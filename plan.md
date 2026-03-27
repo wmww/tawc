@@ -4,7 +4,15 @@
 
 A Rust/Kotlin Android app that runs a Wayland compositor inside an Android Activity.
 Linux Wayland clients (running in Termux/proot/chroot) connect via a Unix domain socket
-and get GPU-accelerated, zero-CPU-copy rendering onto Android Surfaces.
+and get GPU-accelerated rendering onto Android Surfaces. All buffer handling stays on the
+GPU — the compositor imports client dmabuf buffers as GL textures, composites with
+GlesRenderer, and presents via eglSwapBuffers to Android's SurfaceFlinger.
+
+**Non-goal: wl_shm-only support.** This compositor exists to provide hardware-accelerated
+rendering for Wayland clients on Android. `wl_shm` (CPU shared memory buffers) may be
+supported later as a fallback for simple clients, but is never the primary path and must
+not be the first thing implemented. Every phase should target GPU buffers via
+`zwp_linux_dmabuf_v1`.
 
 ---
 
@@ -70,9 +78,9 @@ expect Termux clients to connect.
      via direct `IActivityManager` Binder calls (TermuxAm pattern — reflection on hidden APIs)
    - The tawc app receives the fd from the relay's Binder object
 
-   This is the **reverse** of the original plan's "relay calls bindService()" flow. The relay
-   pushes to the app, not the other way around. Both wlroots-android-bridge and Termux:X11
-   use this pattern. Alternatively, the relay can set up a `Looper` and use
+   This is the **reverse** of a naive "relay calls bindService()" flow. The relay pushes to
+   the app, not the other way around. Both wlroots-android-bridge and Termux:X11 use this
+   pattern. Alternatively, the relay can set up a `Looper` and use
    `ActivityThread.systemMain()` (via reflection/`sun.misc.Unsafe`) to obtain a system
    Context, but this is fragile across Android versions.
 
@@ -122,28 +130,19 @@ expect Termux clients to connect.
    (e.g., `/data/local/tmp/`). May work on some devices/Android versions but SELinux
    enforcement varies by OEM. Not reliable for production.
 
-## Our Approach: Smithay + Android EGL (works on all GPUs)
-
-Instead of the dmabuf/minigbm trick, use the **standard Android EGL import path**:
-
-```
-AHardwareBuffer
-  → eglGetNativeClientBufferANDROID()    → EGLClientBuffer
-  → eglCreateImageKHR(NATIVE_BUFFER_ANDROID) → EGLImage
-  → glEGLImageTargetTexture2DOES()       → GL texture
-```
-
-This goes through the vendor's own EGL/GLES driver and works on Qualcomm, Mali, PowerVR,
-and Intel. No need for Mesa, GBM, or gralloc internals.
-
 ---
 
 ## Architecture
 
 The compositor runs as a Rust native library inside the Android app, on a dedicated
-background thread. No Binder IPC for surfaces or input. A lightweight `app_process` relay
-(started from Termux) handles Wayland socket creation and hands off the listening fd to
-the compositor via a one-shot Binder call — after that, the relay can exit.
+background thread. Clients send GPU buffers (dmabuf fds) via `zwp_linux_dmabuf_v1`. The
+compositor imports them as GL textures, composites with Smithay's GlesRenderer, and
+presents to the Activity's ANativeWindow via `eglSwapBuffers`. One GPU composition pass,
+no CPU buffer copies.
+
+A lightweight `app_process` relay (started from Termux) handles Wayland socket creation
+and hands off the listening fd to the compositor via a one-shot Binder call — after that,
+the relay can exit.
 
 ```
 ┌────────────────────── Android App Process ──────────────────────┐
@@ -160,12 +159,10 @@ the compositor via a one-shot Binder call — after that, the relay can exit.
 │  ┌───────────────────────────────────────────▼▼───────────────┐  │
 │  │  smithay-android                                           │  │
 │  │                                                            │  │
-│  │  ┌─ AndroidAllocator (AHardwareBuffer)                     │  │
-│  │  ├─ GlesRenderer (stock Smithay, vendor GLES driver)       │  │
+│  │  ┌─ GlesRenderer (stock Smithay, vendor GLES driver)       │  │
 │  │  ├─ AndroidEglBackend (EGL on ANativeWindow)               │  │
 │  │  ├─ AndroidInputBackend (events from Kotlin via channel)   │  │
-│  │  ├─ AndroidOutputBackend (ASurfaceTransaction / eglSwap)   │  │
-│  │  ├─ FrameClock (AChoreographer vsync → calloop)            │  │
+│  │  ├─ dmabuf import (EGLImage or AHB→EGLImage → GL texture)  │  │
 │  │  └─ Wayland state (xdg-shell, wl_seat, wl_output, etc)    │  │
 │  └────────────────────────────────────────────────────────────┘  │
 │         │                                                        │
@@ -179,8 +176,28 @@ the compositor via a one-shot Binder call — after that, the relay can exit.
     └─ Exits after handoff
           │
   Termux / proot / chroot (separate process, same device)
-    └─ Wayland clients (GTK, Qt, wlroots apps, etc)
+    └─ Wayland clients (GTK, Qt, wlroots apps — GPU-accelerated via Mesa Turnip)
 ```
+
+**Rendering pipeline:**
+1. Client renders with GPU (Mesa Turnip on Qualcomm, via `/dev/kgsl-3d0` in chroot)
+2. Client sends dmabuf fd to compositor via `zwp_linux_dmabuf_v1`
+3. Compositor imports dmabuf as GL texture (via `EGL_EXT_image_dma_buf_import` if available
+   on stock EGL, or via dmabuf→AHardwareBuffer wrapping + `EGL_ANDROID_image_native_buffer`)
+4. GlesRenderer composites all surfaces (toplevel + popups + subsurfaces) onto the
+   Activity's EGLSurface
+5. `eglSwapBuffers()` → SurfaceFlinger presents
+
+**dmabuf import — two paths (determined at runtime):**
+- **Path A (preferred):** Stock Android EGL supports `EGL_EXT_image_dma_buf_import`. Smithay's
+  `ImportDma` on `GlesRenderer` handles this directly — dmabuf fd → EGLImage → GL texture.
+  No custom code needed beyond Smithay's existing implementation.
+- **Path B (fallback):** Stock EGL does NOT support dmabuf import. Wrap the dmabuf fd as an
+  `AHardwareBuffer` (via socketpair trick with `AHardwareBuffer_recvHandleFromUnixSocket`, or
+  via Gralloc 4 IMapper JNI), then import via AHB → `eglGetNativeClientBufferANDROID` →
+  EGLImage → GL texture. More complex but works on all Android EGL drivers.
+
+Both paths are GPU-only. No CPU copies involved.
 
 Communication between Kotlin UI thread and Rust compositor thread:
 - **Kotlin → Rust:** JNI calls for surface lifecycle (`onSurfaceCreated(nativeWindow)`,
@@ -232,9 +249,8 @@ one-shot socket bootstrap.
 
 ### 2. Android EGL Backend (`smithay-android/src/egl.rs`)
 
-Not needed for the primary ASurfaceControl buffer path, but required for compositor-side
-rendering (cursors, decorations, damage visualization) and as a fallback. Initialize EGL
-from an Android Surface rather than a GBM device.
+Initialize EGL from an Android Surface rather than a GBM device. This is the foundation
+of the rendering pipeline — the compositor uses EGL/GLES for all rendering.
 
 ```rust
 // Pseudocode
@@ -253,6 +269,8 @@ Key considerations:
 - Query `EGL_ANDROID_image_native_buffer` to confirm AHardwareBuffer → EGLImage import is
   available. This is a **driver extension**, not API-level gated — must be queried at runtime
   via `eglQueryString` + `eglGetProcAddress`. Widely available on Android 8+ but not guaranteed.
+- Query `EGL_EXT_image_dma_buf_import` to determine if direct dmabuf import is available.
+  If yes, Smithay's `ImportDma` works directly. If no, use the AHB wrapping fallback.
 - Smithay's `GlesRenderer::new()` takes a Smithay `EGLContext` (not raw EGL handles). We must
   use Smithay's EGL wrappers.
 
@@ -266,158 +284,65 @@ Smithay EGL integration (researched — no GBM assumption):
 - From the wrapped `EGLDisplay`, create an `EGLContext`, then pass to `GlesRenderer::new()`.
 - No Smithay fork needed for this.
 
-### 3. Android Allocator (`smithay-android/src/allocator.rs`)
+### 3. Buffer Import: dmabuf → GL Texture (`smithay-android/src/import.rs`)
 
-**Needed from Phase 2 onward.** The ASurfaceControl path requires AHardwareBuffer allocation:
-for wl_shm clients whose CPU buffers must be copied into AHardwareBuffers before submission
-to SurfaceFlinger, and potentially for compositor-allocated buffers.
+The primary buffer path. Clients send dmabuf fds via `zwp_linux_dmabuf_v1`. The compositor
+must import them as GL textures for compositing.
 
-Implements Smithay's `Allocator` trait using AHardwareBuffer.
+**Path A: Direct dmabuf import (preferred)**
 
-```rust
-pub struct AndroidAllocator;
-pub struct AndroidBuffer {
-    buffer: *mut AHardwareBuffer,
-    size: Size<i32, BufferCoords>,
-    format: Format,
-}
+If the stock Android EGL driver supports `EGL_EXT_image_dma_buf_import`, Smithay's
+`GlesRenderer` already implements `ImportDma` which handles this:
 
-impl Allocator for AndroidAllocator {
-    type Buffer = AndroidBuffer;
-    type Error = AndroidAllocatorError;
-
-    fn create_buffer(
-        &mut self,
-        width: u32,
-        height: u32,
-        fourcc: Fourcc,
-        modifiers: &[Modifier],
-    ) -> Result<AndroidBuffer, Self::Error> {
-        // Map DRM fourcc → AHardwareBuffer format (AHARDWAREBUFFER_FORMAT_*)
-        // AHardwareBuffer_allocate() with GPU_FRAMEBUFFER | GPU_SAMPLED_IMAGE usage
-        // Return wrapped buffer
-    }
-}
-
-impl Buffer for AndroidBuffer {
-    fn size(&self) -> Size<i32, BufferCoords> { self.size }
-    fn format(&self) -> Format { self.format }
-}
+```
+dmabuf fd → eglCreateImageKHR(EGL_LINUX_DMA_BUF_EXT, ...) → EGLImage → GL texture
 ```
 
-Format mapping (DRM fourcc → AHardwareBuffer format):
+No custom code needed. Just enable Smithay's `ImportDma` and test.
 
-**IMPORTANT:** DRM fourcc names describe MSB-to-LSB channel order, which is the *reverse*
-of memory byte order on little-endian. AHardwareBuffer format names describe memory byte order.
-So `DRM_FORMAT_ARGB8888` = BGRA in memory ≠ `R8G8B8A8_UNORM` = RGBA in memory.
+**Path B: AHardwareBuffer wrapping fallback**
 
-Correct mappings:
-- `DRM_FORMAT_ABGR8888` → `AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM` (RGBA in memory)
-- `DRM_FORMAT_XBGR8888` → `AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM` (RGBX in memory)
-- `DRM_FORMAT_RGB565`   → `AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM`
-- `DRM_FORMAT_ARGB8888` → no direct AHB constant; use `HAL_PIXEL_FORMAT_BGRA_8888` (value 5)
-  if vendor supports it, otherwise convert/avoid
-- Others as needed; query supported formats at runtime
+If stock EGL lacks `EGL_EXT_image_dma_buf_import`, wrap the dmabuf fd as an AHardwareBuffer
+first, then use Android's native EGL import:
 
-### 4. Buffer Import: AHardwareBuffer → GL Texture (`smithay-android/src/import.rs`)
-
-For Wayland clients using `wl_shm`, Smithay's `ImportMem` / `ImportMemWl` handles it
-(CPU memcpy → `glTexImage2D`). This works out of the box.
-
-For GPU-accelerated clients and for the compositor's own render targets, two options:
-
-**Option A: Dmabuf export (preferred — leverages existing Smithay code)**
-
-On Android 10+, `AHardwareBuffer` can be exported to a dmabuf fd via NDK. Smithay's
-`GlesRenderer` already implements `ImportDma`. This avoids writing custom GL import code:
-
-```rust
-// Export AHardwareBuffer → dmabuf fd (NDK function, Android 10+)
-// Wrap fd as Smithay Dmabuf
-// Use GlesRenderer::import_dmabuf() — already implemented
+```
+dmabuf fd → AHardwareBuffer (via socketpair trick or Gralloc IMapper)
+  → eglGetNativeClientBufferANDROID() → EGLClientBuffer
+  → eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID, ...) → EGLImage → GL texture
 ```
 
-Needs testing to confirm Android dmabuf fds work with Smithay's desktop-oriented dmabuf
-import path (same EGL extensions under the hood, but edge cases possible).
+The AHB wrapping step uses one of:
+- **Socketpair trick:** Forge the `GraphicBuffer` serialization format (stable since Android 8),
+  write to a socketpair with the dmabuf fd via `SCM_RIGHTS`, call
+  `AHardwareBuffer_recvHandleFromUnixSocket()` on the other end. Uses only public NDK API.
+- **Gralloc 4 IMapper:** Call `android.hardware.graphics.mapper@4.0` HIDL/AIDL interface via
+  JNI to import the native handle. More robust, requires Android 11+.
 
-**Option B: Direct EGLImage import (fallback)**
+Both AHB wrapping approaches are GPU-only — no CPU buffer copies.
 
-```rust
-impl ImportAndroidBuffer for GlesRenderer {
-    fn import_ahardwarebuffer(
-        &mut self,
-        buffer: &AndroidBuffer,
-    ) -> Result<GlesTexture, GlesError> {
-        // 1. eglGetNativeClientBufferANDROID(buffer.raw())
-        // 2. eglCreateImageKHR(display, EGL_NO_CONTEXT,
-        //        EGL_NATIVE_BUFFER_ANDROID, client_buffer, attribs)
-        // 3. glGenTextures + glBindTexture(GL_TEXTURE_2D)
-        // 4. glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image)
-        // 5. Wrap in GlesTexture (or custom texture type)
-    }
-}
-```
+### 4. Presentation (`smithay-android/src/output.rs`)
 
-Both are zero-copy: the AHardwareBuffer is GPU memory; importing it as a GL texture just
-creates a GL view of the same memory.
+The compositor renders all surfaces for a given toplevel (the toplevel itself plus its
+popups and subsurfaces) onto the Activity's EGLSurface via GlesRenderer, then calls
+`eglSwapBuffers()`. SurfaceFlinger handles the final presentation.
 
-### 5. Presentation Backend (`smithay-android/src/output.rs`)
+One EGLSurface per Activity, backed by its ANativeWindow from the SurfaceView. The
+compositor switches between Activities' EGLSurfaces via `eglMakeCurrent()`.
 
-Two presentation paths, in order of preference:
+**Popups and subsurfaces** are composited by GlesRenderer into the same EGLSurface as
+their parent toplevel. They do not get separate Android surfaces. This is the standard
+Wayland compositor approach — the compositor reads client surface textures and draws them
+at the correct positions relative to the toplevel.
 
-**Path A: ASurfaceControl per Wayland surface (preferred, zero-copy)**
+**`wl_output` configuration:** Report Android display metrics to Wayland clients:
+- Resolution: from `DisplayMetrics.widthPixels` / `heightPixels` (passed to Rust via JNI)
+- Physical size: from `DisplayMetrics.xdpi` / `ydpi` (compute mm from pixels/dpi)
+- Refresh rate: from `Display.getRefreshRate()` (or `Display.getSupportedModes()`)
+- Scale factor: derive Wayland scale from `DisplayMetrics.density`. Android density 1.0 =
+  160dpi ≈ Wayland scale 1. density 2.0 = 320dpi ≈ scale 2. Use `wp-fractional-scale-v1`
+  for non-integer scales (common on Android: 2.625, 3.5, etc.)
 
-Each Wayland surface gets its own `ASurfaceControl` child layer under the Activity's
-SurfaceView. Client buffers (as `AHardwareBuffer`s) are submitted directly to
-SurfaceFlinger — the compositor does no GPU rendering for this path.
-
-```rust
-pub struct SurfaceLayer {
-    surface_control: *mut ASurfaceControl, // child of root SurfaceView's SC
-}
-
-pub fn present_surface(layer: &SurfaceLayer, buffer: &AHardwareBuffer,
-                       x: i32, y: i32, z: i32, fence_fd: i32) {
-    // ASurfaceTransaction_create()
-    // ASurfaceTransaction_setBuffer(txn, layer.surface_control, buffer, fence_fd)
-    // ASurfaceTransaction_setPosition(txn, layer.surface_control, x, y)
-    // ASurfaceTransaction_setZOrder(txn, layer.surface_control, z)
-    // ASurfaceTransaction_setVisibility(txn, layer.surface_control, VISIBLE)
-    // ASurfaceTransaction_apply(txn)
-}
-```
-
-All Wayland surfaces (toplevels, popups, subsurfaces) within one Activity are created as
-**flat siblings** under the root SurfaceControl (not mirroring the Wayland parent-child
-tree) to avoid Android's parent-clipping behavior on popups. Z-order and position are
-managed manually. Batch all updates into a single `ASurfaceTransaction_apply()` for
-atomicity.
-
-SurfaceFlinger composites the layers using hardware overlays (up to ~4 per device) or
-its own GPU composition (beyond that). Either way, the compositor's CPU/GPU is not
-involved in composition.
-
-**Caveat:** `ASurfaceControl_createFromWindow` returns NULL for the root `ANativeWindow`
-before API 35 (confirmed bug: https://issuetracker.google.com/issues/320706287). Must use
-a child SurfaceView's `ANativeWindow`, not the Activity's root window. Our architecture
-already uses SurfaceView, so this is not an issue.
-
-**wl_shm surfaces:** For clients using `wl_shm` (CPU-rendered buffers), the compositor
-must copy the shared-memory data into an `AHardwareBuffer` (`AHardwareBuffer_lock` /
-memcpy / `AHardwareBuffer_unlock`) before submitting to SurfaceFlinger. One copy, but
-unavoidable for CPU content.
-
-**Path B: eglSwapBuffers (fallback / compositor-side rendering)**
-- Compositor has one EGLSurface per Activity (backed by its ANativeWindow)
-- Reads client buffers as GL textures, draws them onto the EGLSurface via GlesRenderer
-- Calls `eglSwapBuffers()` — SurfaceFlinger gets the composited result
-- Useful for: compositor-side rendering (cursors, decorations, damage visualization),
-  or as a fallback if ASurfaceControl has issues on a specific device
-
-Path A (ASurfaceControl) is the primary path from the start. Path B is available for
-compositor-generated content and as a fallback.
-
-### 6. Input Backend (`smithay-android/src/input.rs`)
+### 5. Input Backend (`smithay-android/src/input.rs`)
 
 Implements Smithay's `InputBackend` trait. Translates Android events to Smithay event types.
 
@@ -454,96 +379,26 @@ Keyboard mapping is the hardest part:
 - Software keyboard (IME): implement `zwp_text_input_v3` protocol to bridge Android IME
   into Wayland clients. This is a stretch goal — physical/external keyboards first.
 
-### 7. Wayland Protocol Implementation (`smithay-android/src/compositor.rs`)
+### 6. Wayland Protocol Implementation (`smithay-android/src/compositor.rs`)
 
 Use Smithay's protocol handling (this is where it shines — no custom work needed):
 
 **Required (MVP):**
 - `wl_compositor` + `wl_subcompositor` — surface management
-- `wl_shm` — shared memory buffers (software rendering fallback)
+- `zwp_linux_dmabuf_v1` — **the primary buffer path** (GPU buffer sharing from clients)
 - `xdg_shell` (xdg_wm_base + xdg_surface + xdg_toplevel) — window management
 - `wl_seat` (wl_pointer + wl_keyboard) — input
 - `wl_output` — display information
-- `xdg-decoration-unstable-v1` — server-side decorations (android manages window chrome)
-- `wp-fractional-scale-v1` — Android has high-DPI screens
 - `wp-viewporter` — buffer scaling
 
-**Stretch goals:**
-- `zwp_linux_dmabuf_v1` — GPU buffer sharing from clients (needs per-vendor testing)
+**Later:**
+- `wl_shm` — shared memory buffers (software rendering fallback, low priority)
+- `xdg-decoration-unstable-v1` — server-side decorations
+- `wp-fractional-scale-v1` — Android has high-DPI screens
 - `xwayland` — X11 app support via Xwayland connecting to our compositor
 - `zwp_text_input_v3` — Android IME bridge
 - `wl_data_device_manager` — clipboard (bridge to Android clipboard)
 - `wp-cursor-shape-v1` — cursor theming
-
-**Surface mapping — ASurfaceControl per Wayland surface (zero-copy):**
-
-Rather than compositing all of a client's surfaces into a single output buffer (the standard
-Linux compositor approach), we map each Wayland surface to its own `ASurfaceControl` child
-layer and let SurfaceFlinger do the final composition. This eliminates GPU composition in
-the compositor entirely for the common case — client buffers go straight to SurfaceFlinger.
-
-**Hierarchy:** Within each Activity's SurfaceView, obtain the root `SurfaceControl` via
-`SurfaceView.getSurfaceControl()` (API 29+). Create all Wayland surfaces (toplevel,
-popups, subsurfaces) as **flat siblings** — direct children of this root SurfaceControl.
-Do NOT mirror the Wayland parent-child tree, because Android clips child surfaces to their
-parent's bounds, which would clip dropdown menus that extend outside the toplevel window.
-
-For each Wayland surface:
-1. `ASurfaceControl_create(root_sc, debug_name)` — create a child layer
-2. `ASurfaceTransaction_setPosition(txn, sc, x, y)` — position relative to root
-3. `ASurfaceTransaction_setZOrder(txn, sc, z)` — manage stacking manually
-4. `ASurfaceTransaction_setBuffer(txn, sc, ahb, fence)` — submit client's AHardwareBuffer
-5. `ASurfaceTransaction_apply(txn)` — atomic batch update
-
-No EGLSurface per child is needed. No GPU composition by the compositor. SurfaceFlinger
-composites the layers using hardware overlays (up to ~4 layers) or its own GPU composition
-(beyond that). This is the same approach used by wlroots-android-bridge.
-
-**wl_shm fallback:** For clients using `wl_shm` (software rendering), the compositor must
-copy the shared-memory buffer into an `AHardwareBuffer` (via `AHardwareBuffer_lock` /
-memcpy / `AHardwareBuffer_unlock`) before submitting to SurfaceFlinger. This is one extra
-copy but unavoidable for CPU-rendered content.
-
-**Cross-Activity popups:** Popups that must extend beyond an Activity's bounds (rare — only
-relevant in freeform windowing mode) cannot use child ASurfaceControls of that Activity's
-SurfaceView. For MVP, clip them. For polish, consider `SYSTEM_ALERT_WINDOW` permission or
-an overlay SurfaceView.
-
-**`wl_output` configuration:** Report Android display metrics to Wayland clients:
-- Resolution: from `DisplayMetrics.widthPixels` / `heightPixels` (passed to Rust via JNI)
-- Physical size: from `DisplayMetrics.xdpi` / `ydpi` (compute mm from pixels/dpi)
-- Refresh rate: from `Display.getRefreshRate()` (or `Display.getSupportedModes()`)
-- Scale factor: derive Wayland scale from `DisplayMetrics.density`. Android density 1.0 =
-  160dpi ≈ Wayland scale 1. density 2.0 = 320dpi ≈ scale 2. Use `wp-fractional-scale-v1`
-  for non-integer scales (common on Android: 2.625, 3.5, etc.)
-
-### 8. Frame Scheduling (`smithay-android/src/frame_clock.rs`)
-
-The compositor needs vsync-driven frame scheduling to avoid unnecessary rendering and
-screen tearing.
-
-**Approach: `AChoreographer` (NDK API, available since API 24)**
-
-Use `AChoreographer_postFrameCallback64()` (API 29+) for vsync callbacks from native code.
-The callback fires once per vsync; re-register after each frame.
-
-Integration with calloop event loop:
-1. The compositor thread runs a calloop `EventLoop`
-2. Register an `ALooper`-backed event source (AChoreographer requires a thread with an
-   `ALooper` — use `ALooper_prepare()` on the compositor thread)
-3. On vsync callback: post a "render frame" event into calloop
-4. Calloop dispatches: drain input channel, process Wayland events, render all dirty
-   surfaces, call `eglSwapBuffers` (or `ASurfaceTransaction_apply`)
-5. Re-register for next vsync via `AChoreographer_postFrameCallback64()`
-
-Only render when there's actual damage (new client commits, input state changes, etc.).
-Skip the vsync callback re-registration when idle to save power.
-
-**calloop integration:** The compositor's event loop (calloop) needs these event sources:
-- Wayland client connections (from the listening socket fd)
-- Input events (crossbeam channel from JNI, wrapped as a calloop `Channel` source)
-- Surface lifecycle events (JNI callbacks for surface created/destroyed/resized)
-- Frame vsync (from AChoreographer, bridged into calloop via a pipe or eventfd)
 
 ---
 
@@ -555,14 +410,12 @@ smithay-android/
 ├── src/
 │   ├── lib.rs              # JNI entry points, public API
 │   ├── egl.rs              # Android EGL display/context/surface setup
-│   ├── allocator.rs        # AndroidAllocator (AHardwareBuffer)
-│   ├── import.rs           # AHardwareBuffer → EGLImage → GL texture
-│   ├── output.rs           # ASurfaceTransaction or eglSwapBuffers presentation
+│   ├── import.rs           # dmabuf → GL texture (EGLImage or AHB path)
+│   ├── output.rs           # eglSwapBuffers presentation
 │   ├── input.rs            # AndroidInputBackend (InputBackend impl)
 │   ├── keymap.rs           # AKEYCODE → Linux scancode mapping
 │   ├── compositor.rs       # Wayland state machine, protocol handling
-│   ├── window.rs           # Per-toplevel state (surface, geometry, etc.)
-│   └── frame_clock.rs      # AChoreographer vsync + calloop integration
+│   └── window.rs           # Per-toplevel state (surface, geometry, etc.)
 └── build.rs                # bindgen for NDK APIs
 ```
 
@@ -570,7 +423,7 @@ Dependencies:
 - `smithay` (features: `renderer_gl`, `backend_egl`, `wayland_frontend`, `xdg_shell`, `desktop`)
   **Important:** use `default-features = false` to avoid pulling in libdrm, libgbm, libinput,
   libudev, libseat, and X11 — none of which exist on Android.
-- `ndk` — AHardwareBuffer, ANativeWindow, ASurfaceControl bindings
+- `ndk` — AHardwareBuffer, ANativeWindow bindings
 - `jni` — JNI interop with Kotlin app
 - `crossbeam-channel` — lock-free MPSC for input events (UI thread → compositor thread)
 - `xkbcommon` — keymap handling (smithay depends on this; requires cross-compiled libxkbcommon.so)
@@ -599,8 +452,7 @@ embedded in an Intent (TermuxAm pattern). The entire native layer is the Rust .s
 - Rust library cross-compiled for `aarch64-linux-android` via `cargo-ndk`
 - Outputs `libsmithay_android.so` loaded by the Kotlin app via `System.loadLibrary()`
 - Gradle build invokes cargo-ndk as a custom task, copies .so into `jniLibs/arm64-v8a/`
-- Target API level: 29 (Android 10) minimum for ASurfaceTransaction + AHardwareBuffer.
-  API 35 recommended for `ASurfaceControl_createFromWindow` on root ANativeWindow.
+- Target API level: 29 (Android 10) minimum for AHardwareBuffer import/export APIs.
 
 **Native dependency: libxkbcommon.** Smithay depends on the `xkbcommon` crate which links
 to `libxkbcommon.so` via FFI. This C library is **not in the Android NDK** and must be
@@ -619,79 +471,78 @@ pure Rust Wayland protocol implementation — no `libwayland-server.so` needed. 
 the `server_system` cargo feature (which would require the C library).
 
 **Other native deps (provided by NDK):** EGL, GLESv2, libc (bionic), libandroid (for
-AHardwareBuffer/ANativeWindow/ASurfaceControl). These are all in the NDK sysroot.
+AHardwareBuffer/ANativeWindow). These are all in the NDK sysroot.
 
 ---
 
 ## Implementation Order
 
-The priority is getting a single Wayland toplevel visible on screen via the production
-buffer path (ASurfaceControl + AHardwareBuffer) as early as possible. Input, multi-window,
-popups, and polish come after the core rendering pipeline is proven.
+The priority is getting a single GPU-accelerated Wayland client visible on screen as early
+as possible. The rendering path must use GPU buffers (`zwp_linux_dmabuf_v1`) from the start
+— **do not implement or test with `wl_shm` first.**
 
-### Phase 1: Build Toolchain & Scaffold
+### Phase 1: Build Toolchain & EGL Proof
 1. Set up Android app scaffold: single Activity with a SurfaceView
 2. Cross-compile toolchain: cargo-ndk, NDK sysroot, cross-compile libxkbcommon for
    aarch64-linux-android
-3. Rust library skeleton with JNI: `System.loadLibrary()`, JNI entry point receives
-   the SurfaceView's `Surface` object
-4. Verify: Rust code can obtain `ANativeWindow` from the Surface via JNI
-5. **Milestone: Rust .so loads and receives ANativeWindow from Android**
+3. Rust library with JNI: receive ANativeWindow, create EGL context via Smithay's
+   `EGLDisplay::from_raw()` or `EGLNativeDisplay` trait, wrap in `GlesRenderer`
+4. Render a solid color to the EGLSurface via GlesRenderer + `eglSwapBuffers`
+5. Query and log available EGL extensions — specifically check for
+   `EGL_EXT_image_dma_buf_import` and `EGL_ANDROID_image_native_buffer`
+6. **Milestone: GlesRenderer renders to Android Surface, EGL extension support known**
 
-### Phase 2: ASurfaceControl Buffer Submission
-6. From the `ANativeWindow`, create a root `ASurfaceControl` via
-   `ASurfaceControl_createFromWindow()`
-7. Create a single child `ASurfaceControl` (will represent the Wayland toplevel)
-8. Allocate an `AHardwareBuffer`, fill it with a solid color via
-   `AHardwareBuffer_lock` / memcpy / `AHardwareBuffer_unlock`
-9. Submit the buffer via `ASurfaceTransaction_setBuffer()` + `apply()`
-10. **Milestone: solid color on screen via the production buffer path (no EGL yet)**
+### Phase 2: dmabuf Import Proof
+7. Determine dmabuf import path based on Phase 1 extension query:
+   - If `EGL_EXT_image_dma_buf_import` available: use Smithay's `ImportDma` directly
+   - If not: implement AHB wrapping (socketpair trick or Gralloc IMapper) +
+     `EGL_ANDROID_image_native_buffer` import
+8. Test: create a dmabuf (via AHardwareBuffer_allocate + export, or via a test fd),
+   import it as a GL texture, render it onto the EGLSurface via GlesRenderer
+9. **Milestone: dmabuf fd → GL texture → composited onto screen. GPU buffer import proven.**
 
 ### Phase 3: Wayland Server + Socket Relay
-11. Initialize Smithay's Wayland state (Display, compositor, xdg_shell, wl_shm, wl_output)
-12. Build `app_process` relay (TermuxAm pattern) for listening socket handoff
-13. Test: Termux client connects to `$XDG_RUNTIME_DIR/wayland-0`, compositor receives
+10. Initialize Smithay's Wayland state (Display, compositor, xdg_shell,
+    `zwp_linux_dmabuf_v1`, wl_output)
+11. Build `app_process` relay (TermuxAm pattern) for listening socket handoff
+12. Test: Termux client connects to `$XDG_RUNTIME_DIR/wayland-0`, compositor receives
     connection via `DisplayHandle::insert_client()`
-14. Handle wl_shm client commit: copy shm buffer into `AHardwareBuffer`, submit to the
-    child `ASurfaceControl` via `ASurfaceTransaction_setBuffer()`
-15. Test with `weston-simple-shm` from Termux
-16. **Milestone: wl_shm Wayland client visible on screen via ASurfaceControl (production path)**
+13. Handle dmabuf client commit: import dmabuf → GL texture → GlesRenderer composites
+    onto EGLSurface → `eglSwapBuffers`
+14. Test with a GPU-accelerated Wayland client from Termux (Mesa Turnip + a simple
+    EGL/Vulkan client, or `weston-simple-dmabuf` if available)
+15. **Milestone: GPU-accelerated Wayland client visible on screen via compositor**
 
-### Phase 4: EGL + GlesRenderer (for compositor-side rendering)
-17. Create EGL context via Smithay's `EGLDisplay::from_raw()` or `EGLNativeDisplay` trait
-18. Initialize `GlesRenderer` from the EGL context
-19. This enables: compositor-side rendering when needed (cursors, server-side decorations,
-    damage visualization, screenshot capture, etc.)
-20. Also enables `ImportMemWl` (Smithay's optimized wl_shm → GL texture path) as an
-    alternative to raw memcpy for wl_shm clients if needed
-21. **Milestone: GlesRenderer operational on Android**
+### Phase 4: Input
+16. Implement AndroidInputBackend (touch + pointer first, keyboard second)
+17. Wire up Kotlin onTouchEvent/onKeyEvent → JNI → crossbeam channel → Smithay wl_seat
+18. AKEYCODE → Linux scancode mapping + XKB keymap
+19. **Milestone: can interact with a Wayland client**
 
-### Phase 5: Input
-22. Implement AndroidInputBackend (touch + pointer first, keyboard second)
-23. Wire up Kotlin onTouchEvent/onKeyEvent → JNI → crossbeam channel → Smithay wl_seat
-24. AKEYCODE → Linux scancode mapping + XKB keymap
-25. **Milestone: can interact with a Wayland client (e.g., `weston-simple-shm` touch,
-    `foot` terminal keyboard)**
+### Phase 5: Multi-Window
+20. JNI callback: compositor notifies Kotlin of new xdg_toplevels
+21. MainActivity spawns SurfaceViewActivity per toplevel
+22. Each Activity's SurfaceView gets its own EGLSurface; compositor switches via
+    `eglMakeCurrent()` to render each window
+23. Window lifecycle (map, unmap, close, resize)
+24. **Milestone: multiple Wayland windows as separate Android Activities**
 
-### Phase 6: Multi-Window + Surface Tree
-26. JNI callback: compositor notifies Kotlin of new xdg_toplevels
-27. MainActivity spawns SurfaceViewActivity per toplevel
-28. Each Activity's SurfaceView gets its own root ASurfaceControl + child layers
-29. Window lifecycle (map, unmap, close, resize)
-30. Popups and subsurfaces as flat-sibling ASurfaceControl layers within the parent
-    Activity's SurfaceView (manual z-order/position management)
-31. **Milestone: multiple Wayland windows as separate Android Activities, popups work**
+### Phase 6: Polish & Protocols (ongoing)
+25. Frame callbacks (`wl_surface.frame`) for proper client frame pacing
+26. Server-side decorations (xdg-decoration)
+27. Fractional scaling (wp-fractional-scale) for high-DPI Android screens
+28. `wl_shm` support (software rendering fallback for simple clients)
+29. Clipboard bridge (wl_data_device ↔ Android ClipboardManager)
+30. IME bridge (zwp_text_input_v3 ↔ Android InputMethodManager)
+31. Xwayland support (stretch goal)
 
-### Phase 7: Polish & Protocols (ongoing)
-32. Frame scheduling via AChoreographer (render only on vsync + damage)
-33. Fence synchronization (`EGL_ANDROID_native_fence_sync` / acquire fence fd)
-34. Server-side decorations (xdg-decoration)
-35. Fractional scaling (wp-fractional-scale) for high-DPI Android screens
-36. Clipboard bridge (wl_data_device ↔ Android ClipboardManager)
-37. IME bridge (zwp_text_input_v3 ↔ Android InputMethodManager)
-38. `zwp_linux_dmabuf_v1` — GPU buffer sharing from clients (direct AHB submission,
-    no copy needed)
-39. Xwayland support (stretch goal)
+**Note on zero-copy presentation:** The current architecture uses a GPU composition pass
+(GlesRenderer → eglSwapBuffers). A theoretically more efficient path would map each Wayland
+surface to a separate `ASurfaceControl` child layer and submit `AHardwareBuffer`s directly
+to SurfaceFlinger, eliminating the compositor's GPU pass entirely. This would require solving
+the dmabuf→AHardwareBuffer wrapping problem (see notes.md §15) for every client buffer. It's
+a possible future optimization but not a priority — the GPU composition pass is fast and the
+architecture is simpler.
 
 ---
 
@@ -701,21 +552,22 @@ popups, and polish come after the core rendering pipeline is proven.
 |---|---|---|
 | SELinux blocks cross-app Unix sockets | **Clients can't connect** | `app_process` relay in Termux (proven by wlroots-android-bridge and Termux:X11); or fd passing via ContentProvider |
 | Smithay's EGL module assumes GBM | Blocks renderer init | Use `EGLDisplay::from_raw()` with pre-initialized Android EGL display — confirmed to exist in Smithay API. No fork needed. |
-| AHardwareBuffer format support varies by vendor | Some fourcc formats unavailable | Query supported formats at runtime, fall back to ABGR8888 (RGBA). Note: DRM↔AHB format mapping has byte-order subtleties. |
-| `eglGetNativeClientBufferANDROID` not available | Can't import AHB as texture | Runtime extension check; fall back to dmabuf export path or CPU readback. Widely available on Android 8+ but not guaranteed. |
-| `ASurfaceControl_createFromWindow` returns NULL pre-API 35 | Zero-copy path broken | Use child SurfaceView's ANativeWindow (not root window); or fall back to eglSwapBuffers |
+| Stock Android EGL lacks `EGL_EXT_image_dma_buf_import` | Can't import client dmabufs directly | Fallback: wrap dmabuf as AHardwareBuffer (socketpair trick or Gralloc IMapper), then import via `EGL_ANDROID_image_native_buffer`. Both paths are GPU-only. |
+| `eglGetNativeClientBufferANDROID` not available | Can't import AHB as texture | Runtime extension check. Widely available on Android 8+ but not guaranteed. |
+| Mesa Turnip dmabuf fds incompatible with stock EGL | Texture import fails | Both use KGSL (same kernel driver), so physical memory is compatible. Test early in Phase 2. |
 | JNI call overhead for input events | Input lag | Lock-free MPSC channel (crossbeam), batch drain per frame; JNI overhead is ~nanoseconds so unlikely to be an issue |
-| Smithay GlesRenderer internals assume Linux desktop EGL | Texture import fails | Try dmabuf export path first (leverages existing ImportDma); fall back to custom EGLImage import |
+| Smithay GlesRenderer internals assume Linux desktop EGL | Rendering or import fails | Test early. May need to patch Smithay for Android EGL quirks. |
 | Android kills background Activities | Windows disappear | Use foreground service, SYSTEM_ALERT_WINDOW, or freeform multi-window mode |
 | XKB keymap mismatch with Android keycodes | Wrong characters | Ship curated keymap, allow user override |
-| EGL context thread affinity | Rendering fails from wrong thread | EGL context must be current on the compositor thread. Can render to multiple EGLSurfaces from one thread via `eglMakeCurrent` switching (has overhead per switch). |
-| Activity launch latency (100-300ms per window) | Sluggish window creation | Suppress animations (`overridePendingTransition(0, 0)`), consider pre-creating a pool of Activities, or evaluate single-Activity multi-SurfaceView approach as alternative. |
+| EGL context thread affinity | Rendering fails from wrong thread | EGL context must be current on the compositor thread. Switch EGLSurfaces via `eglMakeCurrent` (has overhead per switch). |
+| Activity launch latency (100-300ms per window) | Sluggish window creation | Suppress animations (`overridePendingTransition(0, 0)`), consider pre-creating a pool of Activities. |
 | libxkbcommon not in Android NDK | Build fails | Cross-compile libxkbcommon from source with NDK toolchain; or shim the pure-Rust `xkbcommon-rs` crate. |
 | Smithay has never been built for Android | Unknown build failures | Use `default-features = false`, only enable needed features. wayland-rs pure Rust backend avoids libwayland dependency. May need to patch platform-specific code paths. |
-| Phantom Process Killer (Android 12+) | Relay process killed by OS | Relay exits after fd handoff (short-lived). Users may need `device_config put activity_manager max_phantom_processes 2147483647` or Developer Options toggle (Android 14+). |
-| `app_process` relay lacks Android Context | Can't call `bindService()` | Use TermuxAm pattern: relay creates Binder objects and sends them to app via direct `IActivityManager` calls (reflection). Both wlroots-android-bridge and Termux:X11 use this. |
+| Phantom Process Killer (Android 12+) | Relay process killed by OS | Relay exits after fd handoff (short-lived). Users may need Developer Options toggle (Android 14+). |
+| `app_process` relay lacks Android Context | Can't call `bindService()` | Use TermuxAm pattern: relay creates Binder objects and sends them to app via direct `IActivityManager` calls (reflection). |
 | Hidden API reflection breaks across Android versions | Relay stops working | The `IActivityManager` / `ActivityThread` reflection used by TermuxAm has worked through Android 15. Monitor for breakage; consider Shizuku as alternative mechanism. |
-| Freeform windowing not universally available | Multi-window = fullscreen only on phones | On standard phones, each Activity is fullscreen (switch via recents). True freeform windows only on Samsung DeX, ChromeOS, Android 15+ desktop mode. Document this limitation. |
+| Freeform windowing not universally available | Multi-window = fullscreen only on phones | On standard phones, each Activity is fullscreen (switch via recents). True freeform windows only on Samsung DeX, ChromeOS, Android 15+ desktop mode. |
+| GPU-accelerated clients only work on Qualcomm | Limited device support | Mesa Turnip requires `/dev/kgsl-3d0` (Qualcomm Adreno). Mali/MediaTek/Exynos have no open-source drivers for stock Android kernels. Non-Qualcomm devices need `wl_shm` fallback (Phase 6). |
 
 ---
 
@@ -725,6 +577,7 @@ popups, and polish come after the core rendering pipeline is proven.
 - [Xtr126/labwc-android](https://github.com/Xtr126/labwc-android) — wlroots backend for Android
 - [Smithay](https://github.com/Smithay/smithay) — Rust Wayland compositor library
 - [AHardwareBuffer NDK docs](https://developer.android.com/ndk/reference/group/a-hardware-buffer)
-- [ASurfaceTransaction NDK docs](https://developer.android.com/ndk/reference/group/native-activity#asurfacetransaction)
 - [EGL_ANDROID_image_native_buffer](https://registry.khronos.org/EGL/extensions/ANDROID/EGL_ANDROID_image_native_buffer.txt)
+- [EGL_EXT_image_dma_buf_import](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import.txt)
 - [ndk crate](https://crates.io/crates/ndk) — Rust bindings for Android NDK
+- [Mesa Turnip (Qualcomm Vulkan)](https://docs.mesa3d.org/drivers/freedreno.html) — GPU driver for clients in chroot

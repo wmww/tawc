@@ -222,35 +222,47 @@ Android NDK provides `AChoreographer` for vsync callbacks from native code:
 
 **Requirement:** AChoreographer needs a thread with an `ALooper`. The compositor thread must call `ALooper_prepare()` before using AChoreographer.
 
-### 12. Surface Mapping Strategy: ASurfaceControl per Wayland Surface (2026-03-27)
+### 12. Rendering Architecture Decision (2026-03-27, revised)
 
-**Key insight: avoid redundant composition.** On Linux, a Wayland compositor must composite all client surfaces into an output framebuffer because it's the final display server. On Android, we're nested under SurfaceFlinger, which is already a compositor. We can map each Wayland surface to a separate `ASurfaceControl` child layer and let SurfaceFlinger handle composition — eliminating GPU work in the compositor.
+**Decision: GPU composition pass via GlesRenderer + eglSwapBuffers.**
+
+The compositor imports client dmabuf buffers as GL textures, composites all surfaces
+(toplevel + popups + subsurfaces) with GlesRenderer onto an EGLSurface backed by the
+Activity's ANativeWindow, and calls eglSwapBuffers. One GPU composition pass per frame,
+no CPU buffer copies. Standard Wayland compositor architecture.
+
+**Why not ASurfaceControl per Wayland surface (zero-copy to SurfaceFlinger)?**
+This was investigated and is theoretically possible but impractical:
+- Requires converting client dmabuf fds to AHardwareBuffers, which has no clean public
+  NDK API (see §15)
+- The GPU composition pass is fast (sub-millisecond for typical surface counts) and the
+  architecture is much simpler
+- Popups/subsurfaces are naturally handled by the compositor's render pass without
+  needing separate Android surface management
+- See §15 for detailed analysis of the dmabuf→AHB problem
+
+The ASurfaceControl API details are preserved below for reference in case this is
+revisited in the future.
+
+<details>
+<summary>ASurfaceControl API reference (for future zero-copy investigation)</summary>
 
 **ASurfaceControl API (API 29+):**
 - `ASurfaceControl_createFromWindow(ANativeWindow*, name)` — child from SurfaceView's window
 - `ASurfaceControl_create(ASurfaceControl*, name)` — child from existing SC
-- `ASurfaceTransaction_setBuffer(txn, sc, AHardwareBuffer*, fence_fd)` — submit buffer directly, no EGLSurface needed
+- `ASurfaceTransaction_setBuffer(txn, sc, AHardwareBuffer*, fence_fd)` — submit buffer directly
 - `ASurfaceTransaction_setPosition(txn, sc, x, y)` — position relative to parent
 - `ASurfaceTransaction_setZOrder(txn, sc, z)` — stacking order among siblings
 - `ASurfaceTransaction_apply(txn)` — atomic batch commit
 
-**Java vs NDK API:** The Java `SurfaceControl` API (API 29+) is a superset of the NDK `ASurfaceControl` API. Notably, `SurfaceControl.Transaction.reparent(sc, newParent)` is Java-only — not exposed in NDK. This could be useful for dynamically reparenting popup surfaces. `SurfaceView.getSurfaceControl()` returns a Java `SurfaceControl` (API 29+). For the NDK path, use `ASurfaceControl_createFromWindow()` with the `ANativeWindow` from the SurfaceView.
+**Java vs NDK API:** The Java `SurfaceControl` API (API 29+) is a superset of the NDK API.
+`SurfaceControl.Transaction.reparent(sc, newParent)` is Java-only.
 
-**Parent clipping problem:** Child ASurfaceControls are clipped to their parent's bounds. The Android docs explicitly state: "Child surfaces are constrained to the onscreen region of their parent." This means if a popup (dropdown menu) extends outside the parent toplevel window's rectangle, it gets clipped.
+**Parent clipping:** Child ASurfaceControls are clipped to parent bounds. Popups extending
+beyond the toplevel would be clipped. Solution: flat sibling hierarchy under root SC.
 
-**Solution: flat sibling hierarchy.** Within each Activity's SurfaceView, get the root `SurfaceControl` via `SurfaceView.getSurfaceControl()`. Create ALL Wayland surfaces (toplevel, popups, subsurfaces) as direct children of this root — NOT mirroring the Wayland parent-child tree. Manage z-order and position manually. This avoids the clipping issue because siblings are not clipped by each other, only by the root (which is the full SurfaceView area).
-
-**SurfaceFlinger layer limits:** Android devices typically have ~4 hardware overlay planes. Beyond that, SurfaceFlinger falls back to GPU composition (its own GLES renderer). For 5-10 Wayland surfaces, this is fine — the system routinely handles 10+ layers. The cost is power efficiency (GPU composition vs HW overlay), not functionality.
-
-**wl_shm surfaces:** Clients using `wl_shm` (CPU-rendered) provide shared memory buffers, not `AHardwareBuffer`s. The compositor must copy into an AHB (`AHardwareBuffer_lock` / memcpy / `AHardwareBuffer_unlock`) before submitting to SurfaceFlinger. One extra copy, but unavoidable for CPU content.
-
-**wlroots-android-bridge validates this approach** — it creates a separate `ASurfaceControl` per Wayland window and submits `AHardwareBuffer`s directly to SurfaceFlinger.
-
-**Termux:X11 does NOT do this** — it composites everything into a single surface. Simpler but slower (redundant GPU composition).
-
-**Implementation priority:** The ASurfaceControl path is the primary implementation target
-from the start (Phase 2). EGL/GlesRenderer is deferred to Phase 4 for compositor-side
-rendering (cursors, decorations) and as a fallback path.
+**Layer limits:** ~4 HW overlay planes, GPU composition fallback beyond that. 10+ layers fine.
+</details>
 
 ### 13. Freeform Windowing Availability (2026-03-27)
 
@@ -272,3 +284,174 @@ Confirmed against Smithay 0.7.0 (published 2025-06-24):
 - **`InputBackend`** — requires exactly 25 associated types (24 event types + Device).
 - **`GlesRenderer`** — implements `ImportDma`, `ImportDmaWl`, `ImportMem`, `ImportMemWl`, `ImportEgl`, `ExportMem`, `Bind`, `Blit`, `Offscreen`.
 - **Features** `wayland_frontend` and `renderer_gl` exist. `renderer_gl` pulls in `backend_egl` automatically.
+
+### 15. dmabuf fd to AHardwareBuffer: The Critical Buffer Import Question (2026-03-27)
+
+**Summary: There is NO public NDK API to create an AHardwareBuffer from a dmabuf fd. The viable path is compositor-allocated AHardwareBuffers with the `AHardwareBuffer_sendHandleToUnixSocket` / `recvHandleFromUnixSocket` NDK functions, combined with the zwp_linux_dmabuf_v1 feedback mechanism to guide client allocation. A Vulkan cross-handle-type conversion path is theoretically possible but practically unreliable on Android.**
+
+#### 15a. No Public NDK API for dmabuf Import
+
+The complete AHardwareBuffer NDK API (as of API 36) includes: `allocate`, `acquire`, `release`, `describe`, `lock`, `lockAndGetInfo`, `lockPlanes`, `unlock`, `isSupported`, `getId`, `sendHandleToUnixSocket`, `recvHandleFromUnixSocket`, `toHardwareBuffer`, `fromHardwareBuffer`, `writeToParcel`, `readFromParcel`. **None of these accept a dmabuf fd or native_handle_t as input to create an AHardwareBuffer.**
+
+There ARE two non-public (VNDK) functions in `frameworks/native/libs/nativewindow/`:
+- `AHardwareBuffer_getNativeHandle(const AHardwareBuffer*)` -- returns the internal `native_handle_t*` (which contains the dmabuf fd at `handle->data[0]`). Available in VNDK since Android 8.1.
+- `AHardwareBuffer_createFromHandle(...)` -- exists in AOSP source (`AHardwareBuffer.cpp`), creates an AHardwareBuffer from a `native_handle_t`. This is the function that `recvHandleFromUnixSocket` internally calls after deserializing.
+
+**These are VNDK-only, not public NDK.** Using them from an app requires either:
+1. `dlopen("libnativewindow.so")` + `dlsym()` (fragile, may break across Android versions, blocked by linker namespace restrictions on Android 7+)
+2. Rebuilding the app as a vendor/system process (impractical)
+
+**Verdict: Not a viable path for a third-party app.**
+
+#### 15b. Vulkan Path: dmabuf fd -> VkDeviceMemory -> AHardwareBuffer (NOT VIABLE)
+
+The theoretical chain:
+1. Import dmabuf fd via `VK_EXT_external_memory_dma_buf` (using `VkImportMemoryFdInfoKHR` with `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT`)
+2. Export the same `VkDeviceMemory` as AHardwareBuffer via `VK_ANDROID_external_memory_android_hardware_buffer` (using `vkGetMemoryAndroidHardwareBufferANDROID`)
+
+**Why this does NOT work:**
+
+1. **`VK_EXT_external_memory_dma_buf` is NOT available on stock Android GPU drivers.** The Android Vulkan Profile 2025 (AVP 2025) requires `VK_KHR_external_memory_fd` (opaque fd) and `VK_ANDROID_external_memory_android_hardware_buffer`, but does NOT require `VK_EXT_external_memory_dma_buf`. Stock Qualcomm and ARM Mali drivers on Android do not expose this extension. Only Mesa drivers (Turnip, Freedreno) do, and only with patches.
+
+2. **Cross-handle-type export is not guaranteed.** The Vulkan spec's `compatibleHandleTypes` and `exportFromImportedHandleTypes` bitmasks in `VkExternalMemoryProperties` determine what combinations are valid. Importing as DMA_BUF and exporting as ANDROID_HARDWARE_BUFFER requires both bits to appear in `compatibleHandleTypes` for the allocation. There is no spec requirement that drivers support this combination, and stock Android drivers almost certainly do not.
+
+3. **Even `VK_KHR_external_memory_fd` with OPAQUE_FD won't help.** OPAQUE_FD is NOT the same as DMA_BUF. A dmabuf fd from a Wayland client is `DMA_BUF_BIT_EXT`, not `OPAQUE_FD_BIT`. You cannot import a dmabuf fd using `OPAQUE_FD_BIT` -- the fd types are incompatible.
+
+**Verdict: Not viable on stock Android. Would only work with Mesa drivers (Turnip) in very specific configurations, and even then the cross-handle-type export is not guaranteed.**
+
+#### 15c. EGL Path: dmabuf fd -> EGLImage -> ??? (REQUIRES GPU COPY)
+
+`EGL_EXT_image_dma_buf_import` can import a dmabuf fd as an EGLImage. This works on Android when using Mesa drivers (e.g., Turnip/Freedreno in a chroot). However:
+
+- There is NO API to go from EGLImage to AHardwareBuffer. The path is one-way: AHardwareBuffer -> EGLClientBuffer -> EGLImage (via `eglGetNativeClientBufferANDROID`). There is no reverse.
+- To get the content to SurfaceFlinger, you would need to: create an AHardwareBuffer, bind it as a GL renderbuffer/texture via EGLImage, then `glBlitFramebuffer` or texture-blit from the dmabuf EGLImage to the AHB EGLImage. This is a **GPU copy**, not zero-copy.
+- Stock Android EGL drivers (Qualcomm, Mali) likely do NOT support `EGL_EXT_image_dma_buf_import` at all -- this extension is Mesa-specific.
+
+**Verdict: Not zero-copy. Requires a GPU blit. Also driver-dependent.**
+
+#### 15d. Compositor-Allocated AHardwareBuffers (THE VIABLE PATH)
+
+**This is the correct approach.** Instead of importing client-allocated dmabufs, the compositor allocates AHardwareBuffers and makes them available to clients for rendering.
+
+**How it works with zwp_linux_dmabuf_v1:**
+
+1. **Compositor allocates AHardwareBuffers** using `AHardwareBuffer_allocate()` with GPU_SAMPLED_IMAGE and GPU_COLOR_OUTPUT usage flags.
+
+2. **Compositor extracts dmabuf fds** from the AHardwareBuffers. This can be done via:
+   - Vulkan: Import AHB via `VK_ANDROID_external_memory_android_hardware_buffer`, then export as opaque fd via `VK_KHR_external_memory_fd`. (Both extensions are in AVP 2025.)
+   - The VNDK `AHardwareBuffer_getNativeHandle()` function (risky, non-public).
+   - EGL: `eglGetNativeClientBufferANDROID` -> `eglCreateImageKHR` -> `eglExportDMABUFImageMESA` (Mesa-only).
+
+3. **Compositor advertises supported formats/modifiers** via the `zwp_linux_dmabuf_feedback_v1` interface. The feedback includes the device node and format+modifier pairs. Clients use this to select compatible allocation parameters.
+
+4. **Client allocates buffers using the compositor's advertised parameters.** In the standard Wayland dmabuf protocol, the **client always allocates**. The compositor cannot send pre-allocated buffers to clients via `zwp_linux_dmabuf_v1`.
+
+5. **The key insight:** If the client runs in a chroot/proot with Mesa (Turnip/Freedreno), and the compositor advertises the correct device and format/modifier pairs that match AHardwareBuffer capabilities, the client's Mesa driver will allocate buffers that are compatible with the host's gralloc. Both use the same underlying kernel GPU driver and the same dma-buf heap. The dmabuf fds the client sends will reference buffers that can be wrapped as AHardwareBuffers.
+
+**The problem: wrapping a client-allocated dmabuf as AHardwareBuffer still requires `AHardwareBuffer_createFromHandle` (VNDK-only) or `AHardwareBuffer_recvHandleFromUnixSocket` (requires the AHB serialization format).**
+
+#### 15e. AHardwareBuffer_sendHandleToUnixSocket Path (MOST PROMISING)
+
+These NDK functions (available since API 26) serialize/deserialize AHardwareBuffers over Unix domain sockets:
+- `AHardwareBuffer_sendHandleToUnixSocket(buffer, sockfd)` -- flattens the GraphicBuffer and sends it via `sendmsg()` with `SCM_RIGHTS` for the dmabuf fds
+- `AHardwareBuffer_recvHandleFromUnixSocket(sockfd, &buffer)` -- receives and reconstructs the AHardwareBuffer
+
+**Internally, these use `sendmsg`/`recvmsg` with `SCM_RIGHTS` to pass the native_handle's file descriptors.** The serialization format includes the buffer metadata (width, height, format, stride, etc.) plus the dmabuf fds.
+
+**Two potential approaches:**
+
+**Approach A: Custom Wayland protocol extension (android_buffer)**
+- Define a custom Wayland protocol where the compositor sends serialized AHardwareBuffer handles to clients
+- Client receives them, maps them as render targets, renders, and commits
+- Problem: Standard Wayland clients (GTK, Qt) would not understand this protocol. Would require custom client-side code or a client-side Wayland protocol adapter library.
+
+**Approach B: Compositor as AHB allocator with dmabuf round-trip**
+- Compositor allocates AHardwareBuffer
+- Compositor extracts the dmabuf fd (via Vulkan AHB->opaque_fd export)
+- Compositor makes the fd available to clients (via the standard zwp_linux_dmabuf_v1 protocol or shared memory)
+- Client renders into the dmabuf
+- Client commits via wl_surface.attach + commit
+- Compositor receives the dmabuf fd back, but now needs to reconstruct the AHardwareBuffer
+- Since the compositor originally allocated the AHB, it still holds a reference -- it just maps the incoming dmabuf fd back to its original AHB
+
+**Approach B is the winner.** The compositor maintains a mapping of dmabuf fd -> AHardwareBuffer. When a client commits a buffer, the compositor matches the incoming dmabuf fd to its original AHardwareBuffer (by comparing fd identity via `kcmp(2)` or by maintaining a lookup table keyed on the dmabuf global ID from `/proc/self/fdinfo`).
+
+#### 15f. What wlroots-android-bridge Actually Does
+
+Based on source code analysis (as of 2026-03):
+
+- The project is in active development/restructuring. The `master` branch has minimal C++ code (stub JNI functions in `labwc.cpp`).
+- The README describes the intended architecture: a `wlr_allocator` implementation backed by AHardwareBuffer, with each client's surface rendered onto a compositor-allocated AHB using wlroots' GLES2 renderer, then submitted to SurfaceFlinger via `ASurfaceTransaction_setBuffer`.
+- It uses `cros_gralloc_handle.h` from Intel's minigbm to extract buffer metadata (format, stride, planes) from AHardwareBuffer's native_handle. **This is vendor-specific** -- `cros_gralloc_handle` is the handle format used by minigbm/ChromeOS gralloc, NOT by Qualcomm or ARM Mali gralloc.
+- **This is why it fails on ARM/Qualcomm:** Stock Android devices use vendor-specific gralloc implementations (Qualcomm's `msm_gralloc_handle`, ARM's gralloc). The `cros_gralloc_handle` struct layout does not match these. Casting a Qualcomm gralloc handle as `cros_gralloc_handle` reads garbage values for format/stride/planes.
+- The project was tested with Mesa iris driver (Intel GPU), which uses minigbm gralloc. It does not work with vendor GPU drivers.
+- The approach of rendering client textures onto compositor-allocated AHBs is sound -- it just needs a vendor-agnostic way to extract buffer metadata, which Gralloc 4's `IMapper::get()` HIDL/AIDL interface provides (but that requires Java/AIDL, not raw native_handle parsing).
+
+#### 15g. Client GPU Drivers in proot/chroot on Android
+
+**Qualcomm (Adreno) -- Best Support:**
+- **Turnip** (Mesa Vulkan driver) can run in proot/chroot, accessing the GPU via `/dev/kgsl-3d0` (Qualcomm's kernel-mode GPU driver interface). No root required for GPU access.
+- **Freedreno** (Mesa OpenGL driver) can also work but is less mature.
+- Turnip + Zink provides OpenGL-over-Vulkan translation.
+- The `tu_kgsl_export_dmabuf` patch (now **upstreamed in Mesa**) enables Turnip to export dmabuf file descriptors. This is critical for buffer sharing.
+- DRI3 protocol support allows X11 clients to share buffers via dmabuf fds with the display server (Termux:X11).
+
+**ARM Mali -- Poor Support:**
+- Mali has no open-source kernel driver for Android (Panfrost/PanVK target the mainline Linux kernel driver, not Android's proprietary Mali kernel driver).
+- No Mesa driver can directly talk to the proprietary Mali kernel interface on stock Android.
+- Only VirGL (software rendering proxied through a host renderer) works, which is slow and does not produce dmabuf fds usable by the host.
+
+**MediaTek, Samsung Exynos, etc. -- No Support:**
+- Similar to Mali -- proprietary kernel drivers with no Mesa support.
+- VirGL is the only option.
+
+**dmabuf compatibility:**
+When Mesa Turnip runs in a chroot on a Qualcomm device, the dmabuf fds it produces reference buffers allocated via KGSL, which is the same kernel driver that Android's gralloc uses. **These dmabuf fds are backed by the same physical memory pools and are compatible with the host Android system's AHardwareBuffer/gralloc.** The key challenge is wrapping them as AHardwareBuffers on the compositor side.
+
+#### 15h. Recommended Architecture for tawc
+
+**Primary path (Qualcomm devices with Mesa Turnip clients):**
+
+1. Compositor allocates AHardwareBuffers via `AHardwareBuffer_allocate()`
+2. Compositor imports each AHB into Vulkan via `VK_ANDROID_external_memory_android_hardware_buffer`
+3. Compositor exports each as opaque fd via `VK_KHR_external_memory_fd` (both extensions in AVP 2025)
+4. Compositor serves these fds to clients via `zwp_linux_dmabuf_v1` feedback, advertising compatible formats/modifiers
+5. Client (Mesa Turnip in chroot) allocates compatible buffers, renders, commits dmabuf fds
+6. Compositor receives dmabuf fds and matches them to known AHBs (if compositor-allocated) or falls back to GPU copy (if client-allocated unknown buffers)
+7. AHBs are submitted to SurfaceFlinger via `ASurfaceTransaction_setBuffer()`
+
+**Fallback path (unknown/incompatible buffers):**
+
+For client-allocated dmabufs that the compositor cannot match to a known AHB:
+1. Import the dmabuf as an EGLImage via `EGL_EXT_image_dma_buf_import` (requires Mesa EGL, not stock Android EGL)
+2. GPU-blit from the EGLImage to a compositor-allocated AHardwareBuffer
+3. Submit the AHB to SurfaceFlinger
+
+**wl_shm path (CPU buffers):**
+
+For clients using shared memory (no GPU):
+1. `AHardwareBuffer_allocate()` a CPU-accessible AHB
+2. `AHardwareBuffer_lock()` + `memcpy()` from wl_shm buffer + `AHardwareBuffer_unlock()`
+3. Submit to SurfaceFlinger
+
+**Critical open question:** The Vulkan opaque fd export path (step 3 above) produces OPAQUE_FD handles, not DMA_BUF handles. Can a Mesa Turnip client import an opaque fd from Android's Vulkan driver? Probably not -- opaque fds are driver-specific. The compositor's Vulkan driver is the stock Android driver (Adreno), while the client uses Mesa Turnip. **Opaque fds are not interoperable across different Vulkan driver implementations.**
+
+**This means the "compositor exports fds to clients" path may not work as described.** The more realistic flow is:
+1. Client (Mesa Turnip) allocates buffers independently via its own GBM/Vulkan allocator
+2. Client sends dmabuf fds to compositor
+3. Compositor must somehow wrap these as AHardwareBuffers
+4. Since there's no public NDK API for this, the compositor must use either:
+   a. The VNDK `AHardwareBuffer_createFromHandle` (non-public, fragile)
+   b. Forge the `sendHandleToUnixSocket` serialization format and feed it to `recvHandleFromUnixSocket` on a socketpair (hacky but uses only public NDK API)
+   c. Use the Gralloc 4 AIDL/HIDL `IMapper` interface via Java/JNI to construct an AHB from the native handle
+
+**Option (b) -- the socketpair trick -- deserves investigation.** The compositor could:
+1. Create a `socketpair(AF_UNIX, SOCK_STREAM, 0)`
+2. Construct the GraphicBuffer serialization format manually (the format is defined in AOSP's `GraphicBuffer::flatten()`)
+3. Send the constructed message (with the client's dmabuf fd) through one end of the socketpair
+4. Call `AHardwareBuffer_recvHandleFromUnixSocket()` on the other end
+5. This produces an AHardwareBuffer wrapping the client's dmabuf -- using only public NDK API
+
+This is fragile (depends on the internal serialization format not changing), but the format has been stable since Android 8 and is effectively part of the ABI since `sendHandleToUnixSocket`/`recvHandleFromUnixSocket` are public API.
+
+**Option (c) -- Gralloc 4 IMapper -- is more robust.** Android 11+ (API 30+) standardized `android.hardware.graphics.mapper@4.0` HIDL interface (and AIDL in Android 13+). The `importBuffer(native_handle_t)` method can import a native handle and produce a registered buffer. This can potentially be used to create an AHardwareBuffer. This requires JNI to access the HIDL/AIDL service, but it's the supported vendor-agnostic path for buffer import.
