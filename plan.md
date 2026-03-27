@@ -26,13 +26,17 @@ handles to `cros_gralloc_handle` (minigbm header). This struct layout is specifi
 Intel/ChromeOS gralloc — Qualcomm Adreno and ARM Mali use proprietary handle formats.
 It also depends on Mesa for the GLES/Vulkan renderer and GBM, which don't exist for mobile GPUs.
 
-**Why we don't need two processes:** The wlroots-android-bridge uses two processes because
-labwc is a standalone C program with heavy native dependencies (Mesa, wlroots, etc.) that
-must run inside Termux. It uses `app_process` from Termux to get a hybrid process with both
-Android framework access and Termux's native library environment. We're building a Rust
-library loaded via JNI — the compositor runs as a background thread inside the Android app
-itself. This eliminates all Binder IPC for surfaces and input, meaning zero serialization
-overhead and direct access to ANativeWindow from the compositor thread.
+**Why the compositor doesn't need to run in Termux:** The wlroots-android-bridge uses two
+processes because labwc is a standalone C program with heavy native dependencies (Mesa,
+wlroots, etc.) that must run inside Termux. It uses `app_process` from Termux to get a
+hybrid process with both Android framework access and Termux's native library environment.
+We're building a Rust library loaded via JNI — the compositor runs as a background thread
+inside the Android app itself. This eliminates Binder IPC for surfaces and input, meaning
+zero serialization overhead and direct access to ANativeWindow from the compositor thread.
+
+**However**, we still need a lightweight `app_process` relay for Wayland socket sharing (see
+below). This relay is only involved in connection bootstrapping — once a client is connected,
+data flows directly between the client and compositor with no relay in the path.
 
 **Critical constraint: Wayland socket sharing.** The wlroots-android-bridge avoids the
 cross-app socket problem because its compositor runs *inside Termux* (via `app_process`),
@@ -52,26 +56,37 @@ expect Termux clients to connect.
    (or a wrapper shell script we provide). This works because `app_process` with the APK's
    classpath gives the relay process both Android framework access (Binder, can talk to the
    tawc app) AND Termux filesystem access (launched from Termux's shell). The relay:
-   - Connects to the compositor inside the Android app (via Binder or local socket)
-   - Creates `$XDG_RUNTIME_DIR/wayland-0` in Termux's filesystem
-   - Listens for Wayland client connections and bridges them to the compositor
+   - Creates `$XDG_RUNTIME_DIR/wayland-0` listening socket in Termux's filesystem
+   - Connects to the tawc app's bound AIDL service via Binder
+   - Hands off the listening socket fd to the compositor via `ParcelFileDescriptor`
 
-   **Open design question — relay data path options (investigate during implementation):**
-   - **Byte proxy:** Relay sits in the middle, forwarding all Wayland protocol bytes between
-     client and compositor. Simple but adds latency and CPU overhead for every message.
-   - **Fd handoff via `SCM_RIGHTS`:** Relay accepts a client connection, then passes the
-     client's socket fd to the compositor over a pre-established Unix control channel. After
-     handoff, the relay is out of the data path — bytes flow directly between client and
-     compositor. Zero ongoing overhead. Needs testing: will SELinux allow the compositor
-     (app process) to `read`/`write` on a socket fd that originated in the relay process?
-   - **Listening socket handoff:** Relay creates the listening socket, passes the *listening
-     fd* to the compositor via Binder. Compositor calls `accept()` directly. Relay is only
-     needed at startup. Needs testing: will SELinux allow `accept()` on a socket with a
-     different label than the accepting process?
+   **Relay data path — listening socket handoff (preferred):**
 
-   This is how wlroots-android-bridge and Termux:X11 work. Adds one process but no Binder
-   IPC for rendering/input — only connection bootstrapping (or ongoing proxy, depending on
-   which data path option works).
+   The relay creates the listening socket at `$XDG_RUNTIME_DIR/wayland-0`, then passes
+   the *listening fd* to the compositor via Binder (`ParcelFileDescriptor`). The compositor
+   calls `accept()` directly on the fd and uses `DisplayHandle::insert_client()` to add
+   each new connection to the Wayland display. After the handoff, the relay can exit — it
+   is only needed at startup.
+
+   This works because SELinux checks apply to `connect()`/`bind()` syscalls, not to
+   `read()`/`write()`/`accept()` on inherited file descriptors. Once the compositor holds
+   the fd, the kernel treats it as the compositor's own.
+
+   **Fallback — fd handoff per client:** If `accept()` on a handed-off listening socket
+   hits SELinux issues on some devices, the relay can instead `accept()` each client
+   connection itself, then pass the connected client fd to the compositor over Binder.
+   The relay stays running but is not in the data path after handoff.
+
+   **Last resort — byte proxy:** Relay sits in the middle, forwarding all Wayland protocol
+   bytes. Simple but adds latency and CPU overhead. Only use if fd passing doesn't work.
+
+   This is how wlroots-android-bridge works. (Termux:X11 uses `sharedUserId` instead,
+   which only works for Termux plugins signed with the same key.) Adds one lightweight
+   process but no Binder IPC for rendering/input — only connection bootstrapping.
+
+   **Note:** The relay requires a small AIDL interface (or equivalent) for the initial fd
+   handoff between the relay and the app. This is the *only* use of Binder in the
+   architecture — all rendering and input are Binder-free.
 
 2. **`socketpair()` + fd passing:** The app creates `socketpair()` fds and passes one end
    to Termux via a ContentProvider or bound Service using `ParcelFileDescriptor`. Termux
@@ -100,8 +115,10 @@ and Intel. No need for Mesa, GBM, or gralloc internals.
 
 ## Architecture
 
-Single-process: the compositor runs as a Rust native library inside the Android app,
-on a dedicated background thread. No Binder IPC for surfaces or input.
+The compositor runs as a Rust native library inside the Android app, on a dedicated
+background thread. No Binder IPC for surfaces or input. A lightweight `app_process` relay
+(started from Termux) handles Wayland socket creation and hands off the listening fd to
+the compositor via a one-shot Binder call — after that, the relay can exit.
 
 ```
 ┌────────────────────── Android App Process ──────────────────────┐
@@ -149,7 +166,8 @@ Communication between Kotlin UI thread and Rust compositor thread:
 
 ### 1. Kotlin App Shell (`app/`)
 
-Standard Android app. No AIDL, no Binder, no separate process.
+Standard Android app. Includes a small AIDL service for the `app_process` relay to hand
+off the Wayland listening socket fd. No Binder IPC for rendering or input.
 
 - **`MainActivity`** — entry point. Loads `libsmithay_android.so` via `System.loadLibrary()`.
   Starts the compositor thread via JNI (`nativeStartCompositor(socketPath)`).
@@ -174,10 +192,11 @@ JNI callbacks (Rust → Kotlin):
 - `requestCloseActivity(windowId: Long)`
 - `requestResizeActivity(windowId: Long, w: Int, h: Int)`
 
-Bootstrapping: app starts → loads native lib → spawns compositor thread → creates internal
-compositor socket. Separately, user launches `app_process` relay from Termux which creates
-`$XDG_RUNTIME_DIR/wayland-0` and bridges connections to the compositor (see "Socket sharing"
-above). No AIDL for rendering/input — relay only handles connection bootstrapping.
+Bootstrapping: app starts → loads native lib → spawns compositor thread. Separately, user
+launches `app_process` relay from Termux which creates `$XDG_RUNTIME_DIR/wayland-0` and
+passes the listening socket fd to the compositor via a bound AIDL service. The compositor
+calls `accept()` on the fd directly. After handoff, the relay can exit. No AIDL for
+rendering/input — only for this one-shot socket bootstrap.
 
 ### 2. Android EGL Backend (`smithay-android/src/egl.rs`)
 
@@ -214,6 +233,11 @@ Smithay EGL integration (researched — no GBM assumption):
 - No Smithay fork needed for this.
 
 ### 3. Android Allocator (`smithay-android/src/allocator.rs`)
+
+**Not needed for MVP.** During Phases 1-4 (eglSwapBuffers), the compositor renders directly
+to EGLSurfaces backed by ANativeWindows — no separate buffer allocation needed. The
+allocator is only required for Phase 5 (ASurfaceTransaction zero-copy path), where we need
+to render to AHardwareBuffers and submit them directly to SurfaceFlinger.
 
 Implements Smithay's `Allocator` trait using AHardwareBuffer.
 
@@ -413,24 +437,31 @@ smithay-android/
 
 Dependencies:
 - `smithay` (features: `renderer_gl`, `backend_egl`, `wayland_frontend`, `xdg_shell`, `desktop`)
+  **Important:** use `default-features = false` to avoid pulling in libdrm, libgbm, libinput,
+  libudev, libseat, and X11 — none of which exist on Android.
 - `ndk` — AHardwareBuffer, ANativeWindow, ASurfaceControl bindings
 - `jni` — JNI interop with Kotlin app
 - `crossbeam-channel` — lock-free MPSC for input events (UI thread → compositor thread)
-- `xkbcommon` — keymap handling (smithay already depends on this)
+- `xkbcommon` — keymap handling (smithay depends on this; requires cross-compiled libxkbcommon.so)
 
 Android app:
 ```
 app/
 ├── src/main/
-│   ├── java/com/project/
+│   ├── java/com/tawc/
 │   │   ├── MainActivity.kt
 │   │   ├── SurfaceViewActivity.kt
-│   │   └── NativeBridge.kt           # JNI extern declarations
+│   │   ├── NativeBridge.kt           # JNI extern declarations
+│   │   ├── RelayService.kt           # Bound AIDL service for socket fd handoff
+│   │   └── Relay.kt                  # app_process entry point (runs in Termux)
+│   ├── aidl/com/tawc/
+│   │   └── IRelayService.aidl        # Single method: handoffListeningSocket(fd)
 │   └── res/
 └── build.gradle.kts                   # invokes cargo-ndk, copies .so to jniLibs
 ```
 
-No AIDL, no C++ glue, no separate process. The entire native layer is the Rust .so.
+No C++ glue. AIDL is only for the one-shot relay socket handoff. The entire native layer
+is the Rust .so.
 
 ---
 
@@ -439,9 +470,28 @@ No AIDL, no C++ glue, no separate process. The entire native layer is the Rust .
 - Rust library cross-compiled for `aarch64-linux-android` via `cargo-ndk`
 - Outputs `libsmithay_android.so` loaded by the Kotlin app via `System.loadLibrary()`
 - Gradle build invokes cargo-ndk as a custom task, copies .so into `jniLibs/arm64-v8a/`
-- No C++ code, no AIDL compilation — everything is Rust + Kotlin
+- Small AIDL interface for relay socket handoff (compiled by Gradle automatically)
 - Target API level: 29 (Android 10) minimum for ASurfaceTransaction + AHardwareBuffer.
   API 35 recommended for `ASurfaceControl_createFromWindow` on root ANativeWindow.
+
+**Native dependency: libxkbcommon.** Smithay depends on the `xkbcommon` crate which links
+to `libxkbcommon.so` via FFI. This C library is **not in the Android NDK** and must be
+cross-compiled for `aarch64-linux-android`. Options:
+1. Cross-compile libxkbcommon from source using the NDK toolchain and bundle it in the .so
+   (set `XKBCOMMON_LIB_DIR` / use pkg-config cross-compilation)
+2. Use the pure-Rust `xkbcommon-rs` crate (by wysiwys, port of libxkbcommon 1.7.0, zero C
+   deps) — but this is not yet integrated with Smithay, so would need a compatibility shim
+   or Smithay feature flag
+
+Option 1 is the pragmatic choice for now. Cross-compiling libxkbcommon is well-documented
+and it has minimal dependencies (meson build, no X11 deps needed for just xkb).
+
+**wayland-rs is pure Rust.** Smithay uses the `wayland-backend` crate which defaults to a
+pure Rust Wayland protocol implementation — no `libwayland-server.so` needed. Do NOT enable
+the `server_system` cargo feature (which would require the C library).
+
+**Other native deps (provided by NDK):** EGL, GLESv2, libc (bionic), libandroid (for
+AHardwareBuffer/ANativeWindow/ASurfaceControl). These are all in the NDK sysroot.
 
 ---
 
@@ -449,15 +499,18 @@ No AIDL, no C++ glue, no separate process. The entire native layer is the Rust .
 
 ### Phase 1: Minimal Rendering (weeks 1-2)
 1. Set up Android app scaffold with single SurfaceView
-2. Rust library with JNI: receive ANativeWindow, create EGL context
-3. AndroidAllocator: allocate AHardwareBuffer, import as GL texture
-4. Verify: render a solid color to screen via eglSwapBuffers
+2. Cross-compile toolchain: cargo-ndk, NDK sysroot, cross-compile libxkbcommon for
+   aarch64-linux-android (see Build System section)
+3. Rust library with JNI: receive ANativeWindow, create EGL context via Smithay's
+   `EGLDisplay::from_raw()` or `EGLNativeDisplay` trait, wrap in `GlesRenderer`
+4. Verify: render a solid color to the EGLSurface via eglSwapBuffers
 5. **Milestone: Rust code renders to Android Surface**
 
 ### Phase 2: Wayland Server (weeks 3-4)
 6. Initialize Smithay's Wayland state (Display, compositor, xdg_shell)
-7. Create compositor socket; build `app_process` relay to bridge socket into Termux's
-   `$XDG_RUNTIME_DIR`. Test that Termux clients can connect.
+7. Build `app_process` relay + AIDL service for listening socket handoff. Test that
+   Termux clients can connect to `$XDG_RUNTIME_DIR/wayland-0` and the compositor
+   receives the connections via `DisplayHandle::insert_client()`.
 8. Handle wl_shm clients: ImportMemWl → GlesRenderer → eglSwapBuffers
 9. Test with `weston-simple-shm` or `wlr-randr` from Termux
 10. **Milestone: wl_shm Wayland client renders on screen**
@@ -477,10 +530,12 @@ No AIDL, no C++ glue, no separate process. The entire native layer is the Rust .
 20. **Milestone: multiple Wayland windows as separate Android Activities**
 
 ### Phase 5: Zero-Copy Presentation (weeks 9-10)
-21. Replace eglSwapBuffers with ASurfaceTransaction_setBuffer
-22. Compositor renders to AHardwareBuffer, submits directly to SurfaceFlinger
+21. Implement AndroidAllocator (AHardwareBuffer) — only needed now, for rendering to
+    AHardwareBuffers instead of EGLSurfaces
+22. Replace eglSwapBuffers with ASurfaceTransaction_setBuffer: compositor renders to
+    AHardwareBuffer, submits directly to SurfaceFlinger
 23. Fence synchronization via EGL_ANDROID_native_fence_sync
-24. Benchmark: measure latency and throughput vs Phase 2
+24. Benchmark: measure latency and throughput vs eglSwapBuffers path
 25. **Milestone: zero-copy buffer path, no eglSwapBuffers overhead**
 
 ### Phase 6: Polish & Protocols (ongoing)
@@ -506,6 +561,9 @@ No AIDL, no C++ glue, no separate process. The entire native layer is the Rust .
 | Android kills background Activities | Windows disappear | Use foreground service, SYSTEM_ALERT_WINDOW, or freeform multi-window mode |
 | XKB keymap mismatch with Android keycodes | Wrong characters | Ship curated keymap, allow user override |
 | EGL context thread affinity | Rendering fails from wrong thread | EGL context must be current on the compositor thread. Can render to multiple EGLSurfaces from one thread via `eglMakeCurrent` switching (has overhead per switch). |
+| Activity launch latency (100-300ms per window) | Sluggish window creation | Suppress animations (`overridePendingTransition(0, 0)`), consider pre-creating a pool of Activities, or evaluate single-Activity multi-SurfaceView approach as alternative. |
+| libxkbcommon not in Android NDK | Build fails | Cross-compile libxkbcommon from source with NDK toolchain; or shim the pure-Rust `xkbcommon-rs` crate. |
+| Smithay has never been built for Android | Unknown build failures | Use `default-features = false`, only enable needed features. wayland-rs pure Rust backend avoids libwayland dependency. May need to patch platform-specific code paths. |
 
 ---
 
