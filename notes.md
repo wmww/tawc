@@ -248,9 +248,9 @@ Android NDK provides `AChoreographer` for vsync callbacks from native code:
 
 **Termux:X11 does NOT do this** — it composites everything into a single surface. Simpler but slower (redundant GPU composition).
 
-**Two-phase implementation:**
-- Phases 1-4 (bringup): eglSwapBuffers path. One EGLSurface per Activity, compositor does GPU composition of all surfaces. Simpler to implement and debug.
-- Phase 5 (production): ASurfaceControl path. One ASurfaceControl per Wayland surface, direct buffer submission. Compositor does no GPU rendering (except wl_shm → AHB copy).
+**Implementation priority:** The ASurfaceControl path is the primary implementation target
+from the start (Phase 2). EGL/GlesRenderer is deferred to Phase 4 for compositor-side
+rendering (cursors, decorations) and as a fallback path.
 
 ### 13. Freeform Windowing Availability (2026-03-27)
 

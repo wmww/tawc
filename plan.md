@@ -232,7 +232,9 @@ one-shot socket bootstrap.
 
 ### 2. Android EGL Backend (`smithay-android/src/egl.rs`)
 
-Initialize EGL from an Android Surface rather than a GBM device.
+Not needed for the primary ASurfaceControl buffer path, but required for compositor-side
+rendering (cursors, decorations, damage visualization) and as a fallback. Initialize EGL
+from an Android Surface rather than a GBM device.
 
 ```rust
 // Pseudocode
@@ -266,11 +268,9 @@ Smithay EGL integration (researched — no GBM assumption):
 
 ### 3. Android Allocator (`smithay-android/src/allocator.rs`)
 
-**Not needed for MVP.** During Phases 1-4 (eglSwapBuffers), the compositor renders directly
-to EGLSurfaces backed by ANativeWindows — no separate buffer allocation needed. The
-allocator is required for Phase 5 (ASurfaceControl zero-copy path): for wl_shm clients
-whose CPU buffers must be copied into AHardwareBuffers before submission to SurfaceFlinger,
-and potentially for compositor-allocated buffers if needed.
+**Needed from Phase 2 onward.** The ASurfaceControl path requires AHardwareBuffer allocation:
+for wl_shm clients whose CPU buffers must be copied into AHardwareBuffers before submission
+to SurfaceFlinger, and potentially for compositor-allocated buffers.
 
 Implements Smithay's `Allocator` trait using AHardwareBuffer.
 
@@ -407,14 +407,15 @@ must copy the shared-memory data into an `AHardwareBuffer` (`AHardwareBuffer_loc
 memcpy / `AHardwareBuffer_unlock`) before submitting to SurfaceFlinger. One copy, but
 unavoidable for CPU content.
 
-**Path B: eglSwapBuffers (simpler, for bringup)**
+**Path B: eglSwapBuffers (fallback / compositor-side rendering)**
 - Compositor has one EGLSurface per Activity (backed by its ANativeWindow)
 - Reads client buffers as GL textures, draws them onto the EGLSurface via GlesRenderer
 - Calls `eglSwapBuffers()` — SurfaceFlinger gets the composited result
-- One extra GPU composition step, but simpler to implement and debug
-- All popups/subsurfaces are composited by the compositor in this path
+- Useful for: compositor-side rendering (cursors, decorations, damage visualization),
+  or as a fallback if ASurfaceControl has issues on a specific device
 
-Start with Path B for bringup (Phases 1-4), migrate to Path A for production (Phase 5).
+Path A (ASurfaceControl) is the primary path from the start. Path B is available for
+compositor-generated content and as a fallback.
 
 ### 6. Input Backend (`smithay-android/src/input.rs`)
 
@@ -507,12 +508,6 @@ copy but unavoidable for CPU-rendered content.
 relevant in freeform windowing mode) cannot use child ASurfaceControls of that Activity's
 SurfaceView. For MVP, clip them. For polish, consider `SYSTEM_ALERT_WINDOW` permission or
 an overlay SurfaceView.
-
-**Fallback (Phase 1-4):** Before the ASurfaceControl path is implemented, use the simpler
-approach: one EGLSurface per Activity, compositor reads client textures and renders them
-onto the EGLSurface via the GLES renderer, then calls `eglSwapBuffers`. This is one
-extra composition step but is simpler to implement and debug. Migrate to the zero-copy
-ASurfaceControl path in Phase 5.
 
 **`wl_output` configuration:** Report Android display metrics to Wayland clients:
 - Resolution: from `DisplayMetrics.widthPixels` / `heightPixels` (passed to Rust via JNI)
@@ -630,57 +625,73 @@ AHardwareBuffer/ANativeWindow/ASurfaceControl). These are all in the NDK sysroot
 
 ## Implementation Order
 
-### Phase 1: Minimal Rendering (weeks 1-2)
-1. Set up Android app scaffold with single SurfaceView
+The priority is getting a single Wayland toplevel visible on screen via the production
+buffer path (ASurfaceControl + AHardwareBuffer) as early as possible. Input, multi-window,
+popups, and polish come after the core rendering pipeline is proven.
+
+### Phase 1: Build Toolchain & Scaffold
+1. Set up Android app scaffold: single Activity with a SurfaceView
 2. Cross-compile toolchain: cargo-ndk, NDK sysroot, cross-compile libxkbcommon for
-   aarch64-linux-android (see Build System section)
-3. Rust library with JNI: receive ANativeWindow, create EGL context via Smithay's
-   `EGLDisplay::from_raw()` or `EGLNativeDisplay` trait, wrap in `GlesRenderer`
-4. Verify: render a solid color to the EGLSurface via eglSwapBuffers
-5. **Milestone: Rust code renders to Android Surface**
+   aarch64-linux-android
+3. Rust library skeleton with JNI: `System.loadLibrary()`, JNI entry point receives
+   the SurfaceView's `Surface` object
+4. Verify: Rust code can obtain `ANativeWindow` from the Surface via JNI
+5. **Milestone: Rust .so loads and receives ANativeWindow from Android**
 
-### Phase 2: Wayland Server (weeks 3-4)
-6. Initialize Smithay's Wayland state (Display, compositor, xdg_shell)
-7. Build `app_process` relay (TermuxAm pattern) for listening socket handoff. Test that
-   Termux clients can connect to `$XDG_RUNTIME_DIR/wayland-0` and the compositor
-   receives the connections via `DisplayHandle::insert_client()`.
-8. Handle wl_shm clients: ImportMemWl → GlesRenderer → eglSwapBuffers
-9. Test with `weston-simple-shm` or `wlr-randr` from Termux
-10. **Milestone: wl_shm Wayland client renders on screen**
+### Phase 2: ASurfaceControl Buffer Submission
+6. From the `ANativeWindow`, create a root `ASurfaceControl` via
+   `ASurfaceControl_createFromWindow()`
+7. Create a single child `ASurfaceControl` (will represent the Wayland toplevel)
+8. Allocate an `AHardwareBuffer`, fill it with a solid color via
+   `AHardwareBuffer_lock` / memcpy / `AHardwareBuffer_unlock`
+9. Submit the buffer via `ASurfaceTransaction_setBuffer()` + `apply()`
+10. **Milestone: solid color on screen via the production buffer path (no EGL yet)**
 
-### Phase 3: Input (weeks 5-6)
-11. Implement AndroidInputBackend (keyboard + pointer first)
-12. Wire up Kotlin onTouchEvent/onKeyEvent → JNI → crossbeam channel → Smithay wl_seat
-13. AKEYCODE → Linux scancode mapping + XKB keymap
-14. Pointer/touch from MotionEvent
-15. **Milestone: can type and click in a Wayland client (e.g., `foot` terminal)**
+### Phase 3: Wayland Server + Socket Relay
+11. Initialize Smithay's Wayland state (Display, compositor, xdg_shell, wl_shm, wl_output)
+12. Build `app_process` relay (TermuxAm pattern) for listening socket handoff
+13. Test: Termux client connects to `$XDG_RUNTIME_DIR/wayland-0`, compositor receives
+    connection via `DisplayHandle::insert_client()`
+14. Handle wl_shm client commit: copy shm buffer into `AHardwareBuffer`, submit to the
+    child `ASurfaceControl` via `ASurfaceTransaction_setBuffer()`
+15. Test with `weston-simple-shm` from Termux
+16. **Milestone: wl_shm Wayland client visible on screen via ASurfaceControl (production path)**
 
-### Phase 4: Multi-Window (weeks 7-8)
-16. JNI callback: compositor notifies Kotlin of new xdg_toplevels
-17. MainActivity spawns SurfaceViewActivity per window
-18. Each window gets its own Surface → EGL context → render target
-19. Window lifecycle (map, unmap, close, resize)
-20. Popups and subsurfaces composited into parent's EGLSurface by GlesRenderer
-    (Phase 5 migrates these to individual ASurfaceControl layers)
-21. **Milestone: multiple Wayland windows as separate Android Activities**
+### Phase 4: EGL + GlesRenderer (for compositor-side rendering)
+17. Create EGL context via Smithay's `EGLDisplay::from_raw()` or `EGLNativeDisplay` trait
+18. Initialize `GlesRenderer` from the EGL context
+19. This enables: compositor-side rendering when needed (cursors, server-side decorations,
+    damage visualization, screenshot capture, etc.)
+20. Also enables `ImportMemWl` (Smithay's optimized wl_shm → GL texture path) as an
+    alternative to raw memcpy for wl_shm clients if needed
+21. **Milestone: GlesRenderer operational on Android**
 
-### Phase 5: Zero-Copy Presentation via ASurfaceControl (weeks 9-10)
-21. Create child `ASurfaceControl` per Wayland surface (flat siblings under root SC)
-22. For wl_shm clients: copy shm buffer into AHardwareBuffer, submit via
-    `ASurfaceTransaction_setBuffer`. For dmabuf/AHB clients: submit buffer directly.
-23. Manage z-order and position of child ASurfaceControls to match Wayland surface tree
-24. Fence synchronization via `EGL_ANDROID_native_fence_sync` / acquire fence fd
-25. Remove eglSwapBuffers composition path — compositor no longer does GPU rendering
-    for the common case (only wl_shm → AHB copy remains)
-26. Benchmark: measure latency and throughput vs eglSwapBuffers path
-27. **Milestone: zero-copy surface-per-layer path, SurfaceFlinger does all composition**
+### Phase 5: Input
+22. Implement AndroidInputBackend (touch + pointer first, keyboard second)
+23. Wire up Kotlin onTouchEvent/onKeyEvent → JNI → crossbeam channel → Smithay wl_seat
+24. AKEYCODE → Linux scancode mapping + XKB keymap
+25. **Milestone: can interact with a Wayland client (e.g., `weston-simple-shm` touch,
+    `foot` terminal keyboard)**
 
-### Phase 6: Polish & Protocols (ongoing)
-26. Server-side decorations (xdg-decoration)
-27. Fractional scaling (wp-fractional-scale) for high-DPI Android screens
-28. Clipboard bridge (wl_data_device ↔ Android ClipboardManager)
-29. IME bridge (zwp_text_input_v3 ↔ Android InputMethodManager)
-30. Xwayland support (stretch goal)
+### Phase 6: Multi-Window + Surface Tree
+26. JNI callback: compositor notifies Kotlin of new xdg_toplevels
+27. MainActivity spawns SurfaceViewActivity per toplevel
+28. Each Activity's SurfaceView gets its own root ASurfaceControl + child layers
+29. Window lifecycle (map, unmap, close, resize)
+30. Popups and subsurfaces as flat-sibling ASurfaceControl layers within the parent
+    Activity's SurfaceView (manual z-order/position management)
+31. **Milestone: multiple Wayland windows as separate Android Activities, popups work**
+
+### Phase 7: Polish & Protocols (ongoing)
+32. Frame scheduling via AChoreographer (render only on vsync + damage)
+33. Fence synchronization (`EGL_ANDROID_native_fence_sync` / acquire fence fd)
+34. Server-side decorations (xdg-decoration)
+35. Fractional scaling (wp-fractional-scale) for high-DPI Android screens
+36. Clipboard bridge (wl_data_device ↔ Android ClipboardManager)
+37. IME bridge (zwp_text_input_v3 ↔ Android InputMethodManager)
+38. `zwp_linux_dmabuf_v1` — GPU buffer sharing from clients (direct AHB submission,
+    no copy needed)
+39. Xwayland support (stretch goal)
 
 ---
 
