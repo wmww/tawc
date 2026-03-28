@@ -1,0 +1,19 @@
+# Gradle
+.gradle/
+build/
+app/build/
+local.properties
+gradle/libs.versions.toml
+
+# Rust
+smithay-android/target/
+
+# JNI libs (built artifacts, not source)
+app/src/main/jniLibs/
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store

@@ -1,0 +1,18 @@
+[package]
+name = "smithay-android"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "renderer_gl"] }
+jni = "0.21"
+ndk = { version = "0.9", features = ["api-level-29"] }
+ndk-sys = "0.6"
+log = "0.4"
+android_logger = "0.14"
+
+[patch.crates-io]
+smithay = { path = "/home/ai/smithay-patched" }

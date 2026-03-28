@@ -515,3 +515,115 @@ exist. Mitigations:
 - Android 14+: Developer Options "Disable child process restrictions"
 
 Our relay exits after fd handoff so only needs to survive briefly.
+
+---
+
+## Phase 1 Results (2026-03-28)
+
+### What was built
+- Android app scaffold (Kotlin, single Activity + SurfaceView)
+- Rust JNI library (`smithay-android` crate, cdylib targeting `aarch64-linux-android`)
+- GlesRenderer rendering animated solid colors to Android Surface at ~60fps
+
+### Device: OnePlus (Qualcomm Adreno GPU)
+- EGL 1.5, GLES with full Adreno extension set
+- `EGL_ANDROID_get_native_client_buffer` confirmed available (needed for Phase 2 AHB import)
+- `EGL_KHR_no_config_context`, `EGL_KHR_surfaceless_context` available
+- `EGL_ANDROID_native_fence_sync` available (useful for frame synchronization)
+- Dmabuf import extensions NOT available (as expected -- confirms AHB path is correct)
+
+### Build toolchain
+- cargo-ndk 4.1.2 + NDK r27c (27.2.12479018)
+- Rust target: `aarch64-linux-android`, min API 29
+- libxkbcommon 1.7.0 cross-compiled as static lib (meson, no wayland/x11/registry)
+- JDK 21 for Gradle (JDK 26 not supported by Gradle 8.12)
+- AGP 8.9.1, Kotlin 2.1.20
+
+### Smithay patching
+- **One patch required:** `libEGL.so.1` -> `libEGL.so` on Android in
+  `src/backend/egl/ffi.rs`. Applied to local clone at `/home/ai/smithay-patched/`.
+  Used via `[patch.crates-io]` in Cargo.toml.
+- `EGLDisplay::from_raw()` works perfectly -- we create the raw EGL display/config/context
+  ourselves via direct EGL calls, then wrap in Smithay types.
+- `EGLNativeSurface` implemented for ANativeWindow (`eglCreateWindowSurface`).
+- `GlesRenderer::new()` + `Bind<EGLSurface>` + `Renderer::render()` all work on Android.
+
+### Architecture notes
+- Raw EGL context created manually (eglGetDisplay + eglInitialize + eglChooseConfig +
+  eglCreateContext), then wrapped via `EGLContext::from_raw()`. This avoids needing
+  `EGL_KHR_platform_android` support in Smithay's platform negotiation.
+- Render thread is a plain `std::thread` spawned from JNI callback. ANativeWindow
+  reference counting handled via `ANativeWindow_acquire`/`release`.
+- Smithay's trace-level logging is very verbose (one log per frame). Should reduce log
+  level in production.
+
+---
+
+## Build, Debug, and Iteration Guide
+
+### Prerequisites (already installed on this machine)
+- Rust with `aarch64-linux-android` target (`rustup target add aarch64-linux-android`)
+- `cargo-ndk` (`cargo install cargo-ndk`)
+- Android SDK at `/home/ai/android-sdk` with NDK r27c (`ndk/27.2.12479018`)
+- JDK 21 at `/usr/lib/jvm/java-21-openjdk` (Gradle 8.12 doesn't support JDK 26)
+- libxkbcommon cross-compiled at `/home/ai/libxkbcommon/builddir/libxkbcommon.a`
+- Smithay patched at `/home/ai/smithay-patched/` (one-line `libEGL.so` fix)
+
+### Build Steps
+
+**1. Build Rust native library:**
+```bash
+export ANDROID_NDK_HOME=/home/ai/android-sdk/ndk/27.2.12479018
+cd smithay-android
+cargo ndk --target arm64-v8a --platform 29 -- build --release
+```
+Output: `smithay-android/target/aarch64-linux-android/release/libsmithay_android.so`
+
+**2. Copy .so and build APK:**
+```bash
+cp smithay-android/target/aarch64-linux-android/release/libsmithay_android.so \
+   app/src/main/jniLibs/arm64-v8a/
+export ANDROID_HOME=/home/ai/android-sdk
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+./gradlew assembleDebug
+```
+Output: `app/build/outputs/apk/debug/app-debug.apk`
+
+**3. Deploy and run:**
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n me.phie.tawc/.MainActivity
+```
+
+### Quick rebuild cycle (Rust changes only)
+```bash
+export ANDROID_NDK_HOME=/home/ai/android-sdk/ndk/27.2.12479018
+cd smithay-android && cargo ndk --target arm64-v8a --platform 29 -- build --release && \
+cp target/aarch64-linux-android/release/libsmithay_android.so \
+   ../app/src/main/jniLibs/arm64-v8a/ && \
+cd .. && ANDROID_HOME=/home/ai/android-sdk JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
+./gradlew assembleDebug && \
+adb install -r app/build/outputs/apk/debug/app-debug.apk && \
+adb shell am force-stop me.phie.tawc && \
+adb shell am start -n me.phie.tawc/.MainActivity
+```
+
+### Debugging
+- **Rust/native logs:** `adb logcat -s tawc-native`
+- **All app logs:** `adb logcat --pid=$(adb shell pidof me.phie.tawc)`
+- **Crash traces:** `adb logcat -s DEBUG` (for native crashes / tombstones)
+- **Take screenshot:** `adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png /tmp/s.png`
+  (remember to delete from device after: `adb shell rm /sdcard/s.png`)
+
+### ADB permissions
+ADB may need `sudo` to start the server if USB permissions are denied:
+```bash
+sudo adb kill-server && sudo adb start-server
+```
+After that, regular `adb` commands work.
+
+### External dependencies (NOT in this repo)
+These live outside the repo and are referenced by absolute path:
+- `/home/ai/smithay-patched/` -- Smithay 0.7.0 with `libEGL.so` Android patch
+- `/home/ai/libxkbcommon/builddir/libxkbcommon.a` -- cross-compiled static lib
+- `/home/ai/android-sdk/` -- Android SDK + NDK

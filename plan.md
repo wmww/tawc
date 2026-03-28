@@ -382,12 +382,12 @@ Client-side WSI layer:
 
 ## Implementation Order
 
-### Phase 1: Build Toolchain & EGL Proof
-1. Android app scaffold: single Activity with SurfaceView
-2. Cross-compile toolchain: cargo-ndk, NDK, cross-compile libxkbcommon
-3. Rust JNI library: receive ANativeWindow, create EGL context via Smithay
-4. Render solid color to EGLSurface via GlesRenderer + `eglSwapBuffers`
-5. **Milestone: GlesRenderer renders to Android Surface**
+### Phase 1: Build Toolchain & EGL Proof ✅ COMPLETE (2026-03-28)
+1. ✅ Android app scaffold: single Activity with SurfaceView
+2. ✅ Cross-compile toolchain: cargo-ndk, NDK, cross-compile libxkbcommon
+3. ✅ Rust JNI library: receive ANativeWindow, create EGL context via Smithay
+4. ✅ Render solid color to EGLSurface via GlesRenderer + `eglSwapBuffers`
+5. ✅ **Milestone: GlesRenderer renders to Android Surface**
 
 ### Phase 2: libhybris + AHB Buffer Sharing Proof of Concept
 6. Set up libhybris in Termux chroot, verify stock EGL/GLES loads via libhybris
