@@ -11,6 +11,7 @@ smithay = { version = "0.7", default-features = false, features = ["wayland_fron
 jni = "0.21"
 ndk = { version = "0.9", features = ["api-level-29"] }
 ndk-sys = "0.6"
+libloading = "0.8"
 log = "0.4"
 android_logger = "0.14"
 

@@ -819,6 +819,7 @@ version = "0.1.0"
 dependencies = [
  "android_logger",
  "jni",
+ "libloading",
  "log",
  "ndk",
  "ndk-sys",

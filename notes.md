@@ -559,6 +559,74 @@ Our relay exits after fd handoff so only needs to survive briefly.
 
 ---
 
+## Phase 2 Results (2026-03-28)
+
+### What was built
+- AHardwareBuffer allocation, CPU fill, and Unix socket send/receive (`ahb.rs`)
+- AHB import as GL texture via EGL extensions (`gl_import.rs`)
+- Same-process AHB round-trip: allocate -> fill -> send over socketpair -> receive ->
+  import as EGLImage -> render as GL texture via Smithay GlesRenderer
+- Cross-process AHB round-trip: standalone `ahb-test-client` binary sends AHB from
+  separate process, compositor receives and displays it
+- External mode: compositor can listen on a Unix socket for cross-process clients
+  (flag file `/data/data/me.phie.tawc/external-mode` triggers this)
+
+### AHB Import Pipeline (proven on Pixel 4a, Adreno 618)
+1. `AHardwareBuffer_recvHandleFromUnixSocket(fd)` -- receive AHB from socket
+2. `eglGetNativeClientBufferANDROID(ahb)` -- get EGLClientBuffer (loaded via
+   `eglGetProcAddress`, extension `EGL_ANDROID_get_native_client_buffer`)
+3. `eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, ...)` --
+   create EGLImage (from Smithay's EGL FFI)
+4. `glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, image)` -- attach to texture
+5. `GlesTexture::from_raw_with_flags(is_external=true)` -- wrap for Smithay compositing
+
+### Key discoveries
+- **GL_TEXTURE_EXTERNAL_OES required for AHB on Adreno.** Binding AHB-backed EGLImages
+  to `GL_TEXTURE_2D` produces a black texture. Must use `GL_TEXTURE_EXTERNAL_OES` and
+  Smithay's external texture shader (`samplerExternalOES`).
+- **Smithay's `Bind` doesn't persist EGL context.** After `renderer.bind()` returns,
+  the EGL context may not be current. Must manually call `eglMakeCurrent()` before
+  raw GL calls outside of a frame render. Within `renderer.render()` frames, context is
+  current.
+- **Smithay's `GlesTexture::from_raw()` doesn't support external textures.** Added
+  `from_raw_with_flags()` to Smithay (second patch) to set `is_external: true`.
+- **Damage rects in `render_texture_from_to` are relative to dest rect origin**, not
+  absolute screen coordinates. Passing absolute coords results in zero-size clamped
+  damage (invisible texture).
+- **GL core functions via `eglGetProcAddress` may return stubs on Android.** Must load
+  `glGenTextures`, `glBindTexture`, etc. from `libGLESv2.so` via `libloading` instead.
+  EGL extension functions (e.g. `eglGetNativeClientBufferANDROID`,
+  `glEGLImageTargetTexture2DOES`) work fine via `eglGetProcAddress`.
+
+### Smithay patching (updated)
+Two patches required to `/home/ai/smithay-patched/`:
+1. **`libEGL.so.1` -> `libEGL.so`** in `src/backend/egl/ffi.rs` (Phase 1)
+2. **`GlesTexture::from_raw_with_flags()`** in `src/backend/renderer/gles/texture.rs`
+   (Phase 2) -- adds `is_external` and `y_inverted` parameters for AHB texture import
+
+### Cross-process test
+The `ahb-test-client` binary (`ahb-test-client/` crate) is a standalone Android native
+binary that allocates an AHB, fills with a green/yellow checkerboard, and sends it over
+a Unix socket. To test cross-process:
+```bash
+# Push and set up
+adb push ahb-test-client/target/aarch64-linux-android/release/ahb-test-client /data/local/tmp/
+adb shell "run-as me.phie.tawc cp /data/local/tmp/ahb-test-client . && chmod 755 ahb-test-client"
+adb shell "run-as me.phie.tawc touch /data/data/me.phie.tawc/external-mode"
+
+# Restart app (now in external mode, waits for client)
+adb shell am force-stop me.phie.tawc
+adb shell am start -n me.phie.tawc/.MainActivity
+
+# Run external client
+adb shell "run-as me.phie.tawc ./ahb-test-client /data/data/me.phie.tawc/ahb-test.sock"
+
+# Clean up after testing
+adb shell "run-as me.phie.tawc rm external-mode ahb-test.sock ahb-test-client"
+```
+
+---
+
 ## Build, Debug, and Iteration Guide
 
 ### Prerequisites (already installed on this machine)

@@ -1,4 +1,7 @@
 use std::ffi::c_void;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use jni::JNIEnv;
@@ -8,19 +11,29 @@ use log::info;
 
 use smithay::backend::egl::EGLContext;
 use smithay::backend::egl::EGLSurface;
+use smithay::backend::egl::ffi as egl_ffi;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::{Bind, Color32F, Frame, Renderer};
-use smithay::utils::{Rectangle, Size, Transform};
+use smithay::utils::{Point, Rectangle, Size, Transform};
 
 mod egl_android;
+mod ahb;
+mod gl_import;
+
 use egl_android::AndroidNativeSurface;
+use ahb::AhbBuffer;
+use gl_import::AhbTextureImporter;
 
 /// Global state shared between JNI calls.
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// AHB test buffer dimensions.
+const AHB_TEST_WIDTH: u32 = 256;
+const AHB_TEST_HEIGHT: u32 = 256;
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceCreated(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     surface: jobject,
 ) {
@@ -54,11 +67,51 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceCreated(
     // Release the ref from fromSurface (render thread owns it now)
     unsafe { ndk_sys::ANativeWindow_release(window_ptr as *mut _) };
 
+    // External mode (cross-process test) is triggered by /data/local/tmp/tawc-external.
+    // In external mode, the render thread listens on a socket for AHB clients.
+    // Otherwise, an in-process test client sends AHBs via socketpair.
+    // External mode: compositor listens on a Unix socket for a cross-process
+    // AHB client. Triggered by a flag file in the app's data dir.
+    let sock_path = "/data/data/me.phie.tawc/ahb-test.sock";
+    let flag_path = "/data/data/me.phie.tawc/external-mode";
+    let external_mode = std::path::Path::new(flag_path).exists();
+    let sock_path_owned = sock_path.to_string();
+    info!("external_mode: {}", external_mode);
+
+    // Spawn render thread
     let window_addr = window_ptr as usize;
     std::thread::spawn(move || {
         let window_ptr = window_addr as *mut c_void;
-        info!("Render thread started");
-        if let Err(e) = render_loop(window_ptr, width, height) {
+        info!("Render thread started (external_mode={})", external_mode);
+
+        let sock_receiver = if external_mode {
+            let sock_path = &sock_path_owned;
+            let _ = std::fs::remove_file(sock_path);
+            info!("Waiting for external AHB client on {}", sock_path);
+            let listener = match UnixListener::bind(sock_path) {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!("Failed to bind {}: {}", sock_path, e);
+                    return;
+                }
+            };
+            // Make socket world-accessible so run-as client can connect
+            let _ = std::fs::set_permissions(sock_path,
+                std::fs::Permissions::from_mode(0o777));
+            let (stream, _) = listener.accept().expect("Failed to accept");
+            info!("External client connected");
+            stream
+        } else {
+            let (sock_sender, sock_receiver) = UnixStream::pair().unwrap();
+            std::thread::spawn(move || {
+                if let Err(e) = test_client_loop(sock_sender) {
+                    log::error!("Test client failed: {}", e);
+                }
+            });
+            sock_receiver
+        };
+
+        if let Err(e) = render_loop(window_ptr, width, height, sock_receiver) {
             log::error!("Render loop failed: {}", e);
         }
         unsafe { ndk_sys::ANativeWindow_release(window_ptr as *mut _) };
@@ -74,7 +127,6 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceChanged(
     _height: i32,
 ) {
     info!("nativeOnSurfaceChanged: {}x{}", _width, _height);
-    // TODO: handle resize
 }
 
 #[unsafe(no_mangle)]
@@ -86,7 +138,35 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceDestroyed(
     RUNNING.store(false, Ordering::SeqCst);
 }
 
-fn render_loop(window_ptr: *mut c_void, width: i32, height: i32) -> Result<(), Box<dyn std::error::Error>> {
+/// Test client thread: allocates AHB, fills with test pattern, sends over socket.
+fn test_client_loop(sock: UnixStream) -> Result<(), String> {
+    // Allocate AHB
+    let ahb = AhbBuffer::allocate(AHB_TEST_WIDTH, AHB_TEST_HEIGHT)?;
+
+    // Fill with checkerboard pattern
+    ahb.fill_test_pattern()?;
+
+    // Send AHB over socket
+    ahb.send_to_socket(sock.as_raw_fd())?;
+
+    info!("Test client: AHB sent, parking thread to keep buffer alive");
+
+    // Keep the AHB alive - the compositor needs it. Park until app exits.
+    while RUNNING.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    info!("Test client: exiting");
+    // AHB is dropped here (released)
+    Ok(())
+}
+
+fn render_loop(
+    window_ptr: *mut c_void,
+    width: i32,
+    height: i32,
+    sock: UnixStream,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Step 1: Create raw EGL display, config, and context
     let (raw_display, raw_config, raw_context) = unsafe { egl_android::create_raw_egl_context()? };
     info!("Raw EGL context created: display={:?}, config={:?}, context={:?}",
@@ -114,28 +194,90 @@ fn render_loop(window_ptr: *mut c_void, width: i32, height: i32) -> Result<(), B
     };
     info!("EGLSurface created");
 
-    // Step 5: Render loop
+    // Step 5: Load AHB texture importer
+    let importer = AhbTextureImporter::new()
+        .map_err(|e| format!("Failed to load AHB importer: {}", e))?;
+    info!("AHB texture importer loaded");
+
+    // Step 6: Receive AHB from test client (blocking)
+    info!("Waiting for AHB from test client...");
+    let received_ahb = AhbBuffer::recv_from_socket(sock.as_raw_fd())
+        .map_err(|e| format!("Failed to receive AHB: {}", e))?;
+    info!("AHB received: {}x{}", received_ahb.width(), received_ahb.height());
+
+    // Step 7: Import AHB as GlesTexture (GL context must be current)
+    // Smithay's bind doesn't persist MakeCurrent, so we do it manually
+    unsafe {
+        egl_ffi::egl::MakeCurrent(
+            raw_display,
+            egl_ffi::egl::NO_SURFACE,
+            egl_ffi::egl::NO_SURFACE,
+            raw_context,
+        );
+    }
+    let ahb_texture = importer.import_ahb(
+        &renderer,
+        raw_display,
+        received_ahb.as_raw(),
+        received_ahb.width() as i32,
+        received_ahb.height() as i32,
+    ).map_err(|e| format!("Failed to import AHB as texture: {}", e))?;
+    info!("AHB imported as GlesTexture");
+
+    // Step 8: Render loop - display the AHB texture
     let output_size = Size::from((width, height));
+    let texture_size = Size::<i32, smithay::utils::Buffer>::from((
+        received_ahb.width() as i32,
+        received_ahb.height() as i32,
+    ));
     let mut frame_count: u64 = 0;
 
-    while RUNNING.load(Ordering::SeqCst) {
-        // Animate color: cycle hue over time
-        let t = (frame_count as f32) / 120.0;
-        let r = (t.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
-        let g = ((t + 2.094).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
-        let b = ((t + 4.189).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
-        let color = Color32F::new(r, g, b, 1.0);
+    // Center the texture on screen
+    let tex_x = (width - received_ahb.width() as i32) / 2;
+    let tex_y = (height - received_ahb.height() as i32) / 2;
 
-        // Bind surface and render
+    while RUNNING.load(Ordering::SeqCst) {
+        // Animate background color
+        let t = (frame_count as f32) / 240.0;
+        let gray = (t.sin() * 0.15 + 0.2).clamp(0.0, 1.0);
+        let bg_color = Color32F::new(gray, gray, gray, 1.0);
+
         let mut target = renderer.bind(&mut egl_surface)?;
         let mut frame = renderer.render(&mut target, output_size, Transform::Normal)?;
-        frame.clear(color, &[Rectangle::from_size(output_size)])?;
-        frame.finish()?;
+
+        // Clear background
+        frame.clear(bg_color, &[Rectangle::from_size(output_size)])?;
+
+        // Render the AHB texture centered on screen
+        let tex_w = received_ahb.width() as i32;
+        let tex_h = received_ahb.height() as i32;
+        let src_rect = Rectangle::from_size(texture_size.to_f64());
+        let dst_rect = Rectangle::new(
+            Point::from((tex_x, tex_y)),
+            Size::from((tex_w, tex_h)),
+        );
+        // Damage rects are relative to the dest rect origin
+        let damage_rect = Rectangle::from_size(Size::from((tex_w, tex_h)));
+        Frame::render_texture_from_to(
+            &mut frame,
+            &ahb_texture,
+            src_rect,
+            dst_rect,
+            &[damage_rect],
+            &[],
+            Transform::Normal,
+            1.0,
+        )?;
+
+        let _ = frame.finish()?;
         drop(target);
 
         egl_surface.swap_buffers(None)?;
 
         frame_count += 1;
+        if frame_count % 300 == 0 {
+            info!("Rendered {} frames with AHB texture", frame_count);
+        }
 
         // ~60fps
         std::thread::sleep(std::time::Duration::from_millis(16));

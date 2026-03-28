@@ -1,0 +1,10 @@
+[package]
+name = "ahb-test-client"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ahb-test-client"
+
+[dependencies]
+ndk-sys = "0.6"
