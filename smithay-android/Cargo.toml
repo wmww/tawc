@@ -17,4 +17,4 @@ android_logger = "0.14"
 rustix = { version = "0.38", features = ["net"] }
 
 [patch.crates-io]
-smithay = { path = "/home/ai/smithay-patched" }
+smithay = { git = "https://github.com/wmww/smithay.git", branch = "tawc-patches" }
