@@ -11,6 +11,9 @@ Complex code should be tested, and testing should be as general as possible (int
 ## Iteration
 Getting a good workflow for debugging/iterating is often nontrivial. For example you may need access to a real Android phone to test hardware acceleration and other features. The goal is always to enable as much autonomy as possible, without needing repeated human involvement for iteration. Feel free to ask for whatever one-time setup you need to make this possible.
 
+## Device Support
+The goal of this project is to run on all modern Android phones without requiring firmware modifications. This means requiring open source GPU drivers or bionic patches is not viable. Requiring root is viable (especially for testing), but ideally it could even be run without root.
+
 ## Safety
 I'm letting you play with my phone, try not to fuck it up.
 
