@@ -416,38 +416,55 @@ Client-side WSI layer:
 17. ✅ Test with a simple Wayland EGL client from chroot
 18. **Milestone: GPU-accelerated Wayland client visible on screen** ✅
 
-### Phase 4: Input
-19. Implement AndroidInputBackend (touch + pointer first, keyboard second)
-20. Wire Kotlin events -> JNI -> crossbeam channel -> Smithay wl_seat
-21. AKEYCODE -> Linux scancode mapping + XKB keymap
-22. **Milestone: can interact with a Wayland client**
+### Phase 4: Robust EGL WSI Layer
+19. Complete EGL 1.5 API: export all 44 core functions via macro-generated
+    dispatch table. Unknown functions forward to real driver (no more
+    "undefined symbol" crashes).
+20. Fix `eglGetProcAddress`: forward unknown extension names to real driver.
+    Intercept `eglSwapBuffersWithDamageEXT` (GTK3 prefers it) and platform
+    display extensions.
+21. Thread safety: `pthread_once` for init, `pthread_mutex_t` for surface
+    list, `__thread` for per-thread current-surface tracking.
+22. Fix `eglGetCurrentSurface`/`eglGetCurrentDisplay`: thread-local tracking
+    of which tawc_surface is bound, so apps see the correct surface.
+23. Fix `eglQueryString`: forward from real driver, append/filter
+    Wayland-specific extensions.
+24. Buffer age and damage: implement `EGL_BUFFER_AGE_EXT` query,
+    `eglSwapBuffersWithDamageEXT` (GTK3 needs both).
+25. `wl_egl_window` resize: detect size changes at swap, reallocate AHB pool.
+26. Compositor: add `wl_data_device_manager` stub global (GTK3 binds it).
+27. Test with `gtk3-widget-factory`, then Firefox
+28. **Milestone: GTK3 apps render correctly through the EGL WSI layer**
 
-### Phase 5: Multi-Window
-23. JNI callback: compositor notifies Kotlin of new xdg_toplevels
-24. MainActivity spawns SurfaceViewActivity per toplevel
-25. Each Activity's SurfaceView gets its own EGLSurface
-26. Window lifecycle (map, unmap, close, resize)
-27. Popups (`xdg_popup`) composited onto parent Activity surface (NOT separate Activities)
-28. **Milestone: multiple Wayland windows as separate Android Activities**
+### Phase 5: Input
+29. Implement AndroidInputBackend (touch + pointer first, keyboard second)
+30. Wire Kotlin events -> JNI -> crossbeam channel -> Smithay wl_seat
+31. AKEYCODE -> Linux scancode mapping + XKB keymap
+32. **Milestone: can interact with a Wayland client**
 
-### Phase 6: Polish & Protocols
-29. Frame callbacks (`wl_surface.frame`)
-30. Server-side decorations (xdg-decoration)
-31. Cursor handling (compositor-side cursor rendering)
-32. Fractional scaling (wp-fractional-scale) for high-DPI Android screens
-33. Clipboard bridge (wl_data_device <-> Android ClipboardManager)
-34. IME bridge (zwp_text_input_v3 <-> Android InputMethodManager)
-35. `wl_shm` support (software rendering fallback -- deliberately last so that
-    absence of `wl_shm` serves as proof that AHB hardware path is actually working)
-36. Non-root socket sharing: Binder fd passing (ContentProvider/Service) so
+### Phase 6: Multi-Window
+33. JNI callback: compositor notifies Kotlin of new xdg_toplevels
+34. MainActivity spawns SurfaceViewActivity per toplevel
+35. Each Activity's SurfaceView gets its own EGLSurface
+36. Window lifecycle (map, unmap, close, resize)
+37. Popups (`xdg_popup`) composited onto parent Activity surface (NOT separate Activities)
+38. **Milestone: multiple Wayland windows as separate Android Activities**
+
+### Phase 7: Polish & Protocols
+39. Server-side decorations (xdg-decoration)
+40. Cursor rendering (compositor-side, using SHM cursor images from clients)
+41. Fractional scaling (wp-fractional-scale) for high-DPI Android screens
+42. Clipboard bridge (wl_data_device <-> Android ClipboardManager)
+43. IME bridge (zwp_text_input_v3 <-> Android InputMethodManager)
+44. Non-root socket sharing: Binder fd passing (ContentProvider/Service) so
     proot clients can connect without root (see "Wayland Socket Sharing")
 
-### Phase 7: Vulkan WSI (stretch goal)
-37. Verify libhybris Vulkan loads stock GPU driver (may need unmerged PRs)
-38. Write Vulkan implicit layer using `VK_ANDROID_external_memory_android_hardware_buffer`
-39. Same AHB side-channel mechanism as EGL wrapper
-40. Test with vkcube, vkmark
-41. **Milestone: Vulkan apps work via libhybris + our WSI layer**
+### Phase 8: Vulkan WSI (stretch goal)
+45. Verify libhybris Vulkan loads stock GPU driver (may need unmerged PRs)
+46. Write Vulkan implicit layer using `VK_ANDROID_external_memory_android_hardware_buffer`
+47. Same AHB side-channel mechanism as EGL wrapper
+48. Test with vkcube, vkmark
+49. **Milestone: Vulkan apps work via libhybris + our WSI layer**
 
 ---
 

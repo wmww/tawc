@@ -182,10 +182,78 @@ Located at `client/tawc-wsi/tawc-egl.c`, built as a shared library placed first 
 via the WSI layer on Pixel 4a (Adreno 618). Zero-copy GPU path confirmed.
 
 **Remaining issues:**
-- No `wl_shm` global → cursor loading fails silently (harmless for EGL apps)
 - No frame callback throttling → client renders as fast as possible
 - No resize handling yet
 - Toplevel lifecycle tracking needs work (using surface_ahb as source of truth)
+
+### Phase 4 Design Notes: Robust EGL WSI
+
+**Goal:** make the WSI layer work for GTK3 apps and Firefox. Current wrapper is a
+proof-of-concept that works for `weston-simple-egl` but will crash complex apps.
+
+**GTK3 EGL analysis (2026-03-31):** GTK3 uses **libepoxy** for EGL/GL dispatch.
+Libepoxy resolves EGL functions via `dlsym` on our `libEGL.so`, falling back to
+`eglGetProcAddress`. Every missing export is a crash.
+
+GTK3 GDK Wayland backend EGL calls (from `strings /usr/lib/libgdk-3.so.0`):
+- Core: `eglGetPlatformDisplay[EXT]`, `eglInitialize`, `eglBindAPI`,
+  `eglChooseConfig`, `eglGetConfigAttrib`, `eglCreateContext`,
+  `eglCreateWindowSurface`, `eglMakeCurrent`, `eglSwapBuffers`,
+  `eglSwapInterval`, `eglQuerySurface`, `eglGetCurrentContext`,
+  `eglGetProcAddress`, `eglDestroySurface`, `eglDestroyContext`
+- Extensions: `eglSwapBuffersWithDamageEXT` (preferred over `eglSwapBuffers`)
+- Extension checks: `EGL_EXT_buffer_age`, `EGL_EXT_swap_buffers_with_damage`,
+  `EGL_KHR_create_context`, `EGL_KHR_surfaceless_context`,
+  `EGL_EXT_platform_base`
+
+**Architecture: universal forwarding.** Instead of manually wrapping each function:
+1. At init, `dlopen` the real libhybris EGL (`/usr/local/lib/libEGL.so.1.0.0`)
+2. For each of the 44 core EGL functions, export a symbol that either:
+   - Intercepts (for Wayland-specific behavior): ~8 functions
+   - Forwards to real driver via loaded function pointer: ~36 functions
+3. Use a macro to generate the forwarding stubs to avoid boilerplate
+4. `eglGetProcAddress` forwards unknown names to real driver
+
+**Functions that need interception (not just forwarding):**
+- `eglGetDisplay` / `eglGetPlatformDisplay` -- detect Wayland display, bind protocol
+- `eglInitialize` -- return cached result (already initialized)
+- `eglCreateWindowSurface` / `eglCreatePlatformWindowSurface` -- AHB pool + FBO
+- `eglDestroySurface` -- cleanup our state if tawc_surface
+- `eglMakeCurrent` -- bind FBO if tawc_surface
+- `eglSwapBuffers` -- send AHB + commit if tawc_surface
+- `eglQuerySurface` -- handle width/height/buffer_age for tawc_surface
+- `eglChooseConfig` -- rewrite WINDOW_BIT to PBUFFER_BIT
+
+**Thread safety design:**
+- `pthread_once` for one-time init (stock EGL loading, AHB function loading)
+- `pthread_mutex_t surfaces_mutex` protects `surfaces[]` / `num_surfaces`
+  (locked in `eglCreateWindowSurface`, `eglDestroySurface`, `find_surface`)
+- `__thread struct tawc_surface *current_tawc_surface` tracks per-thread binding
+  (set in `eglMakeCurrent`, read in `eglGetCurrentSurface`/`eglSwapBuffers`)
+- Per-surface `current` index only written by `eglSwapBuffers` (Wayland guarantees
+  one rendering thread per surface), so no lock needed
+
+**eglChooseConfig strategy:** Current approach rewrites `EGL_SURFACE_TYPE` from
+`WINDOW_BIT` to `PBUFFER_BIT`. This works but may exclude configs the app wants.
+Better: request configs with `PBUFFER_BIT` (required for our dummy pbuffer) but
+also add `WINDOW_BIT` configs from the real driver. The app gets a superset.
+Actually, simplest: just add PBUFFER_BIT to whatever the app requests (OR it in).
+
+**Buffer age:** GTK3 queries `EGL_BUFFER_AGE_EXT` via `eglQuerySurface` to optimize
+repainting (only repaint damaged regions from previous frames). With double
+buffering, buffer age alternates: after swap, the "current" buffer was last used
+2 frames ago → age = 2. Return `NUM_BUFFERS` as the buffer age.
+
+**Resize:** `wl_egl_window_resize` modifies `wl_egl_window.width`/`.height` in place.
+Check these fields at each `eglSwapBuffers`. If changed, free old AHB pool,
+allocate new one at new size. This also requires reallocating the depth/stencil
+renderbuffer.
+
+**Compositor-side for GTK3 support:**
+- `wl_data_device_manager` global: GTK3 binds this for clipboard/DnD. Stub
+  implementation that accepts bind and ignores all requests.
+- `wl_shm`: needed for cursor themes and some GTK fallback rendering (being
+  handled separately).
 
 ### libhybris Vulkan Deep Dive (researched 2026-03-28)
 
