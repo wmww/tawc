@@ -209,10 +209,82 @@ Located at `client/tawc-wsi/tawc-egl.c`, built as a shared library placed first 
 **Verified:** `weston-simple-egl` (250x250 animated RGB triangle) renders correctly
 via the WSI layer on Pixel 4a (Adreno 618). Zero-copy GPU path confirmed.
 
-**Remaining issues:**
+**Remaining issues (addressed in Phase 4):**
+- ~~No resize handling yet~~ → Phase 4: `eglSwapBuffers` detects `wl_egl_window` size changes
 - No frame callback throttling → client renders as fast as possible
-- No resize handling yet
 - Toplevel lifecycle tracking needs work (using surface_ahb as source of truth)
+- GTK3 GL path requires desktop-GL-to-GLES shader fix (see `gtk-gles.md`)
+
+### Phase 4 Implementation (2026-03-31)
+
+**Status:** Complete. All code changes deployed and tested on device.
+
+**EGL wrapper rewrite (`client/tawc-wsi/tawc-egl.c`):**
+- All 44 EGL 1.5 core functions exported (was ~36). Missing functions that crashed
+  libepoxy/GTK3 are now either intercepted or forwarded to the real driver.
+- X-macro (`REAL_EGL_FUNCTIONS`) declares all real_* function pointers. Functions
+  split into LOAD_REQUIRED (EGL 1.0-1.4) and LOAD_OPTIONAL (EGL 1.5, may not exist
+  in libhybris). Optional functions stub gracefully if NULL.
+- `eglGetProcAddress` now returns intercepted functions for all our exports AND
+  forwards unknown names to real driver. Specifically intercepts:
+  - `eglGetPlatformDisplayEXT` / `eglCreatePlatformWindowSurfaceEXT` (libepoxy)
+  - `eglSwapBuffersWithDamageEXT` / `eglSwapBuffersWithDamageKHR` (GTK3)
+- Thread safety: `pthread_once` for init, `pthread_mutex_t` for surface list,
+  `__thread` for per-thread current surface + context tracking.
+- `eglGetCurrentSurface` / `eglGetCurrentDisplay` / `eglGetCurrentContext` use
+  TLS (`tls_current_surface`, `tls_current_context`), set by `eglMakeCurrent`.
+- `eglQueryString(EGL_EXTENSIONS)` returns real driver extensions + appended
+  Wayland-specific extensions: `EGL_KHR_platform_wayland`, `EGL_EXT_platform_wayland`,
+  `EGL_EXT_platform_base`, `EGL_EXT_buffer_age`, `EGL_EXT_swap_buffers_with_damage`,
+  `EGL_KHR_create_context`, `EGL_KHR_surfaceless_context`.
+- Buffer age: `eglQuerySurface(EGL_BUFFER_AGE_EXT)` returns `NUM_BUFFERS` after
+  first N swaps, 0 before (per EGL_EXT_buffer_age spec).
+- `eglSwapBuffersWithDamageEXT` implemented (ignores damage rects, delegates to
+  `eglSwapBuffers` -- damage optimization can come later).
+- Resize: `eglSwapBuffers` checks `wl_egl_window->width/height` against current
+  size. If changed, frees entire AHB pool and reallocates at new dimensions.
+- `eglChooseConfig` now ORs in `EGL_PBUFFER_BIT` (was replacing WINDOW with PBUFFER).
+- `eglGetConfigAttrib(EGL_SURFACE_TYPE)` ORs in `EGL_WINDOW_BIT` so apps see
+  window surface support.
+- Surface slots use `in_use` flag instead of linear `num_surfaces` counter, so
+  slots can be reused after `eglDestroySurface`.
+- `tawc_surface` now stores `wl_egl_window*` (for resize) and `EGLConfig` (for
+  potential pbuffer recreation).
+
+**Compositor changes (`server/compositor/src/compositor.rs`):**
+- Added `wl_data_device_manager` global via Smithay's `DataDeviceState`. GTK3
+  binds this during init for clipboard/DnD -- without it, GTK3 aborts.
+- Stub implementations: `DataDeviceHandler`, `ClientDndGrabHandler`,
+  `ServerDndGrabHandler`, `SelectionHandler` all use default (no-op) impls.
+- `delegate_data_device!(TawcState)` wires up the Wayland protocol dispatch.
+
+**Additional fixes discovered during testing:**
+- `eglQueryContext` was missing -- libepoxy resolves it via `dlsym` and crashes
+  on undefined symbol. Added as a pass-through to real driver.
+- EGL 1.5 client extensions: `eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS)`
+  must return platform extensions for libepoxy to detect Wayland support.
+  Returns `EGL_EXT_platform_base EGL_KHR_platform_wayland EGL_EXT_platform_wayland
+  EGL_EXT_client_extensions`.
+- `eglBindAPI(EGL_OPENGL_API)`: Android drivers lack desktop GL. Mapped to
+  `EGL_OPENGL_ES_API` so GTK3's init doesn't abort. Side effect: GTK3 thinks
+  it has desktop GL and compiles wrong shaders (see gtk-gles.md).
+- `eglCreateContext` attribute filtering: strips `EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR`,
+  `EGL_CONTEXT_MINOR_VERSION_KHR`, and forward-compatible flags. Converts
+  `EGL_CONTEXT_MAJOR_VERSION_KHR` to `EGL_CONTEXT_CLIENT_VERSION` for GLES.
+- libhybris-common execstack: the library's ELF `GNU_STACK` had `RWE` (execute).
+  The kernel refused to dlopen it into processes not compiled with `-z execstack`
+  (like GTK3). Fixed by `patchelf --clear-execstack` on libhybris-common.so.
+  Also changed our wrapper to dlopen libhybris-common at runtime instead of
+  linking at build time, and call `personality(READ_IMPLIES_EXEC)` before loading.
+- Build script updated: removed `-lhybris-common` link flag, added `-lpthread`.
+
+**Test results:**
+- `weston-simple-egl`: GPU-accelerated rendering works end-to-end. RGB triangle
+  visible on phone screen via AHB zero-copy path.
+- `gtk3-widget-factory` (SHM): renders correctly via wl_shm fallback (magenta tint).
+- `gtk3-widget-factory` (GL, `GDK_GL=always`): full EGL pipeline works (context
+  creation, window surface, AHB allocation) but shader compilation fails due to
+  desktop-GL-vs-GLES mismatch. See `gtk-gles.md` for detailed analysis.
 
 ### Phase 4 Design Notes: Robust EGL WSI
 

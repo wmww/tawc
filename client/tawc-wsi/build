@@ -27,9 +27,9 @@ gcc -shared -fPIC -o libEGL.so \
     tawc-egl.c \
     tawc-buffer-v1-client.c \
     -lwayland-client \
-    -lhybris-common \
     -lGLESv2 \
     -ldl \
+    -lpthread \
     -I. \
     -Wall -g
 

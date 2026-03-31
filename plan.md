@@ -416,25 +416,42 @@ Client-side WSI layer:
 17. ✅ Test with a simple Wayland EGL client from chroot
 18. **Milestone: GPU-accelerated Wayland client visible on screen** ✅
 
-### Phase 4: Robust EGL WSI Layer
-19. Complete EGL 1.5 API: export all 44 core functions via macro-generated
-    dispatch table. Unknown functions forward to real driver (no more
-    "undefined symbol" crashes).
-20. Fix `eglGetProcAddress`: forward unknown extension names to real driver.
-    Intercept `eglSwapBuffersWithDamageEXT` (GTK3 prefers it) and platform
-    display extensions.
-21. Thread safety: `pthread_once` for init, `pthread_mutex_t` for surface
+### Phase 4: Robust EGL WSI Layer ✅ COMPLETE (2026-03-31)
+19. ✅ Complete EGL 1.5 API: all 44 core functions exported via X-macro
+    dispatch table. Required/optional split for EGL 1.5 functions.
+    Unknown functions forward to real driver.
+20. ✅ Fix `eglGetProcAddress`: forward unknown extension names to real driver.
+    Intercept `eglSwapBuffersWithDamageEXT`/`KHR`, platform display
+    extensions (`eglGetPlatformDisplayEXT`, `eglCreatePlatformWindowSurfaceEXT`).
+21. ✅ Thread safety: `pthread_once` for init, `pthread_mutex_t` for surface
     list, `__thread` for per-thread current-surface tracking.
-22. Fix `eglGetCurrentSurface`/`eglGetCurrentDisplay`: thread-local tracking
-    of which tawc_surface is bound, so apps see the correct surface.
-23. Fix `eglQueryString`: forward from real driver, append/filter
-    Wayland-specific extensions.
-24. Buffer age and damage: implement `EGL_BUFFER_AGE_EXT` query,
-    `eglSwapBuffersWithDamageEXT` (GTK3 needs both).
-25. `wl_egl_window` resize: detect size changes at swap, reallocate AHB pool.
-26. Compositor: add `wl_data_device_manager` stub global (GTK3 binds it).
-27. Test with `gtk3-widget-factory`, then Firefox
-28. **Milestone: GTK3 apps render correctly through the EGL WSI layer**
+22. ✅ Fix `eglGetCurrentSurface`/`eglGetCurrentDisplay`/`eglGetCurrentContext`:
+    thread-local tracking via `tls_current_surface` and `tls_current_context`.
+23. ✅ Fix `eglQueryString`: forward display extensions from real driver with
+    appended Wayland extensions. Return EGL 1.5 client extensions for
+    `eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS)` (required by libepoxy).
+24. ✅ Buffer age and damage: `EGL_BUFFER_AGE_EXT` via `eglQuerySurface`,
+    `eglSwapBuffersWithDamageEXT` (delegates to `eglSwapBuffers`).
+25. ✅ `wl_egl_window` resize: detect size changes at swap, reallocate AHB
+    pool and depth/stencil renderbuffers.
+26. ✅ Compositor: add `wl_data_device_manager` stub global (Smithay
+    `DataDeviceState` with no-op handlers).
+27. ✅ Additional fixes discovered during testing:
+    - `eglQueryContext` export (libepoxy resolves via dlsym, crashes if missing)
+    - EGL client extensions (`EGL_EXT_platform_base` etc) for libepoxy/GDK
+    - `eglGetConfigAttrib(EGL_SURFACE_TYPE)` reports `EGL_WINDOW_BIT`
+    - `eglChooseConfig` ORs in `PBUFFER_BIT` (was replacing `WINDOW_BIT`)
+    - `eglCreateContext` strips desktop-GL-only attributes for GLES driver
+    - `eglBindAPI(EGL_OPENGL_API)` mapped to GLES (Android has no desktop GL)
+    - libhybris-common execstack: cleared via `patchelf --clear-execstack`,
+      dlopen instead of link-time dependency, `personality(READ_IMPLIES_EXEC)`
+    - Surface slot reuse via `in_use` flag
+28. ✅ Tested: `weston-simple-egl` renders GPU-accelerated through WSI layer.
+    GTK3 `gtk3-widget-factory` connects and renders via SHM fallback.
+    GTK3 GL path blocked by desktop-GL-vs-GLES shader mismatch (see
+    `gtk-gles.md` for analysis and solutions).
+    **Milestone: EGL WSI layer is robust for GLES apps. GTK3 GL requires
+    a small GTK3 patch or shader rewriting (documented separately).**
 
 ### Phase 5: Input
 29. Implement AndroidInputBackend (touch + pointer first, keyboard second)

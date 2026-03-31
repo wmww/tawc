@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use log::{error, info};
@@ -7,6 +7,7 @@ use log::{error, info};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexProgram, GlesTexture};
 use smithay::backend::renderer::{buffer_type, BufferType, ImportMemWl};
 use smithay::delegate_compositor;
+use smithay::delegate_data_device;
 use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
@@ -26,6 +27,10 @@ use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
     with_states,
 };
+use smithay::wayland::selection::data_device::{
+    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+};
+use smithay::wayland::selection::{SelectionHandler, SelectionTarget, SelectionSource};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
@@ -75,6 +80,7 @@ pub struct TawcState {
     pub compositor_state: CompositorState,
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
+    pub data_device_state: DataDeviceState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
 
@@ -108,6 +114,7 @@ impl TawcState {
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, []);
+        let data_device_state = DataDeviceState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&dh, "tawc");
 
@@ -119,6 +126,7 @@ impl TawcState {
             compositor_state,
             shm_state,
             xdg_shell_state,
+            data_device_state,
             seat_state,
             seat,
             surface_ahb: HashMap::new(),
@@ -460,9 +468,25 @@ impl ClientData for ClientState {
     }
 }
 
+// --- DataDeviceHandler (stub for GTK3 compatibility) ---
+
+impl DataDeviceHandler for TawcState {
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.data_device_state
+    }
+}
+
+impl ClientDndGrabHandler for TawcState {}
+impl ServerDndGrabHandler for TawcState {}
+
+impl SelectionHandler for TawcState {
+    type SelectionUserData = ();
+}
+
 // --- Delegate macros ---
 
 delegate_compositor!(TawcState);
+delegate_data_device!(TawcState);
 delegate_output!(TawcState);
 delegate_shm!(TawcState);
 delegate_xdg_shell!(TawcState);

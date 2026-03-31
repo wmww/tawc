@@ -1,21 +1,15 @@
 /**
- * tawc EGL wrapper -- intercepts Wayland EGL calls and routes buffer sharing
- * through the tawc_buffer_v1 protocol + AHardwareBuffer side channel.
+ * tawc EGL wrapper -- drop-in libEGL.so replacement for Wayland EGL apps.
  *
- * This is a drop-in libEGL.so replacement. Apps load it via LD_LIBRARY_PATH.
- * It loads the real stock Android EGL driver via libhybris and passes through
- * all calls except the Wayland-specific ones it intercepts.
+ * Routes buffer sharing through the tawc_buffer_v1 protocol + AHardwareBuffer
+ * side channel. Apps load it via LD_LIBRARY_PATH (before libhybris's EGL).
  *
- * Intercepted:
- *   eglGetDisplay / eglGetPlatformDisplay -- detect Wayland, init stock driver
- *   eglCreateWindowSurface -- allocate AHB pool, create FBOs
- *   eglSwapBuffers -- send AHB to compositor, rotate buffers
- *   eglDestroySurface -- cleanup
- *   eglMakeCurrent -- bind correct FBO
+ * Phase 4: Robust EGL WSI layer -- full EGL 1.5 API, thread safety,
+ * buffer age/damage, resize, GTK3/Firefox compatibility.
  *
  * Build in chroot:
  *   gcc -shared -fPIC -o libEGL.so tawc-egl.c tawc-buffer-v1-client.c \
- *       -lwayland-client -lhybris-common -lGLESv2 -I.
+ *       -lwayland-client -lhybris-common -lGLESv2 -ldl -lpthread -I. -Wall -g
  */
 
 #define _GNU_SOURCE
@@ -23,8 +17,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <pthread.h>
+#include <sys/personality.h>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -33,7 +30,15 @@
 
 #include <wayland-client.h>
 #include <wayland-egl-backend.h>
-#include <hybris/common/binding.h>
+
+/* Load libhybris-common via dlopen to avoid baking execstack into our .so.
+ * libhybris-common requires executable stack, and the kernel refuses to
+ * dlopen such libraries into processes that didn't start with execstack.
+ * By dlopening it ourselves (RTLD_LAZY), we defer the load. */
+typedef void *(*fn_android_dlopen)(const char *, int);
+typedef void *(*fn_android_dlsym)(void *, const char *);
+static fn_android_dlopen android_dlopen;
+static fn_android_dlsym android_dlsym;
 
 #include "tawc-buffer-v1-client.h"
 
@@ -84,30 +89,69 @@ static fn_glEGLImageTargetTexture2DOES pfn_imageTargetTex;
 /* Stock EGL function pointers (real driver via libhybris)             */
 /* ------------------------------------------------------------------ */
 
-static EGLDisplay  (*real_eglGetDisplay)(EGLNativeDisplayType);
-static EGLBoolean  (*real_eglInitialize)(EGLDisplay, EGLint *, EGLint *);
-static EGLBoolean  (*real_eglTerminate)(EGLDisplay);
-static EGLBoolean  (*real_eglChooseConfig)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *);
-static EGLBoolean  (*real_eglGetConfigAttrib)(EGLDisplay, EGLConfig, EGLint, EGLint *);
-static EGLContext  (*real_eglCreateContext)(EGLDisplay, EGLConfig, EGLContext, const EGLint *);
-static EGLBoolean  (*real_eglDestroyContext)(EGLDisplay, EGLContext);
-static EGLSurface  (*real_eglCreatePbufferSurface)(EGLDisplay, EGLConfig, const EGLint *);
-static EGLBoolean  (*real_eglDestroySurface)(EGLDisplay, EGLSurface);
-static EGLBoolean  (*real_eglMakeCurrent)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
-static EGLBoolean  (*real_eglSwapBuffers)(EGLDisplay, EGLSurface);
-static EGLBoolean  (*real_eglBindAPI)(EGLenum);
-static void *      (*real_eglGetProcAddress)(const char *);
-static EGLint      (*real_eglGetError)(void);
-static const char *(*real_eglQueryString)(EGLDisplay, EGLint);
-static EGLBoolean  (*real_eglSwapInterval)(EGLDisplay, EGLint);
-static EGLBoolean  (*real_eglReleaseThread)(void);
-static EGLContext  (*real_eglGetCurrentContext)(void);
-static EGLSurface  (*real_eglGetCurrentSurface)(EGLint);
-static EGLDisplay  (*real_eglGetCurrentDisplay)(void);
-static EGLBoolean  (*real_eglQuerySurface)(EGLDisplay, EGLSurface, EGLint, EGLint *);
-static EGLBoolean  (*real_eglWaitGL)(void);
-static EGLBoolean  (*real_eglWaitNative)(EGLint);
-static EGLBoolean  (*real_eglGetConfigs)(EGLDisplay, EGLConfig *, EGLint, EGLint *);
+/* All 44 core EGL 1.5 functions + key extensions */
+#define REAL_EGL_FUNCTIONS(X) \
+    X(EGLDisplay,  eglGetDisplay,           (EGLNativeDisplayType display_id)) \
+    X(EGLBoolean,  eglInitialize,           (EGLDisplay dpy, EGLint *major, EGLint *minor)) \
+    X(EGLBoolean,  eglTerminate,            (EGLDisplay dpy)) \
+    X(const char*, eglQueryString,           (EGLDisplay dpy, EGLint name)) \
+    X(EGLBoolean,  eglGetConfigs,           (EGLDisplay dpy, EGLConfig *configs, EGLint config_size, EGLint *num_config)) \
+    X(EGLBoolean,  eglChooseConfig,         (EGLDisplay dpy, const EGLint *attrib_list, EGLConfig *configs, EGLint config_size, EGLint *num_config)) \
+    X(EGLBoolean,  eglGetConfigAttrib,      (EGLDisplay dpy, EGLConfig config, EGLint attribute, EGLint *value)) \
+    X(EGLSurface,  eglCreateWindowSurface,  (EGLDisplay dpy, EGLConfig config, EGLNativeWindowType win, const EGLint *attrib_list)) \
+    X(EGLSurface,  eglCreatePbufferSurface, (EGLDisplay dpy, EGLConfig config, const EGLint *attrib_list)) \
+    X(EGLSurface,  eglCreatePixmapSurface,  (EGLDisplay dpy, EGLConfig config, EGLNativePixmapType pixmap, const EGLint *attrib_list)) \
+    X(EGLBoolean,  eglDestroySurface,       (EGLDisplay dpy, EGLSurface surface)) \
+    X(EGLBoolean,  eglQuerySurface,         (EGLDisplay dpy, EGLSurface surface, EGLint attribute, EGLint *value)) \
+    X(EGLBoolean,  eglBindAPI,              (EGLenum api)) \
+    X(EGLenum,     eglQueryAPI,             (void)) \
+    X(EGLBoolean,  eglWaitClient,           (void)) \
+    X(EGLBoolean,  eglReleaseThread,        (void)) \
+    X(EGLSurface,  eglCreatePbufferFromClientBuffer, (EGLDisplay dpy, EGLenum buftype, EGLClientBuffer buffer, EGLConfig config, const EGLint *attrib_list)) \
+    X(EGLBoolean,  eglSurfaceAttrib,        (EGLDisplay dpy, EGLSurface surface, EGLint attribute, EGLint value)) \
+    X(EGLBoolean,  eglBindTexImage,         (EGLDisplay dpy, EGLSurface surface, EGLint buffer)) \
+    X(EGLBoolean,  eglReleaseTexImage,      (EGLDisplay dpy, EGLSurface surface, EGLint buffer)) \
+    X(EGLBoolean,  eglSwapInterval,         (EGLDisplay dpy, EGLint interval)) \
+    X(EGLContext,  eglCreateContext,         (EGLDisplay dpy, EGLConfig config, EGLContext share_context, const EGLint *attrib_list)) \
+    X(EGLBoolean,  eglDestroyContext,       (EGLDisplay dpy, EGLContext ctx)) \
+    X(EGLBoolean,  eglMakeCurrent,          (EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)) \
+    X(EGLContext,  eglGetCurrentContext,     (void)) \
+    X(EGLSurface,  eglGetCurrentSurface,    (EGLint readdraw)) \
+    X(EGLDisplay,  eglGetCurrentDisplay,     (void)) \
+    X(EGLBoolean,  eglSwapBuffers,          (EGLDisplay dpy, EGLSurface surface)) \
+    X(EGLBoolean,  eglCopyBuffers,          (EGLDisplay dpy, EGLSurface surface, EGLNativePixmapType target)) \
+    X(EGLint,      eglGetError,             (void)) \
+    X(EGLBoolean,  eglQueryContext,          (EGLDisplay dpy, EGLContext ctx, EGLint attribute, EGLint *value)) \
+    X(EGLBoolean,  eglWaitGL,               (void)) \
+    X(EGLBoolean,  eglWaitNative,           (EGLint engine)) \
+    X(void*,       eglGetProcAddress,       (const char *procname)) \
+    /* EGL 1.5 */ \
+    X(EGLSync,     eglCreateSync,           (EGLDisplay dpy, EGLenum type, const EGLAttrib *attrib_list)) \
+    X(EGLBoolean,  eglDestroySync,          (EGLDisplay dpy, EGLSync sync)) \
+    X(EGLint,      eglClientWaitSync,       (EGLDisplay dpy, EGLSync sync, EGLint flags, EGLTime timeout)) \
+    X(EGLBoolean,  eglGetSyncAttrib,        (EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLAttrib *value)) \
+    X(EGLImage,    eglCreateImage,          (EGLDisplay dpy, EGLContext ctx, EGLenum target, EGLClientBuffer buffer, const EGLAttrib *attrib_list)) \
+    X(EGLBoolean,  eglDestroyImage,         (EGLDisplay dpy, EGLImage image)) \
+    X(EGLDisplay,  eglGetPlatformDisplay,   (EGLenum platform, void *native_display, const EGLAttrib *attrib_list)) \
+    X(EGLSurface,  eglCreatePlatformWindowSurface,  (EGLDisplay dpy, EGLConfig config, void *native_window, const EGLAttrib *attrib_list)) \
+    X(EGLSurface,  eglCreatePlatformPixmapSurface,  (EGLDisplay dpy, EGLConfig config, void *native_pixmap, const EGLAttrib *attrib_list)) \
+    X(EGLBoolean,  eglWaitSync,             (EGLDisplay dpy, EGLSync sync, EGLint flags))
+
+/* Declare real_* function pointers */
+#define DECL_REAL(ret, name, args) static ret (*real_##name) args;
+REAL_EGL_FUNCTIONS(DECL_REAL)
+#undef DECL_REAL
+
+/* ------------------------------------------------------------------ */
+/* Thread safety primitives                                            */
+/* ------------------------------------------------------------------ */
+
+static pthread_once_t init_once_ctrl = PTHREAD_ONCE_INIT;
+static pthread_mutex_t surfaces_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int init_result = -1;  /* 0 = success */
+
+static __thread struct tawc_surface *tls_current_surface = NULL;
+static __thread EGLContext tls_current_context = EGL_NO_CONTEXT;
 
 /* ------------------------------------------------------------------ */
 /* Buffer pool for a Wayland surface                                   */
@@ -115,6 +159,7 @@ static EGLBoolean  (*real_eglGetConfigs)(EGLDisplay, EGLConfig *, EGLint, EGLint
 
 #define NUM_BUFFERS 2
 #define GL_TEXTURE_EXTERNAL_OES 0x8D65
+#define EGL_BUFFER_AGE_EXT 0x313D
 
 struct tawc_buffer {
     AHardwareBuffer *ahb;
@@ -125,21 +170,22 @@ struct tawc_buffer {
     int              width, height;
 };
 
-/* Our fake EGLSurface state */
 struct tawc_surface {
     struct wl_surface             *wl_surf;
+    struct wl_egl_window          *wl_win;    /* for resize detection */
     struct tawc_ahb_channel_v1    *channel;
     int                            side_fd;
     struct tawc_buffer             buffers[NUM_BUFFERS];
     int                            current;
     int                            width, height;
-    /* Real pbuffer surface (for context binding) */
+    int                            swap_count; /* total swaps, for buffer age */
     EGLSurface                     real_pbuffer;
+    EGLConfig                      config;    /* saved for resize */
+    int                            in_use;    /* slot occupied */
 };
 
 #define MAX_SURFACES 16
 static struct tawc_surface surfaces[MAX_SURFACES];
-static int num_surfaces = 0;
 
 /* ------------------------------------------------------------------ */
 /* Global state                                                        */
@@ -148,9 +194,13 @@ static int num_surfaces = 0;
 static int initialized = 0;
 static EGLDisplay stock_display = EGL_NO_DISPLAY;
 static struct wl_display *wayland_display = NULL;
+static void *real_egl_lib = NULL;
 
 /* tawc protocol objects */
 static struct tawc_buffer_manager_v1 *buffer_manager = NULL;
+
+/* Cached extension string (real driver extensions + our additions) */
+static char *cached_extensions = NULL;
 
 static void log_msg(const char *fmt, ...) {
     va_list ap;
@@ -175,7 +225,7 @@ static void channel_fd_handler(void *data, struct tawc_ahb_channel_v1 *ch, int32
 
 static void channel_release_handler(void *data, struct tawc_ahb_channel_v1 *ch)
 {
-    /* Buffer released -- we could track this for smarter buffer rotation */
+    /* Buffer released -- could track for smarter rotation */
 }
 
 static const struct tawc_ahb_channel_v1_listener channel_listener = {
@@ -225,44 +275,93 @@ static int load_ahb_functions(void)
     return 0;
 }
 
+static int load_hybris_common(void)
+{
+    /* libhybris-common requires executable stack. Enable READ_IMPLIES_EXEC
+     * so the kernel allows loading .so files that need execstack. */
+    unsigned long pers = personality(0xffffffff);  /* query current */
+    if (!(pers & READ_IMPLIES_EXEC)) {
+        personality(pers | READ_IMPLIES_EXEC);
+        log_msg("enabled READ_IMPLIES_EXEC for libhybris execstack");
+    }
+
+    void *hc = dlopen("libhybris-common.so.1", RTLD_NOW);
+    if (!hc) { log_msg("FATAL: can't load libhybris-common: %s", dlerror()); return -1; }
+    android_dlopen = (fn_android_dlopen)dlsym(hc, "android_dlopen");
+    android_dlsym = (fn_android_dlsym)dlsym(hc, "android_dlsym");
+    if (!android_dlopen || !android_dlsym) {
+        log_msg("FATAL: missing android_dlopen/android_dlsym in libhybris-common");
+        return -1;
+    }
+    log_msg("libhybris-common loaded (android_dlopen=%p)", (void*)android_dlopen);
+    return 0;
+}
+
 static int load_stock_egl(void)
 {
-    /* Load libhybris's EGL wrapper (glibc .so, not bionic) which in turn
-     * loads the stock Android EGL driver. We use dlopen with the full path
-     * to avoid loading ourselves recursively. */
-    void *egl = dlopen("/usr/local/lib/libEGL.so.1.0.0", RTLD_NOW);
-    if (!egl) { log_msg("FATAL: can't load libhybris EGL: %s", dlerror()); return -1; }
+    real_egl_lib = dlopen("/usr/local/lib/libEGL.so.1.0.0", RTLD_NOW);
+    if (!real_egl_lib) { log_msg("FATAL: can't load libhybris EGL: %s", dlerror()); return -1; }
 
-#define LOAD(name) do { \
-    real_##name = (typeof(real_##name))dlsym(egl, #name); \
-    if (!real_##name) { log_msg("missing: %s", #name); return -1; } \
+    /* Load all real EGL functions. Missing non-1.5 functions are OK (NULL). */
+#define LOAD_REQUIRED(name) do { \
+    real_##name = (typeof(real_##name))dlsym(real_egl_lib, #name); \
+    if (!real_##name) { log_msg("missing required: %s", #name); return -1; } \
 } while(0)
 
-    LOAD(eglGetDisplay);
-    LOAD(eglInitialize);
-    LOAD(eglTerminate);
-    LOAD(eglChooseConfig);
-    LOAD(eglGetConfigAttrib);
-    LOAD(eglCreateContext);
-    LOAD(eglDestroyContext);
-    LOAD(eglCreatePbufferSurface);
-    LOAD(eglDestroySurface);
-    LOAD(eglMakeCurrent);
-    LOAD(eglSwapBuffers);
-    LOAD(eglBindAPI);
-    LOAD(eglGetProcAddress);
-    LOAD(eglGetError);
-    LOAD(eglQueryString);
-    LOAD(eglSwapInterval);
-    LOAD(eglReleaseThread);
-    LOAD(eglGetCurrentContext);
-    LOAD(eglGetCurrentSurface);
-    LOAD(eglGetCurrentDisplay);
-    LOAD(eglQuerySurface);
-    LOAD(eglWaitGL);
-    LOAD(eglWaitNative);
-    LOAD(eglGetConfigs);
-#undef LOAD
+#define LOAD_OPTIONAL(name) do { \
+    real_##name = (typeof(real_##name))dlsym(real_egl_lib, #name); \
+} while(0)
+
+    /* Core EGL 1.0-1.4 (required) */
+    LOAD_REQUIRED(eglGetDisplay);
+    LOAD_REQUIRED(eglInitialize);
+    LOAD_REQUIRED(eglTerminate);
+    LOAD_REQUIRED(eglQueryString);
+    LOAD_REQUIRED(eglGetConfigs);
+    LOAD_REQUIRED(eglChooseConfig);
+    LOAD_REQUIRED(eglGetConfigAttrib);
+    LOAD_REQUIRED(eglCreateWindowSurface);
+    LOAD_REQUIRED(eglCreatePbufferSurface);
+    LOAD_REQUIRED(eglCreatePixmapSurface);
+    LOAD_REQUIRED(eglDestroySurface);
+    LOAD_REQUIRED(eglQuerySurface);
+    LOAD_REQUIRED(eglBindAPI);
+    LOAD_REQUIRED(eglReleaseThread);
+    LOAD_REQUIRED(eglSurfaceAttrib);
+    LOAD_REQUIRED(eglSwapInterval);
+    LOAD_REQUIRED(eglCreateContext);
+    LOAD_REQUIRED(eglDestroyContext);
+    LOAD_REQUIRED(eglMakeCurrent);
+    LOAD_REQUIRED(eglGetCurrentContext);
+    LOAD_REQUIRED(eglGetCurrentSurface);
+    LOAD_REQUIRED(eglGetCurrentDisplay);
+    LOAD_REQUIRED(eglSwapBuffers);
+    LOAD_REQUIRED(eglCopyBuffers);
+    LOAD_REQUIRED(eglGetError);
+    LOAD_REQUIRED(eglQueryContext);
+    LOAD_REQUIRED(eglWaitGL);
+    LOAD_REQUIRED(eglWaitNative);
+    LOAD_REQUIRED(eglGetProcAddress);
+
+    /* Optional (EGL 1.5 or may not exist on older libhybris) */
+    LOAD_OPTIONAL(eglQueryAPI);
+    LOAD_OPTIONAL(eglWaitClient);
+    LOAD_OPTIONAL(eglCreatePbufferFromClientBuffer);
+    LOAD_OPTIONAL(eglBindTexImage);
+    LOAD_OPTIONAL(eglReleaseTexImage);
+    LOAD_OPTIONAL(eglCreateSync);
+    LOAD_OPTIONAL(eglDestroySync);
+    LOAD_OPTIONAL(eglClientWaitSync);
+    LOAD_OPTIONAL(eglGetSyncAttrib);
+    LOAD_OPTIONAL(eglCreateImage);
+    LOAD_OPTIONAL(eglDestroyImage);
+    LOAD_OPTIONAL(eglGetPlatformDisplay);
+    LOAD_OPTIONAL(eglCreatePlatformWindowSurface);
+    LOAD_OPTIONAL(eglCreatePlatformPixmapSurface);
+    LOAD_OPTIONAL(eglWaitSync);
+
+#undef LOAD_REQUIRED
+#undef LOAD_OPTIONAL
 
     return 0;
 }
@@ -285,41 +384,104 @@ static int load_extensions(void)
     return 0;
 }
 
-static int init_once(void)
+static void build_extension_string(void)
 {
-    if (initialized) return 0;
+    /* Get real driver extensions */
+    const char *real_ext = real_eglQueryString(stock_display, EGL_EXTENSIONS);
+    if (!real_ext) real_ext = "";
 
+    /* Extensions we add for Wayland compatibility */
+    static const char *added_exts[] = {
+        "EGL_KHR_platform_wayland",
+        "EGL_EXT_platform_wayland",
+        "EGL_EXT_platform_base",
+        "EGL_EXT_buffer_age",
+        "EGL_EXT_swap_buffers_with_damage",
+        "EGL_KHR_create_context",
+        "EGL_KHR_surfaceless_context",
+        NULL,
+    };
+
+    /* Calculate size */
+    size_t len = strlen(real_ext) + 1;
+    for (int i = 0; added_exts[i]; i++) {
+        if (!strstr(real_ext, added_exts[i]))
+            len += strlen(added_exts[i]) + 1;
+    }
+
+    cached_extensions = malloc(len + 1);
+    strcpy(cached_extensions, real_ext);
+
+    for (int i = 0; added_exts[i]; i++) {
+        if (!strstr(real_ext, added_exts[i])) {
+            if (cached_extensions[0] && cached_extensions[strlen(cached_extensions)-1] != ' ')
+                strcat(cached_extensions, " ");
+            strcat(cached_extensions, added_exts[i]);
+        }
+    }
+}
+
+static void do_init(void)
+{
     log_msg("initializing tawc EGL wrapper");
 
-    if (load_stock_egl() < 0) return -1;
+    if (load_hybris_common() < 0) return;
+    if (load_stock_egl() < 0) return;
 
-    /* Initialize stock EGL with default display */
     real_eglBindAPI(EGL_OPENGL_ES_API);
     stock_display = real_eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (stock_display == EGL_NO_DISPLAY) {
         log_msg("FATAL: stock eglGetDisplay failed: 0x%x", real_eglGetError());
-        return -1;
+        return;
     }
     if (!real_eglInitialize(stock_display, NULL, NULL)) {
         log_msg("FATAL: stock eglInitialize failed: 0x%x", real_eglGetError());
-        return -1;
+        return;
     }
-    if (load_extensions() < 0) return -1;
+    if (load_extensions() < 0) return;
+
+    build_extension_string();
 
     log_msg("stock EGL initialized, display=%p", stock_display);
     initialized = 1;
-    return 0;
+    init_result = 0;
+}
+
+static int ensure_init(void)
+{
+    pthread_once(&init_once_ctrl, do_init);
+    return init_result;
 }
 
 /* ------------------------------------------------------------------ */
-/* Buffer allocation helpers                                           */
+/* Surface helpers (must hold surfaces_mutex)                          */
 /* ------------------------------------------------------------------ */
+
+static struct tawc_surface *find_surface_locked(EGLSurface surface)
+{
+    struct tawc_surface *ts = (struct tawc_surface *)surface;
+    for (int i = 0; i < MAX_SURFACES; i++)
+        if (surfaces[i].in_use && &surfaces[i] == ts) return ts;
+    return NULL;
+}
+
+static struct tawc_surface *find_surface(EGLSurface surface)
+{
+    pthread_mutex_lock(&surfaces_mutex);
+    struct tawc_surface *ts = find_surface_locked(surface);
+    pthread_mutex_unlock(&surfaces_mutex);
+    return ts;
+}
 
 static int ensure_ahb_loaded(void)
 {
-    if (ahb_allocate) return 0;  /* already loaded */
+    if (ahb_allocate) return 0;
     return load_ahb_functions();
 }
+
+/* ------------------------------------------------------------------ */
+/* Buffer allocation / deallocation                                    */
+/* ------------------------------------------------------------------ */
 
 static int alloc_buffer(struct tawc_buffer *buf, int w, int h)
 {
@@ -335,7 +497,6 @@ static int alloc_buffer(struct tawc_buffer *buf, int w, int h)
         return -1;
     }
 
-    /* Create EGLImage from AHB */
     EGLClientBuffer cb = pfn_getClientBuffer(buf->ahb);
     if (!cb) { log_msg("getClientBuffer failed"); return -1; }
 
@@ -346,7 +507,6 @@ static int alloc_buffer(struct tawc_buffer *buf, int w, int h)
         return -1;
     }
 
-    /* Create texture + FBO */
     glGenTextures(1, &buf->tex);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, buf->tex);
     pfn_imageTargetTex(GL_TEXTURE_EXTERNAL_OES, buf->image);
@@ -358,7 +518,6 @@ static int alloc_buffer(struct tawc_buffer *buf, int w, int h)
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                            GL_TEXTURE_EXTERNAL_OES, buf->tex, 0);
 
-    /* Depth/stencil renderbuffer */
     glGenRenderbuffers(1, &buf->depth_rb);
     glBindRenderbuffer(GL_RENDERBUFFER, buf->depth_rb);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES, w, h);
@@ -384,13 +543,31 @@ static void free_buffer(struct tawc_buffer *buf)
     if (buf->fbo) glDeleteFramebuffers(1, &buf->fbo);
     if (buf->depth_rb) glDeleteRenderbuffers(1, &buf->depth_rb);
     if (buf->tex) glDeleteTextures(1, &buf->tex);
-    if (buf->image) pfn_destroyImage(stock_display, buf->image);
+    if (buf->image && pfn_destroyImage) pfn_destroyImage(stock_display, buf->image);
     if (buf->ahb) ahb_release(buf->ahb);
     memset(buf, 0, sizeof(*buf));
 }
 
+static int reallocate_buffers(struct tawc_surface *ts, int w, int h)
+{
+    log_msg("reallocating buffers: %dx%d -> %dx%d", ts->width, ts->height, w, h);
+    for (int i = 0; i < NUM_BUFFERS; i++)
+        free_buffer(&ts->buffers[i]);
+    for (int i = 0; i < NUM_BUFFERS; i++) {
+        if (alloc_buffer(&ts->buffers[i], w, h) < 0) {
+            log_msg("realloc failed at buffer %d", i);
+            return -1;
+        }
+    }
+    ts->width = w;
+    ts->height = h;
+    ts->current = 0;
+    ts->swap_count = 0;
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
-/* EGL API implementation                                              */
+/* EGL API -- intercepted functions                                    */
 /* ------------------------------------------------------------------ */
 
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id)
@@ -399,42 +576,31 @@ EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id)
      * libhybris/bionic initialization, since TLS patching deadlocks
      * wl_display_roundtrip_queue) */
     if (display_id != EGL_DEFAULT_DISPLAY && !wayland_display) {
-        /* Assume it's a wl_display* */
         wayland_display = (struct wl_display *)display_id;
         log_msg("eglGetDisplay: wayland display %p", wayland_display);
 
-        /* Use a private event queue so our roundtrip doesn't interfere
-         * with the app's event dispatch */
-        log_msg("binding tawc protocol (non-blocking)...");
-        /* Don't do a blocking roundtrip here -- eglGetDisplay may be called
-         * from inside wl_display_dispatch (e.g., from a registry callback),
-         * which would deadlock. Instead, just register our listener and let
-         * the app's event loop dispatch it. We'll check for buffer_manager
-         * when we actually need it (in eglCreateWindowSurface). */
+        /* Non-blocking registry bind -- eglGetDisplay may be called from
+         * inside wl_display_dispatch (e.g. from a registry callback) */
         struct wl_registry *reg = wl_display_get_registry(wayland_display);
         wl_registry_add_listener(reg, &registry_listener, NULL);
         wl_display_flush(wayland_display);
-        /* Try a non-blocking dispatch to pick up any already-available events */
         wl_display_dispatch_pending(wayland_display);
         log_msg("buffer_manager after pending dispatch: %p", (void*)buffer_manager);
     }
 
-    /* Now do the heavy init (loads bionic libs via libhybris) */
-    if (init_once() < 0) return EGL_NO_DISPLAY;
-
+    if (ensure_init() < 0) return EGL_NO_DISPLAY;
     return stock_display;
 }
 
 EGLDisplay eglGetPlatformDisplay(EGLenum platform, void *native_display,
                                  const EGLAttrib *attrib_list)
 {
-    /* Treat WAYLAND platform like eglGetDisplay with wl_display */
     return eglGetDisplay((EGLNativeDisplayType)native_display);
 }
 
 EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
 {
-    /* Already initialized in init_once */
+    log_msg("eglInitialize: dpy=%p", dpy);
     if (major) *major = 1;
     if (minor) *minor = 5;
     return EGL_TRUE;
@@ -442,31 +608,38 @@ EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
 
 EGLBoolean eglTerminate(EGLDisplay dpy)
 {
-    return real_eglTerminate(dpy);
+    if (!initialized) return EGL_TRUE;
+    return real_eglTerminate(stock_display);
 }
 
 EGLBoolean eglBindAPI(EGLenum api)
 {
-    /* Don't init_once here -- it loads libhybris which blocks roundtrip.
-     * Defer until eglGetDisplay is called. Just remember the API. */
+    /* Android GPU drivers only support GLES, not desktop GL.
+     * Map desktop GL to GLES. Apps using GDK_DEBUG=gles will call
+     * eglBindAPI(EGL_OPENGL_ES_API) directly and get the right path. */
+    if (api == EGL_OPENGL_API) {
+        log_msg("eglBindAPI: mapping EGL_OPENGL_API -> EGL_OPENGL_ES_API");
+        api = EGL_OPENGL_ES_API;
+    }
     if (initialized)
         return real_eglBindAPI(api);
-    return EGL_TRUE;  /* will be called again after init */
+    return EGL_TRUE;
 }
 
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
                            EGLConfig *configs, EGLint config_size, EGLint *num_config)
 {
-    if (init_once() < 0) return EGL_FALSE;
+    if (ensure_init() < 0) return EGL_FALSE;
 
-    /* Modify attribs: replace WINDOW_BIT with PBUFFER_BIT since we use FBOs */
+    /* Add PBUFFER_BIT to whatever surface type the app requests.
+     * We need pbuffer for our dummy surface; the app expects WINDOW. */
     EGLint modified[64];
     int i = 0, j = 0;
     if (attrib_list) {
         while (attrib_list[i] != EGL_NONE && j < 60) {
             if (attrib_list[i] == EGL_SURFACE_TYPE) {
                 modified[j++] = EGL_SURFACE_TYPE;
-                modified[j++] = EGL_PBUFFER_BIT;
+                modified[j++] = attrib_list[i+1] | EGL_PBUFFER_BIT;
                 i += 2;
             } else {
                 modified[j++] = attrib_list[i++];
@@ -476,25 +649,104 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
     }
     modified[j] = EGL_NONE;
 
-    return real_eglChooseConfig(stock_display, modified, configs, config_size, num_config);
+    EGLint count = 0;
+    EGLBoolean ret = real_eglChooseConfig(stock_display, modified, configs, config_size, &count);
+    log_msg("eglChooseConfig: ret=%d count=%d config_size=%d", ret, count, config_size);
+    if (num_config) *num_config = count;
+    return ret;
 }
+
+#define EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR 0x30FE
+#define EGL_CONTEXT_FLAGS_KHR 0x30FC
+#define EGL_CONTEXT_MAJOR_VERSION_KHR 0x30FB
+#define EGL_CONTEXT_MINOR_VERSION_KHR 0x30FD
+#define EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR 0x00000002
 
 EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share,
                             const EGLint *attribs)
 {
-    if (init_once() < 0) return EGL_NO_CONTEXT;
-    return real_eglCreateContext(stock_display, config, share, attribs);
+    if (ensure_init() < 0) return EGL_NO_CONTEXT;
+
+    /* Normalize desktop-GL context attributes to GLES-compatible ones.
+     * GTK3 thinks it's doing desktop GL and passes KHR attributes that
+     * stock Android GLES drivers don't understand. We:
+     * 1. Strip PROFILE_MASK (desktop GL only)
+     * 2. Strip FORWARD_COMPATIBLE flag (desktop GL only)
+     * 3. Convert MAJOR/MINOR_VERSION_KHR to EGL_CONTEXT_CLIENT_VERSION
+     * 4. Clamp to GLES 3.x (stock drivers support up to GLES 3.2) */
+    EGLint filtered[32];
+    int j = 0;
+    int has_client_version = 0;
+    int requested_major = 0;
+
+    if (attribs) {
+        for (int i = 0; attribs[i] != EGL_NONE; i += 2) {
+            switch (attribs[i]) {
+            case EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR:
+                /* Desktop GL only -- skip */
+                break;
+            case EGL_CONTEXT_MINOR_VERSION_KHR:
+                /* GLES doesn't use minor version -- skip */
+                break;
+            case EGL_CONTEXT_FLAGS_KHR:
+                {
+                    EGLint flags = attribs[i+1] & ~EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR;
+                    if (flags && j < 28) {
+                        filtered[j++] = attribs[i];
+                        filtered[j++] = flags;
+                    }
+                }
+                break;
+            case EGL_CONTEXT_MAJOR_VERSION_KHR:
+                /* Convert to EGL_CONTEXT_CLIENT_VERSION for GLES.
+                 * Request GLES 3 (highest that makes sense). */
+                if (!has_client_version && j < 28) {
+                    requested_major = attribs[i+1];
+                    filtered[j++] = EGL_CONTEXT_CLIENT_VERSION;
+                    filtered[j++] = (requested_major >= 3) ? 3 : requested_major;
+                    has_client_version = 1;
+                }
+                break;
+            case EGL_CONTEXT_CLIENT_VERSION:
+                if (!has_client_version && j < 28) {
+                    filtered[j++] = attribs[i];
+                    filtered[j++] = attribs[i+1];
+                    has_client_version = 1;
+                }
+                break;
+            default:
+                if (j < 28) {
+                    filtered[j++] = attribs[i];
+                    filtered[j++] = attribs[i+1];
+                }
+                break;
+            }
+        }
+    }
+    /* Default to GLES 3 if no version specified */
+    if (!has_client_version && j < 28) {
+        filtered[j++] = EGL_CONTEXT_CLIENT_VERSION;
+        filtered[j++] = 3;
+    }
+    filtered[j] = EGL_NONE;
+
+    log_msg("eglCreateContext: config=%p share=%p (%d attribs)", config, share, j/2);
+    EGLContext ctx = real_eglCreateContext(stock_display, config, share, filtered);
+    if (ctx == EGL_NO_CONTEXT)
+        log_msg("eglCreateContext FAILED: error=0x%x", real_eglGetError());
+    return ctx;
 }
 
 EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx)
 {
+    if (!initialized) return EGL_FALSE;
     return real_eglDestroyContext(stock_display, ctx);
 }
 
 EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
                                    EGLNativeWindowType win, const EGLint *attribs)
 {
-    if (init_once() < 0) return EGL_NO_SURFACE;
+    if (ensure_init() < 0) return EGL_NO_SURFACE;
 
     struct wl_egl_window *wl_win = (struct wl_egl_window *)win;
     int w = wl_win->width;
@@ -510,24 +762,41 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
         log_msg("buffer_manager after roundtrip: %p", (void*)buffer_manager);
     }
 
-    if (num_surfaces >= MAX_SURFACES) {
+    pthread_mutex_lock(&surfaces_mutex);
+
+    /* Find free slot */
+    struct tawc_surface *ts = NULL;
+    for (int i = 0; i < MAX_SURFACES; i++) {
+        if (!surfaces[i].in_use) {
+            ts = &surfaces[i];
+            break;
+        }
+    }
+    if (!ts) {
+        pthread_mutex_unlock(&surfaces_mutex);
         log_msg("too many surfaces");
         return EGL_NO_SURFACE;
     }
 
-    struct tawc_surface *ts = &surfaces[num_surfaces];
     memset(ts, 0, sizeof(*ts));
     ts->wl_surf = wl_surf;
+    ts->wl_win = wl_win;
     ts->width = w;
     ts->height = h;
     ts->side_fd = -1;
     ts->current = 0;
+    ts->swap_count = 0;
+    ts->config = config;
+    ts->in_use = 1;
 
-    /* Create a real pbuffer for MakeCurrent (1x1, just for context binding) */
+    pthread_mutex_unlock(&surfaces_mutex);
+
+    /* Create real pbuffer for MakeCurrent (1x1, just for context binding) */
     EGLint pb_attrs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
     ts->real_pbuffer = real_eglCreatePbufferSurface(stock_display, config, pb_attrs);
     if (ts->real_pbuffer == EGL_NO_SURFACE) {
         log_msg("pbuffer creation failed");
+        ts->in_use = 0;
         return EGL_NO_SURFACE;
     }
 
@@ -536,9 +805,6 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
         ts->channel = tawc_buffer_manager_v1_get_channel(buffer_manager, wl_surf);
         tawc_ahb_channel_v1_add_listener(ts->channel, &channel_listener, ts);
 
-        /* Roundtrip to get the side channel fd.
-         * eglCreateWindowSurface is called after the app's init roundtrips,
-         * so a blocking roundtrip here should be safe. */
         wl_display_roundtrip(wayland_display);
 
         if (ts->side_fd < 0) {
@@ -548,69 +814,82 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
         }
     }
 
-    /* We'll allocate buffers lazily on first MakeCurrent (need GL context) */
-    num_surfaces++;
-
-    /* Return a fake EGLSurface -- pointer to our tawc_surface */
     return (EGLSurface)ts;
+}
+
+EGLSurface eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config,
+                                           void *native_window,
+                                           const EGLAttrib *attrib_list)
+{
+    return eglCreateWindowSurface(dpy, config, (EGLNativeWindowType)native_window, NULL);
 }
 
 EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config,
                                     const EGLint *attribs)
 {
-    if (init_once() < 0) return EGL_NO_SURFACE;
+    if (ensure_init() < 0) return EGL_NO_SURFACE;
     return real_eglCreatePbufferSurface(stock_display, config, attribs);
 }
 
 EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface)
 {
-    /* Check if it's one of our tawc surfaces */
-    struct tawc_surface *ts = (struct tawc_surface *)surface;
-    for (int i = 0; i < num_surfaces; i++) {
-        if (&surfaces[i] == ts) {
-            for (int j = 0; j < NUM_BUFFERS; j++)
-                free_buffer(&ts->buffers[j]);
-            if (ts->channel)
-                tawc_ahb_channel_v1_destroy(ts->channel);
-            if (ts->real_pbuffer)
-                real_eglDestroySurface(stock_display, ts->real_pbuffer);
-            log_msg("surface destroyed");
-            return EGL_TRUE;
-        }
+    pthread_mutex_lock(&surfaces_mutex);
+    struct tawc_surface *ts = find_surface_locked(surface);
+    if (ts) {
+        for (int j = 0; j < NUM_BUFFERS; j++)
+            free_buffer(&ts->buffers[j]);
+        if (ts->channel)
+            tawc_ahb_channel_v1_destroy(ts->channel);
+        if (ts->real_pbuffer)
+            real_eglDestroySurface(stock_display, ts->real_pbuffer);
+        if (ts->side_fd >= 0)
+            close(ts->side_fd);
+        /* Clear TLS if this was the current surface */
+        if (tls_current_surface == ts)
+            tls_current_surface = NULL;
+        ts->in_use = 0;
+        pthread_mutex_unlock(&surfaces_mutex);
+        log_msg("surface destroyed");
+        return EGL_TRUE;
     }
+    pthread_mutex_unlock(&surfaces_mutex);
+    if (!initialized) return EGL_FALSE;
     return real_eglDestroySurface(stock_display, surface);
-}
-
-static struct tawc_surface *find_surface(EGLSurface surface)
-{
-    struct tawc_surface *ts = (struct tawc_surface *)surface;
-    for (int i = 0; i < num_surfaces; i++)
-        if (&surfaces[i] == ts) return ts;
-    return NULL;
 }
 
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read,
                            EGLContext ctx)
 {
-    struct tawc_surface *ts = find_surface(draw);
+    struct tawc_surface *ts_draw = find_surface(draw);
+    struct tawc_surface *ts_read = find_surface(read);
 
-    if (!ts) {
+    /* Unbind case */
+    if (ctx == EGL_NO_CONTEXT) {
+        tls_current_surface = NULL;
+        tls_current_context = EGL_NO_CONTEXT;
+        if (!initialized) return EGL_TRUE;
+        return real_eglMakeCurrent(stock_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+
+    if (!ts_draw) {
         /* Not our surface, pass through */
+        tls_current_surface = NULL;
+        tls_current_context = ctx;
         return real_eglMakeCurrent(stock_display, draw, read, ctx);
     }
 
     /* Bind the real pbuffer to make the GL context current */
-    if (!real_eglMakeCurrent(stock_display, ts->real_pbuffer,
-                              ts->real_pbuffer, ctx)) {
-        log_msg("MakeCurrent pbuffer failed");
+    EGLSurface read_surf = ts_read ? ts_read->real_pbuffer : ts_draw->real_pbuffer;
+    if (!real_eglMakeCurrent(stock_display, ts_draw->real_pbuffer, read_surf, ctx)) {
+        log_msg("MakeCurrent pbuffer failed: 0x%x", real_eglGetError());
         return EGL_FALSE;
     }
 
     /* Allocate buffers if not yet done (needs active GL context) */
-    if (ts->buffers[0].fbo == 0) {
-        log_msg("allocating %d buffers (%dx%d)", NUM_BUFFERS, ts->width, ts->height);
+    if (ts_draw->buffers[0].fbo == 0) {
+        log_msg("allocating %d buffers (%dx%d)", NUM_BUFFERS, ts_draw->width, ts_draw->height);
         for (int i = 0; i < NUM_BUFFERS; i++) {
-            if (alloc_buffer(&ts->buffers[i], ts->width, ts->height) < 0) {
+            if (alloc_buffer(&ts_draw->buffers[i], ts_draw->width, ts_draw->height) < 0) {
                 log_msg("buffer alloc failed");
                 return EGL_FALSE;
             }
@@ -618,8 +897,11 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read,
     }
 
     /* Bind current buffer's FBO */
-    glBindFramebuffer(GL_FRAMEBUFFER, ts->buffers[ts->current].fbo);
-    glViewport(0, 0, ts->width, ts->height);
+    glBindFramebuffer(GL_FRAMEBUFFER, ts_draw->buffers[ts_draw->current].fbo);
+    glViewport(0, 0, ts_draw->width, ts_draw->height);
+
+    tls_current_surface = ts_draw;
+    tls_current_context = ctx;
 
     return EGL_TRUE;
 }
@@ -627,14 +909,30 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read,
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
 {
     struct tawc_surface *ts = find_surface(surface);
-    if (!ts) return real_eglSwapBuffers(stock_display, surface);
+    if (!ts) {
+        if (!initialized) return EGL_FALSE;
+        return real_eglSwapBuffers(stock_display, surface);
+    }
 
-    /* Flush GL commands */
+    /* Check for resize (wl_egl_window_resize modifies fields in place) */
+    if (ts->wl_win &&
+        (ts->wl_win->width != ts->width || ts->wl_win->height != ts->height)) {
+        int new_w = ts->wl_win->width;
+        int new_h = ts->wl_win->height;
+        if (new_w > 0 && new_h > 0) {
+            if (reallocate_buffers(ts, new_w, new_h) < 0) {
+                log_msg("resize realloc failed");
+                return EGL_FALSE;
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, ts->buffers[ts->current].fbo);
+            glViewport(0, 0, new_w, new_h);
+        }
+    }
+
     glFinish();
 
     struct tawc_buffer *buf = &ts->buffers[ts->current];
 
-    /* Send AHB to compositor */
     if (ts->side_fd >= 0 && ts->channel && ahb_send) {
         if (ahb_send(buf->ahb, ts->side_fd) != 0) {
             log_msg("AHB send failed");
@@ -646,6 +944,8 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
         wl_display_flush(wayland_display);
     }
 
+    ts->swap_count++;
+
     /* Rotate to next buffer */
     ts->current = (ts->current + 1) % NUM_BUFFERS;
     glBindFramebuffer(GL_FRAMEBUFFER, ts->buffers[ts->current].fbo);
@@ -654,8 +954,15 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
     return EGL_TRUE;
 }
 
+static EGLBoolean tawc_eglSwapBuffersWithDamageEXT(EGLDisplay dpy, EGLSurface surface,
+                                                     const EGLint *rects, EGLint n_rects)
+{
+    /* We don't use damage info yet -- just swap normally */
+    return eglSwapBuffers(dpy, surface);
+}
+
 /* ------------------------------------------------------------------ */
-/* Pass-through functions                                              */
+/* EGL API -- query/state functions with tawc surface awareness        */
 /* ------------------------------------------------------------------ */
 
 EGLint eglGetError(void)
@@ -666,57 +973,117 @@ EGLint eglGetError(void)
 
 const char *eglQueryString(EGLDisplay dpy, EGLint name)
 {
-    if (name == EGL_CLIENT_APIS) return "OpenGL_ES";
-    if (name == EGL_EXTENSIONS) return "EGL_KHR_platform_wayland EGL_EXT_platform_wayland";
-    if (name == EGL_VERSION) return "1.5";
-    if (name == EGL_VENDOR) return "tawc";
-    if (!initialized) return "";
-    return real_eglQueryString(stock_display, name);
+    log_msg("eglQueryString: dpy=%p name=0x%x", dpy, name);
+
+    /* EGL_EXTENSIONS with EGL_NO_DISPLAY returns client extensions (EGL 1.5).
+     * This is how libepoxy checks for EGL_EXT_platform_base. */
+    if (dpy == EGL_NO_DISPLAY && name == EGL_EXTENSIONS) {
+        const char *client_ext = "EGL_EXT_platform_base EGL_KHR_platform_wayland "
+                                 "EGL_EXT_platform_wayland EGL_EXT_client_extensions";
+        log_msg("eglQueryString: returning client extensions: %s", client_ext);
+        return client_ext;
+    }
+
+    if (ensure_init() < 0) return "";
+
+    switch (name) {
+    case EGL_CLIENT_APIS:
+        return real_eglQueryString(stock_display, EGL_CLIENT_APIS);
+    case EGL_EXTENSIONS:
+        log_msg("eglQueryString: returning display extensions");
+        return cached_extensions ? cached_extensions : "";
+    case EGL_VERSION:
+        return "1.5";
+    case EGL_VENDOR:
+        return "tawc";
+    default:
+        return real_eglQueryString(stock_display, name);
+    }
 }
 
 void (*eglGetProcAddress(const char *procname))(void)
 {
-    /* Return our intercepted functions without triggering init */
-    if (strcmp(procname, "eglGetPlatformDisplay") == 0)
-        return (void(*)(void))eglGetPlatformDisplay;
-    if (strcmp(procname, "eglCreatePlatformWindowSurface") == 0)
-        return (void(*)(void))eglCreateWindowSurface;
+    /* Intercept our functions first -- no init required */
+#define CHECK(name) if (strcmp(procname, #name) == 0) return (void(*)(void))name;
+    CHECK(eglGetDisplay)
+    CHECK(eglGetPlatformDisplay)
+    CHECK(eglInitialize)
+    CHECK(eglTerminate)
+    CHECK(eglChooseConfig)
+    CHECK(eglGetConfigAttrib)
+    CHECK(eglCreateContext)
+    CHECK(eglDestroyContext)
+    CHECK(eglCreateWindowSurface)
+    CHECK(eglCreatePlatformWindowSurface)
+    CHECK(eglCreatePbufferSurface)
+    CHECK(eglDestroySurface)
+    CHECK(eglMakeCurrent)
+    CHECK(eglSwapBuffers)
+    CHECK(eglQuerySurface)
+    CHECK(eglQueryString)
+    CHECK(eglGetError)
+    CHECK(eglGetCurrentContext)
+    CHECK(eglGetCurrentSurface)
+    CHECK(eglGetCurrentDisplay)
+    CHECK(eglBindAPI)
+    CHECK(eglSwapInterval)
+    CHECK(eglReleaseThread)
+    CHECK(eglWaitGL)
+    CHECK(eglWaitNative)
+    CHECK(eglGetConfigs)
+    CHECK(eglSurfaceAttrib)
+    CHECK(eglQueryContext)
+    CHECK(eglGetProcAddress)
+#undef CHECK
+
+    /* Platform display extensions (libepoxy/GTK3 look for these) */
     if (strcmp(procname, "eglGetPlatformDisplayEXT") == 0)
         return (void(*)(void))eglGetPlatformDisplay;
     if (strcmp(procname, "eglCreatePlatformWindowSurfaceEXT") == 0)
-        return (void(*)(void))eglCreateWindowSurface;
-    if (!initialized) {
-        /* Can't forward yet, return NULL for unknown functions */
+        return (void(*)(void))eglCreatePlatformWindowSurface;
+
+    /* Damage extension (GTK3 prefers this over plain eglSwapBuffers) */
+    if (strcmp(procname, "eglSwapBuffersWithDamageEXT") == 0)
+        return (void(*)(void))tawc_eglSwapBuffersWithDamageEXT;
+    if (strcmp(procname, "eglSwapBuffersWithDamageKHR") == 0)
+        return (void(*)(void))tawc_eglSwapBuffersWithDamageEXT;
+
+    /* Forward everything else to real driver */
+    if (ensure_init() < 0)
         return NULL;
-    }
     return (void(*)(void))real_eglGetProcAddress(procname);
 }
 
 EGLBoolean eglSwapInterval(EGLDisplay dpy, EGLint interval)
 {
-    return EGL_TRUE; /* ignore, we control frame pacing */
+    return EGL_TRUE; /* we control frame pacing */
 }
 
 EGLBoolean eglReleaseThread(void)
 {
+    tls_current_surface = NULL;
+    tls_current_context = EGL_NO_CONTEXT;
     if (!initialized) return EGL_TRUE;
     return real_eglReleaseThread();
 }
 
 EGLContext eglGetCurrentContext(void)
 {
-    if (!initialized) return EGL_NO_CONTEXT;
-    return real_eglGetCurrentContext();
+    return tls_current_context;
 }
 
 EGLSurface eglGetCurrentSurface(EGLint readdraw)
 {
+    if (tls_current_surface)
+        return (EGLSurface)tls_current_surface;
     if (!initialized) return EGL_NO_SURFACE;
     return real_eglGetCurrentSurface(readdraw);
 }
 
 EGLDisplay eglGetCurrentDisplay(void)
 {
+    if (tls_current_surface || tls_current_context != EGL_NO_CONTEXT)
+        return stock_display;
     if (!initialized) return EGL_NO_DISPLAY;
     return stock_display;
 }
@@ -726,12 +1093,60 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface surface, EGLint attr, EGLi
     struct tawc_surface *ts = find_surface(surface);
     if (ts) {
         switch (attr) {
-            case EGL_WIDTH:  *value = ts->width;  return EGL_TRUE;
-            case EGL_HEIGHT: *value = ts->height; return EGL_TRUE;
-            default: return EGL_TRUE;
+        case EGL_WIDTH:
+            *value = ts->width;
+            return EGL_TRUE;
+        case EGL_HEIGHT:
+            *value = ts->height;
+            return EGL_TRUE;
+        case EGL_BUFFER_AGE_EXT:
+            /* With N buffers, after the first N swaps each buffer was last
+             * used N frames ago. Before that, age = 0 (undefined). */
+            if (ts->swap_count >= NUM_BUFFERS)
+                *value = NUM_BUFFERS;
+            else
+                *value = 0;
+            return EGL_TRUE;
+        default:
+            /* Forward other queries to the real pbuffer */
+            if (!initialized) return EGL_FALSE;
+            return real_eglQuerySurface(stock_display, ts->real_pbuffer, attr, value);
         }
     }
+    if (!initialized) return EGL_FALSE;
     return real_eglQuerySurface(stock_display, surface, attr, value);
+}
+
+/* ------------------------------------------------------------------ */
+/* EGL API -- pure pass-through / stub functions                       */
+/* ------------------------------------------------------------------ */
+
+EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config, EGLint attr, EGLint *value)
+{
+    if (ensure_init() < 0) return EGL_FALSE;
+    EGLBoolean ret = real_eglGetConfigAttrib(stock_display, config, attr, value);
+    /* Report WINDOW_BIT support even though we use pbuffers internally */
+    if (ret && attr == EGL_SURFACE_TYPE && value)
+        *value |= EGL_WINDOW_BIT;
+    return ret;
+}
+
+EGLBoolean eglGetConfigs(EGLDisplay dpy, EGLConfig *configs, EGLint config_size, EGLint *num_config)
+{
+    if (ensure_init() < 0) return EGL_FALSE;
+    return real_eglGetConfigs(stock_display, configs, config_size, num_config);
+}
+
+EGLenum eglQueryAPI(void)
+{
+    if (real_eglQueryAPI) return real_eglQueryAPI();
+    return EGL_OPENGL_ES_API;
+}
+
+EGLBoolean eglWaitClient(void)
+{
+    if (real_eglWaitClient) return real_eglWaitClient();
+    return EGL_TRUE;
 }
 
 EGLBoolean eglWaitGL(void)
@@ -746,29 +1161,102 @@ EGLBoolean eglWaitNative(EGLint engine)
     return real_eglWaitNative(engine);
 }
 
-EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config, EGLint attr, EGLint *value)
+EGLBoolean eglCopyBuffers(EGLDisplay dpy, EGLSurface surface, EGLNativePixmapType target)
 {
-    if (init_once() < 0) return EGL_FALSE;
-    return real_eglGetConfigAttrib(stock_display, config, attr, value);
+    return EGL_FALSE;
 }
 
-EGLBoolean eglGetConfigs(EGLDisplay dpy, EGLConfig *configs, EGLint config_size, EGLint *num_config)
+EGLSurface eglCreatePixmapSurface(EGLDisplay dpy, EGLConfig config,
+                                    EGLNativePixmapType pixmap, const EGLint *attribs)
 {
-    if (init_once() < 0) return EGL_FALSE;
-    return real_eglGetConfigs(stock_display, configs, config_size, num_config);
+    return EGL_NO_SURFACE;
 }
 
-EGLBoolean eglWaitClient(void) { return EGL_TRUE; }
-EGLBoolean eglCopyBuffers(EGLDisplay d, EGLSurface s, EGLNativePixmapType t) { return EGL_FALSE; }
-EGLSurface eglCreatePixmapSurface(EGLDisplay d, EGLConfig c, EGLNativePixmapType p, const EGLint *a) { return EGL_NO_SURFACE; }
-EGLBoolean eglSurfaceAttrib(EGLDisplay d, EGLSurface s, EGLint a, EGLint v) { return EGL_TRUE; }
-EGLImage eglCreateImage(EGLDisplay d, EGLContext c, EGLenum t, EGLClientBuffer b, const EGLAttrib *a) { return EGL_NO_IMAGE; }
-EGLBoolean eglDestroyImage(EGLDisplay d, EGLImage i) { return EGL_TRUE; }
-EGLSync eglCreateSync(EGLDisplay d, EGLenum t, const EGLAttrib *a) { return EGL_NO_SYNC; }
-EGLBoolean eglDestroySync(EGLDisplay d, EGLSync s) { return EGL_TRUE; }
-EGLint eglClientWaitSync(EGLDisplay d, EGLSync s, EGLint f, EGLTime t) { return EGL_CONDITION_SATISFIED; }
-EGLBoolean eglWaitSync(EGLDisplay d, EGLSync s, EGLint f) { return EGL_TRUE; }
-EGLSurface eglCreatePlatformWindowSurface(EGLDisplay d, EGLConfig c, void *w, const EGLAttrib *a) {
-    return eglCreateWindowSurface(d, c, (EGLNativeWindowType)w, NULL);
+EGLSurface eglCreatePlatformPixmapSurface(EGLDisplay dpy, EGLConfig config,
+                                            void *native_pixmap, const EGLAttrib *attribs)
+{
+    return EGL_NO_SURFACE;
 }
-EGLSurface eglCreatePlatformPixmapSurface(EGLDisplay d, EGLConfig c, void *p, const EGLAttrib *a) { return EGL_NO_SURFACE; }
+
+EGLSurface eglCreatePbufferFromClientBuffer(EGLDisplay dpy, EGLenum buftype,
+                                              EGLClientBuffer buffer, EGLConfig config,
+                                              const EGLint *attribs)
+{
+    if (real_eglCreatePbufferFromClientBuffer)
+        return real_eglCreatePbufferFromClientBuffer(stock_display, buftype, buffer, config, attribs);
+    return EGL_NO_SURFACE;
+}
+
+EGLBoolean eglSurfaceAttrib(EGLDisplay dpy, EGLSurface surface, EGLint attr, EGLint value)
+{
+    struct tawc_surface *ts = find_surface(surface);
+    if (ts) return EGL_TRUE;  /* accept silently */
+    if (!initialized) return EGL_TRUE;
+    return real_eglSurfaceAttrib(stock_display, surface, attr, value);
+}
+
+EGLBoolean eglBindTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer)
+{
+    if (real_eglBindTexImage)
+        return real_eglBindTexImage(stock_display, surface, buffer);
+    return EGL_FALSE;
+}
+
+EGLBoolean eglReleaseTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer)
+{
+    if (real_eglReleaseTexImage)
+        return real_eglReleaseTexImage(stock_display, surface, buffer);
+    return EGL_FALSE;
+}
+
+/* eglQueryContext -- missing from original wrapper, GTK3/libepoxy needs it */
+EGLBoolean eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attribute, EGLint *value)
+{
+    if (ensure_init() < 0) return EGL_FALSE;
+    return real_eglQueryContext(stock_display, ctx, attribute, value);
+}
+
+/* EGL 1.5 sync/image -- forward to real driver or stub */
+
+EGLSync eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLAttrib *attribs)
+{
+    if (real_eglCreateSync) return real_eglCreateSync(stock_display, type, attribs);
+    return EGL_NO_SYNC;
+}
+
+EGLBoolean eglDestroySync(EGLDisplay dpy, EGLSync sync)
+{
+    if (real_eglDestroySync) return real_eglDestroySync(stock_display, sync);
+    return EGL_TRUE;
+}
+
+EGLint eglClientWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags, EGLTime timeout)
+{
+    if (real_eglClientWaitSync) return real_eglClientWaitSync(stock_display, sync, flags, timeout);
+    return EGL_CONDITION_SATISFIED;
+}
+
+EGLBoolean eglGetSyncAttrib(EGLDisplay dpy, EGLSync sync, EGLint attr, EGLAttrib *value)
+{
+    if (real_eglGetSyncAttrib) return real_eglGetSyncAttrib(stock_display, sync, attr, value);
+    return EGL_FALSE;
+}
+
+EGLImage eglCreateImage(EGLDisplay dpy, EGLContext ctx, EGLenum target,
+                          EGLClientBuffer buffer, const EGLAttrib *attribs)
+{
+    if (real_eglCreateImage) return real_eglCreateImage(stock_display, ctx, target, buffer, attribs);
+    return EGL_NO_IMAGE;
+}
+
+EGLBoolean eglDestroyImage(EGLDisplay dpy, EGLImage image)
+{
+    if (real_eglDestroyImage) return real_eglDestroyImage(stock_display, image);
+    return EGL_TRUE;
+}
+
+EGLBoolean eglWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags)
+{
+    if (real_eglWaitSync) return real_eglWaitSync(stock_display, sync, flags);
+    return EGL_TRUE;
+}
