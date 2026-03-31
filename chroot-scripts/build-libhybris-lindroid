@@ -1,8 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Build and install the lindroid fork of libhybris with tawc patches:
 #   - bionic_tls allocation (stock Android TLS fix)
-#   - linker namespace bypass (gralloc HAL loading)
-#   - pthread_create thread wrapping
+#   - pthread_create thread wrapping (bionic_tls on new threads)
 #
 # Run from Termux. Requires the chroot to be set up.
 # Usage: ./build-libhybris-lindroid

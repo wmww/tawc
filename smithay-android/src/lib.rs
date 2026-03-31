@@ -67,11 +67,8 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceCreated(
     // Release the ref from fromSurface (render thread owns it now)
     unsafe { ndk_sys::ANativeWindow_release(window_ptr as *mut _) };
 
-    // External mode (cross-process test) is triggered by /data/local/tmp/tawc-external.
-    // In external mode, the render thread listens on a socket for AHB clients.
-    // Otherwise, an in-process test client sends AHBs via socketpair.
     // External mode: compositor listens on a Unix socket for a cross-process
-    // AHB client. Triggered by a flag file in the app's data dir.
+    // AHB client (e.g. glibc chroot). Triggered by a flag file in the app's data dir.
     let sock_path = "/data/data/me.phie.tawc/ahb-test.sock";
     let flag_path = "/data/data/me.phie.tawc/external-mode";
     let external_mode = std::path::Path::new(flag_path).exists();
@@ -85,21 +82,13 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceCreated(
         info!("Render thread started (external_mode={})", external_mode);
 
         if external_mode {
-            // Compositor-allocates-AHB flow:
-            // 1. Allocate AHB
-            // 2. Accept client connection
-            // 3. Send AHB to client (client renders into it)
-            // 4. Wait for "done" signal
-            // 5. Import AHB and display
+            // Client-allocates-AHB flow:
+            // 1. Listen for client connection
+            // 2. Client connects and sends its AHB (raw handle)
+            // 3. Compositor receives and reconstructs the AHB
+            // 4. Display the client-rendered AHB
             let sock_path = &sock_path_owned;
             let _ = std::fs::remove_file(sock_path);
-
-            // Allocate AHB first
-            let ahb = match AhbBuffer::allocate(AHB_TEST_WIDTH, AHB_TEST_HEIGHT) {
-                Ok(a) => a,
-                Err(e) => { log::error!("AHB allocate failed: {}", e); return; }
-            };
-            info!("AHB allocated for external client: {}x{}", AHB_TEST_WIDTH, AHB_TEST_HEIGHT);
 
             info!("Waiting for external client on {}", sock_path);
             let listener = match UnixListener::bind(sock_path) {
@@ -111,28 +100,14 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceCreated(
             let (stream, _) = listener.accept().expect("Failed to accept");
             info!("External client connected");
 
-            // Send AHB native handle to client
-            // Use send_handle_raw which sends the raw fds + metadata,
-            // allowing the client to construct an EGLImage directly
-            // without needing AHardwareBuffer_recv (which requires gralloc mapper)
-            if let Err(e) = ahb.send_handle_raw(stream.as_raw_fd()) {
-                log::error!("Failed to send AHB handle: {}", e);
-                return;
-            }
-            info!("AHB handle sent to client, waiting for render completion...");
+            // Receive AHB from client via standard AHardwareBuffer socket protocol
+            let ahb = match AhbBuffer::recv_from_socket(stream.as_raw_fd()) {
+                Ok(a) => a,
+                Err(e) => { log::error!("Failed to receive AHB: {}", e); return; }
+            };
+            info!("Received client-allocated AHB: {}x{}", ahb.width(), ahb.height());
 
-            // Wait for 1-byte "done" signal from client
-            use std::io::Read;
-            let mut buf = [0u8; 1];
-            let mut stream_r = &stream;
-            match stream_r.read_exact(&mut buf) {
-                Ok(()) => info!("Client signaled render complete"),
-                Err(e) => { log::error!("Failed to read done signal: {}", e); return; }
-            }
-
-            // Now enter render loop displaying the AHB
-            // We pass the stream through but render_loop will use the
-            // already-allocated ahb via the render_loop_external function
+            // Display the AHB
             if let Err(e) = render_loop_external(window_ptr, width, height, ahb) {
                 log::error!("Render loop failed: {}", e);
             }

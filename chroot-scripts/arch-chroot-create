@@ -65,9 +65,10 @@ su -c "grep -q '^IgnorePkg' '$CHROOT_DIR/etc/pacman.conf' || sed -i '/#CheckSpac
 # Step 6: Set up bind mounts
 echo "==> Setting up bind mounts..."
 su -c "mkdir -p '$CHROOT_DIR/dev' '$CHROOT_DIR/proc' '$CHROOT_DIR/sys' \
-    '$CHROOT_DIR/vendor' '$CHROOT_DIR/system' '$CHROOT_DIR/dev/pts' \
+    '$CHROOT_DIR/vendor' '$CHROOT_DIR/system' '$CHROOT_DIR/system_ext' \
+    '$CHROOT_DIR/dev/pts' \
     '$CHROOT_DIR/dev/binderfs' '$CHROOT_DIR/apex' '$CHROOT_DIR/linkerconfig'"
-for pair in /dev:/dev /dev/pts:/dev/pts /dev/binderfs:/dev/binderfs /proc:/proc /sys:/sys /vendor:/vendor /system:/system /linkerconfig:/linkerconfig; do
+for pair in /dev:/dev /dev/pts:/dev/pts /dev/binderfs:/dev/binderfs /proc:/proc /sys:/sys /vendor:/vendor /system:/system /system_ext:/system_ext /linkerconfig:/linkerconfig; do
     src="${pair%%:*}"
     dst="$CHROOT_DIR${pair##*:}"
     su -c "mountpoint -q '$dst' 2>/dev/null || mount --bind '$src' '$dst'"

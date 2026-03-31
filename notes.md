@@ -65,68 +65,37 @@ Env: `HYBRIS_PATCH_TLS=1`.
 **Upstream relevance:** This approach could be contributed to libhybris upstream
 (issue #559, PR #575). It builds on NotKit's tls-patcher-v2 thunk infrastructure.
 
-### Gralloc Mapper HAL Problem (2026-03-31)
+### Gralloc Mapper HAL — SOLVED (2026-03-31)
 
-`AHardwareBuffer_allocate` and related NDK functions fail from the chroot with
-"gralloc-mapper is missing" because the HIDL passthrough HAL loading goes through
-`android_get_exported_namespace("sphal")` which returns a non-NULL but broken
-namespace pointer. The namespace-aware `android_dlopen_ext` then fails to find the
-mapper implementation `.so`. See `gralloc-problem.md` for full analysis.
+`AHardwareBuffer_allocate` and all gralloc operations now work from the chroot.
 
-**Current workaround:** compositor allocates AHBs and sends raw native handle (fds
-via SCM_RIGHTS + int data) to the client. Client constructs `ANativeWindowBuffer`
-manually and creates `EGLImage` directly. Proven working end-to-end.
+**Root cause:** `/system_ext` was not bind-mounted into the chroot. The HIDL
+service management code checks for `hwservicemanager` at
+`/system_ext/bin/hwservicemanager` as a feature flag. Without it, HIDL is
+considered "not supported" and all passthrough HAL lookups are skipped entirely.
+The PassthroughServiceManager is never tried, so the mapper `.so` is never loaded.
 
-### Cross-Process AHB Sharing from Chroot (2026-03-31)
+**Fix:** Add `/system_ext` to chroot bind mounts. One-line fix in `arch-chroot-run`.
 
-**Problem:** `AHardwareBuffer_allocate`, `_recvHandleFromUnixSocket`, and
-`_createFromHandle` all fail from the chroot because they go through
-`GraphicBufferMapper` which requires the gralloc HIDL passthrough HAL. The
-passthrough HAL loading (`IMapper::getService()`) fails because `openLibs()`
-can't register the HAL implementation from outside the Android runtime. Error:
-"gralloc-mapper is missing" → SIGABRT.
+**Working flow (client allocates):**
+1. Client allocates AHB with `AHardwareBuffer_allocate` (works via HIDL mapper)
+2. Client creates EGLImage via `eglGetNativeClientBufferANDROID` + `eglCreateImageKHR`
+3. Client renders to AHB via FBO with GLES (pure GPU, zero CPU copies)
+4. Client sends AHB via `AHardwareBuffer_sendHandleToUnixSocket`
+5. Compositor receives via `AHardwareBuffer_recvHandleFromUnixSocket`
+6. Compositor imports as GL texture, displays on screen
 
-**Solution:** Bypass all `AHardwareBuffer` APIs on the client side. Instead:
-1. Compositor allocates AHB (works from the Android app process)
-2. Compositor extracts the `native_handle_t` via `AHardwareBuffer_getNativeHandle`
-3. Compositor sends raw fds (via `SCM_RIGHTS`) + int data + AHB descriptor over socket
-4. Client receives fds, reconstructs `native_handle_t` manually
-5. Client constructs `ANativeWindowBuffer` struct manually (matching `nativebase.h` layout)
-6. Client calls `eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID, anb)` directly
-7. This works because EGL imports the buffer using the fds without needing gralloc mapper
+See `gralloc-problem.md` for full debugging history.
 
-The key insight: `eglCreateImageKHR` with `EGL_NATIVE_BUFFER_ANDROID` only needs
-the `ANativeWindowBuffer` struct pointer with valid `handle` and geometry fields.
-It does NOT go through `GraphicBufferMapper`. The actual GPU buffer import uses
-the KGSL device node directly.
+### Cross-Process AHB Sharing (2026-03-31)
+
+Standard Android AHB socket APIs (`sendHandleToUnixSocket`/`recvHandleFromUnixSocket`)
+work between the chroot and compositor now that gralloc mapper is available.
 
 **Chroot bind mounts:** `/dev/binderfs` must be bind-mounted separately from `/dev`
 because binderfs is a separate filesystem that doesn't propagate through bind mounts.
 Without this, EGL init may work (accesses GPU directly via `/dev/kgsl-3d0`) but
 AHB operations fail (need `/dev/binderfs/hwbinder` for HAL access).
-
-**`ANativeWindowBuffer` struct layout** (aarch64, from `nativebase.h`):
-```
-android_native_base_t (56 bytes):
-  0:  int32 magic = 0x5f626672 ('_bfr')
-  4:  int32 version = 168 (sizeof ANativeWindowBuffer)
-  8:  void* reserved[4] (32 bytes, zeroed)
-  40: void (*incRef)(base*)
-  48: void (*decRef)(base*)
-ANativeWindowBuffer fields:
-  56: int32 width
-  60: int32 height
-  64: int32 stride
-  68: int32 format
-  72: int32 usage_deprecated
-  76: (pad)
-  80: uint64 layerCount = 1
-  88: void* reserved[1] = NULL
-  96: native_handle_t* handle
-  104: uint64 usage
-  112: void* reserved_proc[7] (zeroed)
-Total: 168 bytes
-```
 
 ### libhybris Vulkan Deep Dive (researched 2026-03-28)
 
