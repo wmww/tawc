@@ -16,7 +16,7 @@ pub struct AhbBuffer {
 unsafe impl Send for AhbBuffer {}
 
 impl AhbBuffer {
-    /// Allocate an RGBA8888 AHardwareBuffer with GPU sampled + CPU write usage.
+    /// Allocate an RGBA8888 AHardwareBuffer with GPU sampled + GPU render + CPU write usage.
     pub fn allocate(width: u32, height: u32) -> Result<Self, String> {
         let desc = ndk_sys::AHardwareBuffer_Desc {
             width,
@@ -24,6 +24,7 @@ impl AhbBuffer {
             layers: 1,
             format: ndk_sys::AHardwareBuffer_Format::AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM.0,
             usage: ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE.0
+                | ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT.0
                 | ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN.0,
             stride: 0,
             rfu0: 0,
@@ -96,6 +97,100 @@ impl AhbBuffer {
             return Err(format!("AHardwareBuffer_sendHandleToUnixSocket failed: {}", ret));
         }
         info!("AHB sent over socket fd={}", fd);
+        Ok(())
+    }
+
+    /// Send this AHB's native handle (fds + metadata) over a Unix socket.
+    /// Uses SCM_RIGHTS for fds. The receiver can reconstruct via
+    /// AHardwareBuffer_createFromHandle. This bypasses the gralloc mapper
+    /// that recvHandleFromUnixSocket requires.
+    pub fn send_handle_raw(&self, fd: RawFd) -> Result<(), String> {
+        use std::mem;
+
+        // Load AHardwareBuffer_getNativeHandle at runtime (API 33+)
+        #[repr(C)]
+        struct NativeHandle {
+            version: i32,
+            num_fds: i32,
+            num_ints: i32,
+            data: [i32; 0], // flexible array
+        }
+
+        type GetNativeHandleFn = unsafe extern "C" fn(*const ndk_sys::AHardwareBuffer) -> *const NativeHandle;
+        let lib = unsafe { libloading::Library::new("libnativewindow.so") }
+            .map_err(|e| format!("Failed to load libnativewindow.so: {}", e))?;
+        let get_handle: libloading::Symbol<GetNativeHandleFn> = unsafe {
+            lib.get(b"AHardwareBuffer_getNativeHandle")
+                .map_err(|e| format!("AHardwareBuffer_getNativeHandle not found: {}", e))?
+        };
+
+        let handle_ptr = unsafe { get_handle(self.buffer) };
+        if handle_ptr.is_null() {
+            return Err("AHardwareBuffer_getNativeHandle returned null".into());
+        }
+        let handle = unsafe { &*handle_ptr };
+        info!("Native handle: numFds={}, numInts={}", handle.num_fds, handle.num_ints);
+
+        // Get AHB descriptor
+        let mut desc = ndk_sys::AHardwareBuffer_Desc {
+            width: 0, height: 0, layers: 0, format: 0, usage: 0, stride: 0, rfu0: 0, rfu1: 0,
+        };
+        unsafe { ndk_sys::AHardwareBuffer_describe(self.buffer, &mut desc) };
+
+        // Build message:
+        // 1. Header: numFds (u32) + numInts (u32) + AHardwareBuffer_Desc (48 bytes)
+        // 2. Int data: handle.data[numFds..numFds+numInts] as i32 array
+        // 3. Fds via SCM_RIGHTS
+
+        let num_fds = handle.num_fds as usize;
+        let num_ints = handle.num_ints as usize;
+
+        // Serialize header + int data
+        let mut msg_data: Vec<u8> = Vec::new();
+        msg_data.extend_from_slice(&(num_fds as u32).to_le_bytes());
+        msg_data.extend_from_slice(&(num_ints as u32).to_le_bytes());
+        msg_data.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(
+                &desc as *const _ as *const u8,
+                mem::size_of::<ndk_sys::AHardwareBuffer_Desc>(),
+            )
+        });
+        // Get pointer to data array (starts right after the struct header)
+        let data_ptr = unsafe {
+            (handle_ptr as *const i32).add(3) // skip version, num_fds, num_ints
+        };
+
+        // Int data from handle->data[numFds..]
+        let int_data: &[i32] = unsafe {
+            std::slice::from_raw_parts(data_ptr.add(num_fds), num_ints)
+        };
+        for &val in int_data {
+            msg_data.extend_from_slice(&val.to_le_bytes());
+        }
+
+        // Collect fds
+        let fds: Vec<RawFd> = unsafe {
+            std::slice::from_raw_parts(data_ptr, num_fds)
+                .iter().map(|&x| x as RawFd).collect()
+        };
+
+        // Send with SCM_RIGHTS
+        use std::os::unix::io::BorrowedFd;
+        use std::io::IoSlice;
+
+        let iov = [IoSlice::new(&msg_data)];
+        let fds_borrowed: Vec<BorrowedFd<'_>> = fds.iter()
+            .map(|&fd| unsafe { BorrowedFd::borrow_raw(fd) })
+            .collect();
+        let mut cmsg_buf = vec![0u8; rustix::cmsg_space!(ScmRights(num_fds))];
+        let mut cmsg_buf = rustix::net::SendAncillaryBuffer::new(&mut cmsg_buf);
+        cmsg_buf.push(rustix::net::SendAncillaryMessage::ScmRights(&fds_borrowed));
+
+        let fd_borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        rustix::net::sendmsg(fd_borrowed, &iov, &mut cmsg_buf, rustix::net::SendFlags::empty())
+            .map_err(|e| format!("sendmsg failed: {}", e))?;
+
+        info!("Raw handle sent: {} fds, {} ints, {} bytes data", num_fds, num_ints, msg_data.len());
         Ok(())
     }
 

@@ -29,7 +29,7 @@ compositor use the **stock Android GPU driver**:
 
 Same driver = buffer fds are natively compatible. No cross-driver import needed.
 
-### libhybris Status (verified 2026-03-28)
+### libhybris Status (verified 2026-03-28, stock Android support 2026-03-31)
 
 libhybris is **actively maintained**. Key facts:
 - Android 16 support merged March 25, 2026 (PR #609)
@@ -38,6 +38,95 @@ libhybris is **actively maintained**. Key facts:
 - EGL/GLES via libhybris is battle-tested (Sailfish OS, Ubuntu Touch, years of production)
 - Vulkan support is newer -- active PRs (#604, #607) for improvements
 - Loads bionic `.so` files into glibc processes by reimplementing bionic's linker
+
+### libhybris on Stock (Unpatched) Android -- SOLVED (2026-03-31)
+
+All prior libhybris deployments required patched Android firmware (Halium/hybris-patches)
+to disable TLS usage in bionic's locale functions. We solved this for stock firmware:
+
+**Problem:** Bionic's `TLS_SLOT_BIONIC_TLS` (slot -1, at `TPIDR_EL0 - 8`) points to a
+~12KB `bionic_tls` struct. The lindroid TLS thunk patcher redirects `TPIDR_EL0` reads
+to `tls_hooks[]`, but slot -1 maps to `tls_hooks[-1]` which is NULL → SIGSEGV.
+
+**Fix (in lindroid fork's `hooks.c`):**
+1. Changed `tls_hooks[16]` to `struct { void *bionic_tls_ptr; void *slots[16]; } tls_area`
+   so that `slots[-1]` reads `bionic_tls_ptr` (contiguous in memory).
+2. Lazy allocation: `_hybris_hook___get_tls_hooks()` calls `calloc(1, 16384)` on first
+   call per thread, stores in `bionic_tls_ptr`. Zero-init works because bionic checks
+   for NULL locale and falls back to C locale.
+3. Thread wrapping: `_hybris_hook_pthread_create()` wraps `start_routine` to call
+   `__get_tls_hooks()` before bionic code runs, ensuring allocation.
+
+**Result:** EGL 1.5 initializes on Pixel 4a (Adreno 618), Android 16, stock LineageOS.
+Loaded libraries: libc.so, libm.so, libc++.so, liblog.so, libcutils.so,
+libnativewindow.so, libEGL.so, libEGL_adreno.so, libGLESv2_adreno.so.
+Env: `HYBRIS_PATCH_TLS=1`.
+
+**Upstream relevance:** This approach could be contributed to libhybris upstream
+(issue #559, PR #575). It builds on NotKit's tls-patcher-v2 thunk infrastructure.
+
+### Gralloc Mapper HAL Problem (2026-03-31)
+
+`AHardwareBuffer_allocate` and related NDK functions fail from the chroot with
+"gralloc-mapper is missing" because the HIDL passthrough HAL loading goes through
+`android_get_exported_namespace("sphal")` which returns a non-NULL but broken
+namespace pointer. The namespace-aware `android_dlopen_ext` then fails to find the
+mapper implementation `.so`. See `gralloc-problem.md` for full analysis.
+
+**Current workaround:** compositor allocates AHBs and sends raw native handle (fds
+via SCM_RIGHTS + int data) to the client. Client constructs `ANativeWindowBuffer`
+manually and creates `EGLImage` directly. Proven working end-to-end.
+
+### Cross-Process AHB Sharing from Chroot (2026-03-31)
+
+**Problem:** `AHardwareBuffer_allocate`, `_recvHandleFromUnixSocket`, and
+`_createFromHandle` all fail from the chroot because they go through
+`GraphicBufferMapper` which requires the gralloc HIDL passthrough HAL. The
+passthrough HAL loading (`IMapper::getService()`) fails because `openLibs()`
+can't register the HAL implementation from outside the Android runtime. Error:
+"gralloc-mapper is missing" → SIGABRT.
+
+**Solution:** Bypass all `AHardwareBuffer` APIs on the client side. Instead:
+1. Compositor allocates AHB (works from the Android app process)
+2. Compositor extracts the `native_handle_t` via `AHardwareBuffer_getNativeHandle`
+3. Compositor sends raw fds (via `SCM_RIGHTS`) + int data + AHB descriptor over socket
+4. Client receives fds, reconstructs `native_handle_t` manually
+5. Client constructs `ANativeWindowBuffer` struct manually (matching `nativebase.h` layout)
+6. Client calls `eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID, anb)` directly
+7. This works because EGL imports the buffer using the fds without needing gralloc mapper
+
+The key insight: `eglCreateImageKHR` with `EGL_NATIVE_BUFFER_ANDROID` only needs
+the `ANativeWindowBuffer` struct pointer with valid `handle` and geometry fields.
+It does NOT go through `GraphicBufferMapper`. The actual GPU buffer import uses
+the KGSL device node directly.
+
+**Chroot bind mounts:** `/dev/binderfs` must be bind-mounted separately from `/dev`
+because binderfs is a separate filesystem that doesn't propagate through bind mounts.
+Without this, EGL init may work (accesses GPU directly via `/dev/kgsl-3d0`) but
+AHB operations fail (need `/dev/binderfs/hwbinder` for HAL access).
+
+**`ANativeWindowBuffer` struct layout** (aarch64, from `nativebase.h`):
+```
+android_native_base_t (56 bytes):
+  0:  int32 magic = 0x5f626672 ('_bfr')
+  4:  int32 version = 168 (sizeof ANativeWindowBuffer)
+  8:  void* reserved[4] (32 bytes, zeroed)
+  40: void (*incRef)(base*)
+  48: void (*decRef)(base*)
+ANativeWindowBuffer fields:
+  56: int32 width
+  60: int32 height
+  64: int32 stride
+  68: int32 format
+  72: int32 usage_deprecated
+  76: (pad)
+  80: uint64 layerCount = 1
+  88: void* reserved[1] = NULL
+  96: native_handle_t* handle
+  104: uint64 usage
+  112: void* reserved_proc[7] (zeroed)
+Total: 168 bytes
+```
 
 ### libhybris Vulkan Deep Dive (researched 2026-03-28)
 
@@ -538,8 +627,15 @@ Same distro packages, mounted in a real chroot. Requires root (e.g., Magisk).
 - **Native performance** -- no ptrace overhead, syscalls execute at full speed
 - **Same distro packages** as proot-distro -- `pacman`, `apt`, etc.
 - **Requires root** -- limits the user base to rooted devices
-- **Must bind-mount** `/dev`, `/proc`, `/sys`, `/vendor`, `/system`, and GPU device
-  nodes (e.g. `/dev/kgsl-3d0`, `/dev/mali0`) into the chroot
+- **Must bind-mount** `/dev`, `/proc`, `/sys`, `/vendor`, `/system`, `/linkerconfig`,
+  and `/apex` (with `--rbind`) into the chroot. GPU device nodes (e.g. `/dev/kgsl-3d0`)
+  come in via the `/dev` bind mount.
+- **`/apex` requires `mount --rbind`** -- each APEX is a separate loop mount, so plain
+  `mount --bind` gives empty directories. Without `/apex`, bionic `libc.so` can't be
+  found (it's symlinked from `/system/lib64/` to `/apex/com.android.runtime/lib64/bionic/`)
+- **`/linkerconfig`** must be mounted for Android 11+ linker namespace config
+- **PATH fix needed** -- `/system/bin` leaks into PATH via login shell and breaks
+  everything. Add `/etc/profile.d/00-path.sh` to set PATH explicitly
 - **Simpler path semantics** -- no path translation layer, libhybris sees real
   filesystem paths
 
@@ -573,6 +669,100 @@ exist. Mitigations:
 - Android 14+: Developer Options "Disable child process restrictions"
 
 Our relay exits after fd handoff so only needs to survive briefly.
+
+---
+
+## Chroot Setup Results (2026-03-28)
+
+### Working chroot at `/data/local/arch-chroot/`
+
+Arch Linux ARM chroot created via `chroot-scripts/arch-chroot-create`. ~5.5GB with
+base-devel, git, gdb, wayland, libtool, pkg-config installed via pacman.
+
+### Running commands via adb
+
+Commands can be run in the chroot from the host machine via:
+```bash
+adb shell "su -c 'chroot /data/local/arch-chroot /bin/bash -lc \"command here\"'"
+```
+
+The `-l` flag is important for picking up the PATH fix in `/etc/profile.d/00-path.sh`.
+For complex commands with quoting issues, push a script to
+`/data/local/claude-debug/` then copy into the chroot and execute.
+
+### Bind mounts are ephemeral
+
+All bind mounts are lost on reboot. `arch-chroot-run` re-establishes them idempotently.
+The `/apex` recursive bind creates ~80 submounts (one per APEX module).
+
+### Device details (corrected)
+
+- **Device:** Pixel 4a (sunfish)
+- **Android version:** 16 (API 36) -- NOT Android 10 as originally assumed
+- **GPU:** Qualcomm Adreno 618
+- **GPU device node:** `/dev/kgsl-3d0`
+- **Vendor EGL:** `/vendor/lib64/egl/libEGL_adreno.so`
+
+### What's installed in the chroot
+
+- **Android headers:** Android 15 from `Squishy123/android-15-headers` version-bumped
+  to 16 with GCC compatibility fixes. Installed to `/usr/local/include/android/`.
+- **libhybris (lindroid fork):** Built from `Linux-on-droid/libhybris` branch `lindroid-21`
+  with TLS thunk patcher + our bionic_tls allocation fix + `android_get_exported_namespace`
+  NULL return (for gralloc debugging). Installed to `/usr/local/lib/`.
+  Source at `/root/libhybris-lindroid/`, build script: `chroot-scripts/build-libhybris-lindroid`.
+
+### libhybris TLS problem -- SOLVED (2026-03-31)
+
+Loading Android C++ libraries (`libc++.so`) crashes because bionic's inline
+`mrs tpidr_el0` reads glibc's TLS pointer, then dereferences bionic-specific TLS
+slots that don't exist in glibc's layout. The crash is in `__ctype_get_mb_cur_max`
+reading `TLS_SLOT_BIONIC_TLS` (slot -1 at TP-8), which expects a pointer to a
+~12KB `bionic_tls` struct.
+
+The lindroid TLS thunk patcher (`HYBRIS_PATCH_TLS=1`) redirects `MRS TPIDR_EL0`
+instructions to point at `tls_hooks[]`, but slot -1 maps to `tls_hooks[-1]` which
+is before the array — NULL → crash. The thunk patcher was designed for GPU TLS
+slots (3-4, positive offsets), not bionic's slot -1.
+
+**Fix:** See "libhybris on Stock (Unpatched) Android" section above.
+
+All existing libhybris deployments use patched bionic. Prior art:
+
+| Project | Approach | Stock Android? |
+|---------|----------|---------------|
+| **Lindroid** | Custom ROM + LXC container + libhybris | No |
+| **Droidian** | Halium (patched AOSP) + libhybris | No |
+| **Sailfish OS** | Halium (patched AOSP) + libhybris | No |
+| **Ubuntu Touch** | Halium (patched AOSP) + libhybris | No |
+
+Bionic TLS slot layout (aarch64, for reference):
+
+| Offset from TP | Slot | Name |
+|---|---|---|
+| TP - 8 | -1 | `TLS_SLOT_BIONIC_TLS` (~12KB struct pointer) |
+| TP + 0 | 0 | `TLS_SLOT_DTV` |
+| TP + 8 | 1 | `TLS_SLOT_THREAD_ID` |
+| TP + 16 | 2 | `TLS_SLOT_APP` |
+| TP + 24 | 3 | `TLS_SLOT_OPENGL` |
+| TP + 32 | 4 | `TLS_SLOT_OPENGL_API` |
+| TP + 40 | 5 | `TLS_SLOT_STACK_GUARD` |
+
+Upstream references: libhybris issue #559 (TLS swap proposal), PR #575 (TLS
+patcher v1), NotKit's `tls-patcher-v2` branch.
+
+### libhybris build configuration
+
+Both builds configured with:
+```
+--enable-arch=arm64 --enable-adreno-quirks --enable-property-cache
+--with-default-hybris-ld-library-path=/vendor/lib64/egl:/vendor/lib64/hw:/vendor/lib64:/system/lib64
+--prefix=/usr/local
+```
+
+Source trees in chroot `/root/`: `libhybris/` (upstream), `libhybris-lindroid/`
+(lindroid fork, currently installed). Headers from `Squishy123/android-15-headers`
+version-bumped to 16 with GCC compatibility fixes.
 
 ---
 
@@ -662,7 +852,7 @@ Two patches required to `/home/ai/smithay-patched/`:
 2. **`GlesTexture::from_raw_with_flags()`** in `src/backend/renderer/gles/texture.rs`
    (Phase 2) -- adds `is_external` and `y_inverted` parameters for AHB texture import
 
-### Cross-process test
+### Cross-process test (Android native client)
 The `ahb-test-client` binary (`ahb-test-client/` crate) is a standalone Android native
 binary that allocates an AHB, fills with a green/yellow checkerboard, and sends it over
 a Unix socket. To test cross-process:
@@ -681,6 +871,37 @@ adb shell "run-as me.phie.tawc ./ahb-test-client /data/data/me.phie.tawc/ahb-tes
 
 # Clean up after testing
 adb shell "run-as me.phie.tawc rm external-mode ahb-test.sock ahb-test-client"
+```
+
+### Cross-process test (chroot libhybris client) -- 2026-03-31
+
+In external mode, the compositor now allocates the AHB and sends the raw native
+handle to the client (because AHB APIs don't work from the chroot — see
+`gralloc-problem.md`). The client constructs `ANativeWindowBuffer` manually and
+creates `EGLImage` directly.
+
+The flow: compositor allocates AHB → `AHardwareBuffer_getNativeHandle` → sends fds
+via `SCM_RIGHTS` + int data + descriptor over socket → client receives → constructs
+`ANativeWindowBuffer` (168 bytes, layout from `nativebase.h`) → `eglCreateImageKHR`
+→ attach to FBO → GPU render → send 1-byte "done" signal → compositor imports same
+AHB and displays it.
+
+To test from the chroot:
+```bash
+# Ensure bind mounts include app data dir (for socket access)
+adb shell "su -c 'mkdir -p /data/local/arch-chroot/data/data/me.phie.tawc && \
+  mountpoint -q /data/local/arch-chroot/data/data/me.phie.tawc 2>/dev/null || \
+  mount --bind /data/data/me.phie.tawc /data/local/arch-chroot/data/data/me.phie.tawc'"
+
+# Enable external mode and launch compositor
+adb shell "su -c 'touch /data/data/me.phie.tawc/external-mode'"
+adb shell am force-stop me.phie.tawc
+adb shell am start -n me.phie.tawc/.MainActivity
+sleep 3
+
+# Run chroot client (compile first if needed — see test source in chroot /tmp/)
+adb shell "su -c 'HYBRIS_PATCH_TLS=1 chroot /data/local/arch-chroot \
+  /tmp/hybris-gpu-client /data/data/me.phie.tawc/ahb-test.sock'"
 ```
 
 ---

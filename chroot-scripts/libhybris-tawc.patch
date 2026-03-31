@@ -1,0 +1,235 @@
+diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
+index 4f8c65b..4370c6f 100644
+--- a/hybris/common/hooks.c
++++ b/hybris/common/hooks.c
+@@ -97,6 +97,9 @@ static locale_t hybris_locale;
+ static int locale_inited = 0;
+ static hybris_hook_cb hook_callback = NULL;
+ 
++/* Forward declaration -- defined later with bionic_tls allocation */
++void *_hybris_hook___get_tls_hooks(void);
++
+ #ifdef WANT_ARM_TRACING
+ static void (*_android_linker_init)(int sdk_version, void* (*get_hooked_symbol)(const char*, const char*), int enable_linker_gdb_support, hybris_tls_patcher_funcs_t* tls_patcher_funcs, void *(_create_wrapper)(const char*, void*, int), int wrapping_enabled) = NULL;
+ #else
+@@ -409,6 +412,24 @@ static pid_t _hybris_hook_gettid(void)
+  *
+  * */
+ 
++/* Wrapper for bionic threads: ensure bionic_tls is allocated before
++ * the bionic start_routine runs. */
++struct _hybris_thread_wrapper_args {
++    void *(*real_start)(void*);
++    void *real_arg;
++};
++
++static void *_hybris_thread_wrapper(void *wrapper_arg) {
++    struct _hybris_thread_wrapper_args args =
++        *(struct _hybris_thread_wrapper_args *)wrapper_arg;
++    free(wrapper_arg);
++
++    /* Force bionic_tls allocation for this thread */
++    _hybris_hook___get_tls_hooks();
++
++    return args.real_start(args.real_arg);
++}
++
+ static int _hybris_hook_pthread_create(pthread_t *thread, const pthread_attr_t *__attr,
+                              void *(*start_routine)(void*), void *arg)
+ {
+@@ -419,6 +440,16 @@ static int _hybris_hook_pthread_create(pthread_t *thread, const pthread_attr_t *
+     if (__attr != NULL)
+         realattr = (pthread_attr_t *) *(uintptr_t *) __attr;
+ 
++    /* Wrap start_routine to initialize bionic_tls on the new thread */
++    struct _hybris_thread_wrapper_args *wrapper_args =
++        malloc(sizeof(struct _hybris_thread_wrapper_args));
++    if (wrapper_args) {
++        wrapper_args->real_start = start_routine;
++        wrapper_args->real_arg = arg;
++        return pthread_create(thread, realattr, _hybris_thread_wrapper, wrapper_args);
++    }
++
++    /* Fallback if malloc fails */
+     return pthread_create(thread, realattr, start_routine, arg);
+ }
+ 
+@@ -2379,14 +2410,39 @@ __THROW int _hybris_hook___snprintf_chk (char *__restrict __s, size_t __n, int _
+     return ret;
+ }
+ 
++/* bionic_tls compatibility for stock (unpatched) Android firmware.
++ *
++ * The TLS thunk patcher redirects bionic code's TPIDR_EL0 reads to point
++ * at tls_area.slots[0]. Bionic's TLS_SLOT_BIONIC_TLS (slot -1, at TP-8)
++ * then reads tls_area.bionic_tls_ptr, which we populate with a pointer to
++ * a zero-filled struct. This satisfies bionic's locale/errno/etc accesses
++ * without needing patched firmware.
++ */
++#define BIONIC_TLS_COMPAT_SIZE 16384  /* 16KB, oversized for safety */
++
+ static __attribute__((tls_model ("initial-exec")))
+-       __thread void *tls_hooks[16];
++       __thread struct {
++    void *bionic_tls_ptr;   /* maps to bionic slot -1 (TLS_SLOT_BIONIC_TLS) */
++    void *slots[16];        /* slots 0-15 (OpenGL etc) */
++} tls_area;
++
++/* Legacy macro so existing code using tls_hooks still works */
++#define tls_hooks (tls_area.slots)
+ 
+ __attribute__((__visibility__("default")))
+ void *_hybris_hook___get_tls_hooks()
+ {
+     TRACE_HOOK("");
+-    return tls_hooks;
++
++    /* Lazily allocate a bionic_tls struct for this thread */
++    if (__builtin_expect(tls_area.bionic_tls_ptr == NULL, 0)) {
++        void *btls = calloc(1, BIONIC_TLS_COMPAT_SIZE);
++        if (btls) {
++            tls_area.bionic_tls_ptr = btls;
++        }
++    }
++
++    return tls_area.slots;
+ }
+ 
+ struct __wrapped_atexit {
+@@ -2813,9 +2869,51 @@ void* _hybris_hook_android_dlopen_ext(const char* filename, int flag, const void
+ {
+     TRACE("filename %s, flag %d, extinfo %p", filename, flag, extinfo);
+ 
++    /* android_dlextinfo has a library_namespace field (at offset 48 on aarch64)
++     * that specifies a linker namespace like "sphal". On stock Android this is
++     * obtained from android_get_exported_namespace(). libhybris's linker may
++     * not support these namespaces, causing HAL loading to fail.
++     * If a namespace is set, strip it and fall back to regular dlopen which
++     * searches the configured library path. */
++    if (extinfo != NULL) {
++        /* android_dlextinfo layout:
++         *   uint64_t flags;        // offset 0
++         *   void* reserved_addr;   // offset 8
++         *   size_t reserved_size;  // offset 16
++         *   int relro_fd;          // offset 24
++         *   int library_fd;        // offset 28
++         *   off64_t library_fd_offset; // offset 32
++         *   struct android_namespace_t* library_namespace; // offset 40-48
++         * ANDROID_DLEXT_USE_NAMESPACE flag = 0x200
++         */
++        uint64_t ext_flags = *(const uint64_t*)extinfo;
++        if (ext_flags & 0x200) {
++            /* Namespace specified -- strip it and use regular dlopen */
++            return _android_dlopen(filename, flag);
++        }
++    }
++
+     return _android_dlopen_ext(filename, flag, extinfo);
+ }
+ 
++/* Hook for android_load_sphal_library: used by HIDL passthrough HAL loading
++ * (e.g. gralloc mapper). On stock Android this does a dlopen with the "sphal"
++ * linker namespace. In libhybris we redirect to our own android_dlopen which
++ * searches the configured library paths including /vendor/lib64/hw/. */
++void* _hybris_hook_android_load_sphal_library(const char* name, int flag)
++{
++    TRACE("name %s, flag %d", name, flag);
++    return _android_dlopen(name, flag);
++}
++
++/* Matching unload hook */
++int _hybris_hook_android_unload_sphal_library(void* handle)
++{
++    TRACE("handle %p", handle);
++    /* Just do nothing - the library stays loaded */
++    return 0;
++}
++
+ void _hybris_hook_android_set_application_target_sdk_version(uint32_t target)
+ {
+     TRACE("target %u", target);
+@@ -2868,7 +2966,10 @@ void* _hybris_hook_android_get_exported_namespace(const char* name)
+ {
+     TRACE("name %s", name);
+ 
+-    return _android_get_exported_namespace(name);
++    /* hybris: return NULL to force HIDL passthrough HAL loading (e.g. gralloc
++     * mapper) to use the default namespace via regular dlopen instead of the
++     * "sphal" linker namespace which doesn't work in the libhybris context. */
++    return NULL;
+ }
+ 
+ void _hybris_hook_free(void *ptr)
+@@ -3199,6 +3300,8 @@ static struct _hook hooks_common[] = {
+     HOOK_INDIRECT(android_get_LD_LIBRARY_PATH),
+     HOOK_INDIRECT(android_update_LD_LIBRARY_PATH),
+     HOOK_INDIRECT(android_dlopen_ext),
++    HOOK_INDIRECT(android_load_sphal_library),
++    HOOK_INDIRECT(android_unload_sphal_library),
+     HOOK_INDIRECT(android_set_application_target_sdk_version),
+     HOOK_INDIRECT(android_get_application_target_sdk_version),
+     HOOK_INDIRECT(android_create_namespace),
+@@ -3916,13 +4019,11 @@ void android_dlwarning(void* obj, void (*f)(void*, const char*))
+ 
+ struct android_namespace_t* android_get_exported_namespace(const char* name)
+ {
+-    ENSURE_LINKER_IS_LOADED();
+-
+-    if (!_android_get_exported_namespace) {
+-        return NULL;
+-    }
+-
+-    return _android_get_exported_namespace(name);
++    /* hybris: always return NULL to force HIDL passthrough HAL loading
++     * (gralloc mapper) to use the default namespace via regular dlopen.
++     * The "sphal" namespace doesn't work in the libhybris context. */
++    (void)name;
++    return NULL;
+ }
+ 
+ void* hybris_dlopen(const char* filename, int flag)
+diff --git a/hybris/common/q/dlfcn.cpp b/hybris/common/q/dlfcn.cpp
+index 2341109..2016507 100644
+--- a/hybris/common/q/dlfcn.cpp
++++ b/hybris/common/q/dlfcn.cpp
+@@ -296,7 +296,10 @@ bool __loader_android_link_namespaces_all_libs(android_namespace_t* namespace_fr
+ }
+ 
+ android_namespace_t* __loader_android_get_exported_namespace(const char* name) {
+-  return get_exported_namespace(name);
++  // hybris: return NULL to disable linker namespace lookups.
++  // Forces HIDL passthrough HAL loading to use regular dlopen.
++  (void)name;
++  return nullptr;
+ }
+ 
+ void __loader_cfi_fail(uint64_t CallSiteTypeId, void* Ptr, void *DiagData, void *CallerPc) {
+@@ -455,6 +458,9 @@ void android_dlwarning(void* obj, void (*f)(void*, const char*)) {
+ }
+ 
+ struct android_namespace_t* android_get_exported_namespace(const char* name) {
+-  return __loader_android_get_exported_namespace(name);
++  // hybris: return NULL to force HIDL passthrough HAL loading to use the
++  // default namespace (via regular dlopen) instead of the "sphal" namespace.
++  (void)name;
++  return nullptr;
+ }
+ }
+diff --git a/hybris/common/q/linker.cpp b/hybris/common/q/linker.cpp
+index dcc8428..42ef8cc 100644
+--- a/hybris/common/q/linker.cpp
++++ b/hybris/common/q/linker.cpp
+@@ -2271,7 +2271,12 @@ void* do_dlopen(const char* name, int flags,
+         DL_ERR("ANDROID_DLEXT_USE_NAMESPACE is set but extinfo->library_namespace is null");
+         return nullptr;
+       }
+-      ns = extinfo->library_namespace;
++      // hybris: ignore the namespace and use the default namespace.
++      // On stock Android, HIDL passthrough HAL loading uses the "sphal"
++      // namespace which has specific library paths. In libhybris, all
++      // libraries are loaded through the default namespace which already
++      // includes /vendor/lib64/hw/ in the search path.
++      LD_LOG(kLogDlopen, "hybris: ignoring ANDROID_DLEXT_USE_NAMESPACE for %s", name);
+     }
+   }
+ 

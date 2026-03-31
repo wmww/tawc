@@ -389,21 +389,24 @@ Client-side WSI layer:
 4. ✅ Render solid color to EGLSurface via GlesRenderer + `eglSwapBuffers`
 5. ✅ **Milestone: GlesRenderer renders to Android Surface**
 
-### Phase 2: AHB Buffer Sharing Proof of Concept ✅ MOSTLY COMPLETE (2026-03-28)
-6. ⏳ Set up libhybris in Termux chroot, verify stock EGL/GLES loads via libhybris
-   (chroot setup in progress via separate agent)
+### Phase 2: AHB Buffer Sharing Proof of Concept ✅ COMPLETE (2026-03-31)
+6. ✅ Set up libhybris in Termux chroot, verify stock EGL/GLES loads via libhybris
+   **SOLVED (2026-03-31):** Fixed bionic/glibc TLS conflict by adding `bionic_tls`
+   allocation to the lindroid fork's TLS thunk patcher. Added a pre-slot before
+   `tls_hooks[]` for bionic's TLS_SLOT_BIONIC_TLS (slot -1), lazily allocate a
+   zero-filled 16KB struct per thread. EGL 1.5 initializes, Adreno GPU driver loads.
+   First known successful libhybris on stock (unpatched) Android firmware.
+   See notes.md "libhybris on Stock (Unpatched) Android" for details.
 7. ✅ Write minimal test: allocate AHardwareBuffer, CPU-fill with pattern,
    send AHB over Unix socket via `AHardwareBuffer_sendHandleToUnixSocket`
 8. ✅ Write minimal compositor-side test: receive AHB, import via
    `eglGetNativeClientBufferANDROID` + `eglCreateImageKHR`, display as texture
 9. ✅ Test buffer round-trip: same-process AND cross-process (standalone binary)
    Both produce correct visual output (checkerboard patterns on screen)
-10. **Milestone: zero-copy GPU buffer sharing proven end-to-end** ✅ (without libhybris)
-    libhybris client-side rendering deferred to chroot setup completion
+10. **Milestone: zero-copy GPU buffer sharing proven end-to-end** ✅
 
 ### Phase 3: Wayland Server + Socket Relay
-11. Patch Smithay: `libEGL.so.1` -> `libEGL.so` for Android (compositor side --
-    Smithay needs to load Android's system EGL in the app process; see notes.md)
+11. ✅ Patch Smithay: `libEGL.so.1` -> `libEGL.so` for Android (done in Phase 1)
 12. Define `tawc_buffer_v1` Wayland protocol extension (AHB buffer lifecycle)
 13. Initialize Smithay Wayland state (Display, compositor, xdg_shell, wl_output,
     tawc_buffer_v1)
@@ -411,6 +414,9 @@ Client-side WSI layer:
 15. Test: Termux client connects to `$XDG_RUNTIME_DIR/wayland-0`
 16. Handle client buffer commit: receive AHB -> EGLImage -> GL texture ->
     composite -> present
+    **Note:** AHB allocation from the chroot doesn't work (see `gralloc-problem.md`).
+    Current workaround: compositor allocates AHBs and sends raw native handles to
+    clients. The WSI layer / buffer protocol needs to account for this.
 17. Test with a simple Wayland EGL client from chroot
 18. **Milestone: GPU-accelerated Wayland client visible on screen**
 

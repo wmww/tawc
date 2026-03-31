@@ -24,10 +24,13 @@ mount_if_needed() {
 
 su -c "mkdir -p '$CHROOT_DIR/dev' '$CHROOT_DIR/proc' '$CHROOT_DIR/sys' \
     '$CHROOT_DIR/vendor' '$CHROOT_DIR/system' '$CHROOT_DIR/dev/pts' \
-    '$CHROOT_DIR/apex' '$CHROOT_DIR/linkerconfig'"
+    '$CHROOT_DIR/apex' '$CHROOT_DIR/linkerconfig' '$CHROOT_DIR/dev/binderfs'"
 
 mount_if_needed /dev "$CHROOT_DIR/dev"
 mount_if_needed /dev/pts "$CHROOT_DIR/dev/pts"
+# binderfs is needed for AHB recv/alloc (gralloc uses hwbinder).
+# /dev bind mount doesn't propagate binderfs submounts, so mount separately.
+mount_if_needed /dev/binderfs "$CHROOT_DIR/dev/binderfs"
 mount_if_needed /proc "$CHROOT_DIR/proc"
 mount_if_needed /sys "$CHROOT_DIR/sys"
 mount_if_needed /vendor "$CHROOT_DIR/vendor"

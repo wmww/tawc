@@ -1,0 +1,104 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Build and install the lindroid fork of libhybris with tawc patches:
+#   - bionic_tls allocation (stock Android TLS fix)
+#   - linker namespace bypass (gralloc HAL loading)
+#   - pthread_create thread wrapping
+#
+# Run from Termux. Requires the chroot to be set up.
+# Usage: ./build-libhybris-lindroid
+
+set -euo pipefail
+
+CHROOT_DIR="/data/local/arch-chroot"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PATCH_FILE="$SCRIPT_DIR/libhybris-tawc.patch"
+
+if ! su -c "[ -d '$CHROOT_DIR/usr' ]"; then
+    echo "Chroot not found. Run arch-chroot-create first."
+    exit 1
+fi
+
+if [ ! -f "$PATCH_FILE" ]; then
+    echo "Patch file not found: $PATCH_FILE"
+    exit 1
+fi
+
+# Ensure bind mounts
+if [ -x "$SCRIPT_DIR/arch-chroot-run" ]; then
+    "$SCRIPT_DIR/arch-chroot-run" "true"
+fi
+
+# Copy patch into chroot
+su -c "cp '$PATCH_FILE' '$CHROOT_DIR/tmp/libhybris-tawc.patch'"
+
+echo "==> Building lindroid libhybris inside chroot..."
+
+su -c "cat > '$CHROOT_DIR/tmp/build-lindroid.sh' << 'BUILDEOF'
+#!/bin/bash
+set -e
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TMPDIR=/tmp
+export HOME=/root
+export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+
+# Step 1: Ensure build deps
+echo "==> Checking build dependencies..."
+pacman -S --noconfirm --needed libtool wayland pkg-config git
+
+# Step 2: Clone if needed
+cd /root
+if [ ! -d libhybris-lindroid ]; then
+    echo "==> Cloning lindroid libhybris..."
+    git clone https://github.com/Linux-on-droid/libhybris.git libhybris-lindroid
+fi
+
+# Step 3: Apply tawc patch
+cd /root/libhybris-lindroid
+if ! git diff --quiet 2>/dev/null; then
+    echo "==> Source already has local changes, resetting..."
+    git checkout -- .
+fi
+echo "==> Applying tawc patch..."
+git apply /tmp/libhybris-tawc.patch
+echo "==> Patch applied"
+
+# Step 4: Ensure android headers are installed
+if ! pkg-config --exists android-headers 2>/dev/null; then
+    echo "ERROR: android-headers not installed. Install them first."
+    exit 1
+fi
+echo "==> Android headers version: $(pkg-config --modversion android-headers)"
+
+# Step 5: Build
+cd /root/libhybris-lindroid/hybris
+
+echo "==> Running autogen.sh..."
+./autogen.sh 2>&1 | tail -5
+
+echo "==> Configuring..."
+./configure \
+    --enable-arch=arm64 \
+    --enable-adreno-quirks \
+    --enable-property-cache \
+    --with-default-hybris-ld-library-path=/vendor/lib64/egl:/vendor/lib64/hw:/vendor/lib64:/system/lib64 \
+    --prefix=/usr/local 2>&1 | grep -E 'Android version|arch |prefix|Features'
+
+echo "==> Building (this may take a few minutes)..."
+make -j4 2>&1 | tail -10
+
+echo "==> Installing..."
+for dir in include common properties hardware ui gralloc libsync platforms egl glesv1 glesv2 sf input camera vibrator media opencl wifi hwc2 utils; do
+    if [ -d $dir ] && [ -f $dir/Makefile ]; then
+        make -C $dir install 2>/dev/null || echo "  (skipped $dir due to build error)"
+    fi
+done
+ldconfig
+
+echo "==> Installed libraries:"
+ls /usr/local/lib/libEGL.so /usr/local/lib/libGLESv2.so /usr/local/lib/libhybris-common.so 2>/dev/null
+
+echo "==> Done"
+BUILDEOF
+chmod 755 '$CHROOT_DIR/tmp/build-lindroid.sh'"
+
+su -c "exec chroot '$CHROOT_DIR' /tmp/build-lindroid.sh"

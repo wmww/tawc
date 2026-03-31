@@ -1,0 +1,38 @@
+#!/bin/bash
+# Fix Android 15+ headers for GCC compatibility
+# Run inside the chroot
+set -e
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+echo "==> Fixing Clang-specific annotations in Android headers..."
+
+# Add _Nonnull/_Nullable macros for GCC compatibility
+COMPAT_HEADER=/usr/local/include/android/android-config.h
+if ! grep -q _Nonnull "$COMPAT_HEADER" 2>/dev/null; then
+    cat >> "$COMPAT_HEADER" << 'HDREOF'
+
+/* GCC compatibility for Clang nullability annotations */
+#ifndef __clang__
+#  ifndef _Nonnull
+#    define _Nonnull
+#  endif
+#  ifndef _Nullable
+#    define _Nullable
+#  endif
+#endif
+HDREOF
+    echo "  Added _Nonnull/_Nullable defines to android-config.h"
+else
+    echo "  _Nonnull already defined, skipping"
+fi
+
+# Fix C++ scoped enum syntax (enum Foo : int32_t) in C headers
+for f in /usr/local/include/android/vndk/hardware_buffer.h \
+         /usr/local/include/android/android/hardware_buffer.h; do
+    if [ -f "$f" ] && grep -q 'enum AHardwareBufferStatus : int32_t' "$f"; then
+        sed -i 's/enum AHardwareBufferStatus : int32_t/enum AHardwareBufferStatus/' "$f"
+        echo "  Fixed scoped enum in $f"
+    fi
+done
+
+echo "==> Done"

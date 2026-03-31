@@ -14,6 +14,7 @@ ndk-sys = "0.6"
 libloading = "0.8"
 log = "0.4"
 android_logger = "0.14"
+rustix = { version = "0.38", features = ["net"] }
 
 [patch.crates-io]
 smithay = { path = "/home/ai/smithay-patched" }
