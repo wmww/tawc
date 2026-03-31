@@ -12,4 +12,7 @@ Complex code should be tested, and testing should be as general as possible (int
 Getting a good workflow for debugging/iterating is often nontrivial. For example you may need access to a real Android phone to test hardware acceleration and other features. The goal is always to enable as much autonomy as possible, without needing repeated human involvement for iteration. Feel free to ask for whatever one-time setup you need to make this possible.
 
 ## Safety
-I'm letting you play with my phone, try not to fuck it up. Also avoid junking up devices (eg delete screenshots you take when you're done with them)
+I'm letting you play with my phone, try not to fuck it up.
+
+## Organization
+Avoid junking up devices (eg delete screenshots you take when you're done with them). On the phone things should generally stay in `/data/local/arch-chroot/`, `/data/local/claude-debug` and the termux home directory
