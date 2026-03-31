@@ -1,0 +1,31 @@
+#!/bin/bash
+# Build the ashmem shim (libashmem-shim.so) inside the chroot.
+set -e
+
+CHROOT="/data/local/arch-chroot"
+BUILD="/tmp/ashmem-shim"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+echo "=== Pushing source ==="
+TMP="/data/local/tmp/tawc-build"
+adb shell "mkdir -p $TMP"
+adb push "$SCRIPT_DIR/ashmem-shim.c" "$TMP/"
+adb shell "su -c 'mkdir -p $CHROOT$BUILD && cp $TMP/ashmem-shim.c $CHROOT$BUILD/'"
+
+echo "=== Building ==="
+adb shell "su -c 'chroot $CHROOT /bin/bash -c \"
+export PATH=/usr/local/bin:/usr/bin:/bin
+cd $BUILD
+
+gcc -shared -fPIC -o libashmem-shim.so \
+    ashmem-shim.c \
+    -ldl \
+    -lpthread \
+    -Wall -g
+
+echo Build successful
+ls -la libashmem-shim.so
+\"'"
+
+echo "=== Done ==="
+echo "Usage: LD_PRELOAD=$BUILD/libashmem-shim.so <wayland-client>"

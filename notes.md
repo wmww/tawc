@@ -8,13 +8,13 @@ and for LLM agents.
 SHM buffers (`wl_shm`) are supported alongside the AHB path. See [shm.md](shm.md) for
 detailed notes on the SELinux issue and potential solutions.
 
-**Current status:** SHM works but requires a one-time-per-boot SELinux workaround:
-```
-su -c 'supolicy --live "permissive untrusted_app"'
-```
-This must be run before any SHM client connects to the compositor. Without it, SELinux
-blocks the compositor from mmapping memfds created by chroot clients, which silently
-corrupts the Wayland protocol stream and hangs the client.
+**Current status:** SHM works without any SELinux workaround, thanks to an ashmem
+LD_PRELOAD shim (`client/ashmem-shim/`). The shim intercepts `memfd_create()`,
+`ftruncate()`, and `posix_fallocate()` in chroot clients, redirecting shared memory
+allocation to Android's `/dev/ashmem` driver. Ashmem fds are in SELinux's
+`mlstrustedobject` set, so the compositor (untrusted_app) can mmap them freely.
+
+Usage: `LD_PRELOAD=/tmp/ashmem-shim/libashmem-shim.so weston-simple-shm`
 
 **Magenta tint**: SHM surfaces are rendered with a distinct magenta tint via a custom
 `GlesTexProgram` shader. This is intentional -- it makes it visually obvious when a client
