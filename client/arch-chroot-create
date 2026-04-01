@@ -86,6 +86,7 @@ else
     su -c "cat > '$CHROOT_DIR/tmp/setup.sh' << 'SETUP'
 #!/bin/bash
 set -e
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 echo '==> Initializing pacman keyring...'
 pacman-key --init
 echo '==> Updating system...'

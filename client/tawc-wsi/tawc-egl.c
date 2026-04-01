@@ -22,6 +22,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <sys/personality.h>
+#include <sys/mman.h>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -421,6 +422,47 @@ static void build_extension_string(void)
     }
 }
 
+/* Patch bionic's __cfi_slowpath to a no-op return.
+ * Android vendor libraries are compiled with Control Flow Integrity (CFI).
+ * CFI checks call __cfi_slowpath in libdl.so, which looks up a shadow table.
+ * In the libhybris/glibc environment, the CFI shadow table is never
+ * initialized (it's normally set up by the bionic dynamic linker at process
+ * start). The uninitialized NULL pointer causes a crash in eglInitialize.
+ * Fix: patch __cfi_slowpath to just return immediately. */
+static void patch_bionic_cfi(void)
+{
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) return;
+
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        unsigned long lo, hi;
+        char perms[5];
+        if (sscanf(line, "%lx-%lx %4s", &lo, &hi, perms) < 3) continue;
+        if (!strstr(line, "libdl.so")) continue;
+        if (perms[0] != 'r' || perms[2] != 'x') continue;
+
+        uint32_t *code = (uint32_t *)lo;
+        size_t count = (hi - lo) / 4;
+        for (size_t i = 0; i + 1 < count; i++) {
+            /* Android 14: sub w8,w1,#0x7f,lsl#12 + ubfx x9,x8,#31,#7
+             * Android 16+: xpaclri + movn x9,#0xaf40,lsl#16 */
+            if ((code[i] == 0xd351fc28 && code[i+1] == 0xd35f9909) ||
+                (code[i] == 0xd50320ff && code[i+1] == 0x92b5e809)) {
+                unsigned long page = (unsigned long)&code[i] & ~0xFFFUL;
+                if (mprotect((void*)page, 4096, PROT_READ|PROT_WRITE|PROT_EXEC) == 0) {
+                    code[i] = 0xd65f03c0; /* ret */
+                    __builtin___clear_cache((char*)&code[i], (char*)&code[i+1]);
+                    log_msg("patched __cfi_slowpath in bionic libdl.so");
+                }
+                fclose(f);
+                return;
+            }
+        }
+    }
+    fclose(f);
+}
+
 static void do_init(void)
 {
     log_msg("initializing tawc EGL wrapper");
@@ -434,6 +476,11 @@ static void do_init(void)
         log_msg("FATAL: stock eglGetDisplay failed: 0x%x", real_eglGetError());
         return;
     }
+
+    /* Patch CFI after eglGetDisplay loads bionic libraries but before
+     * eglInitialize triggers CFI-checked indirect calls */
+    patch_bionic_cfi();
+
     if (!real_eglInitialize(stock_display, NULL, NULL)) {
         log_msg("FATAL: stock eglInitialize failed: 0x%x", real_eglGetError());
         return;

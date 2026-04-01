@@ -964,18 +964,103 @@ The `-l` flag is important for picking up the PATH fix in `/etc/profile.d/00-pat
 For complex commands with quoting issues, push a script to
 `/data/local/claude-debug/` then copy into the chroot and execute.
 
+### New device bringup checklist
+
+1. **Tear down old chroot** (`arch-chroot-destroy` or manual unmount + rm -rf)
+2. **Create chroot** (`arch-chroot-create` -- tarball is cached in `/data/local/tmp/`)
+   - If pacman-key fails, it's because the setup script doesn't export PATH. Run
+     the package install step manually with `export PATH=/usr/local/sbin:...:/bin`
+3. **Build libhybris** (`build-libhybris-lindroid`)
+4. **Build WSI + memfd shim** (`client/tawc-wsi/build` and `client/memfd-selinux-shim/build`)
+5. **Install & launch compositor** (build with gradlew, adb install, am start)
+6. **Test SHM first** (`weston-simple-shm`) -- this doesn't need the WSI layer and
+   verifies the compositor and Wayland socket are working
+7. **Test EGL** (`weston-simple-egl -f`) -- if this crashes in eglInitialize, check:
+   - `cannot locate symbol` errors → likely vendor/system library mismatch (libbinder fix)
+   - SIGSEGV in `__cfi_slowpath` → CFI shadow table not initialized (already fixed in WSI)
+   - Other crashes → use the signal handler + /proc/self/maps technique from the
+     OnePlus 9 debugging to identify which library and offset
+8. **Test GTK3** (`GDK_GL=gles:always gtk3-widget-factory`) -- set `TMPDIR=/tmp`
+
+**Common env vars for running clients in chroot:**
+```bash
+export WAYLAND_DISPLAY=/data/data/me.phie.tawc/wayland-0
+export XDG_RUNTIME_DIR=/tmp
+export TMPDIR=/tmp
+export HOME=/root
+export LD_LIBRARY_PATH=/tmp/tawc-wsi:/usr/local/lib
+export LD_PRELOAD=/tmp/memfd-selinux-shim/libmemfd-selinux-shim.so
+export HYBRIS_PATCH_TLS=1
+export GDK_GL=gles:always  # for GTK3
+```
+
+### Debugging tips for new devices
+
+- **Bionic libraries loaded by libhybris don't appear in maps until after
+  `eglGetDisplay`** (not after dlopen of libhybris). This tripped up CFI patching --
+  the patch must run after eglGetDisplay, not before.
+- **Android linker namespace issues** cause "cannot locate symbol" errors even when
+  the symbol exists on the device. The bionic linker restricts which libraries can
+  see each other. Check if vendor and system copies of the same library differ in size.
+- **Writing test C programs**: don't try to inline them in shell heredocs through
+  multiple layers of adb/su/chroot quoting. Instead, write the file on the host,
+  `adb push` it, then `su -c 'cp ... chroot/tmp/'` and compile inside.
+- **`LD_PRELOAD` breaks Android system binaries** (toybox/sleep/timeout) with
+  namespace errors. Use bash builtins or unset LD_PRELOAD for system commands.
+- **The `arch-chroot-create` script's setup.sh doesn't set PATH**, so pacman-key
+  and pacman aren't found. Run the package install manually if it fails.
+
 ### Bind mounts are ephemeral
 
 All bind mounts are lost on reboot. `arch-chroot-run` re-establishes them idempotently.
 The `/apex` recursive bind creates ~80 submounts (one per APEX module).
 
-### Device details (corrected)
+### Tested devices
 
-- **Device:** Pixel 4a (sunfish)
-- **Android version:** 16 (API 36) -- NOT Android 10 as originally assumed
+**Pixel 4a (sunfish):**
+- **Android version:** 16 (API 36)
 - **GPU:** Qualcomm Adreno 618
-- **GPU device node:** `/dev/kgsl-3d0`
 - **Vendor EGL:** `/vendor/lib64/egl/libEGL_adreno.so`
+- **Status:** Fully working (SHM, EGL, GTK3)
+
+**OnePlus 9 (LE2115):**
+- **Android version:** 14 (API 34)
+- **GPU:** Qualcomm Adreno 660v2 (Snapdragon 888, lahaina)
+- **Vendor EGL:** `/vendor/lib64/egl/libEGL_adreno.so`
+- **Status:** Fully working (SHM, EGL, GTK3) after two fixes (see below)
+- **GPU device node:** `/dev/kgsl-3d0` (world rw)
+
+### OnePlus 9 / Android 14 fixes (2026-03-31)
+
+Two issues needed fixing on this device:
+
+**1. Vendor libbinder.so missing symbols:**
+`/system/lib64/libbinder_ndk.so` references `openDeclaredPassthroughHal` which
+exists in `/system/lib64/libbinder.so` but NOT in `/vendor/lib64/libbinder.so`
+(795KB vs 816KB). The bionic linker loads vendor libs in a namespace that finds
+the vendor copy first. Fix: bind-mount system's copy over vendor's in the chroot.
+Added to `arch-chroot-run`.
+
+**2. CFI (Control Flow Integrity) crash in eglInitialize:**
+Android vendor libraries are compiled with CFI enabled. CFI checks indirect call
+targets via `__cfi_slowpath` in bionic's `libdl.so`, which looks up a shadow
+table. In the libhybris/glibc environment, this shadow table is never initialized
+(normally done by bionic's dynamic linker at process start), leaving a NULL pointer
+that crashes during `eglInitialize`. The crash manifests as SIGSEGV at
+`libdl.so:__cfi_slowpath+0x18` (the `ldrh w8, [x9, x8]` instruction where x9 is
+the NULL shadow table pointer).
+
+Fix: patch `__cfi_slowpath` to a no-op `ret` instruction at runtime, after
+`eglGetDisplay` loads bionic's libdl.so but before `eglInitialize` triggers
+CFI-checked calls. The patch scans `/proc/self/maps` for libdl.so, finds the
+function by its instruction signature, and replaces the first instruction with
+`ret` (0xd65f03c0). Two signatures are supported:
+- Android 14: `sub w8,w1,#0x7f,lsl#12` (0xd351fc28) + `ubfx x9,x8,#31,#7` (0xd35f9909)
+- Android 16+: `xpaclri` (0xd50320ff) + `movn x9,#0xaf40,lsl#16` (0x92b5e809)
+
+This fix is in `tawc-egl.c:patch_bionic_cfi()`. Note: this was NOT needed on
+the Pixel 4a / Android 16, suggesting either CFI is disabled on that build or
+the shadow table is initialized differently.
 
 ### What's installed in the chroot
 

@@ -43,6 +43,14 @@ mount_if_needed /linkerconfig "$CHROOT_DIR/linkerconfig"
 # Plain mount --bind gives empty directories for the individual APEXes.
 su -c "mountpoint -q '$CHROOT_DIR/apex' 2>/dev/null || mount --rbind /apex '$CHROOT_DIR/apex'"
 
+# On some devices (e.g. OnePlus 9 / Android 14), vendor's libbinder.so is
+# older and missing symbols that system's libbinder_ndk.so expects
+# (openDeclaredPassthroughHal). Overlay with system's copy.
+if su -c "[ -f /system/lib64/libbinder.so ] && [ -f '$CHROOT_DIR/vendor/lib64/libbinder.so' ]"; then
+    su -c "mountpoint -q '$CHROOT_DIR/vendor/lib64/libbinder.so' 2>/dev/null || \
+           mount --bind /system/lib64/libbinder.so '$CHROOT_DIR/vendor/lib64/libbinder.so'"
+fi
+
 # Mount compositor's data dir for Wayland socket access
 TAWC_DATA="/data/data/me.phie.tawc"
 if su -c "[ -d '$TAWC_DATA' ]"; then
