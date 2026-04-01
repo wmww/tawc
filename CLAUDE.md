@@ -1,5 +1,8 @@
 Hi Claude, this project is Tess's Android Wayland Compositor (tawc)
 
+## Plan
+[plan.md](plan.md) has the implementation roadmap (phases 1-10, current phase: 6 text input).
+
 ## Notes
 The `notes/` directory contains architecture and implementation notes. Key files:
 - [architecture.md](notes/architecture.md) -- compositor module layout, design decisions, Smithay integration

@@ -1,5 +1,39 @@
 # GPU Driver Strategy and Buffer Sharing
 
+## Prior Art
+
+### wlroots-android-bridge
+[Xtr126/wlroots-android-bridge](https://github.com/Xtr126/wlroots-android-bridge) --
+wlroots/labwc compositor on Android. Key design decisions we borrow:
+- **One Android Activity per Wayland toplevel** -- Android's window manager handles
+  task switching, recents, window positioning
+- **ASurfaceTransaction for presentation** -- submit rendered buffers to SurfaceFlinger
+
+Why it doesn't work for us: depends on Mesa + minigbm, only works on Intel/x86.
+
+### Termux:X11
+Current state of the art for graphical Linux apps on Android. Works but **all paths
+involve CPU readback** -- no zero-copy GPU buffer sharing. See "Termux:X11 Comparison"
+section below.
+
+### libhybris
+[libhybris/libhybris](https://github.com/libhybris/libhybris) -- compatibility layer
+allowing glibc programs to load bionic-linked Android shared libraries. Used by Sailfish
+OS and Ubuntu Touch. **Actively maintained** -- Android 16 support merged March 2026.
+This is what enables our architecture.
+
+### ARM vulkan-wsi-layer
+[ArmSoM/vulkan-wsi-layer](https://github.com/ArmSoM/vulkan-wsi-layer) -- open-source
+Vulkan layer implementing Wayland/X11 WSI independently of the GPU driver. **Not usable
+for our architecture** -- requires `VK_EXT_external_memory_dma_buf` which stock Android
+drivers don't support. Useful as structural reference for writing a Vulkan implicit layer.
+
+### libhybris Vulkan WSI
+libhybris has a built-in Vulkan WSI that swaps `VK_KHR_android_surface` for
+`VK_KHR_wayland_surface` and presents via the `android_wlegl` protocol (Sailfish OS
+ecosystem). Uses `WaylandNativeWindow` (inherits `ANativeWindow`) + gralloc for buffer
+allocation. See "libhybris Vulkan" section below.
+
 ## The Problem
 
 A Wayland compositor on Android needs GPU buffer sharing between clients (Linux programs

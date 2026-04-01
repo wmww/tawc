@@ -83,3 +83,28 @@ Toplevels are retained as long as `ToplevelSurface::alive()` returns true (not b
 whether they have buffers). SHM state is cleaned up when the toplevel dies. This is
 important because SHM clients don't create buffer state until after the first configure
 event, so buffer-based retain logic would immediately remove new toplevels.
+
+## Known Risks and Constraints
+
+| Risk | Status | Mitigation |
+|---|---|---|
+| libhybris can't load stock EGL/GLES | ✅ Solved | Battle-tested (Sailfish OS). Proven in Phase 2. |
+| libhybris Vulkan varies by vendor | Open | Stretch goal. EGL/GLES covers most apps. Mali needs unmerged PRs (#604, #607). |
+| Stock driver needs Binder/gralloc | ✅ Solved | Bind-mount `/vendor`, `/system`, `/system_ext`, `/dev/binderfs`. |
+| `eglGetNativeClientBufferANDROID` not available | Low risk | Widely available Android 8+. Runtime-check required. |
+| AHB side-channel socket complexity | Accepted | Necessary (AHB serialization uses multi-fd wire format). |
+| Custom protocol breaks standard clients | Accepted | Clients use our WSI layer. `wl_shm` provides fallback. |
+| SELinux blocks socket without root | Documented | Root: direct connect. No-root: Binder fd passing. |
+| Smithay on Android | ✅ Solved | `default-features = false`, patched EGL loader. Proven in Phase 1. |
+| Phantom Process Killer (Android 12+) | Open | Users need Developer Options toggle for Termux processes. |
+| Vendor-specific GPU quirks | Open | Architecture is vendor-neutral. Each vendor needs testing. `wl_shm` fallback. |
+| Freeform windowing not universal | Accepted | Phones: fullscreen Activities. Freeform on DeX/ChromeOS/Android 15+. |
+
+## References
+
+- [libhybris/libhybris](https://github.com/libhybris/libhybris) -- bionic compatibility layer
+- [Smithay](https://github.com/Smithay/smithay) -- Rust Wayland compositor library
+- [Xtr126/wlroots-android-bridge](https://github.com/Xtr126/wlroots-android-bridge)
+- [AHardwareBuffer NDK docs](https://developer.android.com/ndk/reference/group/a-hardware-buffer)
+- [Vulkan Layer mechanism](https://vulkan.lunarg.com/doc/view/latest/linux/loader_and_layer_interface.html)
+- [ndk crate](https://crates.io/crates/ndk) -- Rust NDK bindings
