@@ -116,7 +116,9 @@ impl TawcState {
         let shm_state = ShmState::new::<Self>(&dh, []);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
-        let seat = seat_state.new_wl_seat(&dh, "tawc");
+        let mut seat = seat_state.new_wl_seat(&dh, "tawc");
+        // Advertise pointer capability so clients (esp. Firefox) will create windows
+        seat.add_pointer();
 
         // Register tawc_buffer_manager_v1 global
         dh.create_global::<Self, TawcBufferManagerV1, ()>(1, ());
