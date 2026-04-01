@@ -979,11 +979,13 @@ The `/apex` recursive bind creates ~80 submounts (one per APEX module).
 
 ### What's installed in the chroot
 
-- **Android headers:** Android 15 from `Squishy123/android-15-headers` version-bumped
-  to 16 with GCC compatibility fixes. Installed to `/usr/local/include/android/`.
+- **Android headers:** Halium `halium-11.0` branch from `Halium/android-headers`,
+  version-bumped to 16 in `android-version.h` and `.pc` file, with GCC compatibility
+  fixes (script: `client/fix-android-headers`). Installed to `/usr/local/include/android/`.
 - **libhybris (lindroid fork):** Built from `Linux-on-droid/libhybris` branch `lindroid-21`
-  with TLS thunk patcher + our bionic_tls allocation fix + `android_get_exported_namespace`
-  NULL return (for gralloc debugging). Installed to `/usr/local/lib/`.
+  with cherry-picked TLS thunk patcher (commit `75be4aa` from `lindroid-drm` branch)
+  + our bionic_tls allocation patch (`client/libhybris-tawc.patch`) + libsync fix
+  for Android 16 (version guard relaxation). Installed to `/usr/local/lib/`.
   Source at `/root/libhybris-lindroid/`, build script: `client/build-libhybris-lindroid`.
 
 ### libhybris TLS problem -- SOLVED (2026-03-31)
@@ -1034,9 +1036,26 @@ Both builds configured with:
 --prefix=/usr/local
 ```
 
-Source trees in chroot `/root/`: `libhybris/` (upstream), `libhybris-lindroid/`
-(lindroid fork, currently installed). Headers from `Squishy123/android-15-headers`
+Source trees in chroot `/root/`: `libhybris-lindroid/` (lindroid fork, currently
+installed). Headers from `Halium/android-headers` branch `halium-11.0`,
 version-bumped to 16 with GCC compatibility fixes.
+
+### libsync fix for Android 16+ (2026-03-31)
+
+The `libsync` component fails to build with Android 16 headers because the
+version guard `#if (ANDROID_VERSION_MAJOR >= 10) && (ANDROID_VERSION_MAJOR < 12)`
+excludes versions 12+, leaving `sync_get_fence_info` and `sync_file_info_free`
+undeclared. Fix: change to `#if (ANDROID_VERSION_MAJOR >= 10)`. This is handled
+automatically by the `build-libhybris-lindroid` script.
+
+### libhybris base commit (documented 2026-03-31)
+
+The tawc patch (`client/libhybris-tawc.patch`) applies to `Linux-on-droid/libhybris`
+branch `lindroid-21` AFTER cherry-picking commit `75be4aa` ("hybris: introduce
+thunk-based TLS access patcher for aarch64") from the `lindroid-drm` branch.
+The cherry-pick has a conflict in `hybris/common/Makefile.am` (needs both the
+`hooks/libhybris-hooks.la` LIBADD and the `tls_patcher.c` source file). The
+build script handles this automatically. See also `chroot-scripts/libhybris-base.md`.
 
 ---
 

@@ -43,6 +43,13 @@ mount_if_needed /linkerconfig "$CHROOT_DIR/linkerconfig"
 # Plain mount --bind gives empty directories for the individual APEXes.
 su -c "mountpoint -q '$CHROOT_DIR/apex' 2>/dev/null || mount --rbind /apex '$CHROOT_DIR/apex'"
 
+# Mount compositor's data dir for Wayland socket access
+TAWC_DATA="/data/data/me.phie.tawc"
+if su -c "[ -d '$TAWC_DATA' ]"; then
+    su -c "mkdir -p '$CHROOT_DIR$TAWC_DATA'"
+    mount_if_needed "$TAWC_DATA" "$CHROOT_DIR$TAWC_DATA"
+fi
+
 # Ensure chroot environment fixes are in place (PATH, TMPDIR)
 # Android's /system/bin leaks into PATH and breaks everything otherwise
 if ! su -c "[ -f '$CHROOT_DIR/etc/profile.d/00-path.sh' ]"; then

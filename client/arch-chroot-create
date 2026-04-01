@@ -91,7 +91,8 @@ pacman-key --init
 echo '==> Updating system...'
 pacman -Syu --noconfirm
 echo '==> Installing base development tools...'
-pacman -S --noconfirm --needed base-devel git
+pacman -S --noconfirm --needed base-devel git libtool wayland wayland-protocols \
+    pkg-config autoconf automake patchelf weston gtk3 gtk3-demos
 rm -f /tmp/setup.sh
 SETUP
 chmod 755 '$CHROOT_DIR/tmp/setup.sh'"

@@ -1,9 +1,10 @@
 #!/system_ext/bin/bash
 # Build and install the lindroid fork of libhybris with tawc patches:
+#   - Cherry-picked TLS thunk patcher from lindroid-drm branch
 #   - bionic_tls allocation (stock Android TLS fix)
 #   - pthread_create thread wrapping (bionic_tls on new threads)
 #
-# Run from Termux. Requires the chroot to be set up.
+# Run from Termux or via adb. Requires the chroot to be set up.
 # Usage: ./build-libhybris-lindroid
 
 set -euo pipefail
@@ -27,8 +28,12 @@ if [ -x "$SCRIPT_DIR/arch-chroot-run" ]; then
     "$SCRIPT_DIR/arch-chroot-run" "true"
 fi
 
-# Copy patch into chroot
+# Copy patch and fix-headers into chroot
 su -c "cp '$PATCH_FILE' '$CHROOT_DIR/tmp/libhybris-tawc.patch'"
+if [ -x "$SCRIPT_DIR/fix-android-headers" ]; then
+    su -c "cp '$SCRIPT_DIR/fix-android-headers' '$CHROOT_DIR/tmp/fix-android-headers'"
+    su -c "chmod +x '$CHROOT_DIR/tmp/fix-android-headers'"
+fi
 
 echo "==> Building lindroid libhybris inside chroot..."
 
@@ -41,40 +46,101 @@ export HOME=/root
 export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
 # Step 1: Ensure build deps
-echo "==> Checking build dependencies..."
-pacman -S --noconfirm --needed libtool wayland pkg-config git
+echo '==> Checking build dependencies...'
+pacman -S --noconfirm --needed libtool wayland pkg-config git autoconf automake patchelf 2>&1 | tail -3
 
-# Step 2: Clone if needed
+# Step 2: Install android-headers if needed
+if ! pkg-config --exists android-headers 2>/dev/null; then
+    echo '==> Installing android-headers from Halium...'
+    cd /root
+    rm -rf android-headers
+    git clone --branch halium-11.0 --depth 1 https://github.com/Halium/android-headers.git
+    cd android-headers
+    # Bump version to 16 to match modern Android devices
+    sed -i 's/ANDROID_VERSION_MAJOR 11/ANDROID_VERSION_MAJOR 16/' android-version.h
+    sed -i 's/Version: 11.0.0/Version: 16.0.0/' android-headers.pc.in
+    make PREFIX=/usr/local install
+    echo "==> Android headers installed: $(pkg-config --modversion android-headers)"
+fi
+
+# Step 3: Fix android headers for GCC compatibility
+if [ -x /tmp/fix-android-headers ]; then
+    /tmp/fix-android-headers
+fi
+
+# Step 4: Clone if needed
 cd /root
 if [ ! -d libhybris-lindroid ]; then
-    echo "==> Cloning lindroid libhybris..."
+    echo '==> Cloning lindroid libhybris...'
     git clone https://github.com/Linux-on-droid/libhybris.git libhybris-lindroid
 fi
 
-# Step 3: Apply tawc patch
+# Step 5: Cherry-pick TLS thunk patcher from lindroid-drm and apply tawc patch
 cd /root/libhybris-lindroid
-if ! git diff --quiet 2>/dev/null; then
-    echo "==> Source already has local changes, resetting..."
-    git checkout -- .
-fi
-echo "==> Applying tawc patch..."
-git apply /tmp/libhybris-tawc.patch
-echo "==> Patch applied"
 
-# Step 4: Ensure android headers are installed
-if ! pkg-config --exists android-headers 2>/dev/null; then
-    echo "ERROR: android-headers not installed. Install them first."
-    exit 1
+# Reset to clean lindroid-21 state
+git checkout lindroid-21 2>/dev/null || true
+git checkout -- . 2>/dev/null || true
+
+# Check if TLS patcher is already present (from cherry-pick)
+if ! git log --oneline | head -5 | grep -q 'thunk-based TLS'; then
+    echo '==> Cherry-picking TLS thunk patcher from lindroid-drm...'
+    # The TLS thunk patcher commit from lindroid-drm branch
+    TLS_COMMIT=$(git log --oneline remotes/origin/lindroid-drm | grep 'thunk-based TLS' | head -1 | awk '{print $1}')
+    if [ -z "$TLS_COMMIT" ]; then
+        echo "ERROR: Could not find TLS thunk patcher commit on lindroid-drm"
+        exit 1
+    fi
+    echo "  Cherry-picking $TLS_COMMIT..."
+    if ! git cherry-pick "$TLS_COMMIT" 2>/dev/null; then
+        echo '  Resolving Makefile.am conflict...'
+        # The conflict is between LIBADD line (lindroid-21) and tls_patcher source (lindroid-drm)
+        # We need both
+        FILE=hybris/common/Makefile.am
+        awk '
+        /^<<<<<<< HEAD/ { skip=1; next }
+        /^=======$/     { if(skip) { skip=2; next } }
+        /^>>>>>>> /     {
+            if(skip) {
+                print "if WANT_ARCH_ARM64"
+                print "libhybris_common_la_SOURCES += \\"
+                print "\ttls_patcher.c"
+                print "endif"
+                print ""
+                print "libhybris_common_la_LIBADD = \\"
+                print "\thooks/libhybris-hooks.la"
+                skip=0
+                next
+            }
+        }
+        { if(!skip) print }
+        ' "$FILE" > "${FILE}.tmp"
+        mv "${FILE}.tmp" "$FILE"
+        git add "$FILE"
+        GIT_COMMITTER_NAME=tawc GIT_COMMITTER_EMAIL=tawc@local \
+        GIT_AUTHOR_NAME=tawc GIT_AUTHOR_EMAIL=tawc@local \
+        git cherry-pick --continue --no-edit
+    fi
 fi
+
+echo '==> Applying tawc patch...'
+git checkout -- . 2>/dev/null || true
+git apply /tmp/libhybris-tawc.patch
+echo '==> Patch applied'
+
 echo "==> Android headers version: $(pkg-config --modversion android-headers)"
 
-# Step 5: Build
+# Step 6: Fix libsync for Android 16+ (version guard too restrictive)
+echo '==> Fixing libsync version guard...'
+sed -i 's/#if (ANDROID_VERSION_MAJOR >= 10) && (ANDROID_VERSION_MAJOR < 12)/#if (ANDROID_VERSION_MAJOR >= 10)/' hybris/libsync/sync.c
+
+# Step 7: Build
 cd /root/libhybris-lindroid/hybris
 
-echo "==> Running autogen.sh..."
+echo '==> Running autogen.sh...'
 ./autogen.sh 2>&1 | tail -5
 
-echo "==> Configuring..."
+echo '==> Configuring...'
 ./configure \
     --enable-arch=arm64 \
     --enable-adreno-quirks \
@@ -82,21 +148,34 @@ echo "==> Configuring..."
     --with-default-hybris-ld-library-path=/vendor/lib64/egl:/vendor/lib64/hw:/vendor/lib64:/system/lib64 \
     --prefix=/usr/local 2>&1 | grep -E 'Android version|arch |prefix|Features'
 
-echo "==> Building (this may take a few minutes)..."
-make -j4 2>&1 | tail -10
-
-echo "==> Installing..."
-for dir in include common properties hardware ui gralloc libsync platforms egl glesv1 glesv2 sf input camera vibrator media opencl wifi hwc2 utils; do
-    if [ -d $dir ] && [ -f $dir/Makefile ]; then
-        make -C $dir install 2>/dev/null || echo "  (skipped $dir due to build error)"
+echo '==> Building (this may take a few minutes)...'
+# Build in dependency order, skipping components that fail
+for dir in include common properties libsync platforms hardware ui gralloc egl glesv1 glesv2 hwc2 utils; do
+    if [ -d "$dir" ] && [ -f "$dir/Makefile" ]; then
+        echo "  Building $dir..."
+        if ! make -C "$dir" -j4 2>&1 | tail -3; then
+            echo "  WARNING: $dir build failed, continuing..."
+        fi
     fi
 done
+
+echo '==> Installing...'
+for dir in include common properties libsync platforms hardware ui gralloc egl glesv1 glesv2 hwc2 utils; do
+    if [ -d "$dir" ] && [ -f "$dir/Makefile" ]; then
+        make -C "$dir" install 2>/dev/null || echo "  (skipped $dir install)"
+    fi
+done
+
+# Fix execstack on libhybris-common (needed for GTK3 and other complex apps)
+echo '==> Clearing execstack on libhybris-common...'
+patchelf --clear-execstack /usr/local/lib/libhybris-common.so.1.0.0 2>/dev/null || true
+
 ldconfig
 
-echo "==> Installed libraries:"
-ls /usr/local/lib/libEGL.so /usr/local/lib/libGLESv2.so /usr/local/lib/libhybris-common.so 2>/dev/null
+echo '==> Installed libraries:'
+ls /usr/local/lib/libEGL.so /usr/local/lib/libGLESv2.so /usr/local/lib/libhybris-common.so 2>/dev/null || echo "WARNING: some libraries missing"
 
-echo "==> Done"
+echo '==> Done'
 BUILDEOF
 chmod 755 '$CHROOT_DIR/tmp/build-lindroid.sh'"
 
