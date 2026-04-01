@@ -16,10 +16,18 @@ if ! su -c "[ -d '$CHROOT_DIR/usr' ]"; then
     exit 1
 fi
 
-# Set up bind mounts (idempotent -- skips if already mounted)
+# Check if a path is already mounted by grepping /proc/mounts.
+# Works for both directory and file bind mounts (unlike mountpoint -q).
+is_mounted() {
+    su -c "grep -q ' $1 ' /proc/mounts 2>/dev/null"
+}
+
+# Bind mount with slave propagation (host→chroot only, no feedback).
+# Without rslave, shared propagation causes exponential mount storms.
+# Uses toybox's -o syntax (--make-rslave is not supported on Android).
 mount_if_needed() {
     local src="$1" dst="$2"
-    su -c "mountpoint -q '$dst' 2>/dev/null || mount --bind '$src' '$dst'"
+    is_mounted "$dst" || su -c "mount -o bind,rslave '$src' '$dst'"
 }
 
 su -c "mkdir -p '$CHROOT_DIR/dev' '$CHROOT_DIR/proc' '$CHROOT_DIR/sys' \
@@ -41,14 +49,15 @@ mount_if_needed /linkerconfig "$CHROOT_DIR/linkerconfig"
 
 # /apex needs recursive bind mount because each APEX is a separate loop mount.
 # Plain mount --bind gives empty directories for the individual APEXes.
-su -c "mountpoint -q '$CHROOT_DIR/apex' 2>/dev/null || mount --rbind /apex '$CHROOT_DIR/apex'"
+# rslave is critical here to prevent propagation storms (~40 submounts).
+is_mounted "$CHROOT_DIR/apex" || su -c "mount -o rbind,rslave /apex '$CHROOT_DIR/apex'"
 
 # On some devices (e.g. OnePlus 9 / Android 14), vendor's libbinder.so is
 # older and missing symbols that system's libbinder_ndk.so expects
 # (openDeclaredPassthroughHal). Overlay with system's copy.
 if su -c "[ -f /system/lib64/libbinder.so ] && [ -f '$CHROOT_DIR/vendor/lib64/libbinder.so' ]"; then
-    su -c "mountpoint -q '$CHROOT_DIR/vendor/lib64/libbinder.so' 2>/dev/null || \
-           mount --bind /system/lib64/libbinder.so '$CHROOT_DIR/vendor/lib64/libbinder.so'"
+    is_mounted "$CHROOT_DIR/vendor/lib64/libbinder.so" || \
+        su -c "mount --bind /system/lib64/libbinder.so '$CHROOT_DIR/vendor/lib64/libbinder.so'" 2>/dev/null || true
 fi
 
 # Mount compositor's data dir for Wayland socket access
