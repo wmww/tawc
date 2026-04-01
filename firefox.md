@@ -2,7 +2,7 @@
 
 ## Current Status (2026-03-31)
 
-Firefox 149 (Arch Linux ARM aarch64) is installed in the chroot and **renders via SHM buffers** visible in the compositor (with magenta SHM tint). Requires the wayland-flush-shim (`client/wayland-flush-shim/`) to work around a libmozwayland flush issue.
+Firefox 149 (Arch Linux ARM aarch64) is installed in the chroot and **renders via SHM buffers** visible in the compositor (with magenta SHM tint). Requires `setenforce 0` (SELinux permissive) because Firefox/GDK's memfds bypass the LD_PRELOAD SELinux shim (see notes.md).
 
 **GTK3 GPU rendering is fully working** - confirmed with gtk3-widget-factory rendering via AHB buffers through our tawc-egl wrapper.
 
@@ -48,17 +48,18 @@ Firefox 149 (Arch Linux ARM aarch64) is installed in the chroot and **renders vi
 
 **Fix:** Frame callbacks are sent to all toplevel surface trees (which includes subsurfaces) via `send_frames_surface_tree()`.
 
-### 6. Wayland flush shim for Firefox (CRITICAL)
+### 6. Calloop event loop (2026-04-01 refactor)
 
-**Problem:** Firefox's `libmozwayland.so` manages its own Wayland output buffer but never calls `wl_display_flush()`, leaving encoded attach+commit messages stuck in client-side memory. The compositor never receives them.
+**Problem:** The original raw `poll()` event loop didn't properly integrate with
+smithay's Wayland dispatch. This led to missed client messages and a cascade of
+hacks: double `dispatch_clients()` calls, output mode toggling to "wake up" clients,
+and an LD_PRELOAD flush shim for Firefox.
 
-**Fix:** `client/wayland-flush-shim/flush-shim.c` — an LD_PRELOAD library that hooks `wl_display_connect()` to capture the display pointer, then starts a background thread calling `wl_display_flush()` (resolved via `dlsym(RTLD_DEFAULT)` to use libmozwayland.so's own implementation) every 100ms.
-
-### 7. Compositor event loop polling
-
-**Problem:** The sleep-based compositor loop didn't properly poll the wayland-server's display fd, causing `dispatch_clients()` to miss client messages.
-
-**Fix:** Replaced `sleep(16ms)` with `poll()` on both the display fd and listener fd with a 16ms timeout. Also added periodic `output.change_current_state()` to send wl_output events that wake up client event loops.
+**Fix:** Replaced with a proper calloop event loop (the standard smithay pattern).
+Three event sources: display fd (dispatch client messages + flush responses), listener
+socket (accept connections), frame timer (~60fps render loop). All the hacks were
+deleted. Firefox and GTK3 work without any shims — the real bug was SELinux blocking
+memfd sharing, not the event loop.
 
 ## Key Findings
 

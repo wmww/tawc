@@ -3,6 +3,34 @@
 This file contains design, architecture and implementation notes, primarily written by
 and for LLM agents.
 
+## Compositor Architecture (2026-04-01)
+
+The compositor (`server/compositor/src/`) is split into:
+
+- **lib.rs** — JNI entry points + `run_compositor()` which sets up EGL, Wayland display,
+  output, and listening socket, then hands off to the event loop.
+- **event_loop.rs** — Calloop-based event loop with three sources: Wayland display fd
+  (dispatch client messages), listener socket (accept connections), frame timer (~60fps
+  render loop). This is the standard smithay pattern.
+- **compositor.rs** — `TawcState` (Wayland protocol state) and all smithay handler trait
+  impls. Does NOT hold rendering state.
+- **render.rs** — `RenderState` (GPU/EGL state), buffer import (AHB + SHM → GL textures),
+  frame rendering, frame callbacks, and the SHM magenta tint shader.
+- **egl_android.rs** — Raw EGL context creation and `AndroidNativeSurface` for smithay.
+- **ahb.rs** — AHardwareBuffer allocation, CPU fill, and cross-process sharing.
+- **gl_import.rs** — Import AHB as GlesTexture via EGL/GL extensions.
+- **protocol.rs** — wayland-scanner generated code for tawc_buffer_v1.
+
+**Key design decisions:**
+- `TawcState` (protocol) and `RenderState` (GPU) are separate structs. Both live in
+  `LoopData` which calloop passes to all callbacks.
+- `dispatch_clients()` is called in BOTH the display fd callback AND the frame timer.
+  The fd callback handles the fast path; the timer catch ensures no messages are delayed
+  by more than one frame. Do not remove either call.
+- Per-surface state structs (`SurfaceAhbState`, `SurfaceShmState`) live in TawcState
+  but contain texture fields written by render.rs. This cross-cutting is documented in
+  compositor.rs and is intentional (avoids duplicate lookup tables).
+
 ## Building and Deploying (2026-03-31)
 
 **Required environment variables for building:**
@@ -56,6 +84,13 @@ that makes the memfd shareable with any app, with full normal memfd semantics pr
 Requires root for `fsetxattr`. Build with `cd client/memfd-selinux-shim && ./build`.
 
 Usage: `LD_PRELOAD=/tmp/memfd-selinux-shim/libmemfd-selinux-shim.so weston-simple-shm`
+
+**Shim limitation (discovered 2026-04-01):** The shim intercepts the libc `memfd_create()`
+wrapper, but GDK/GLib calls `syscall(SYS_memfd_create, ...)` directly, bypassing the
+LD_PRELOAD. This means GTK3/GTK4 apps' SHM pools get the wrong SELinux label. Confirmed
+with strace: `wayland-cursor` memfd gets relabeled (intercepted), but `gdk-wayland` memfd
+does not (direct syscall). Workaround: `setenforce 0` for testing. Proper fix: intercept
+`syscall()` itself, or run clients as the compositor's UID.
 
 **Without root:** Run client processes as the same app/UID as the compositor. Their memfds
 natively get `appdomain_tmpfs` label. No shim needed. This is the path to proot from
