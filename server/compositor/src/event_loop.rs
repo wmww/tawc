@@ -114,6 +114,10 @@ pub fn run(
             TouchEvent::Down { id, x, y, time } => {
                 let location: Point<f64, smithay::utils::Logical> =
                     (x as f64 / touch_scale, y as f64 / touch_scale).into();
+                // Set keyboard focus on touch to the target surface
+                if let (Some((ref surface, _)), Some(keyboard)) = (&focus, data.state.seat.get_keyboard()) {
+                    keyboard.set_focus(&mut data.state, Some(surface.clone()), serial);
+                }
                 touch.down(
                     &mut data.state,
                     focus,
@@ -232,7 +236,7 @@ pub fn run(
         data.state.popup_manager.cleanup();
         data.state.text_input_state.cleanup();
 
-        // Update text input focus if toplevels changed (new/removed)
+        // Update keyboard and text input focus if toplevels changed
         let new_focus = data.state.toplevels.iter()
             .find(|t| t.alive())
             .map(|t| t.wl_surface().clone());

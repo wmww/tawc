@@ -26,7 +26,11 @@ The `done` event is critical for atomicity. All preedit/commit/delete events are
 
 ### What about wl_keyboard?
 
-Firefox works without it today (touch input, rendering, etc. all function). wl_keyboard is NOT required for text-input-v3 to work — text-input-v3 is a self-contained protocol for text entry. The gap without wl_keyboard is non-text keys: arrow keys, escape, tab, Ctrl+C/V/Z, and other keyboard shortcuts have no text-input-v3 equivalent. This is a real limitation but it's orthogonal to text input and can be added later as a separate concern.
+**Update**: wl_keyboard IS required. Testing showed Firefox won't send text-input-v3 `enable` unless the seat has keyboard capability and the surface has keyboard focus. Without keyboard focus, clicking a text field in Firefox opens the autocomplete dropdown but never enables text input. The seat must advertise keyboard capability (`seat.add_keyboard()`) and the compositor must send `wl_keyboard.enter` to the focused surface.
+
+xkbcommon needs XKB data files to initialize. On Android, set `XKB_CONFIG_ROOT` to point at the chroot's xkeyboard-config data before calling `add_keyboard()`.
+
+The gap without full key event support is non-text keys: arrow keys, escape, Ctrl+C/V/Z, and other keyboard shortcuts have no text-input-v3 equivalent. This is a real limitation but orthogonal to text input and can be added later.
 
 For special keys that Android IMEs do send (backspace, enter), we can handle them through text-input-v3:
 - **Backspace**: `delete_surrounding_text(1, 0)` + `done`
@@ -210,10 +214,27 @@ This requires a reverse JNI channel: Rust compositor calls back into Kotlin. Use
 
 See [plan.md](../plan.md) phases 6-7 for the implementation steps.
 
+## Testing Results
+
+Text input was tested end-to-end on a real device (OnePlus 9 Pro, LineageOS):
+
+- **Working**: Full pipeline: Gboard → InputConnection → JNI → calloop channel → zwp_text_input_v3 → Firefox. Typed "claude.ai" and searched successfully.
+- **Composing text**: Gboard sends `setComposingText` for each keystroke, then `commitText` when a word is finalized (e.g. after period/space). This maps correctly to preedit_string/commit_string.
+- **Keyboard show/hide**: Keyboard appears when Firefox URL bar is focused (Firefox sends text_input enable), disappears when unfocused.
+- **Backspace**: Works via `sendKeyEvent(KEYCODE_DEL)` → `deleteSurroundingText(1,0)`.
+- **Auto-capitalization**: Gboard auto-capitalizes (e.g. "claude" → "Claude"). This is Gboard behavior, not compositor behavior.
+
+### Known Issues
+
+- **OnceLock stale channels**: The original OnceLock-based channel pattern caused stale senders after compositor restart. Fixed by switching to Mutex<Option<Sender>>.
+- **Coordinate estimation**: Simulated touch via `adb shell input tap` uses physical pixel coordinates. The compositor divides by scale (2x) to get logical coords sent to Wayland clients. When estimating keyboard key positions from screenshots, remember the image is at physical resolution but Firefox layouts at logical resolution.
+
 ## Open Questions
 
-1. **Smithay fork or fully custom?** We're bypassing Smithay's `TextInputManagerState` because it requires an input-method client. The protocol is simple enough that a custom impl is probably cleaner than fighting Smithay's architecture.
+1. ~~**Smithay fork or fully custom?**~~ Resolved: custom implementation bypassing Smithay's input-method-coupled TextInputManagerState.
 
-2. **Surrounding text synchronization**: `InputConnection.getTextBeforeCursor()` is called by the IME on its own thread. The surrounding text state comes from the Wayland client (compositor thread). Need thread-safe access — probably an `AtomicPtr` or `Mutex`-guarded string that the compositor updates and the InputConnection reads.
+2. **Surrounding text synchronization**: `InputConnection.getTextBeforeCursor()` is called by the IME on its own thread. Currently not implemented — Gboard works without it but some IMEs may need it for accurate predictions.
 
-3. **Key repeat**: Android IME handles its own repeat (holding backspace sends repeated `sendKeyEvent`). Since we're not using wl_keyboard's repeat_info mechanism, this should Just Work — each repeated event from Android gets translated individually.
+3. **Key repeat**: Android IME handles its own repeat (holding backspace sends repeated `sendKeyEvent`). Each repeated event from Android gets translated individually — this works.
+
+4. **Content type hints**: `set_content_type` from Firefox is received but not yet forwarded to Android's EditorInfo. Would improve keyboard layout (URL keyboard for URL bars, etc.).

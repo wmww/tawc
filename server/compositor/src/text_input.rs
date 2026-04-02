@@ -9,7 +9,7 @@
 //! directly via reverse JNI.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use log::info;
 use smithay::reexports::calloop::channel;
@@ -42,21 +42,19 @@ pub enum TextInputEvent {
     DeleteSurroundingText { before: u32, after: u32 },
 }
 
-/// Global sender for text input events from JNI.
-static TEXT_INPUT_SENDER: OnceLock<channel::Sender<TextInputEvent>> = OnceLock::new();
+/// Global sender for text input events from JNI. Replaced on compositor restart.
+static TEXT_INPUT_SENDER: Mutex<Option<channel::Sender<TextInputEvent>>> = Mutex::new(None);
 
 /// Create the calloop channel pair. Returns the receiver for the event loop.
 pub fn create_text_input_channel() -> channel::Channel<TextInputEvent> {
     let (sender, ch) = channel::channel();
-    TEXT_INPUT_SENDER
-        .set(sender)
-        .unwrap_or_else(|_| log::warn!("Text input channel already initialized"));
+    *TEXT_INPUT_SENDER.lock().unwrap() = Some(sender);
     ch
 }
 
 /// Send a text input event from JNI. No-op if the channel isn't set up yet.
 pub fn send_text_input_event(event: TextInputEvent) {
-    if let Some(sender) = TEXT_INPUT_SENDER.get() {
+    if let Some(sender) = TEXT_INPUT_SENDER.lock().unwrap().as_ref() {
         let _ = sender.send(event);
     }
 }
@@ -158,13 +156,14 @@ impl TextInputState {
         info!("text_input: commit (enable={}, disable={})",
             state.pending_enable, state.pending_disable);
 
-        if state.pending_enable {
-            self.enabled = true;
-            show_keyboard();
-        }
+        // Per text-input-v3 spec, enable and disable are mutually exclusive
+        // within a single commit. If both are set, disable wins.
         if state.pending_disable {
             self.enabled = false;
             hide_keyboard();
+        } else if state.pending_enable {
+            self.enabled = true;
+            show_keyboard();
         }
 
         state.commit_count += 1;
@@ -216,7 +215,7 @@ impl TextInputState {
         }
 
         let surface = match &self.focused_surface {
-            Some(s) => s.clone(),
+            Some(s) => s,
             None => return,
         };
 

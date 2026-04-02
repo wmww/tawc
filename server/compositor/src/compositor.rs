@@ -24,6 +24,7 @@ use smithay::delegate_shm;
 use smithay::delegate_xdg_decoration;
 use smithay::delegate_xdg_shell;
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::input::keyboard::XkbConfig;
 use smithay::reexports::wayland_server::protocol::wl_seat;
 use smithay::reexports::wayland_server::protocol::wl_buffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -146,8 +147,12 @@ impl TawcState {
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "tawc");
-        // Advertise pointer capability so clients (esp. Firefox) will create windows
+        // Advertise pointer, keyboard, and touch capabilities
         seat.add_pointer();
+        // xkbcommon needs XKB data files; point it at the chroot's copy
+        std::env::set_var("XKB_CONFIG_ROOT", "/data/local/arch-chroot/usr/share/xkeyboard-config-2");
+        seat.add_keyboard(XkbConfig::default(), 200, 25)
+            .expect("Failed to add keyboard to seat");
         seat.add_touch();
 
         dh.create_global::<Self, TawcBufferManagerV1, ()>(1, ());
@@ -219,6 +224,11 @@ impl XdgShellHandler for TawcState {
             state.size = Some((w, h).into());
         });
         surface.send_configure();
+        // Set keyboard focus to the new toplevel so text input works
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
+        }
         self.toplevels.push(surface);
     }
 
