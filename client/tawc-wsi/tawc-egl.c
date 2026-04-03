@@ -1440,3 +1440,46 @@ EGLBoolean eglWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags)
     if (real_eglWaitSync) return real_eglWaitSync(stock_display, sync, flags);
     return EGL_TRUE;
 }
+
+/* ------------------------------------------------------------------ */
+/* Test helper -- creates a tawc_surface without compositor protocol   */
+/* ------------------------------------------------------------------ */
+
+EGLSurface tawc_create_test_surface(EGLDisplay dpy, EGLConfig config,
+                                     int width, int height)
+{
+    if (ensure_init() < 0) return EGL_NO_SURFACE;
+
+    pthread_mutex_lock(&surfaces_mutex);
+    struct tawc_surface *ts = NULL;
+    for (int i = 0; i < MAX_SURFACES; i++) {
+        if (!surfaces[i].in_use) {
+            ts = &surfaces[i];
+            break;
+        }
+    }
+    if (!ts) {
+        pthread_mutex_unlock(&surfaces_mutex);
+        log_msg("tawc_create_test_surface: no free slot");
+        return EGL_NO_SURFACE;
+    }
+
+    memset(ts, 0, sizeof(*ts));
+    ts->width = width;
+    ts->height = height;
+    ts->side_fd = -1;
+    ts->config = config;
+    ts->in_use = 1;
+    pthread_mutex_unlock(&surfaces_mutex);
+
+    EGLint pb_attrs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
+    ts->real_pbuffer = real_eglCreatePbufferSurface(stock_display, config, pb_attrs);
+    if (ts->real_pbuffer == EGL_NO_SURFACE) {
+        log_msg("tawc_create_test_surface: pbuffer failed");
+        ts->in_use = 0;
+        return EGL_NO_SURFACE;
+    }
+
+    log_msg("tawc_create_test_surface: %dx%d", width, height);
+    return (EGLSurface)ts;
+}
