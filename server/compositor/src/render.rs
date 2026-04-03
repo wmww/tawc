@@ -13,7 +13,7 @@ use smithay::backend::renderer::gles::{
     GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture,
     Uniform, UniformName, UniformType, UniformValue,
 };
-use smithay::backend::renderer::{Bind, Color32F, Frame, ImportMemWl, Renderer};
+use smithay::backend::renderer::{Bind, Frame, ImportMemWl, Renderer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Point, Rectangle, Size, Transform};
@@ -23,6 +23,7 @@ use smithay::wayland::compositor::{
 };
 
 use crate::ahb::AhbBuffer;
+use crate::background::BackgroundRenderer;
 use crate::compositor::TawcState;
 use crate::gl_import::AhbTextureImporter;
 
@@ -35,6 +36,7 @@ pub struct RenderState {
     pub egl_surface: EGLSurface,
     pub importer: AhbTextureImporter,
     pub shm_tint_shader: Option<GlesTexProgram>,
+    pub background: Option<BackgroundRenderer>,
     pub raw_egl_display: *const std::ffi::c_void,
     pub raw_egl_context: *const std::ffi::c_void,
 }
@@ -300,17 +302,16 @@ pub fn render_frame(
     state: &TawcState,
     render: &mut RenderState,
     output_size: Size<i32, smithay::utils::Physical>,
-    frame_count: u64,
+    _frame_count: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut target = render.renderer.bind(&mut render.egl_surface)?;
 
-    // Animated background
-    let t = (frame_count as f32) / 240.0;
-    let gray = (t.sin() * 0.15 + 0.2).clamp(0.0, 1.0);
-    let bg_color = Color32F::new(gray * 0.3, gray * 0.1, gray * 0.3, 1.0);
-
     let mut frame = render.renderer.render(&mut target, output_size, Transform::Normal)?;
-    frame.clear(bg_color, &[Rectangle::from_size(output_size)])?;
+
+    // Background gradient (black to dark turquoise)
+    if let Some(ref bg) = render.background {
+        bg.draw(&mut frame, output_size.w, output_size.h)?;
+    }
 
     let screen_h = output_size.h;
 

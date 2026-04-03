@@ -247,7 +247,9 @@ pub fn run(
             if t.alive() {
                 true
             } else {
-                data.state.surface_shm.remove(t.wl_surface());
+                let wl = t.wl_surface();
+                data.state.surface_shm.remove(wl);
+                data.state.surface_ahb.remove(wl);
                 false
             }
         });

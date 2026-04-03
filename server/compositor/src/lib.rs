@@ -21,6 +21,7 @@ mod gl_import;
 mod protocol;
 mod compositor;
 mod render;
+mod background;
 mod event_loop;
 mod input;
 mod text_input;
@@ -286,12 +287,14 @@ fn run_compositor(
     info!("EGL + GlesRenderer + AHB importer ready");
 
     let shm_tint_shader = render::compile_shm_tint_shader(&mut renderer);
+    let background = background::BackgroundRenderer::new(&mut renderer);
 
     let render_state = RenderState {
         renderer,
         egl_surface,
         importer,
         shm_tint_shader,
+        background,
         raw_egl_display: raw_display,
         raw_egl_context: raw_context,
     };
