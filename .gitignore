@@ -14,5 +14,8 @@ target/
 .idea/
 *.iml
 
+# External repos
+libhybris/
+
 # OS
 .DS_Store

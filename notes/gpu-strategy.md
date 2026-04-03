@@ -63,6 +63,9 @@ Same driver = buffer fds are natively compatible. No cross-driver import needed.
 allowing glibc programs to load bionic-linked Android shared libraries. Used by Sailfish
 OS and Ubuntu Touch. **Actively maintained** -- Android 16 support merged March 2026.
 
+We use [our fork](https://github.com/wmww/libhybris) with stock Android TLS fixes.
+Local checkout: `./libhybris`. Build/deploy: `bash client/build-libhybris`.
+
 Loading chain in a client:
 ```
 App (glibc-linked)

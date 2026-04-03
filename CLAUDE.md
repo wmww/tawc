@@ -48,8 +48,13 @@ I'm letting you play with my phone, try not to fuck it up.
 ## Organization
 Avoid junking up devices (delete screenshots when done). On the phone, things stay in `/data/local/arch-chroot/`, `/data/local/claude-debug` (**NOT** `/data/local/tmp`).
 
+## External Repos
+- **libhybris fork:** https://github.com/wmww/libhybris -- clone to `./libhybris` if needed (`git clone https://github.com/wmww/libhybris.git ./libhybris`). Already in `.gitignore`.
+- **Build libhybris from local source:** `bash client/build-libhybris [--clean]` — syncs `./libhybris` to phone and builds inside chroot.
+
 ## Quick Reference
-- **Build:** `cd server && JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew assembleDebug`
+- **Build (compositor):** `cd server && JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew assembleDebug`
+- **Build (libhybris):** `bash client/build-libhybris` (or `--clean` to reconfigure). Edit `./libhybris` locally, script syncs to phone.
 - **Install & launch:** `adb install -r server/app/build/outputs/apk/debug/app-debug.apk && adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.MainActivity`
 - **Chroot:** `adb push client/arch-chroot-run /data/local/tmp/ && adb shell su -c "/system_ext/bin/bash /data/local/tmp/arch-chroot-run"` (SELinux must be permissive: `adb shell su -c setenforce 0`)
 - **Run Wayland app:** `adb shell su -c "/system_ext/bin/bash /data/local/tmp/arch-chroot-run '<command>'"` (env vars set by profile)

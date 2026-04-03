@@ -57,6 +57,18 @@ Client-side WSI layer:
 - Links against libhybris
 - Installed in chroot's library path
 
+## libhybris
+
+Our fork lives at `./libhybris` (clone with `git clone https://github.com/wmww/libhybris.git ./libhybris`).
+
+Build and install to the phone's chroot:
+```bash
+bash client/build-libhybris          # incremental build
+bash client/build-libhybris --clean   # full reconfigure
+```
+
+This tars the local `./libhybris` source, pushes it to the phone, and builds inside the chroot. Edit `./libhybris` locally, then re-run the script to deploy.
+
 ## Debug App & Integration Tests
 
 See [testing.md](testing.md) for full details.

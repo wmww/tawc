@@ -1,0 +1,145 @@
+#!/bin/bash
+# Build and install our fork of libhybris with stock Android support:
+#   - TLS thunk patcher (from lindroid-drm, for bionic TLS slot redirection)
+#   - bionic_tls allocation (our fix for stock Android firmware)
+#   - pthread_create thread wrapping (bionic_tls on new threads)
+#
+# Run from the host (not the phone). Syncs local ./libhybris to the phone
+# and builds inside the chroot.
+#
+# Usage: bash client/build-libhybris [--clean]
+#   --clean: force full reconfigure (otherwise does incremental build)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LIBHYBRIS_DIR="$REPO_DIR/libhybris"
+CHROOT_DIR="/data/local/arch-chroot"
+
+if [ ! -d "$LIBHYBRIS_DIR/hybris" ]; then
+    echo "ERROR: $LIBHYBRIS_DIR not found or missing hybris/ directory."
+    echo "Clone it: git clone https://github.com/wmww/libhybris.git ./libhybris"
+    exit 1
+fi
+
+CLEAN=0
+if [ "${1:-}" = "--clean" ]; then
+    CLEAN=1
+fi
+
+# Step 1: Sync local libhybris source to the phone's chroot
+echo "==> Syncing libhybris source to phone..."
+TAR_TMP=$(mktemp /tmp/libhybris-src.XXXXXX.tar.gz)
+tar czf "$TAR_TMP" -C "$REPO_DIR" --exclude='.git' --exclude='autom4te.cache' libhybris/
+adb push "$TAR_TMP" /data/local/tmp/libhybris-src.tar.gz
+rm -f "$TAR_TMP"
+
+adb shell su -c "cp /data/local/tmp/libhybris-src.tar.gz '$CHROOT_DIR/tmp/libhybris-src.tar.gz'"
+
+# Step 2: Push arch-chroot-run and fix-headers if available
+adb push "$SCRIPT_DIR/arch-chroot-run" /data/local/tmp/
+if [ -f "$SCRIPT_DIR/fix-android-headers" ]; then
+    adb push "$SCRIPT_DIR/fix-android-headers" /data/local/tmp/
+    adb shell su -c "cp /data/local/tmp/fix-android-headers '$CHROOT_DIR/tmp/fix-android-headers'"
+fi
+
+# Step 3: Write the in-chroot build script
+adb shell su -c "cat > '$CHROOT_DIR/tmp/build-libhybris.sh'" << 'BUILDEOF'
+#!/bin/bash
+set -e
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TMPDIR=/tmp
+export HOME=/root
+export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+
+CLEAN=${1:-0}
+
+# Extract synced source
+echo '==> Extracting libhybris source...'
+cd /root
+rm -rf libhybris
+tar xzf /tmp/libhybris-src.tar.gz
+rm -f /tmp/libhybris-src.tar.gz
+
+# Ensure build deps
+echo '==> Checking build dependencies...'
+pacman -S --noconfirm --needed libtool wayland pkg-config autoconf automake patchelf 2>&1 | tail -3
+
+# Install android-headers if needed
+if ! pkg-config --exists android-headers 2>/dev/null; then
+    echo '==> Installing android-headers from Halium...'
+    cd /root
+    rm -rf android-headers
+    git clone --branch halium-11.0 --depth 1 https://github.com/Halium/android-headers.git
+    cd android-headers
+    sed -i 's/ANDROID_VERSION_MAJOR 11/ANDROID_VERSION_MAJOR 16/' android-version.h
+    sed -i 's/Version: 11.0.0/Version: 16.0.0/' android-headers.pc.in
+    make PREFIX=/usr/local install
+    echo "==> Android headers installed: $(pkg-config --modversion android-headers)"
+fi
+
+# Fix android headers for GCC compatibility
+if [ -x /tmp/fix-android-headers ]; then
+    /tmp/fix-android-headers
+fi
+
+cd /root/libhybris
+
+echo "==> Android headers version: $(pkg-config --modversion android-headers)"
+
+# Fix libsync for Android 16+ (version guard too restrictive)
+echo '==> Fixing libsync version guard...'
+sed -i 's/#if (ANDROID_VERSION_MAJOR >= 10) && (ANDROID_VERSION_MAJOR < 12)/#if (ANDROID_VERSION_MAJOR >= 10)/' hybris/libsync/sync.c
+
+cd /root/libhybris/hybris
+
+# Only run autogen+configure if no Makefile or --clean requested
+if [ ! -f Makefile ] || [ "$CLEAN" = "1" ]; then
+    echo '==> Running autogen.sh...'
+    ./autogen.sh 2>&1 | tail -5
+
+    echo '==> Configuring...'
+    ./configure \
+        --enable-arch=arm64 \
+        --enable-adreno-quirks \
+        --enable-property-cache \
+        --with-default-hybris-ld-library-path=/vendor/lib64/egl:/vendor/lib64/hw:/vendor/lib64:/system/lib64 \
+        --prefix=/usr/local 2>&1 | grep -E 'Android version|arch |prefix|Features'
+else
+    echo '==> Makefile exists, doing incremental build (use --clean to reconfigure)'
+fi
+
+echo '==> Building...'
+for dir in include common properties libsync platforms hardware ui gralloc egl glesv1 glesv2 hwc2 utils; do
+    if [ -d "$dir" ] && [ -f "$dir/Makefile" ]; then
+        echo "  Building $dir..."
+        if ! make -C "$dir" -j4 2>&1 | tail -3; then
+            echo "  WARNING: $dir build failed, continuing..."
+        fi
+    fi
+done
+
+echo '==> Installing...'
+for dir in include common properties libsync platforms hardware ui gralloc egl glesv1 glesv2 hwc2 utils; do
+    if [ -d "$dir" ] && [ -f "$dir/Makefile" ]; then
+        make -C "$dir" install 2>/dev/null || echo "  (skipped $dir install)"
+    fi
+done
+
+echo '==> Clearing execstack on libhybris-common...'
+patchelf --clear-execstack /usr/local/lib/libhybris-common.so.1.0.0 2>/dev/null || true
+
+ldconfig
+
+echo '==> Installed libraries:'
+ls /usr/local/lib/libEGL.so /usr/local/lib/libGLESv2.so /usr/local/lib/libhybris-common.so 2>/dev/null || echo "WARNING: some libraries missing"
+
+echo '==> Done'
+BUILDEOF
+
+# Step 4: Build inside chroot
+echo "==> Building libhybris inside chroot..."
+adb shell su -c "/system_ext/bin/bash /data/local/tmp/arch-chroot-run 'bash /tmp/build-libhybris.sh $CLEAN'"
+
+echo "==> libhybris build complete"

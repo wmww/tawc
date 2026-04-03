@@ -102,7 +102,7 @@ event, so buffer-based retain logic would immediately remove new toplevels.
 
 ## References
 
-- [libhybris/libhybris](https://github.com/libhybris/libhybris) -- bionic compatibility layer
+- [wmww/libhybris](https://github.com/wmww/libhybris) -- our fork of libhybris (bionic compatibility layer), local checkout at `./libhybris`
 - [Smithay](https://github.com/Smithay/smithay) -- Rust Wayland compositor library
 - [Xtr126/wlroots-android-bridge](https://github.com/Xtr126/wlroots-android-bridge)
 - [AHardwareBuffer NDK docs](https://developer.android.com/ndk/reference/group/a-hardware-buffer)
