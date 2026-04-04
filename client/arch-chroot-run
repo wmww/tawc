@@ -10,94 +10,92 @@ set -euo pipefail
 
 CHROOT_DIR="/data/local/arch-chroot"
 
-if ! su -c "[ -d '$CHROOT_DIR/usr' ]"; then
-    echo "Chroot not found at $CHROOT_DIR"
-    echo "Run arch-chroot-create first."
+# Build the setup + chroot command as a single su invocation to avoid
+# repeated su overhead (~15 su calls -> 1).
+read -r -d '' SETUP_SCRIPT << 'ENDSCRIPT' || true
+set -eu
+CHROOT_DIR="/data/local/arch-chroot"
+TAWC_DATA="/data/data/me.phie.tawc"
+
+if [ ! -d "$CHROOT_DIR/usr" ]; then
+    echo "Chroot not found at $CHROOT_DIR" >&2
+    echo "Run arch-chroot-create first." >&2
     exit 1
 fi
 
-# Check if a path is already mounted by grepping /proc/mounts.
-# Works for both directory and file bind mounts (unlike mountpoint -q).
-is_mounted() {
-    su -c "grep -q ' $1 ' /proc/mounts 2>/dev/null"
-}
+# Fast path: if /sys is mounted in the chroot, everything else should be too.
+# This avoids ~400ms of mount checks on repeated invocations.
+if ! grep -q " $CHROOT_DIR/sys " /proc/mounts 2>/dev/null; then
+    mkdir -p "$CHROOT_DIR/dev" "$CHROOT_DIR/proc" "$CHROOT_DIR/sys" \
+        "$CHROOT_DIR/vendor" "$CHROOT_DIR/system" "$CHROOT_DIR/system_ext" \
+        "$CHROOT_DIR/dev/pts" \
+        "$CHROOT_DIR/apex" "$CHROOT_DIR/linkerconfig" "$CHROOT_DIR/dev/binderfs"
 
-# Bind mount with slave propagation (host→chroot only, no feedback).
-# Without rslave, shared propagation causes exponential mount storms.
-# Uses toybox's -o syntax (--make-rslave is not supported on Android).
-mount_if_needed() {
-    local src="$1" dst="$2"
-    is_mounted "$dst" || su -c "mount -o bind,rslave '$src' '$dst'"
-}
+    MOUNTS=$(cat /proc/mounts)
 
-su -c "mkdir -p '$CHROOT_DIR/dev' '$CHROOT_DIR/proc' '$CHROOT_DIR/sys' \
-    '$CHROOT_DIR/vendor' '$CHROOT_DIR/system' '$CHROOT_DIR/system_ext' \
-    '$CHROOT_DIR/dev/pts' \
-    '$CHROOT_DIR/apex' '$CHROOT_DIR/linkerconfig' '$CHROOT_DIR/dev/binderfs'"
+    is_mounted() {
+        echo "$MOUNTS" | grep -q " $1 "
+    }
 
-mount_if_needed /dev "$CHROOT_DIR/dev"
-mount_if_needed /dev/pts "$CHROOT_DIR/dev/pts"
-# binderfs is needed for AHB recv/alloc (gralloc uses hwbinder).
-# /dev bind mount doesn't propagate binderfs submounts, so mount separately.
-mount_if_needed /dev/binderfs "$CHROOT_DIR/dev/binderfs"
-mount_if_needed /proc "$CHROOT_DIR/proc"
-mount_if_needed /sys "$CHROOT_DIR/sys"
-mount_if_needed /vendor "$CHROOT_DIR/vendor"
-mount_if_needed /system "$CHROOT_DIR/system"
-mount_if_needed /system_ext "$CHROOT_DIR/system_ext"
-mount_if_needed /linkerconfig "$CHROOT_DIR/linkerconfig"
+    # Bind mount with slave propagation (host->chroot only, no feedback).
+    # Without rslave, shared propagation causes exponential mount storms.
+    mount_if_needed() {
+        local src="$1" dst="$2"
+        is_mounted "$dst" || mount -o bind,rslave "$src" "$dst"
+    }
 
-# /apex needs recursive bind mount because each APEX is a separate loop mount.
-# Plain mount --bind gives empty directories for the individual APEXes.
-# rslave is critical here to prevent propagation storms (~40 submounts).
-is_mounted "$CHROOT_DIR/apex" || su -c "mount -o rbind,rslave /apex '$CHROOT_DIR/apex'"
+    mount_if_needed /dev "$CHROOT_DIR/dev"
+    mount_if_needed /dev/pts "$CHROOT_DIR/dev/pts"
+    # binderfs is needed for AHB recv/alloc (gralloc uses hwbinder).
+    # /dev bind mount doesn't propagate binderfs submounts, so mount separately.
+    mount_if_needed /dev/binderfs "$CHROOT_DIR/dev/binderfs"
+    mount_if_needed /proc "$CHROOT_DIR/proc"
+    mount_if_needed /sys "$CHROOT_DIR/sys"
+    mount_if_needed /vendor "$CHROOT_DIR/vendor"
+    mount_if_needed /system "$CHROOT_DIR/system"
+    mount_if_needed /system_ext "$CHROOT_DIR/system_ext"
+    mount_if_needed /linkerconfig "$CHROOT_DIR/linkerconfig"
 
-# Individual APEX loop mounts may not propagate into the rbind (they're private,
-# not shared). /system/lib64/libc.so symlinks into com.android.runtime, so if
-# that APEX didn't propagate, libhybris can't resolve bionic dependencies.
-# Explicitly bind-mount the runtime APEX if it's empty in the chroot.
-if su -c "[ -d /apex/com.android.runtime/lib64 ]" && ! su -c "[ -d '$CHROOT_DIR/apex/com.android.runtime/lib64' ]"; then
-    su -c "mount --rbind /apex/com.android.runtime '$CHROOT_DIR/apex/com.android.runtime'"
-fi
+    # /apex needs recursive bind mount because each APEX is a separate loop mount.
+    # rslave is critical here to prevent propagation storms (~40 submounts).
+    is_mounted "$CHROOT_DIR/apex" || mount -o rbind,rslave /apex "$CHROOT_DIR/apex"
 
-# On some devices (e.g. OnePlus 9 / Android 14), vendor's libbinder.so is
-# older and missing symbols that system's libbinder_ndk.so expects
-# (openDeclaredPassthroughHal). Overlay with system's copy.
-if su -c "[ -f /system/lib64/libbinder.so ] && [ -f '$CHROOT_DIR/vendor/lib64/libbinder.so' ]"; then
-    is_mounted "$CHROOT_DIR/vendor/lib64/libbinder.so" || \
-        su -c "mount --bind /system/lib64/libbinder.so '$CHROOT_DIR/vendor/lib64/libbinder.so'" 2>/dev/null || true
-fi
+    # Individual APEX loop mounts may not propagate into the rbind (they're private,
+    # not shared). /system/lib64/libc.so symlinks into com.android.runtime, so if
+    # that APEX didn't propagate, libhybris can't resolve bionic dependencies.
+    if [ -d /apex/com.android.runtime/lib64 ] && [ ! -d "$CHROOT_DIR/apex/com.android.runtime/lib64" ]; then
+        mount --rbind /apex/com.android.runtime "$CHROOT_DIR/apex/com.android.runtime"
+    fi
 
-# Mount compositor's data dir for Wayland socket access
-TAWC_DATA="/data/data/me.phie.tawc"
-if su -c "[ -d '$TAWC_DATA' ]"; then
-    su -c "mkdir -p '$CHROOT_DIR$TAWC_DATA'"
-    mount_if_needed "$TAWC_DATA" "$CHROOT_DIR$TAWC_DATA"
-fi
+    # On some devices (e.g. OnePlus 9 / Android 14), vendor's libbinder.so is
+    # older and missing symbols that system's libbinder_ndk.so expects
+    # (openDeclaredPassthroughHal). Overlay with system's copy.
+    if [ -f /system/lib64/libbinder.so ] && [ -f "$CHROOT_DIR/vendor/lib64/libbinder.so" ]; then
+        is_mounted "$CHROOT_DIR/vendor/lib64/libbinder.so" || \
+            mount --bind /system/lib64/libbinder.so "$CHROOT_DIR/vendor/lib64/libbinder.so" 2>/dev/null || true
+    fi
 
-# Ensure chroot environment fixes are in place (PATH, TMPDIR)
-# Android's /system/bin leaks into PATH and breaks everything otherwise
-if ! su -c "[ -f '$CHROOT_DIR/etc/profile.d/00-path.sh' ]"; then
-    su -c "cat > '$CHROOT_DIR/etc/profile.d/00-path.sh' << 'PROFEOF'
+    # Mount compositor's data dir for Wayland socket access
+    if [ -d "$TAWC_DATA" ]; then
+        mkdir -p "$CHROOT_DIR$TAWC_DATA"
+        mount_if_needed "$TAWC_DATA" "$CHROOT_DIR$TAWC_DATA"
+    fi
+
+    # Ensure chroot environment fixes are in place (PATH, TMPDIR)
+    # Android's /system/bin leaks into PATH and breaks everything otherwise
+    if [ ! -f "$CHROOT_DIR/etc/profile.d/00-path.sh" ]; then
+        cat > "$CHROOT_DIR/etc/profile.d/00-path.sh" << 'PROFEOF'
 # Fix PATH and TMPDIR for Android chroot
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export TMPDIR=/tmp
 export HOME=/root
 PROFEOF
-    chmod 644 '$CHROOT_DIR/etc/profile.d/00-path.sh'"
+        chmod 644 "$CHROOT_DIR/etc/profile.d/00-path.sh"
+    fi
 fi
 
-# Set up tawc Wayland environment so login shells can run Wayland clients.
-# These are generic (not app-specific). App-specific vars (e.g. MOZ_ENABLE_WAYLAND)
-# should be set at launch time.
-#
-# LD_PRELOAD must be set here (not before chroot entry) because it's a glibc .so
-# that would break bionic tools. Inside the chroot with the correct PATH, only
-# glibc tools run so this is safe.
-#
-# The wayland socket symlink is also created here because /tmp is the
-# XDG_RUNTIME_DIR and clients look for $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY.
-su -c "cat > '$CHROOT_DIR/etc/profile.d/01-tawc.sh' << 'PROFEOF'
+# Always write tawc profile (cheap, ensures it's up to date)
+cat > "$CHROOT_DIR/etc/profile.d/01-tawc.sh" << 'PROFEOF'
 # tawc Wayland compositor environment
 export WAYLAND_DISPLAY=wayland-0
 export XDG_RUNTIME_DIR=/tmp
@@ -105,12 +103,13 @@ export LD_LIBRARY_PATH=/tmp/tawc-wsi:/usr/local/lib
 export LD_PRELOAD=/tmp/memfd-selinux-shim/libmemfd-selinux-shim.so
 ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
 PROFEOF
-    chmod 644 '$CHROOT_DIR/etc/profile.d/01-tawc.sh'"
+chmod 644 "$CHROOT_DIR/etc/profile.d/01-tawc.sh"
+ENDSCRIPT
 
 if [ $# -gt 0 ]; then
-    # Run a command
-    su -c "chroot '$CHROOT_DIR' /bin/bash -lc '$*'"
+    su -c "$SETUP_SCRIPT
+chroot '$CHROOT_DIR' /bin/bash -lc '$*'"
 else
-    # Interactive shell
-    su -c "chroot '$CHROOT_DIR' /bin/bash -l"
+    su -c "$SETUP_SCRIPT
+chroot '$CHROOT_DIR' /bin/bash -l"
 fi
