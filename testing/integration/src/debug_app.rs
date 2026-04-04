@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::adb;
+use crate::chroot_process::ChrootProcess;
 
 const PROTOCOL_PREFIX: &str = "TAWC_DEBUG:";
 
@@ -13,7 +13,7 @@ const MIN_ACTION_DELAY: Duration = Duration::from_millis(50);
 
 /// A running instance of gtk3-debug-app with structured output capture.
 pub struct DebugApp {
-    process: std::process::Child,
+    process: ChrootProcess,
     /// All received protocol lines (without the TAWC_DEBUG: prefix).
     lines: Arc<Mutex<Vec<String>>>,
     /// Channel for new protocol lines as they arrive.
@@ -26,9 +26,9 @@ impl DebugApp {
     /// `gdk_gl` controls GTK3's GL usage: "gles:always" for hardware buffers, "disabled" for SHM.
     pub fn start(binary_path: &str, subcommand: &str, gdk_gl: &str) -> io::Result<Self> {
         let cmd = format!("GDK_GL={} {} {}", gdk_gl, binary_path, subcommand);
-        let mut child = adb::chroot_spawn(&cmd)?;
+        let mut proc = ChrootProcess::spawn(&cmd)?;
 
-        let stdout = child.stdout.take().expect("stdout was piped");
+        let stdout = proc.take_stdout().expect("stdout was piped");
         let lines = Arc::new(Mutex::new(Vec::new()));
         let lines_clone = lines.clone();
         let (tx, rx) = mpsc::channel();
@@ -52,8 +52,11 @@ impl DebugApp {
             }
         });
 
+        // Discover PGID now that stdout is being drained (so the process won't stall)
+        proc.ensure_pgid();
+
         Ok(Self {
-            process: child,
+            process: proc,
             lines,
             line_rx: rx,
         })
@@ -249,15 +252,9 @@ impl DebugApp {
             .filter(|l| l.starts_with("CURSOR_POS:"))
             .count()
     }
-}
 
-impl Drop for DebugApp {
-    fn drop(&mut self) {
-        // Kill the debug app inside the chroot. The nested shell chain
-        // (adb -> su -> bash -> chroot -> bash -> app) doesn't propagate
-        // signals reliably, so killall by name is the safest approach.
-        let _ = adb::chroot_run("killall gtk3-debug-app");
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+    /// Stop the debug app and all its children, verify it didn't crash.
+    pub fn stop(&mut self) -> Result<(), String> {
+        self.process.stop()
     }
 }

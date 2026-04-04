@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tawc_integration::{adb, chroot, compositor, debug_app::DebugApp};
+use tawc_integration::{adb, chroot, chroot_process::ChrootProcess, compositor, debug_app::DebugApp};
 
 extern "C" fn stop_compositor() {
     compositor::stop_if_started();
@@ -43,7 +43,7 @@ const TAP_TEXT_MID_Y: u32 = 250;
 
 #[test]
 fn test_text_input_and_backspace() {
-    let app = start_text_input("disabled");
+    let mut app = start_text_input("disabled");
 
     // Type multi-word text (covers basic input + spaces)
     adb::input_text("hello world").expect("Failed to send text");
@@ -61,11 +61,13 @@ fn test_text_input_and_backspace() {
         "Expected SHM buffer import in compositor logs (GDK_GL=disabled should use SHM)");
     assert!(!logs.contains("AHB imported as texture"),
         "Unexpected AHB buffer import (GDK_GL=disabled should not use hardware buffers)");
+
+    app.stop().expect("Debug app crashed or failed to stop cleanly");
 }
 
 #[test]
 fn test_click_cursor_positioning() {
-    let app = start_text_input("gles:always");
+    let mut app = start_text_input("gles:always");
 
     // Type text
     adb::input_text("abcdef").expect("Failed to send text");
@@ -107,6 +109,8 @@ fn test_click_cursor_positioning() {
     let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
     assert!(logs.contains("AHB imported as texture"),
         "Expected AHB buffer import in compositor logs (GDK_GL=gles:always should use hardware buffers)");
+
+    app.stop().expect("Debug app crashed or failed to stop cleanly");
 }
 
 const FIREFOX_CMD: &str = "GDK_GL=disabled MOZ_ENABLE_WAYLAND=1 MOZ_ACCELERATED=1 \
@@ -128,13 +132,19 @@ fn test_firefox_launches_with_hardware_buffers() {
               ~/.config/mozilla/firefox/*/lock"
     );
 
-    // Launch Firefox in the chroot (fire-and-forget spawn)
-    let _child = adb::chroot_spawn(FIREFOX_CMD).expect("Failed to spawn Firefox");
+    let mut firefox = ChrootProcess::spawn(FIREFOX_CMD)
+        .expect("Failed to spawn Firefox");
+    firefox.ensure_pgid();
 
-    // Poll logcat until we see an AHB import, meaning Firefox rendered a frame
+    // Poll logcat until we see an AHB import, meaning Firefox rendered a frame.
+    // Also check if Firefox crashed (chroot process exits early).
     let deadline = Instant::now() + FIREFOX_LAUNCH_TIMEOUT;
     let mut saw_ahb = false;
     while Instant::now() < deadline {
+        if !firefox.is_running() {
+            firefox.stop().ok();
+            panic!("Firefox crashed/exited before rendering");
+        }
         let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
         if logs.contains("AHB imported as texture") {
             saw_ahb = true;
@@ -142,9 +152,10 @@ fn test_firefox_launches_with_hardware_buffers() {
         }
         thread::sleep(Duration::from_millis(500));
     }
+    // Let Firefox finish opening its window before killing it
+    thread::sleep(Duration::from_millis(1000));
 
-    // Clean up Firefox before asserting so it doesn't linger on failure
-    let _ = adb::chroot_run("killall firefox");
+    firefox.stop().expect("Firefox process group failed to stop cleanly");
 
     assert!(saw_ahb,
         "Firefox did not produce hardware (AHB) buffer imports within {:?}",

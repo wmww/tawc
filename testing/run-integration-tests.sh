@@ -34,6 +34,10 @@ adb install -r server/app/build/outputs/apk/debug/app-debug.apk
 echo "=== Pushing arch-chroot-run ==="
 adb push client/arch-chroot-run /data/local/tmp/
 
+echo "=== Pushing pidfile helper ==="
+adb push testing/tawc-pidfile-exec /data/local/tmp/
+adb shell "su -c 'cp /data/local/tmp/tawc-pidfile-exec /data/local/arch-chroot/tmp/tawc-pidfile-exec && chmod +x /data/local/arch-chroot/tmp/tawc-pidfile-exec'"
+
 echo "=== Building WSI layer ==="
 bash client/tawc-wsi/build
 
