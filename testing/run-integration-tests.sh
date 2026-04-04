@@ -40,15 +40,9 @@ bash client/tawc-wsi/build
 echo "=== Building memfd shim ==="
 bash client/memfd-selinux-shim/build
 
-echo "=== Building debug app ==="
-bash testing/build-debug-app.sh
-
-echo "=== Starting compositor ==="
-adb shell am force-stop me.phie.tawc
-adb shell am start -n me.phie.tawc/.MainActivity
-sleep 3
-
 echo "=== Running integration tests ==="
+# Note: debug app build + deps are handled by the Rust test harness
+# (chroot::ensure_debug_app) with freshness caching.
 cd "$SCRIPT_DIR/integration"
 cargo test -- --nocapture --test-threads=1
 TEST_EXIT=$?

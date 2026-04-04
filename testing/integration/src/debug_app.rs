@@ -8,6 +8,9 @@ use crate::adb;
 
 const PROTOCOL_PREFIX: &str = "TAWC_DEBUG:";
 
+/// Minimum delay after each wait completes, so actions are visible on screen.
+const MIN_ACTION_DELAY: Duration = Duration::from_millis(50);
+
 /// A running instance of gtk3-debug-app with structured output capture.
 pub struct DebugApp {
     process: std::process::Child,
@@ -152,6 +155,88 @@ impl DebugApp {
             .iter()
             .filter(|l| l.starts_with("TEXT_CHANGED:"))
             .count()
+    }
+
+    /// Wait until `last_text()` equals `expected`, or timeout.
+    pub fn wait_for_text(&self, expected: &str, timeout: Duration) -> Result<String, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(text) = self.last_text() {
+                if text == expected {
+                    thread::sleep(MIN_ACTION_DELAY);
+                    return Ok(text);
+                }
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    format!(
+                        "Timeout waiting for text '{}' (last: {:?})",
+                        expected,
+                        self.last_text()
+                    )
+                })?;
+            // Wait for any new line, then re-check
+            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(format!(
+                        "Debug app exited waiting for text '{}' (last: {:?})",
+                        expected,
+                        self.last_text()
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Wait until `text_changed_count()` exceeds `prev_count`, or timeout.
+    /// Returns the new text value.
+    pub fn wait_for_text_change(&self, prev_count: usize, timeout: Duration) -> Result<String, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.text_changed_count() > prev_count {
+                thread::sleep(MIN_ACTION_DELAY);
+                return Ok(self.last_text().unwrap());
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    format!(
+                        "Timeout waiting for text change (count still {}, last: {:?})",
+                        prev_count,
+                        self.last_text()
+                    )
+                })?;
+            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Debug app exited waiting for text change".into());
+                }
+            }
+        }
+    }
+
+    /// Wait until `cursor_pos_count()` exceeds `prev_count`, or timeout.
+    pub fn wait_for_cursor_change(&self, prev_count: usize, timeout: Duration) -> Result<u32, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.cursor_pos_count() > prev_count {
+                thread::sleep(MIN_ACTION_DELAY);
+                return Ok(self.last_cursor_pos().unwrap());
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    format!("Timeout waiting for CURSOR_POS (count still {})", prev_count)
+                })?;
+            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Debug app exited waiting for cursor change".into());
+                }
+            }
+        }
     }
 
     /// Count how many CURSOR_POS events have been received so far.

@@ -1,8 +1,19 @@
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
 use crate::adb;
+
+static STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Stop the compositor if we started it. Called from the test shutdown hook.
+pub fn stop_if_started() {
+    if STARTED.load(Ordering::Relaxed) {
+        eprintln!("Stopping compositor...");
+        let _ = adb::shell("am force-stop me.phie.tawc");
+    }
+}
 
 /// Ensure the tawc compositor is running and visible on the phone.
 /// Restarts it if not running or if backgrounded/paused.
@@ -27,7 +38,21 @@ pub fn ensure_running() -> io::Result<()> {
     }
 
     adb::shell("am start -n me.phie.tawc/.MainActivity")?;
-    // Give it time to initialize EGL and create the Wayland socket
-    thread::sleep(Duration::from_secs(3));
+    // Poll for the Wayland socket to appear (compositor is ready)
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let output = adb::shell("test -e /data/local/arch-chroot/tmp/wayland-0 && echo ready")?;
+        if String::from_utf8_lossy(&output.stdout).contains("ready") {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Wayland socket did not appear within 10s",
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    STARTED.store(true, Ordering::Relaxed);
     Ok(())
 }
