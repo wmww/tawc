@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use log::{error, info};
+use smithay::reexports::wayland_server::Resource;
 
 use smithay::backend::input::TouchSlot;
 use smithay::input::touch::{DownEvent, MotionEvent, UpEvent};
@@ -247,12 +248,20 @@ pub fn run(
             if t.alive() {
                 true
             } else {
+                info!("Removing dead toplevel");
                 let wl = t.wl_surface();
                 data.state.surface_shm.remove(wl);
                 data.state.surface_ahb.remove(wl);
                 false
             }
         });
+
+        // Clean up AHB and SHM entries for surfaces whose client disconnected.
+        // The toplevel cleanup above only removes entries keyed by the toplevel's
+        // wl_surface, but AHB channels may be bound to different surfaces.
+        data.state.surface_ahb.retain(|surface, _| surface.is_alive());
+        data.state.surface_shm.retain(|surface, _| surface.is_alive());
+
         data.state.popup_manager.cleanup();
         data.state.text_input_state.cleanup();
 
