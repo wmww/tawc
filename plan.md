@@ -65,9 +65,42 @@ See [notes/text-input.md](notes/text-input.md) for design.
 See [notes/testing.md](notes/testing.md) for details.
 
 ## Vulkan WSI
-- Verify libhybris Vulkan with stock driver
-- Vulkan implicit layer using VK_ANDROID_external_memory_android_hardware_buffer
-- Test with vkcube, vkmark
+Buffer sharing uses the same AHB side-channel as EGL. The compositor doesn't need changes
+— it already imports AHBs as GL textures regardless of how clients rendered them.
+
+**Verify libhybris Vulkan basics**
+- Load stock `libvulkan.so` via libhybris `android_dlopen()` from chroot
+- Enumerate physical devices and confirm correct GPU shows up
+- Check instance/device extensions, specifically `VK_ANDROID_external_memory_android_hardware_buffer`
+- Test: can we create a VkInstance + VkDevice + allocate a VkImage backed by an AHB?
+- Watch for bionic TLS issues (EGL needed a fix, Vulkan may need similar)
+
+**Vulkan implicit layer** (`client/tawc-vulkan/`)
+- Standard Khronos implicit layer (JSON manifest + shared library)
+- NOT using libhybris's built-in Vulkan WSI (it uses Sailfish's `android_wlegl` protocol)
+- Intercept instance-level: advertise `VK_KHR_wayland_surface`, hide `VK_KHR_android_surface`
+- Intercept device-level: implement `VK_KHR_swapchain`
+- Swapchain images: allocate AHBs, import as VkImage via
+  `VK_ANDROID_external_memory_android_hardware_buffer` + `VK_KHR_external_memory`
+- Present: explicit Vulkan fence/semaphore wait, then send AHB over side-channel socket
+  (same `tawc_buffer_v1` protocol + `tawc_ahb_channel_v1` as EGL layer)
+- Surface capabilities: report extent from `wl_egl_window` (or equivalent), FIFO present mode
+- Thread safety: Vulkan's threading model differs from EGL — `vkAcquireNextImageKHR` and
+  `vkQueuePresentKHR` may be called from different threads, side-channel fd needs guarding
+- Reference: ARM's [vulkan-wsi-layer](https://github.com/ArmSoM/vulkan-wsi-layer) for
+  layer structure (but it uses dmabufs which we can't use)
+
+**Open questions needing research**
+- GPU synchronization: EGL layer does `glFinish()` before sending AHB. Vulkan needs explicit
+  fence wait. Does AHB cross-process sync work correctly with Vulkan fences through libhybris?
+- Validation layers: may conflict with libhybris symbol interception. Test without them first.
+- Format negotiation: which VkFormats map to AHB formats the compositor can import?
+  (RGBA8 should work, others need testing)
+
+**Testing**
+- vkcube (basic triangle rendering + present)
+- vkmark (stress test various rendering patterns)
+- Real apps: Firefox WebGPU, games
 
 ## wl_keyboard (non-text keys)
 Arrow keys, escape, tab, Ctrl+C/V/Z need wl_keyboard (no text-input-v3 equivalent).
