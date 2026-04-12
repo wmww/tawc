@@ -304,6 +304,41 @@ the problem by calling `AHardwareBuffer_allocate` directly from the chroot
 (bypassing libhybris gralloc entirely), so this is the first time we've hit
 it.
 
+Note that libhybris has no gralloc implementation of its own —
+`hybris/gralloc/gralloc.c` is a dispatcher that forwards every call to one of
+three external backends (GRALLOC_COMPAT via `libui_compat_layer.so`, GRALLOC1
+via `hw_get_module`, GRALLOC0). Handle layout comes entirely from whichever
+backend gets picked; "using libhybris gralloc" means "using whatever the
+vendor library libhybris loaded for us".
+
+**Why we can't just use gralloc1 on the compositor side too.** The vendor
+EGL driver (`libEGL_adreno.so`) isn't statically bound to a gralloc version
+— it dispatches through whatever gralloc is reachable in its linker
+namespace. In the chroot, libhybris pairs the driver with vendor gralloc1
+(loaded via `hybris_gralloc`), so client EGL + client gralloc agree. In the
+compositor, the Android app linker namespace pairs the same driver binary
+with the system gralloc4 mapper (via `libnativewindow.so` →
+`libgralloctypes.so` → HIDL mapper). Two independent problems prevent us
+from realigning the compositor to gralloc1:
+
+1. **Sandbox.** `libhardware.so`, `libcutils.so`, and `libvndksupport.so`
+   aren't in `/system/etc/public.libraries.txt` on Android 16, so the
+   untrusted-app namespace refuses to dlopen them. We can't reach
+   `hw_get_module` from the compositor to load gralloc1 at all.
+2. **In-process validation.** Even if we could load gralloc1 ourselves,
+   the EGL driver in the same process resolves its *own* gralloc symbols
+   against the system gralloc4 mapper. When we hand it an ANWB wrapping a
+   gralloc1 handle, it validates through gralloc4 internally and rejects
+   (`BAD_BUFFER` / `gsl_memory_map_ext_fd failed`). We observed this
+   directly — wrapping the handle in an ANWB and feeding it to
+   `eglCreateImageKHR` without any gralloc-side retain produced the same
+   failure as every other import path.
+
+So the client has to produce gralloc4-shaped handles. `AHardwareBuffer_*` is
+the NDK path that allocates through whatever gralloc the system currently
+ships — on this device, gralloc4 — which is why Option 1 routes libhybris's
+dispatcher through it.
+
 ### Code state at the point we stopped
 
 - `server/compositor/protocols/android_wlegl.xml` — copy of the libhybris
@@ -375,9 +410,16 @@ Three viable routes, ranked by how fork-local they are:
 3. **Build `libui_compat_layer.so` from Halium.** Restores libhybris's
    preferred GRALLOC_COMPAT path (`graphic_buffer_allocator_allocate`), which
    routes through modern `GraphicBuffer` and produces gralloc4-compatible
-   handles. Needs AOSP / Halium build tooling; not fork-local. High effort
-   and device-specific — different Android versions want different compat
-   layers.
+   handles. `libui_compat_layer.so` is a Halium-specific C shim that
+   re-exports a stable subset of Android's C++ `libui.so`
+   (`GraphicBufferAllocator::allocate`, `GraphicBuffer` ctor/dtor, lock/unlock)
+   through an ABI libhybris can `dlopen`. It has to be compiled against a
+   specific Android version's libui inside that Android's build system, so
+   getting one requires Halium's AOSP manifest and build tooling (repo,
+   lunch, soong/make) targeted at Android 16. Halium ships it as part of
+   their system overlay; stock LineageOS has no reason to and doesn't. High
+   effort, device/version-specific, and has to be rebuilt per Android
+   release — strictly worse than Option 1 for our use case.
 
 A fourth option is to revert — keep `tawc-egl.c`. That loses the gains
 described at the top of this document (triple buffering, vsync, proper
@@ -389,3 +431,87 @@ Option 1. It's the smallest change that actually fixes the root cause, it's
 entirely within our libhybris fork, and it improves every other libhybris
 consumer in the chroot at the same time. The NDK path (`AHardwareBuffer_*`) is
 public and stable, so there's nothing device-specific to maintain.
+
+### Option 1 design notes
+
+**What changes, what doesn't.**
+
+- **libhybris:** add an AHB backend alongside GRALLOC_COMPAT / GRALLOC1 /
+  GRALLOC0 in `hybris/gralloc/gralloc.c`. Probe for `libnativewindow.so` at
+  init time (it's always present on Android ≥ 8, but we want a runtime check
+  so non-Android builds still compile). Prefer it over GRALLOC_COMPAT when
+  available.
+- **libhybris Wayland plugin:** no changes. `eglplatform_wayland.so` calls
+  the dispatcher (`hybris_gralloc_allocate`, `_lock`, `_release`, etc.) and
+  doesn't care which backend answers.
+- **`android_wlegl` protocol:** no changes. The protocol already carries
+  `native_handle_t` by splitting it across `create_handle(ints[])` +
+  `handle.add_fd(fd)` × N + `create_buffer(w, h, stride, format, usage, …)`.
+  AHB native handles serialize through this unchanged.
+- **Side-channel Unix socket:** gone. Everything the socket carries today
+  (the fds and a couple of ints) rides inside the `android_wlegl` messages
+  listed above. SCM_RIGHTS on the Wayland socket handles fd transfer;
+  width/height/stride/format/usage come through `create_buffer`, which is
+  exactly the set of fields `AHardwareBuffer_Desc` needs for
+  `createFromHandle`.
+- **`tawc_buffer_v1` protocol:** gone — Phase 4 cleanup proceeds as
+  originally planned.
+
+**Compositor-side cleanup enabled by modern handles.** Once handles are
+gralloc4-format, the compositor's `wlegl_import.c` can drop the manual
+`ANativeWindowBuffer` wrapping and switch to the public NDK path:
+
+```
+native_handle_t (from protocol fds + ints)
+  -> AHardwareBuffer_createFromHandle(desc, handle, REGISTER_HANDLE, &ahb)
+    -> eglGetNativeClientBufferANDROID(ahb)
+      -> eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID, client_buffer)
+        -> glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES)
+```
+
+That removes:
+- The hand-rolled `native_handle_t` allocator in `wlegl_import.c`
+- The manual `ANativeWindowBuffer` construction and refcount stubs
+- The `android_load_sphal_library` attempt and its dead gralloc1
+  retain/release path
+- The vendored halium android-headers under `server/compositor/native/include/`
+  (`hardware/`, `cutils/`, `system/`, `nativebase/`, `apex/`, `vndk/`, `log/`,
+  `android/`) — we only need the NDK surface from now on
+
+Roughly ~300 lines of compositor-side plumbing collapse into a few NDK calls
+that are guaranteed to produce the same result as the system's own AHB
+import path.
+
+**Pre-flight verification (before committing to the libhybris patch).**
+
+1. Confirm `libnativewindow.so` resolves inside libhybris's bionic bridge in
+   the chroot. It's a bionic library and libhybris already loads bionic libs
+   via its `hybris_hook` mechanism, but the symbols we need
+   (`AHardwareBuffer_allocate`, `_describe`, `_lock`, `_unlock`, `_acquire`,
+   `_release`, `_getNativeHandle`, `_createFromHandle`) all need to be
+   resolvable. Quick `dlopen` + `dlsym` smoke test before writing the
+   backend.
+2. Format/usage translation. `AHARDWAREBUFFER_FORMAT_*` values differ from
+   `HAL_PIXEL_FORMAT_*` constants, and AHB usage flags
+   (`AHARDWAREBUFFER_USAGE_*`) differ from gralloc1 producer/consumer
+   usage. Need a translation table similar to the existing
+   `GrallocUsageConversion.cpp` — both directions (caller passes gralloc
+   flags, AHB backend converts).
+3. Lock semantics. `AHardwareBuffer_lock` takes a fence fd and is
+   asynchronous; gralloc1 `lock` callers expect synchronous behaviour.
+   Passing `-1` as the fence and letting the driver wait is correct but
+   conservative — revisit if perf demands it.
+4. Refcount mapping:
+   - gralloc `retain` → `AHardwareBuffer_acquire`
+   - gralloc `release` → `AHardwareBuffer_release`
+   - `importBuffer(handle)` → `AHardwareBuffer_createFromHandle(…,
+     CLONE_HANDLE, …)` on the client side if we ever need to round-trip
+     handles locally.
+
+**Deferred for later.** Server-side allocation (Option 2) is still worth
+revisiting after Option 1 is stable, but for a narrower reason than "lower
+latency": it's a prerequisite for direct scanout / hardware overlay paths
+(where the buffer layout must match the display controller's requirements,
+and only the compositor knows those). For our current GL-composited
+SurfaceView architecture, server-side and client-side perform equivalently
+once buffer pools warm up, so there's no urgency.
