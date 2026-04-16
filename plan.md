@@ -71,18 +71,14 @@ See [notes/testing.md](notes/testing.md) for details.
 - ✅ Removed `patch_bionic_cfi()` and `<sys/mman.h>` include from `client/tawc-wsi/tawc-egl.c`
 - ✅ Integration tests pass (text-input, click-cursor, firefox); documented in `libhybris/TAWC_FORK.md`
 
-## Migrate to libhybris Wayland EGL Platform
-Replace our custom `tawc-egl.c` WSI layer and `tawc_buffer_v1` protocol with libhybris's built-in
-Wayland EGL platform (`eglplatform_wayland.so`) and `android_wlegl` buffer sharing protocol.
-Eliminates ~1500 lines of custom EGL wrapping, the GL shim libraries, `LD_LIBRARY_PATH` overrides,
-and our custom Wayland protocol. Gains triple buffering, vsync, damage forwarding, proper resize.
-See [issues/migrate-to-libhybris-wayland-platform.md](issues/migrate-to-libhybris-wayland-platform.md) for full plan.
-
-- Build libhybris with `--enable-wayland --enable-glvnd`
-- Implement `android_wlegl` protocol server-side in compositor (Rust)
-- C helper wraps libhybris gralloc + `RemoteWindowBuffer` for buffer import (native_handle_t → EGLClientBuffer → EGLImage)
-- Update chroot environment (`HYBRIS_EGLPLATFORM=wayland`, remove `/tmp/tawc-wsi`)
-- Delete tawc-egl.c, GL shims, tawc_buffer_v1 protocol, AHB side-channel socket code
+## Migrate to libhybris Wayland EGL Platform ✅ (2026-04-15)
+- ✅ libhybris built with `--enable-wayland --disable-wayland_serverside_buffers` (no glvnd; pulling Mesa GLX in breaks Firefox).
+- ✅ `android_wlegl` protocol dispatch in compositor (Rust + ~50-line C helper calling `AHardwareBuffer_createFromHandle`)
+- ✅ libhybris fork: AHB gralloc backend (`AHardwareBuffer_*` via libnativewindow.so) to produce modern-format handles — without it the stock vendor gralloc1 path returns handles the Android-side mapper rejects on Android 12+ devices. Plus shared-queue and `queueBuffer`-attach patches needed by Firefox/Adreno. See `libhybris/TAWC_FORK.md`.
+- ✅ Chroot env: `HYBRIS_EGLPLATFORM=wayland`, `LD_LIBRARY_PATH=/tmp/gl-shims:/usr/local/lib`.
+- ✅ Dead code removed: `client/tawc-wsi/` directory (tawc-egl.c ~1500 lines), `server/compositor/protocols/tawc_buffer_v1.xml`, `src/ahb.rs`, the Unix-socket side-channel, the `surface_ahb` HashMap, the legacy `import_pending_ahbs` render path.
+- ✅ Tiny GL shims (`client/libgl-shim.c`, `client/libglesv2-shim.c`, ~30 lines each) built as part of `bash client/build-libhybris`. Firefox/glxtest and GTK/libepoxy probe libGL.so/libGLESv2.so by name and need GLX symbols stubbed so Mesa GLX (broken in chroot) doesn't get reached. See `notes/wsi-layer.md` "Why GL shims still exist".
+- ✅ Integration tests (text-input SHM, click-cursor AHB, firefox AHB) all pass.
 
 ## Vulkan WSI
 libhybris has built-in Wayland Vulkan WSI (`vulkanplatform_wayland.so`). It intercepts

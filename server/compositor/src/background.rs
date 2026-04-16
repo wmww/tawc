@@ -10,7 +10,6 @@ use smithay::backend::renderer::gles::{
     GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture,
     Uniform, UniformName, UniformType, UniformValue,
 };
-use smithay::backend::renderer::Frame;
 use smithay::utils::{Point, Rectangle, Size, Transform};
 
 /// Dark turquoise target color in the upper-right corner (R, G, B).

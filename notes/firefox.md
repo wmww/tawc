@@ -1,7 +1,15 @@
 # Firefox
 
-Firefox 149 WebRender renders via GPU: WebRender -> tawc-egl -> libhybris -> Adreno 660.
-All surfaces (main content + GTK decorations) use AHB hardware buffers.
+Firefox 149 renders via the libhybris Wayland EGL platform against the Adreno
+660 vendor driver. Window chrome goes through AHB; fragments of content can
+fall back to SHM (no `zwp_linux_dmabuf_v1` support yet in this compositor).
+
+**Known issue:** on this chroot Firefox reliably lands on its "Firefox closed
+unexpectedly while starting" crash-recovery dialog at startup, so the visible
+content is usually that dialog rather than a real browser. Both the
+pre-migration `tawc-egl.c` WSI and the current libhybris WSI produce identical
+behaviour here — it's a Firefox-side startup problem (see
+`issues/firefox-startup-crash-dialog.md`), not a rendering bug.
 
 ## Launching
 
@@ -22,13 +30,13 @@ Firefox-specific env vars (not in the chroot profile because they're app-specifi
 
 ### Why GDK_GL=gles:always (not disabled)
 
-Previously `GDK_GL=disabled` was used, which made GTK render decorations/popups via
-SHM (CPU). With `gles:always`, GTK uses GLES via our EGL wrapper, producing AHB buffers
-for everything -- zero SHM fallback.
+With `gles:always`, GTK uses GLES via libhybris's vendor EGL, producing AHB
+buffers for the window chrome. With `GDK_GL=disabled`, GTK renders everything
+via SHM (CPU) — the magenta-tinted SHM path in the compositor.
 
-This requires the libGLESv2 shim (see "GL Library Shims" below) to provide GLX stubs.
-Without the stubs, libepoxy (GTK's GL dispatch) aborts when probing for GLX symbols in
-a GLES-only library.
+This requires the libGLESv2 shim (see "GL Library Shims" below) to provide
+GLX stubs. Without the stubs, libepoxy (GTK's GL dispatch) aborts when
+probing for GLX symbols in a GLES-only library.
 
 ## GL Library Shims
 
@@ -42,7 +50,7 @@ GL library requirements:
 - **GTK/libepoxy:** `dlsym(libGLESv2_handle, "glXGetCurrentContext")` -- probes for
   GLX to detect context type. Aborts if the probe produces an error (vs returning NULL).
 
-**Solution:** Shim libraries in `/tmp/tawc-wsi/` that re-export libhybris GLES symbols
+**Solution:** Shim libraries in `/tmp/gl-shims/` that re-export libhybris GLES symbols
 AND provide GLX stubs returning NULL (indicating "no GLX context, use EGL"):
 
 ```
@@ -56,24 +64,29 @@ libGLESv2_real.so -- actual libhybris GLES (soname patched to break cycle)
 The real libhybris library is renamed to `libGLESv2_real.so` (with `patchelf --set-soname`)
 to prevent circular DT_NEEDED resolution.
 
-Built by `client/tawc-wsi/build`. Source: `libgl-shim.c`, `libglesv2-shim.c`.
+Built as part of `bash client/build-libhybris`. Source: `client/libgl-shim.c`, `client/libglesv2-shim.c`.
 
-## tawc-egl Fixes for Firefox
+## libhybris fixes for Firefox
 
-1. **glxtest probe** -- Firefox's `glxtest -w` hard-requires `eglQueryDeviceStringEXT`
-   (from `EGL_EXT_device_query`), which Android drivers don't implement. Added a stub.
+These live as patches in our libhybris fork (see `libhybris/TAWC_FORK.md`):
 
-2. **Context attributes** -- Firefox requests robustness extensions that Adreno rejects.
-   Stripped in the attribute filter alongside desktop-GL attribute stripping.
-
-3. **GL symbol resolution** -- Firefox resolves GL functions via `dlsym` on `libGL.so`,
-   NOT `eglGetProcAddress`. Handled by the libGL.so shim above.
-
-**Other changes:**
-- Removed `-lGLESv2` link dependency. GL functions resolved lazily via `eglGetProcAddress`.
-- `eglTerminate` is a no-op (Firefox terminate+reinitialize cycles invalidated the stock display).
-- `eglChooseConfig` ensures `EGL_RENDERABLE_TYPE` includes `EGL_OPENGL_ES2_BIT`.
-- Added `eglSetDamageRegionKHR` stub.
+1. **`eglQueryDeviceStringEXT` / `eglQueryDisplayAttribEXT` stubs** —
+   Firefox's `glxtest -w` null-checks these via `eglGetProcAddress` and
+   bails ("EGL test failed" → `Feature::HW_COMPOSITING` ForceDisabled →
+   software WebRender) when they're NULL. The stubs honestly return
+   "no info" (NULL / EGL_FALSE) without advertising
+   `EGL_EXT_device_query`.
+2. **Shared per-display `wl_event_queue`** — Firefox/WebRender creates
+   two `wl_egl_window`s on different threads. With per-window queues
+   (upstream behaviour) the main thread's `wl_buffer.release` events
+   sit on a queue nobody dispatches, deadlocking the Renderer thread's
+   dequeueBuffer.
+3. **Attach + commit inside `queueBuffer`** — Adreno's WebRender path
+   pushes frames through `queueBuffer` from a driver-internal thread
+   that never calls `eglSwapBuffers`, so upstream libhybris's
+   `finishSwap`-driven attach never fires. We drain the queue inline
+   from `queueBuffer` so the submission path doesn't depend on
+   `eglSwapBuffers`.
 
 ## Known Issues
 

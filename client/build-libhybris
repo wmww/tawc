@@ -62,9 +62,12 @@ rm -rf libhybris
 tar xzf /tmp/libhybris-src.tar.gz
 rm -f /tmp/libhybris-src.tar.gz
 
-# Ensure build deps
-echo '==> Checking build dependencies...'
-pacman -S --noconfirm --needed libtool wayland pkg-config autoconf automake patchelf 2>&1 | tail -3
+# Ensure build deps. Notably NOT libglvnd — it would pull in mesa as a hard
+# runtime dep (libGLX_mesa can't init in this chroot, breaks Firefox startup
+# probes). We install libhybris's libEGL/libGLESv2 directly under
+# /usr/local/lib and put that first on the library search path, which is the
+# path every chroot app uses.
+pacman -S --noconfirm --needed libtool wayland wayland-protocols pkg-config autoconf automake patchelf 2>&1 | tail -3
 
 # Install android-headers if needed
 if ! pkg-config --exists android-headers 2>/dev/null; then
@@ -102,10 +105,12 @@ if [ ! -f Makefile ] || [ "$CLEAN" = "1" ]; then
     echo '==> Configuring...'
     ./configure \
         --enable-arch=arm64 \
+        --enable-wayland \
+        --disable-wayland_serverside_buffers \
         --enable-adreno-quirks \
         --enable-property-cache \
         --with-default-hybris-ld-library-path=/vendor/lib64/egl:/vendor/lib64/hw:/vendor/lib64:/system/lib64 \
-        --prefix=/usr/local 2>&1 | grep -E 'Android version|arch |prefix|Features'
+        --prefix=/usr/local 2>&1 | grep -E 'Android version|arch |prefix|Features|wayland'
 else
     echo '==> Makefile exists, doing incremental build (use --clean to reconfigure)'
 fi
@@ -130,16 +135,68 @@ done
 echo '==> Clearing execstack on libhybris-common...'
 patchelf --clear-execstack /usr/local/lib/libhybris-common.so.1.0.0 2>/dev/null || true
 
+echo '==> Removing stale glvnd-suffixed libEGL/libGLES (no longer used — we build without --enable-glvnd)...'
+for f in /usr/local/lib/libEGL_libhybris* /usr/local/lib/libGLESv1_CM_libhybris* /usr/local/lib/libGLESv2_libhybris*; do
+    [ -e "$f" ] && rm -f "$f"
+done
+# And remove the ICD JSON that libglvnd would have scanned
+rm -f /usr/local/share/glvnd/egl_vendor.d/10_libhybris.json \
+      /usr/share/glvnd/egl_vendor.d/10_libhybris.json
+
 ldconfig
 
 echo '==> Installed libraries:'
-ls /usr/local/lib/libEGL.so /usr/local/lib/libGLESv2.so /usr/local/lib/libhybris-common.so 2>/dev/null || echo "WARNING: some libraries missing"
+ls /usr/local/lib/libEGL.so* /usr/local/lib/libGLESv2.so* /usr/local/lib/libhybris-common.so 2>/dev/null || echo "WARNING: some libraries missing"
+echo '==> Wayland EGL platform:'
+ls /usr/local/lib/libhybris/eglplatform_wayland.so 2>/dev/null || echo "WARNING: eglplatform_wayland.so missing"
+
+# --- GL shims ---
+# Apps resolve libGL.so / libGLESv2.so.2 by name. The distro's libGL.so is
+# libglvnd routing to Mesa GLX, which can't init (no DRI render node).
+# Firefox's glxtest and GTK's libepoxy abort or fall back to software when
+# the probes hit broken Mesa GLX. These shims export NULL-returning glX*
+# stubs and DT_NEEDED-link to the real libhybris GLES so dlsym for GL
+# symbols still resolves.
+echo '==> Building GL shims...'
+SHIM_DIR=/tmp/gl-shims
+rm -rf "$SHIM_DIR"
+mkdir -p "$SHIM_DIR"
+cp /tmp/libhybris-build-staging/libgl-shim.c "$SHIM_DIR/"
+cp /tmp/libhybris-build-staging/libglesv2-shim.c "$SHIM_DIR/"
+cd "$SHIM_DIR"
+
+cp /usr/local/lib/libGLESv2.so.2 libGLESv2_real.so
+patchelf --set-soname libGLESv2_real.so libGLESv2_real.so
+
+gcc -shared -fPIC -o libGLESv2.so.2 libglesv2-shim.c \
+    -L"$SHIM_DIR" -l:libGLESv2_real.so \
+    -Wl,-rpath,"$SHIM_DIR" -Wl,--no-as-needed \
+    -Wl,-soname,libGLESv2.so.2
+ln -sf libGLESv2.so.2 libGLESv2.so
+
+ln -sf "$SHIM_DIR/libGLESv2.so.2" libGL.so.1
+gcc -shared -fPIC -o libGL.so libgl-shim.c \
+    -L"$SHIM_DIR" -l:libGL.so.1 \
+    -Wl,-rpath,"$SHIM_DIR" -Wl,--no-as-needed \
+    -Wl,-soname,libGL.so.1
+
+echo '==> GL shims:'
+ls -la libGL.so libGL.so.1 libGLESv2.so libGLESv2.so.2 libGLESv2_real.so
 
 echo '==> Done'
 BUILDEOF
 
-# Step 4: Build inside chroot
-echo "==> Building libhybris inside chroot..."
+# Step 4: Push GL shim sources to staging area
+echo "==> Pushing GL shim sources..."
+STAGING="/data/local/tmp/libhybris-build-staging"
+adb shell su -c "mkdir -p '$CHROOT_DIR/tmp/libhybris-build-staging'"
+adb push "$SCRIPT_DIR/libgl-shim.c" /data/local/tmp/
+adb push "$SCRIPT_DIR/libglesv2-shim.c" /data/local/tmp/
+adb shell su -c "cp /data/local/tmp/libgl-shim.c '$CHROOT_DIR/tmp/libhybris-build-staging/'"
+adb shell su -c "cp /data/local/tmp/libglesv2-shim.c '$CHROOT_DIR/tmp/libhybris-build-staging/'"
+
+# Step 5: Build inside chroot (libhybris + GL shims)
+echo "==> Building libhybris + GL shims inside chroot..."
 adb shell su -c "/system_ext/bin/bash /data/local/tmp/arch-chroot-run 'bash /tmp/build-libhybris.sh $CLEAN'"
 
 echo "==> libhybris build complete"

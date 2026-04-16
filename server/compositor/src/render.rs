@@ -4,8 +4,6 @@
 //! TawcState (compositor.rs) owns Wayland protocol state; this module
 //! turns that protocol state into pixels.
 
-use std::os::unix::io::AsRawFd;
-
 use log::{error, info};
 
 use smithay::backend::egl::EGLSurface;
@@ -22,10 +20,11 @@ use smithay::wayland::compositor::{
     with_surface_tree_downward, SubsurfaceCachedState, SurfaceAttributes, TraversalAction,
 };
 
-use crate::ahb::AhbBuffer;
 use crate::background::BackgroundRenderer;
 use crate::compositor::TawcState;
 use crate::gl_import::AhbTextureImporter;
+use crate::wlegl::WleglBufferData;
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 
 /// GPU-side rendering state, separate from Wayland protocol state.
 ///
@@ -36,6 +35,14 @@ pub struct RenderState {
     pub egl_surface: EGLSurface,
     pub importer: AhbTextureImporter,
     pub shm_tint_shader: Option<GlesTexProgram>,
+    /// Custom shader used for wlegl (EXTERNAL_OES AHB-backed) textures that
+    /// forces alpha=1 regardless of the texture's alpha channel. Smithay's
+    /// built-in EXTERNAL variant is compiled without NO_ALPHA and so
+    /// multiplies by the texture alpha; GTK/libhybris render RGB content
+    /// with alpha=0 (GTK assumes its surfaces are opaque and never writes
+    /// alpha), which makes the output fully transparent. See
+    /// `variant_for_format` in smithay/src/backend/renderer/gles/shaders/implicit/mod.rs.
+    pub wlegl_opaque_shader: Option<GlesTexProgram>,
     pub background: Option<BackgroundRenderer>,
     pub raw_egl_display: *const std::ffi::c_void,
     pub raw_egl_context: *const std::ffi::c_void,
@@ -46,6 +53,65 @@ pub struct RenderState {
 // calloop event loop on that same thread. Calloop requires Send for LoopData even
 // though it never actually moves data across threads.
 unsafe impl Send for RenderState {}
+
+/// Compile a texture shader that always forces alpha=1.
+///
+/// smithay's built-in EXTERNAL shader variant samples the texture's alpha
+/// channel (no NO_ALPHA define for external textures). GTK/libhybris render
+/// into AHB-backed EGLImages without writing alpha, so texels end up
+/// (R,G,B,0) and smithay outputs fully-transparent pixels. This shader
+/// discards the texture's alpha and writes 1.0 instead, making the
+/// client-provided RGB content actually visible.
+pub fn compile_wlegl_opaque_shader(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
+    match renderer.compile_custom_texture_shader(
+        r#"
+#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+precision mediump float;
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+void main() {
+    vec4 color = texture2D(tex, v_coords);
+    // Always ignore the texture's alpha channel — GTK on libhybris paints
+    // RGB only and leaves alpha at 0, which would otherwise render the
+    // surface fully transparent.
+    color = vec4(color.rgb, 1.0) * alpha;
+#if defined(DEBUG_FLAGS)
+    if (tint == 1.0)
+        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
+#endif
+    gl_FragColor = color;
+}
+"#,
+        &[],
+    ) {
+        Ok(program) => {
+            info!("wlegl opaque shader compiled");
+            Some(program)
+        }
+        Err(e) => {
+            error!("Failed to compile wlegl opaque shader: {:?}", e);
+            None
+        }
+    }
+}
 
 /// Compile the magenta tint shader used for SHM buffer rendering.
 /// Must be called after the EGL context is current.
@@ -113,66 +179,36 @@ void main() {
 // Buffer import
 // ---------------------------------------------------------------------------
 
-/// Import pending AHB buffers for all surfaces that have one queued.
-/// Returns true if any buffer was imported (caller can use for dirty tracking).
-pub fn import_pending_ahbs(state: &mut TawcState, render: &RenderState) -> bool {
-    // Short-circuit: avoid allocating a Vec when nothing is pending (common case).
-    if !state.surface_ahb.values().any(|s| s.pending_width.is_some()) {
-        return false;
-    }
-
-    let surfaces: Vec<_> = state
-        .surface_ahb
-        .iter()
-        .filter(|(_, s)| s.pending_width.is_some())
-        .map(|(surf, _)| surf.clone())
+/// Ensure GlesTextures are created for all wlegl buffers currently attached to
+/// surfaces. The texture is cached on the wl_buffer's user-data so repeat
+/// attaches don't re-import.
+/// Returns true if any new texture was imported (caller uses for dirty tracking).
+pub fn import_wlegl_buffers(state: &mut TawcState, render: &mut RenderState) -> bool {
+    let buffers: Vec<WlBuffer> = state
+        .surface_wlegl
+        .values()
+        .filter_map(|s| s.current_buffer.clone())
         .collect();
 
-    for surface in &surfaces {
-        import_one_ahb(state, render, surface);
-    }
-    !surfaces.is_empty()
-}
-
-/// Import a single pending AHB for a surface.
-fn import_one_ahb(
-    state: &mut TawcState,
-    render: &RenderState,
-    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-) {
-    let Some(ahb_state) = state.surface_ahb.get_mut(surface) else {
-        return;
-    };
-
-    let (Some(width), Some(height)) = (
-        ahb_state.pending_width.take(),
-        ahb_state.pending_height.take(),
-    ) else {
-        return;
-    };
-
-    // Drain all pending AHBs from the side channel, keep only the latest.
-    // Socket is permanently nonblocking (set at creation in compositor.rs).
-    let recv_fd = ahb_state.recv_socket.as_raw_fd();
-    let mut latest_ahb = None;
-    loop {
-        match AhbBuffer::recv_from_socket(recv_fd) {
-            Ok(ahb) => latest_ahb = Some(ahb),
-            Err(_) => break,
+    let mut imported = false;
+    for buf in buffers {
+        let Some(data) = buf.data::<WleglBufferData>() else {
+            continue;
+        };
+        {
+            let tex_guard = data.texture.lock().unwrap();
+            if tex_guard.is_some() {
+                continue; // already imported
+            }
+        }
+        if ensure_wlegl_texture(render, data) {
+            imported = true;
         }
     }
+    imported
+}
 
-    let Some(ahb) = latest_ahb else {
-        return; // Client sent attach but AHB hasn't arrived yet
-    };
-
-    info!(
-        "Received AHB {}x{} for surface {:?}",
-        ahb.width(),
-        ahb.height(),
-        surface.id()
-    );
-
+fn ensure_wlegl_texture(render: &RenderState, data: &WleglBufferData) -> bool {
     // Make EGL context current for GL operations
     unsafe {
         smithay::backend::egl::ffi::egl::MakeCurrent(
@@ -182,22 +218,23 @@ fn import_one_ahb(
             render.raw_egl_context,
         );
     }
-
-    match render.importer.import_ahb(
+    let res = render.importer.import_ahb(
         &render.renderer,
         render.raw_egl_display,
-        ahb.as_raw(),
-        width,
-        height,
-    ) {
-        Ok(texture) => {
-            info!("AHB imported as texture for surface {:?}", surface.id());
-            ahb_state.texture = Some(texture);
-            ahb_state.ahb = Some(ahb);
-            ahb_state.committed_width = width;
-            ahb_state.committed_height = height;
+        data.ahb_raw(),
+        data.width,
+        data.height,
+    );
+    match res {
+        Ok(tex) => {
+            *data.texture.lock().unwrap() = Some(tex);
+            info!("wlegl: imported ANativeWindowBuffer as texture {}x{}", data.width, data.height);
+            true
         }
-        Err(e) => error!("Failed to import AHB: {}", e),
+        Err(e) => {
+            error!("wlegl: texture import failed: {}", e);
+            false
+        }
     }
 }
 
@@ -232,8 +269,8 @@ pub fn import_shm_buffers(state: &mut TawcState, renderer: &mut GlesRenderer) ->
             (),
             |_, _, &()| TraversalAction::DoChildren(()),
             |surf, surf_states, &()| {
-                if state.surface_ahb.contains_key(surf) {
-                    return; // AHB surfaces are handled separately
+                if state.surface_wlegl.contains_key(surf) {
+                    return; // GPU (AHB) surfaces are handled separately
                 }
                 let mut guard = surf_states.cached_state.get::<SurfaceAttributes>();
                 let attrs = guard.current();
@@ -313,6 +350,10 @@ pub fn render_frame(
     output_size: Size<i32, smithay::utils::Physical>,
     _frame_count: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Take a raw clone of the custom shader ref up front — `frame` below takes
+    // an exclusive borrow on `render.renderer` so we can't re-borrow
+    // `render.wlegl_opaque_shader` through it.
+    let wlegl_shader = render.wlegl_opaque_shader.clone();
     let mut target = render.renderer.bind(&mut render.egl_surface)?;
 
     let mut frame = render.renderer.render(&mut target, output_size, Transform::Normal)?;
@@ -324,23 +365,13 @@ pub fn render_frame(
 
     let screen_h = output_size.h;
 
-    // Draw AHB surfaces (fullscreen at origin — no coordinate transform needed)
-    for ahb_state in state.surface_ahb.values() {
-        let Some(ref texture) = ahb_state.texture else { continue };
-        let w = ahb_state.committed_width;
-        let h = ahb_state.committed_height;
-
-        let src = Rectangle::from_size(Size::<i32, smithay::utils::Buffer>::from((w, h)).to_f64());
-        let dst = Rectangle::new(
-            Point::from((0, 0)),
-            Size::from((w, h)),
-        );
-        let damage = Rectangle::from_size(Size::from((w, h)));
-
-        Frame::render_texture_from_to(
-            &mut frame, texture, src, dst, &[damage], &[], Transform::Normal, 1.0,
-        )?;
-    }
+    // Draw wlegl (AHB-backed) surfaces by walking each toplevel's surface
+    // tree so subsurface positioning is respected. Firefox/WebRender creates
+    // a subsurface on the Renderer thread for page content and the toplevel
+    // on the main thread for chrome; drawing every wlegl surface at (0,0)
+    // fullscreen lets whichever gets iterated last cover everything —
+    // usually the subsurface covers the chrome, giving a blank/black window.
+    draw_wlegl_surfaces(state, &mut frame, screen_h, wlegl_shader.as_ref())?;
 
     // Draw SHM surfaces from toplevel surface trees with subsurface positioning
     draw_shm_surfaces(state, &mut frame, screen_h, &render.shm_tint_shader)?;
@@ -348,6 +379,90 @@ pub fn render_frame(
     let _ = frame.finish()?;
     drop(target);
     render.egl_surface.swap_buffers(None)?;
+    Ok(())
+}
+
+/// Walk each toplevel tree and draw wlegl surfaces at their subsurface
+/// offsets. Buffers are drawn 1:1 at their pixel dimensions (matching the
+/// SHM draw path); see `SurfaceWleglState` for why we don't honour
+/// `wl_surface.set_buffer_scale` here.
+fn draw_wlegl_surfaces(
+    state: &TawcState,
+    frame: &mut GlesFrame<'_, '_>,
+    screen_h: i32,
+    wlegl_shader: Option<&GlesTexProgram>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scale = state.output_scale;
+    let toplevel_surfaces: Vec<_> = state
+        .toplevels
+        .iter()
+        .map(|t| t.wl_surface().clone())
+        .collect();
+
+    let mut to_render: Vec<(GlesTexture, i32, i32, i32, i32)> = Vec::new();
+
+    let collect_tree = |root: &WlSurface, offset_x: i32, offset_y: i32,
+                        to_render: &mut Vec<(GlesTexture, i32, i32, i32, i32)>| {
+        with_surface_tree_downward(
+            root,
+            (offset_x, offset_y),
+            |_surf, states, &(px, py)| {
+                let loc = states
+                    .cached_state
+                    .get::<SubsurfaceCachedState>()
+                    .current()
+                    .location;
+                TraversalAction::DoChildren((px + loc.x, py + loc.y))
+            },
+            |surf, _states, &(abs_x, abs_y)| {
+                let Some(wlegl_state) = state.surface_wlegl.get(surf) else { return };
+                let Some(ref buf) = wlegl_state.current_buffer else { return };
+                let Some(data) = buf.data::<WleglBufferData>() else { return };
+                let tex_guard = data.texture.lock().unwrap();
+                let Some(ref tex) = *tex_guard else { return };
+                to_render.push((
+                    tex.clone(),
+                    abs_x,
+                    abs_y,
+                    wlegl_state.committed_width,
+                    wlegl_state.committed_height,
+                ));
+            },
+            |_, _, _| true,
+        );
+    };
+
+    for root in &toplevel_surfaces {
+        collect_tree(root, 0, 0, &mut to_render);
+    }
+
+    // with_surface_tree_downward invokes its processor post-order (children
+    // first, then parent), which reverses Wayland's z-order: subsurfaces are
+    // above their parent by default, so they must be drawn last to appear
+    // on top. Firefox/WebRender relies on this — its toplevel wl_surface
+    // holds a placeholder buffer and WebRender draws the UI into a
+    // subsurface; post-order painted the toplevel last, occluding the UI.
+    to_render.reverse();
+
+    for (texture, logical_x, logical_y, buf_w, buf_h) in &to_render {
+        let src = Rectangle::from_size(
+            Size::<i32, smithay::utils::Buffer>::from((*buf_w, *buf_h)).to_f64(),
+        );
+        let dst = Rectangle::new(
+            Point::from((
+                logical_x * scale,
+                screen_h - logical_y * scale - buf_h,
+            )),
+            Size::from((*buf_w, *buf_h)),
+        );
+        let damage = Rectangle::from_size(Size::from((*buf_w, *buf_h)));
+
+        frame.render_texture_from_to(
+            &texture, src, dst, &[damage], &[], Transform::Flipped180, 1.0,
+            wlegl_shader, &[],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -453,6 +568,47 @@ fn draw_shm_surfaces(
 // ---------------------------------------------------------------------------
 // Frame callbacks
 // ---------------------------------------------------------------------------
+
+/// Send wl_buffer.release for every wlegl surface whose current buffer has
+/// been used by the just-completed render pass.
+///
+/// libhybris's wayland-egl platform (`hybris/platforms/wayland/wayland_window_common.cpp`)
+/// allocates a fixed pool of wl_buffers (default 3, see `setBufferCount(3)` in
+/// the WaylandNativeWindow ctor) and blocks in `dequeueBuffer` until one is
+/// released back. Without this call libhybris hangs after the first frame —
+/// the buffer is attached, libhybris waits for `wl_buffer.release` before
+/// dequeuing the next, the release never comes, no second commit ever
+/// happens. Smithay's own auto-release fires only at the *next* commit
+/// (handlers.rs:125 `merge_into`), which by definition can't help here.
+///
+/// Once we send the release, smithay would try to release the same buffer
+/// again at the next commit (replacing the cached SurfaceAttributes::buffer)
+/// — that double-release trips libhybris's `assert(it != fronted.end())` in
+/// `releaseBuffer`. So we also clear smithay's cached buffer here.
+pub fn release_consumed_wlegl_buffers(state: &mut TawcState) {
+    use smithay::wayland::compositor::{with_states, BufferAssignment};
+    let surfaces: Vec<WlSurface> = state.surface_wlegl.keys().cloned().collect();
+    if surfaces.is_empty() { return; }
+    for surface in surfaces {
+        let Some(wlegl_state) = state.surface_wlegl.get_mut(&surface) else { continue };
+        if wlegl_state.released { continue; }
+        let Some(buf) = wlegl_state.current_buffer.clone() else { continue };
+        let Some(data) = buf.data::<WleglBufferData>() else { continue };
+        let consumed = data.texture.lock().unwrap().is_some();
+        if !consumed { continue; }
+        buf.release();
+        wlegl_state.released = true;
+        with_states(&surface, |surf_states| {
+            let mut guard = surf_states.cached_state.get::<SurfaceAttributes>();
+            let attrs = guard.current();
+            if let Some(BufferAssignment::NewBuffer(cached)) = &attrs.buffer {
+                if cached == &buf {
+                    attrs.buffer = None;
+                }
+            }
+        });
+    }
+}
 
 /// Send frame-done callbacks to all surfaces in all toplevel and popup surface trees.
 pub fn send_frame_callbacks(state: &TawcState, time: u32) {

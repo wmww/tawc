@@ -10,7 +10,7 @@ use crate::adb;
 pub struct CompositorState {
     pub clients: u32,
     pub toplevels: u32,
-    pub surfaces_ahb: u32,
+    pub surfaces_wlegl: u32,
     pub surfaces_shm: u32,
     pub frames: u64,
     /// Number of toplevels visible in the last rendered frame.
@@ -80,7 +80,7 @@ fn parse_compositor_state_line(line: &str) -> Option<CompositorState> {
     let payload = &line[idx + "COMPOSITOR_STATE:".len()..];
     let mut clients = None;
     let mut toplevels = None;
-    let mut surfaces_ahb = None;
+    let mut surfaces_wlegl = None;
     let mut surfaces_shm = None;
     let mut frames = None;
     let mut rendered_toplevels = None;
@@ -89,7 +89,7 @@ fn parse_compositor_state_line(line: &str) -> Option<CompositorState> {
             match key {
                 "clients" => clients = Some(val.parse().ok()?),
                 "toplevels" => toplevels = Some(val.parse().ok()?),
-                "surfaces_ahb" => surfaces_ahb = Some(val.parse().ok()?),
+                "surfaces_wlegl" => surfaces_wlegl = Some(val.parse().ok()?),
                 "surfaces_shm" => surfaces_shm = Some(val.parse().ok()?),
                 "frames" => frames = Some(val.parse().ok()?),
                 "rendered_toplevels" => rendered_toplevels = Some(val.parse().ok()?),
@@ -100,7 +100,7 @@ fn parse_compositor_state_line(line: &str) -> Option<CompositorState> {
     Some(CompositorState {
         clients: clients?,
         toplevels: toplevels?,
-        surfaces_ahb: surfaces_ahb?,
+        surfaces_wlegl: surfaces_wlegl?,
         surfaces_shm: surfaces_shm?,
         frames: frames?,
         rendered_toplevels: rendered_toplevels?,

@@ -17,9 +17,9 @@ use smithay::utils::{Size, Transform};
 use wayland_server::{Display, ListeningSocket};
 
 mod egl_android;
-mod ahb;
 mod gl_import;
 mod protocol;
+mod wlegl;
 mod compositor;
 mod render;
 mod background;
@@ -305,6 +305,7 @@ fn run_compositor(
     info!("EGL + GlesRenderer + AHB importer ready");
 
     let shm_tint_shader = render::compile_shm_tint_shader(&mut renderer);
+    let wlegl_opaque_shader = render::compile_wlegl_opaque_shader(&mut renderer);
     let background = background::BackgroundRenderer::new(&mut renderer);
 
     let render_state = RenderState {
@@ -312,6 +313,7 @@ fn run_compositor(
         egl_surface,
         importer,
         shm_tint_shader,
+        wlegl_opaque_shader,
         background,
         raw_egl_display: raw_display,
         raw_egl_context: raw_context,

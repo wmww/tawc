@@ -18,6 +18,25 @@ relative to their toplevel root.
 **Note:** Firefox uses wl_subsurface (not xdg_popup) for its dropdown menus. Both paths go
 through the same rendering code in `draw_shm_surfaces`.
 
+## Wayland subsurface z-order for wlegl (AHB-backed) surfaces
+
+Firefox with WebRender creates two wlegl surfaces per window: a toplevel (main
+thread, holds the `xdg_toplevel` role plus a placeholder buffer) and a
+subsurface covering the full window, into which WebRender renders the actual
+chrome + page content from the Renderer thread. The subsurface is above the
+toplevel by default (Wayland z-order), so the subsurface's pixels must overlap
+the toplevel's placeholder.
+
+`draw_wlegl_surfaces` walks each toplevel tree with `with_surface_tree_downward`
+and then **reverses** the collected list before drawing. `with_surface_tree_downward`
+invokes its processor post-order (children first, then parent), which is the
+*reverse* of Wayland z-order — drawing in visit order would paint the toplevel
+last and cover the subsurface. Without the reverse, Firefox renders as a black
+rectangle because the toplevel's placeholder buffer occludes WebRender's output.
+The same reversal is not needed for `draw_shm_surfaces` today only because
+nothing produces overlapping SHM subsurfaces with this ordering pathology; if
+an app starts doing so, apply the same `reverse()` there.
+
 ## Coordinate System
 
 **This is subtle. Do not "fix" without understanding.**
@@ -28,8 +47,22 @@ through the same rendering code in `draw_shm_surfaces`.
 
 2. **Y-axis flip:** Smithay's GlesRenderer uses a GL projection where Y=0 is at the
    **bottom** of the screen, not the top. For SHM surfaces at non-origin positions:
-   `physical_y = screen_h - logical_y * scale - texture_h`. AHB surfaces skip this
-   because they're always fullscreen at the origin (the flip is a no-op for them).
+   `physical_y = screen_h - logical_y * scale - texture_h`. For AHB (android_wlegl)
+   surfaces drawn fullscreen at the origin the per-row offset cancels out, but the
+   buffer itself is still Y-down (Wayland convention) vs. Y-up (GL), so we pass
+   `Transform::Flipped180` to `Frame::render_texture_from_to` — same reason as SHM.
+   Getting this wrong flips the client's content upside down; Firefox and the
+   `weston-simple-egl` triangle both expose the bug.
+
+3. **AHB buffers are drawn 1:1 at their pixel dimensions.** In theory,
+   `wl_surface.set_buffer_scale(n)` means the compositor should divide by `n`
+   and re-scale. In practice, Firefox/WebRender renders its main surface at
+   the output's physical resolution (1080×2400) but commits `buffer_scale=1`
+   — applying the spec formula `dst = buffer / buffer_scale × output_scale`
+   would draw it at 2× size and blow it off-screen. Since every libhybris
+   client we have allocates buffers that already match the intended
+   on-screen dimensions, we skip the buffer_scale math and draw at buffer
+   size. This matches the SHM draw path, which also uses buffer dimensions.
 
 The canonical scale factor lives in `TawcState::output_scale`. Do not hardcode `2` elsewhere.
 

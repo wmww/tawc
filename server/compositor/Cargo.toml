@@ -19,5 +19,8 @@ wayland-scanner = "0.31"
 wayland-server = "0.31"
 wayland-protocols = { version = "0.32", features = ["server"] }
 
+[build-dependencies]
+cc = "1.0"
+
 [patch.crates-io]
 smithay = { git = "https://github.com/wmww/smithay.git", branch = "tawc-patches" }

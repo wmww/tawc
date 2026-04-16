@@ -105,66 +105,71 @@ impl AhbTextureImporter {
         height: i32,
     ) -> Result<GlesTexture, String> {
         unsafe {
-            // Clear any prior GL errors
-            while (self.gl_get_error)() != 0 {}
-
-            // 1. Get EGLClientBuffer from AHB
             let client_buffer = (self.egl_get_native_client_buffer)(ahb as *const c_void);
             if client_buffer.is_null() {
                 return Err("eglGetNativeClientBufferANDROID returned null".into());
             }
-            info!("AHB -> EGLClientBuffer: {:?}", client_buffer);
-
-            // 2. Create EGLImage from the client buffer
-            let attribs: [i32; 3] = [
-                EGL_IMAGE_PRESERVED_KHR, egl_ffi::egl::TRUE as i32,
-                egl_ffi::egl::NONE as i32,
-            ];
-            let egl_image = egl_ffi::egl::CreateImageKHR(
-                raw_display,
-                egl_ffi::egl::NO_CONTEXT,
-                EGL_NATIVE_BUFFER_ANDROID,
-                client_buffer,
-                attribs.as_ptr(),
-            );
-            if egl_image.is_null() {
-                let err = egl_ffi::egl::GetError();
-                return Err(format!("eglCreateImageKHR failed, EGL error: 0x{:X}", err));
-            }
-            info!("EGLImage created: {:?}", egl_image);
-
-            // 3. Create GL texture and attach EGLImage via GL_TEXTURE_EXTERNAL_OES
-            // AHB-backed EGLImages on Android require EXTERNAL_OES target
-            let mut tex: u32 = 0;
-            (self.gl_gen_textures)(1, &mut tex);
-            if tex == 0 {
-                return Err("glGenTextures failed".into());
-            }
-
-            (self.gl_bind_texture)(GL_TEXTURE_EXTERNAL_OES, tex);
-            (self.gl_egl_image_target_texture_2d_oes)(GL_TEXTURE_EXTERNAL_OES, egl_image);
-
-            let gl_err = (self.gl_get_error)();
-            if gl_err != 0 {
-                error!("GL error after EGLImageTargetTexture2DOES: 0x{:X}", gl_err);
-                return Err(format!("glEGLImageTargetTexture2DOES failed: GL error 0x{:X}", gl_err));
-            }
-
-            // Set texture parameters
-            (self.gl_tex_parameteri)(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            (self.gl_tex_parameteri)(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            (self.gl_bind_texture)(GL_TEXTURE_EXTERNAL_OES, 0);
-
-            info!("GL texture {} created from AHB EGLImage (EXTERNAL_OES)", tex);
-
-            // 4. Wrap in GlesTexture with is_external=true so Smithay uses the
-            //    samplerExternalOES shader path
-            let size = Size::from((width, height));
-            let texture = GlesTexture::from_raw_with_flags(
-                renderer, None, false, true, false, tex, size,
-            );
-
-            Ok(texture)
+            self.import_client_buffer(renderer, raw_display, client_buffer, width, height)
         }
+    }
+
+    /// Import an EGLClientBuffer (typically an `ANativeWindowBuffer*`) as a
+    /// GlesTexture via `eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID, ...)`.
+    ///
+    /// The EGL context must be current on the calling thread.
+    pub unsafe fn import_client_buffer(
+        &self,
+        renderer: &GlesRenderer,
+        raw_display: *const c_void,
+        client_buffer: *const c_void,
+        width: i32,
+        height: i32,
+    ) -> Result<GlesTexture, String> {
+        // Clear any prior GL errors
+        while (self.gl_get_error)() != 0 {}
+
+        let attribs: [i32; 3] = [
+            EGL_IMAGE_PRESERVED_KHR, egl_ffi::egl::TRUE as i32,
+            egl_ffi::egl::NONE as i32,
+        ];
+        let egl_image = egl_ffi::egl::CreateImageKHR(
+            raw_display,
+            egl_ffi::egl::NO_CONTEXT,
+            EGL_NATIVE_BUFFER_ANDROID,
+            client_buffer,
+            attribs.as_ptr(),
+        );
+        if egl_image.is_null() {
+            let err = egl_ffi::egl::GetError();
+            return Err(format!("eglCreateImageKHR failed, EGL error: 0x{:X}", err));
+        }
+
+        let mut tex: u32 = 0;
+        (self.gl_gen_textures)(1, &mut tex);
+        if tex == 0 {
+            return Err("glGenTextures failed".into());
+        }
+
+        (self.gl_bind_texture)(GL_TEXTURE_EXTERNAL_OES, tex);
+        (self.gl_egl_image_target_texture_2d_oes)(GL_TEXTURE_EXTERNAL_OES, egl_image);
+
+        let gl_err = (self.gl_get_error)();
+        if gl_err != 0 {
+            error!("GL error after EGLImageTargetTexture2DOES: 0x{:X}", gl_err);
+            return Err(format!("glEGLImageTargetTexture2DOES failed: GL error 0x{:X}", gl_err));
+        }
+
+        (self.gl_tex_parameteri)(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        (self.gl_tex_parameteri)(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        (self.gl_bind_texture)(GL_TEXTURE_EXTERNAL_OES, 0);
+
+        info!("GL texture {} created from EGLImage (EXTERNAL_OES) {}x{}", tex, width, height);
+
+        let size = Size::from((width, height));
+        let texture = GlesTexture::from_raw_with_flags(
+            renderer, None, false, true, false, tex, size,
+        );
+
+        Ok(texture)
     }
 }

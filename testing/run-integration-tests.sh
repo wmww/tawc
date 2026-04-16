@@ -1,12 +1,14 @@
 #!/bin/bash
 # Run the full tawc integration test suite.
 #
-# Builds all components (compositor APK, WSI layer, memfd shim, debug app),
-# deploys to the phone, and runs the Cargo integration tests.
+# Builds all components (compositor APK, memfd shim, debug app), deploys to
+# the phone, and runs the Cargo integration tests.
 #
 # Prerequisites:
 #   - Android device connected via adb with root (su) access
 #   - Arch Linux ARM chroot installed at /data/local/arch-chroot
+#   - libhybris already built and installed in the chroot (run
+#     `bash client/build-libhybris` once)
 #   - JAVA_HOME set or java-21-openjdk installed at default path
 #
 # Usage: bash testing/run-integration-tests.sh
@@ -38,8 +40,8 @@ echo "=== Pushing pidfile helper ==="
 adb push testing/tawc-pidfile-exec /data/local/tmp/
 adb shell "su -c 'cp /data/local/tmp/tawc-pidfile-exec /data/local/arch-chroot/tmp/tawc-pidfile-exec && chmod +x /data/local/arch-chroot/tmp/tawc-pidfile-exec'"
 
-echo "=== Building WSI layer ==="
-bash client/tawc-wsi/build
+echo "=== Building libhybris + GL shims ==="
+bash client/build-libhybris
 
 echo "=== Building memfd shim ==="
 bash client/memfd-selinux-shim/build

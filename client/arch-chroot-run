@@ -99,7 +99,14 @@ cat > "$CHROOT_DIR/etc/profile.d/01-tawc.sh" << 'PROFEOF'
 # tawc Wayland compositor environment
 export WAYLAND_DISPLAY=wayland-0
 export XDG_RUNTIME_DIR=/tmp
-export LD_LIBRARY_PATH=/tmp/tawc-wsi:/usr/local/lib
+# Apps use libhybris's libEGL.so at /usr/local/lib via HYBRIS_EGLPLATFORM=
+# wayland (buffer sharing through the android_wlegl Wayland protocol).
+# /tmp/gl-shims holds tiny libGL.so / libGLESv2.so.2 GLX-stub shims (see
+# client/libgl-shim.c, client/libglesv2-shim.c) that sit ahead of the distro libraries on the search
+# path so libglvnd/Mesa GLX never gets probed — Mesa GLX can't init in
+# this chroot and Firefox/libepoxy abort if it's reachable.
+export LD_LIBRARY_PATH=/tmp/gl-shims:/usr/local/lib
+export HYBRIS_EGLPLATFORM=wayland
 export LD_PRELOAD=/tmp/memfd-selinux-shim/libmemfd-selinux-shim.so
 ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
 PROFEOF

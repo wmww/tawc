@@ -43,14 +43,19 @@ fn start_text_input(gdk_gl: &str) -> DebugApp {
     app
 }
 
+/// True if compositor logcat shows a libhybris android_wlegl AHB import.
+fn saw_ahb_import(logs: &str) -> bool {
+    logs.contains("wlegl: imported ANativeWindowBuffer as texture")
+}
+
 /// Assert the compositor has no connected clients or toplevels, and that
 /// the screen actually shows an empty frame (not a stale frame from the
 /// previous client).
 fn assert_compositor_clean() {
     let state = compositor::wait_for_state(0, 0, TIMEOUT)
         .expect("Compositor did not return to clean state");
-    assert_eq!(state.surfaces_ahb, 0,
-        "Expected no AHB surfaces after cleanup, got {:?}", state);
+    assert_eq!(state.surfaces_wlegl, 0,
+        "Expected no wlegl surfaces after cleanup, got {:?}", state);
     assert_eq!(state.surfaces_shm, 0,
         "Expected no SHM surfaces after cleanup, got {:?}", state);
     // Verify the screen reflects the clean state — the last rendered frame
@@ -84,7 +89,7 @@ fn test_text_input_and_backspace() {
     let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
     assert!(logs.contains("SHM buffer imported"),
         "Expected SHM buffer import in compositor logs (GDK_GL=disabled should use SHM)");
-    assert!(!logs.contains("AHB imported as texture"),
+    assert!(!saw_ahb_import(&logs),
         "Unexpected AHB buffer import (GDK_GL=disabled should not use hardware buffers)");
 
     app.stop().expect("Debug app crashed or failed to stop cleanly");
@@ -133,7 +138,7 @@ fn test_click_cursor_positioning() {
 
     // Verify hardware (AHB) buffers were used (GDK_GL=gles:always → GL rendering → AHB)
     let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
-    assert!(logs.contains("AHB imported as texture"),
+    assert!(saw_ahb_import(&logs),
         "Expected AHB buffer import in compositor logs (GDK_GL=gles:always should use hardware buffers)");
 
     app.stop().expect("Debug app crashed or failed to stop cleanly");
@@ -176,7 +181,7 @@ fn test_firefox_launches_with_hardware_buffers() {
             panic!("Firefox crashed/exited before rendering");
         }
         let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
-        if logs.contains("AHB imported as texture") {
+        if saw_ahb_import(&logs) {
             saw_ahb = true;
             break;
         }
@@ -189,11 +194,6 @@ fn test_firefox_launches_with_hardware_buffers() {
     assert!(saw_ahb,
         "Firefox did not produce hardware (AHB) buffer imports within {:?}",
         FIREFOX_LAUNCH_TIMEOUT);
-
-    // Verify no SHM buffers were used (GDK_GL=gles:always means all surfaces use AHB)
-    let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
-    assert!(!logs.contains("SHM buffer imported"),
-        "Firefox should not use SHM buffers with GDK_GL=gles:always (all surfaces should be AHB)");
 
     // Verify compositor sees Firefox's toplevel
     let state = compositor::query_state(TIMEOUT)

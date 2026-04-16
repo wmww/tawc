@@ -107,14 +107,28 @@ link-time dependency, and `personality(READ_IMPLIES_EXEC)` before loading.
 Android's native cross-process GPU buffer primitive. Stock drivers don't support dmabuf
 extensions (`VK_EXT_external_memory_dma_buf`, `EGL_EXT_image_dma_buf_import`).
 
-Buffer sharing path:
-1. Client allocates AHB with GPU usage flags (via NDK API through libhybris)
-2. Client creates EGLImage from AHB, attaches to FBO, renders with GLES
-3. Client sends AHB via `AHardwareBuffer_sendHandleToUnixSocket()` on side-channel socket
-4. Compositor receives via `AHardwareBuffer_recvHandleFromUnixSocket()`
-5. Compositor imports: `eglGetNativeClientBufferANDROID(ahb)` -> `eglCreateImageKHR`
-   with `EGL_NATIVE_BUFFER_ANDROID` -> GL texture
-6. Compositor composites and presents
+Buffer sharing path (post-libhybris-migration):
+1. Client's libhybris allocates a gralloc buffer via the AHB backend
+   (`AHardwareBuffer_allocate` from libnativewindow.so).
+2. Vendor EGL driver renders into the buffer through libhybris's
+   `wl_egl_window` integration.
+3. Client posts the buffer to the compositor via the standard
+   `android_wlegl` Wayland protocol (`create_handle` + N × `add_fd` +
+   `create_buffer`). Native handle fds + ints travel inside the
+   Wayland connection — no side-channel socket.
+4. Compositor reconstructs the handle and calls
+   `AHardwareBuffer_createFromHandle(REGISTER)` (via the C helper in
+   `server/compositor/native/wlegl_import.c`) to get an AHB pointer.
+5. Lazy texture import: `eglGetNativeClientBufferANDROID(ahb)` →
+   `eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID)` →
+   `glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES)`. Cached on
+   the wl_buffer's user-data so re-attaches reuse the texture.
+6. Compositor composites and presents.
+
+For this to work on stock Android ≥ 12, our libhybris fork's gralloc
+backend must allocate via `AHardwareBuffer_*` so the handle layout
+matches what `AHardwareBuffer_createFromHandle` expects on the
+compositor side. See `notes/wsi-layer.md` and `libhybris/TAWC_FORK.md`.
 
 ### Gralloc Mapper HAL (SOLVED 2026-03-31)
 

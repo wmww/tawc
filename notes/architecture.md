@@ -6,19 +6,25 @@ The compositor (`server/compositor/src/`) is split into:
 
 - **lib.rs** -- JNI entry points + `run_compositor()` which sets up EGL, Wayland display,
   output, and listening socket, then hands off to the event loop.
-- **event_loop.rs** -- Calloop-based event loop with four sources: Wayland display fd
+- **event_loop.rs** -- Calloop-based event loop. Sources: Wayland display fd
   (dispatch client messages), listener socket (accept connections), touch input channel
-  (Android touch -> wl_touch), frame timer (~60fps render loop).
+  (Android touch -> wl_touch), text-input channel, state-query channel, frame timer
+  (~60 fps render loop).
 - **input.rs** -- Touch input delivery from Android JNI to the compositor via calloop
   channel. Global `OnceLock<Sender>` allows JNI callbacks to send events cross-thread.
+- **text_input.rs** -- `zwp_text_input_v3` server impl bridging Android InputConnection.
 - **compositor.rs** -- `TawcState` (Wayland protocol state) and all Smithay handler trait
   impls. Does NOT hold rendering state.
 - **render.rs** -- `RenderState` (GPU/EGL state), buffer import (AHB + SHM -> GL textures),
-  frame rendering, frame callbacks, and the SHM magenta tint shader.
+  frame rendering, frame callbacks, and the SHM magenta tint / wlegl-opaque shaders.
+- **background.rs** -- Black-to-turquoise gradient drawn behind every frame.
 - **egl_android.rs** -- Raw EGL context creation and `AndroidNativeSurface` for Smithay.
-- **ahb.rs** -- AHardwareBuffer allocation, CPU fill, and cross-process sharing.
-- **gl_import.rs** -- Import AHB as GlesTexture via EGL/GL extensions.
-- **protocol.rs** -- wayland-scanner generated code for tawc_buffer_v1.
+- **wlegl.rs** -- `android_wlegl` server: reconstruct client-allocated gralloc buffers
+  into AHardwareBuffers via the C helper, expose them as wl_buffers.
+- **gl_import.rs** -- Import AHardwareBuffer as GlesTexture via EGL/GL extensions.
+- **protocol.rs** -- wayland-scanner generated code for `android_wlegl`.
+- **native/wlegl_import.c** -- ~50-line C helper calling
+  `AHardwareBuffer_createFromHandle(REGISTER)` (dlsym'd from libnativewindow.so).
 
 ## Key Design Decisions
 
@@ -27,29 +33,21 @@ The compositor (`server/compositor/src/`) is split into:
 - `dispatch_clients()` is called in BOTH the display fd callback AND the frame timer.
   The fd callback handles the fast path; the timer catch ensures no messages are delayed
   by more than one frame. Do not remove either call.
-- Per-surface state structs (`SurfaceAhbState`, `SurfaceShmState`) live in TawcState
-  but contain texture fields written by render.rs. This cross-cutting is intentional
-  (avoids duplicate lookup tables).
+- Per-surface state structs (`SurfaceWleglState`, `SurfaceShmState`) live in
+  `TawcState` but contain texture fields written by `render.rs`. This cross-cutting
+  is intentional (avoids duplicate lookup tables).
 
 ## Wayland Protocols Implemented
 
 - `wl_compositor`, `xdg_wm_base` (v6), `wl_shm`, `wl_seat`, `wl_output`
 - `xdg_decoration` (always requests server-side, no actual decorations drawn)
 - `wl_data_device_manager` (clipboard/DnD, stub implementations)
-- Custom: `tawc_buffer_manager_v1` / `tawc_ahb_channel_v1` (GPU buffer sharing)
+- `zwp_text_input_v3` (custom impl bridging Android IME)
+- `android_wlegl` (libhybris's standard GPU buffer sharing protocol; client-side
+  allocation only — `get_server_buffer_handle` is rejected)
 
-## tawc_buffer_v1 Protocol
-
-- `tawc_buffer_manager_v1` (global): client binds, calls `get_channel(surface)` to
-  create a per-surface AHB channel.
-- `tawc_ahb_channel_v1`: compositor sends `channel_fd` event with a socketpair fd for
-  AHB transfer. Client calls `attach(width, height)` after sending an AHB on the side
-  channel. Standard `wl_surface.commit` triggers presentation.
-- Side channel uses `AHardwareBuffer_sendHandleToUnixSocket` /
-  `recvHandleFromUnixSocket` (multi-fd serialization that doesn't fit Wayland's wire format).
-
-**Socket path:** `/data/data/me.phie.tawc/wayland-0` -- app's own data dir ensures write
-access. Chroot clients access via root. Uses `ListeningSocket::bind_absolute()`.
+**Socket path:** `/data/data/me.phie.tawc/wayland-0` -- app's own data dir ensures
+write access. Chroot clients access via root. Uses `ListeningSocket::bind_absolute()`.
 
 ## Smithay Integration
 
@@ -92,8 +90,7 @@ event, so buffer-based retain logic would immediately remove new toplevels.
 | libhybris Vulkan varies by vendor | Open | Stretch goal. EGL/GLES covers most apps. Mali needs unmerged PRs (#604, #607). |
 | Stock driver needs Binder/gralloc | ✅ Solved | Bind-mount `/vendor`, `/system`, `/system_ext`, `/dev/binderfs`. |
 | `eglGetNativeClientBufferANDROID` not available | Low risk | Widely available Android 8+. Runtime-check required. |
-| AHB side-channel socket complexity | Accepted | Necessary (AHB serialization uses multi-fd wire format). |
-| Custom protocol breaks standard clients | Accepted | Clients use our WSI layer. `wl_shm` provides fallback. |
+| `android_wlegl` is libhybris-specific | Accepted | All chroot apps reach the GPU via libhybris; `wl_shm` is the standard fallback. |
 | SELinux blocks socket without root | Documented | Root: direct connect. No-root: Binder fd passing. |
 | Smithay on Android | ✅ Solved | `default-features = false`, patched EGL loader. Proven in Phase 1. |
 | Phantom Process Killer (Android 12+) | Open | Users need Developer Options toggle for Termux processes. |

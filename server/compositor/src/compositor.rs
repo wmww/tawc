@@ -3,16 +3,8 @@
 //! This module owns TawcState (the Wayland protocol side of the compositor)
 //! and all the smithay handler trait impls. It does NOT own the renderer,
 //! EGL context, or GPU textures — those live in render::RenderState.
-//!
-//! The per-surface state structs (SurfaceAhbState, SurfaceShmState) contain
-//! both protocol fields (pending_width, current_buffer) written by handlers
-//! here, and texture fields written by render.rs during buffer import.
-//! This cross-cutting is intentional: keeping them together avoids a separate
-//! lookup table keyed by the same WlSurface.
 
 use std::collections::HashMap;
-use std::os::fd::AsFd;
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use log::{error, info};
@@ -31,7 +23,7 @@ use smithay::reexports::wayland_server::protocol::wl_seat;
 use smithay::reexports::wayland_server::protocol::wl_buffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+    Client, DisplayHandle, Resource,
 };
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::Display;
@@ -52,33 +44,35 @@ use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorati
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
-use crate::ahb::AhbBuffer;
-use crate::protocol::tawc_buffer_v1::server::{
-    tawc_ahb_channel_v1::{self, TawcAhbChannelV1},
-    tawc_buffer_manager_v1::{self, TawcBufferManagerV1},
-};
+use crate::protocol::android_wlegl::server::android_wlegl::AndroidWlegl;
 use crate::text_input::TextInputState;
+use crate::wlegl;
 use wayland_protocols::wp::text_input::zv3::server::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
 
 // ---------------------------------------------------------------------------
 // Per-surface state
 // ---------------------------------------------------------------------------
 
-/// Per-surface AHB channel state.
+/// Per-surface state for an attached android_wlegl (AHB-backed) buffer.
 ///
-/// Protocol fields (recv_socket, pending_width/height) are written by the
-/// tawc_ahb_channel_v1 handler. Texture fields are written by render.rs
-/// during import_pending_ahbs().
-pub struct SurfaceAhbState {
-    pub recv_socket: UnixStream,
-    pub pending_width: Option<i32>,
-    pub pending_height: Option<i32>,
-    /// Set by render.rs after importing the AHB as a GL texture.
-    pub texture: Option<GlesTexture>,
-    /// Kept alive so the GL texture remains valid.
-    pub ahb: Option<AhbBuffer>,
+/// Written by the CompositorHandler::commit callback when a wlegl wl_buffer
+/// is attached. Texture import happens lazily in render.rs, cached on the
+/// buffer's WleglBufferData user-data so reattaches reuse it.
+pub struct SurfaceWleglState {
+    pub current_buffer: Option<wl_buffer::WlBuffer>,
+    /// Buffer dimensions in buffer pixels (`wl_buffer.width/height`).
+    /// We render the buffer 1:1 at these physical dimensions — matching the
+    /// SHM draw path and what the legacy `surface_ahb` path did. Some
+    /// clients (Firefox/WebRender's main wl_surface) render at the output's
+    /// physical size but commit buffer_scale=1 anyway, so honouring
+    /// buffer_scale would draw them at 2× and run them off-screen.
     pub committed_width: i32,
     pub committed_height: i32,
+    /// True once we've sent wl_buffer.release for `current_buffer`. Set in
+    /// render::release_consumed_wlegl_buffers after a frame uses the buffer's
+    /// texture; reset when a new buffer is attached. Prevents double-release
+    /// (libhybris asserts on it — see hybris/platforms/wayland/wayland_window_common.cpp:254).
+    pub released: bool,
 }
 
 /// Per-surface SHM buffer state.
@@ -91,11 +85,6 @@ pub struct SurfaceShmState {
     pub current_buffer: Option<wl_buffer::WlBuffer>,
     pub committed_width: i32,
     pub committed_height: i32,
-}
-
-/// Data stored per tawc_ahb_channel_v1 resource.
-pub struct ChannelData {
-    pub surface: WlSurface,
 }
 
 // ---------------------------------------------------------------------------
@@ -116,8 +105,8 @@ pub struct TawcState {
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
 
-    /// Per-surface AHB state, keyed by WlSurface.
-    pub surface_ahb: HashMap<WlSurface, SurfaceAhbState>,
+    /// Per-surface android_wlegl (AHB-backed GPU) buffer state.
+    pub surface_wlegl: HashMap<WlSurface, SurfaceWleglState>,
     /// Per-surface SHM state, keyed by WlSurface.
     pub surface_shm: HashMap<WlSurface, SurfaceShmState>,
 
@@ -144,6 +133,14 @@ pub struct TawcState {
     /// Set when toplevels are added or removed; cleared by the frame timer
     /// after updating focus. Avoids per-frame focus scans when nothing changed.
     pub toplevels_changed: bool,
+
+    /// Set by the compositor commit handler when a wlegl/AHB surface attaches
+    /// a buffer whose texture is already cached (re-attach of an existing
+    /// wl_buffer object with fresh Adreno-written content). Without this,
+    /// import_wlegl_buffers returns false on every commit after the first,
+    /// needs_render stays false, and we stop redrawing even though the client
+    /// keeps producing frames.
+    pub buffer_commit_pending: bool,
 }
 
 impl TawcState {
@@ -165,7 +162,7 @@ impl TawcState {
             .expect("Failed to add keyboard to seat");
         seat.add_touch();
 
-        dh.create_global::<Self, TawcBufferManagerV1, ()>(1, ());
+        dh.create_global::<Self, AndroidWlegl, ()>(2, ());
         dh.create_global::<Self, ZwpTextInputManagerV3, ()>(1, ());
 
         Self {
@@ -177,7 +174,7 @@ impl TawcState {
             data_device_state,
             seat_state,
             seat,
-            surface_ahb: HashMap::new(),
+            surface_wlegl: HashMap::new(),
             surface_shm: HashMap::new(),
             toplevels: Vec::new(),
             popup_manager: PopupManager::default(),
@@ -186,6 +183,7 @@ impl TawcState {
             text_input_state: TextInputState::new(),
             client_count: Arc::new(AtomicU32::new(0)),
             toplevels_changed: false,
+            buffer_commit_pending: false,
         }
     }
 }
@@ -215,6 +213,49 @@ impl CompositorHandler for TawcState {
 
     fn commit(&mut self, surface: &WlSurface) {
         self.popup_manager.commit(surface);
+        // Track the attached android_wlegl (AHB) buffer so the renderer can
+        // find its texture. wl_buffer.release is sent post-frame by
+        // render::release_consumed_wlegl_buffers, which also clears smithay's
+        // cached SurfaceAttributes::buffer to suppress smithay's own
+        // auto-release at the next commit. Without that explicit release
+        // libhybris's wayland-egl never frees its dequeueBuffer pool and
+        // deadlocks after the first frame.
+        use smithay::wayland::compositor::{with_states, SurfaceAttributes};
+        use smithay::wayland::compositor::BufferAssignment;
+
+        let mut new_buf_info: Option<(wl_buffer::WlBuffer, i32, i32)> = None;
+        let mut removed = false;
+        with_states(surface, |surf_states| {
+            let mut guard = surf_states.cached_state.get::<SurfaceAttributes>();
+            let attrs = guard.current();
+            match &attrs.buffer {
+                Some(BufferAssignment::NewBuffer(buf)) => {
+                    if let Some(data) = wlegl::wlegl_buffer_data(buf) {
+                        new_buf_info = Some((buf.clone(), data.width, data.height));
+                    }
+                }
+                Some(BufferAssignment::Removed) => removed = true,
+                None => {}
+            }
+        });
+
+        if let Some((buf, w, h)) = new_buf_info {
+            self.surface_wlegl.insert(
+                surface.clone(),
+                SurfaceWleglState {
+                    current_buffer: Some(buf),
+                    committed_width: w,
+                    committed_height: h,
+                    released: false,
+                },
+            );
+            // A wlegl surface replaces any prior SHM attachment.
+            self.surface_shm.remove(surface);
+            self.buffer_commit_pending = true;
+        } else if removed {
+            self.surface_wlegl.remove(surface);
+            self.buffer_commit_pending = true;
+        }
     }
 }
 
@@ -326,106 +367,6 @@ impl SeatHandler for TawcState {
         _seat: &Seat<Self>,
         _image: smithay::input::pointer::CursorImageStatus,
     ) {
-    }
-}
-
-// ---------------------------------------------------------------------------
-// tawc_buffer_manager_v1 / tawc_ahb_channel_v1 protocol
-// ---------------------------------------------------------------------------
-
-impl GlobalDispatch<TawcBufferManagerV1, ()> for TawcState {
-    fn bind(
-        _state: &mut Self,
-        _handle: &DisplayHandle,
-        _client: &Client,
-        resource: New<TawcBufferManagerV1>,
-        _global_data: &(),
-        data_init: &mut DataInit<'_, Self>,
-    ) {
-        data_init.init(resource, ());
-        info!("Client bound tawc_buffer_manager_v1");
-    }
-}
-
-impl Dispatch<TawcBufferManagerV1, ()> for TawcState {
-    fn request(
-        state: &mut Self,
-        _client: &Client,
-        _resource: &TawcBufferManagerV1,
-        request: tawc_buffer_manager_v1::Request,
-        _data: &(),
-        _dhandle: &DisplayHandle,
-        data_init: &mut DataInit<'_, Self>,
-    ) {
-        match request {
-            tawc_buffer_manager_v1::Request::GetChannel { id, surface } => {
-                info!("get_channel for surface {:?}", surface.id());
-
-                let (compositor_sock, client_sock) = match UnixStream::pair() {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        error!("Failed to create socketpair: {}", e);
-                        return;
-                    }
-                };
-
-                let channel_data = ChannelData {
-                    surface: surface.clone(),
-                };
-                let channel = data_init.init(id, channel_data);
-                channel.channel_fd(client_sock.as_fd());
-                info!("Sent side-channel fd to client");
-
-                // Set nonblocking once at creation — the socket is only ever
-                // drained in a loop by import_one_ahb(), never blocking-read.
-                if let Err(e) = compositor_sock.set_nonblocking(true) {
-                    error!("Failed to set AHB socket nonblocking: {}", e);
-                }
-
-                state.surface_ahb.insert(
-                    surface,
-                    SurfaceAhbState {
-                        recv_socket: compositor_sock,
-                        pending_width: None,
-                        pending_height: None,
-                        texture: None,
-                        ahb: None,
-                        committed_width: 0,
-                        committed_height: 0,
-                    },
-                );
-            }
-            tawc_buffer_manager_v1::Request::Destroy => {}
-        }
-    }
-}
-
-impl Dispatch<TawcAhbChannelV1, ChannelData> for TawcState {
-    fn request(
-        state: &mut Self,
-        _client: &Client,
-        _resource: &TawcAhbChannelV1,
-        request: tawc_ahb_channel_v1::Request,
-        data: &ChannelData,
-        _dhandle: &DisplayHandle,
-        _data_init: &mut DataInit<'_, Self>,
-    ) {
-        match request {
-            tawc_ahb_channel_v1::Request::Attach { width, height } => {
-                info!(
-                    "AHB attach: {}x{} for surface {:?}",
-                    width, height, data.surface.id()
-                );
-                if let Some(ahb_state) = state.surface_ahb.get_mut(&data.surface) {
-                    ahb_state.pending_width = Some(width);
-                    ahb_state.pending_height = Some(height);
-                }
-            }
-            tawc_ahb_channel_v1::Request::Destroy => {
-                info!("AHB channel destroyed for surface {:?}", data.surface.id());
-                state.surface_ahb.remove(&data.surface);
-            }
-        }
     }
 }
 

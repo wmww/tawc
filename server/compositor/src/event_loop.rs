@@ -217,10 +217,10 @@ pub fn run(
         if let ChannelEvent::Msg(()) = event {
             let clients = data.state.client_count.load(std::sync::atomic::Ordering::Relaxed);
             info!(
-                "COMPOSITOR_STATE: clients={} toplevels={} surfaces_ahb={} surfaces_shm={} frames={} rendered_toplevels={}",
+                "COMPOSITOR_STATE: clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={}",
                 clients,
                 data.state.toplevels.len(),
-                data.state.surface_ahb.len(),
+                data.state.surface_wlegl.len(),
                 data.state.surface_shm.len(),
                 data.frame_count,
                 data.last_rendered_toplevels,
@@ -260,7 +260,14 @@ pub fn run(
         }
 
         // 2. Import buffers (marks dirty if new content arrived)
-        if render::import_pending_ahbs(&mut data.state, &data.render) {
+        if render::import_wlegl_buffers(&mut data.state, &mut data.render) {
+            data.needs_render = true;
+        }
+        // Re-attaches of an already-imported wl_buffer (the hot path once
+        // libhybris's buffer pool has been fully mapped) don't re-import, so
+        // the commit handler signals via buffer_commit_pending instead.
+        if data.state.buffer_commit_pending {
+            data.state.buffer_commit_pending = false;
             data.needs_render = true;
         }
         if render::import_shm_buffers(&mut data.state, &mut data.render.renderer) {
@@ -282,10 +289,27 @@ pub fn run(
             data.last_rendered_toplevels = data.state.toplevels.len();
         }
 
+        // Release wlegl buffers whose textures we've already imported, so
+        // libhybris's wayland-egl can dequeue the next one. Done every tick
+        // (not gated on needs_render) because the very first import sets
+        // needs_render true exactly once — without an unconditional release
+        // libhybris hangs after frame 1, no second buffer ever arrives, and
+        // needs_render never fires again.
+        render::release_consumed_wlegl_buffers(&mut data.state);
+
         // 4. Frame callbacks (always sent so clients can
-        // submit new buffers even when we skipped rendering)
+        // submit new buffers even when we skipped rendering).
         let time = data.start_time.elapsed().as_millis() as u32;
         render::send_frame_callbacks(&data.state, time);
+
+        // Flush so that wl_buffer.release events (sent above) and frame
+        // callbacks reach the client even on idle ticks. The fd-source
+        // dispatcher only flushes on incoming requests; without an explicit
+        // flush here libhybris waits forever for a release that's already
+        // been written to its socket-side queue but not posted.
+        if let Err(e) = data.display.flush_clients() {
+            error!("flush_clients error in frame timer: {}", e);
+        }
 
         // 5. Cleanup — collect dead toplevels first, then remove their state.
         // (Two-pass avoids borrowing toplevels and surface maps simultaneously.)
@@ -299,14 +323,14 @@ pub fn run(
         for wl in &dead_surfaces {
             info!("Removing dead toplevel");
             data.state.surface_shm.remove(wl);
-            data.state.surface_ahb.remove(wl);
+            data.state.surface_wlegl.remove(wl);
         }
         data.state.toplevels.retain(|t| t.alive());
 
-        // Clean up AHB and SHM entries for surfaces whose client disconnected.
+        // Clean up wlegl/SHM entries for surfaces whose client disconnected.
         // The toplevel cleanup above only removes entries keyed by the toplevel's
-        // wl_surface, but AHB channels may be bound to different surfaces.
-        data.state.surface_ahb.retain(|surface, _| surface.is_alive());
+        // wl_surface, but subsurfaces (e.g. Firefox WebRender) live separately.
+        data.state.surface_wlegl.retain(|surface, _| surface.is_alive());
         data.state.surface_shm.retain(|surface, _| surface.is_alive());
 
         data.state.popup_manager.cleanup();
@@ -327,10 +351,10 @@ pub fn run(
 
         if data.frame_count % 300 == 0 {
             info!(
-                "Compositor: {} frames, {} toplevels, {} ahb, {} shm",
+                "Compositor: {} frames, {} toplevels, {} wlegl, {} shm",
                 data.frame_count,
                 data.state.toplevels.len(),
-                data.state.surface_ahb.len(),
+                data.state.surface_wlegl.len(),
                 data.state.surface_shm.len(),
             );
         }
