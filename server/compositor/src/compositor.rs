@@ -214,15 +214,47 @@ impl CompositorHandler for TawcState {
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        // Register a pre-commit hook that suppresses Smithay's auto-release for
+        // wlegl buffers we've already released ourselves.
+        //
+        // Background: libhybris's wayland-egl needs wl_buffer.release before
+        // the next dequeueBuffer (which happens before the next commit), but
+        // Smithay's auto-release fires during merge_into at the *next* commit —
+        // too late. We release early in release_consumed_wlegl_buffers(), but
+        // then Smithay would double-release in merge_into. This hook clears the
+        // cached buffer assignment right before merge_into runs, so Smithay sees
+        // no buffer to release.
+        //
+        // Pre-commit hooks are Smithay's official extension point for this: they
+        // run after pending state is set but before merge_into applies it.
+        use smithay::wayland::compositor::add_pre_commit_hook;
+        add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
+            use smithay::wayland::compositor::{with_states, SurfaceAttributes, BufferAssignment};
+            let Some(wlegl_state) = state.surface_wlegl.get(surface) else { return };
+            if !wlegl_state.released { return; }
+            let Some(ref released_buf) = wlegl_state.current_buffer else { return };
+            let released_buf = released_buf.clone();
+            with_states(surface, |surf_states| {
+                let mut guard = surf_states.cached_state.get::<SurfaceAttributes>();
+                let attrs = guard.current();
+                if let Some(BufferAssignment::NewBuffer(cached)) = &attrs.buffer {
+                    if *cached == released_buf {
+                        attrs.buffer = None;
+                    }
+                }
+            });
+        });
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         self.popup_manager.commit(surface);
         // Track the attached android_wlegl (AHB) buffer so the renderer can
         // find its texture. wl_buffer.release is sent post-frame by
-        // render::release_consumed_wlegl_buffers, which also clears smithay's
-        // cached SurfaceAttributes::buffer to suppress smithay's own
-        // auto-release at the next commit. Without that explicit release
-        // libhybris's wayland-egl never frees its dequeueBuffer pool and
-        // deadlocks after the first frame.
+        // release_consumed_wlegl_buffers(); the pre-commit hook registered in
+        // new_surface() suppresses Smithay's auto-release so the buffer isn't
+        // double-released. Without the early release, libhybris's wayland-egl
+        // never frees its dequeueBuffer pool and deadlocks after the first frame.
         use smithay::wayland::compositor::{with_states, SurfaceAttributes};
         use smithay::wayland::compositor::BufferAssignment;
 

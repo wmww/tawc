@@ -528,12 +528,11 @@ pub fn render_frame(
 /// happens. Smithay's own auto-release fires only at the *next* commit
 /// (handlers.rs:125 `merge_into`), which by definition can't help here.
 ///
-/// Once we send the release, smithay would try to release the same buffer
-/// again at the next commit (replacing the cached SurfaceAttributes::buffer)
-/// — that double-release trips libhybris's `assert(it != fronted.end())` in
-/// `releaseBuffer`. So we also clear smithay's cached buffer here.
+/// To prevent double-release (which trips libhybris's `assert(it !=
+/// fronted.end())` in `releaseBuffer`), a pre-commit hook registered in
+/// `CompositorHandler::new_surface` clears Smithay's cached buffer assignment
+/// before `merge_into` runs. See compositor.rs for that hook.
 pub fn release_consumed_wlegl_buffers(state: &mut TawcState) {
-    use smithay::wayland::compositor::{with_states, BufferAssignment};
     let surfaces: Vec<WlSurface> = state.surface_wlegl.keys().cloned().collect();
     if surfaces.is_empty() { return; }
     for surface in surfaces {
@@ -545,15 +544,6 @@ pub fn release_consumed_wlegl_buffers(state: &mut TawcState) {
         if !consumed { continue; }
         buf.release();
         wlegl_state.released = true;
-        with_states(&surface, |surf_states| {
-            let mut guard = surf_states.cached_state.get::<SurfaceAttributes>();
-            let attrs = guard.current();
-            if let Some(BufferAssignment::NewBuffer(cached)) = &attrs.buffer {
-                if cached == &buf {
-                    attrs.buffer = None;
-                }
-            }
-        });
     }
 }
 

@@ -166,14 +166,12 @@ too late for libhybris: it needs a release before it can dequeue the
 next buffer, and without one the very first commit blocks forever.
 
 So `render::release_consumed_wlegl_buffers` sends `wl_buffer.release`
-itself once we've imported the buffer's texture, then clears Smithay's
-cached `BufferAssignment::NewBuffer` to suppress Smithay's
-auto-release at the next commit (releasing twice trips libhybris's
-`assert(it != fronted.end())` in
-`wayland_window_common.cpp::releaseBuffer`).
-
-The "clear Smithay's cache" trick depends on Smithay's internal cache
-layout — see `issues/wlegl-release-clears-smithay-cache-fragile.md`.
+itself once we've imported the buffer's texture. To prevent Smithay
+from double-releasing the same buffer at the next commit, a pre-commit
+hook (registered in `CompositorHandler::new_surface`) clears the cached
+`BufferAssignment` right before `merge_into` runs. This uses Smithay's
+official `add_pre_commit_hook` API rather than reaching into the cache
+from outside — see compositor.rs for the hook.
 
 ## What this replaces
 
