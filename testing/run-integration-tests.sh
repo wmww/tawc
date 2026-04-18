@@ -40,8 +40,8 @@ echo "=== Pushing pidfile helper ==="
 adb push testing/tawc-pidfile-exec /data/local/tmp/
 adb shell "su -c 'cp /data/local/tmp/tawc-pidfile-exec /data/local/arch-chroot/tmp/tawc-pidfile-exec && chmod +x /data/local/arch-chroot/tmp/tawc-pidfile-exec'"
 
-echo "=== Building libhybris + GL shims ==="
-bash client/build-libhybris
+echo "=== Building libhybris + GL shims (if sources changed) ==="
+bash client/build-libhybris --if-needed
 
 echo "=== Building memfd shim ==="
 bash client/memfd-selinux-shim/build

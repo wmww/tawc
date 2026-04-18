@@ -7,8 +7,9 @@
 # Run from the host (not the phone). Syncs local ./libhybris to the phone
 # and builds inside the chroot.
 #
-# Usage: bash client/build-libhybris [--clean]
-#   --clean: force full reconfigure (otherwise does incremental build)
+# Usage: bash client/build-libhybris [--clean] [--if-needed]
+#   --clean:     force full reconfigure (otherwise does incremental build)
+#   --if-needed: skip build if source hash matches the stamp on the phone
 
 set -euo pipefail
 
@@ -16,6 +17,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIBHYBRIS_DIR="$REPO_DIR/libhybris"
 CHROOT_DIR="/data/local/arch-chroot"
+STAMP_FILE="$CHROOT_DIR/usr/local/lib/.libhybris-build-stamp"
+INSTALLED_LIB="$CHROOT_DIR/usr/local/lib/libhybris-common.so.1.0.0"
 
 if [ ! -d "$LIBHYBRIS_DIR/hybris" ]; then
     echo "ERROR: $LIBHYBRIS_DIR not found or missing hybris/ directory."
@@ -24,8 +27,36 @@ if [ ! -d "$LIBHYBRIS_DIR/hybris" ]; then
 fi
 
 CLEAN=0
-if [ "${1:-}" = "--clean" ]; then
-    CLEAN=1
+IF_NEEDED=0
+for arg in "$@"; do
+    case "$arg" in
+        --clean) CLEAN=1 ;;
+        --if-needed) IF_NEEDED=1 ;;
+        *) echo "ERROR: unknown argument: $arg"; exit 1 ;;
+    esac
+done
+
+# Hash everything that feeds the build so --if-needed can skip work.
+compute_source_hash() {
+    (
+        cd "$REPO_DIR"
+        find libhybris -type f \
+            ! -path '*/.git/*' ! -path '*/autom4te.cache/*' \
+            -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+        sha256sum client/libgl-shim.c client/libglesv2-shim.c client/build-libhybris
+        [ -f client/fix-android-headers ] && sha256sum client/fix-android-headers
+    ) | sha256sum | awk '{print $1}'
+}
+
+SOURCE_HASH=$(compute_source_hash)
+
+if [ "$IF_NEEDED" = "1" ] && [ "$CLEAN" = "0" ]; then
+    STORED_HASH=$(adb shell "su -c 'cat $STAMP_FILE 2>/dev/null; [ -f $INSTALLED_LIB ] && echo INSTALLED'" 2>/dev/null | tr -d '\r' || true)
+    if echo "$STORED_HASH" | grep -qF "$SOURCE_HASH" && echo "$STORED_HASH" | grep -q INSTALLED; then
+        echo "==> libhybris up-to-date (hash $SOURCE_HASH), skipping build"
+        exit 0
+    fi
+    echo "==> libhybris sources changed or not installed, rebuilding"
 fi
 
 # Step 1: Sync local libhybris source to the phone's chroot
@@ -199,4 +230,7 @@ adb shell su -c "cp /data/local/tmp/libglesv2-shim.c '$CHROOT_DIR/tmp/libhybris-
 echo "==> Building libhybris + GL shims inside chroot..."
 adb shell su -c "/system_ext/bin/bash /data/local/tmp/arch-chroot-run 'bash /tmp/build-libhybris.sh $CLEAN'"
 
-echo "==> libhybris build complete"
+# Record the source hash so future --if-needed invocations can skip.
+adb shell "su -c 'echo $SOURCE_HASH > $STAMP_FILE'"
+
+echo "==> libhybris build complete (hash $SOURCE_HASH)"
