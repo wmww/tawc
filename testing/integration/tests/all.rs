@@ -226,6 +226,56 @@ fn test_firefox_launches_with_hardware_buffers() {
     assert_compositor_clean();
 }
 
+const STK_LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[test]
+fn test_supertuxkart_launches_with_hardware_buffers() {
+    ensure_compositor();
+    adb::logcat_clear().expect("Failed to clear logcat");
+
+    let mut stk = ChrootProcess::spawn("supertuxkart")
+        .expect("Failed to spawn supertuxkart");
+    stk.ensure_pgid();
+
+    // Poll logcat until we see an AHB import, meaning STK rendered a frame.
+    // STK compiles many shaders during startup so allow a long timeout.
+    let deadline = Instant::now() + STK_LAUNCH_TIMEOUT;
+    let mut saw_ahb = false;
+    while Instant::now() < deadline {
+        if !stk.is_running() {
+            stk.stop().ok();
+            panic!("supertuxkart crashed/exited before rendering");
+        }
+        let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
+        if saw_ahb_import(&logs) {
+            saw_ahb = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    // Let STK finish opening its window before killing it
+    thread::sleep(Duration::from_millis(1000));
+
+    assert!(saw_ahb,
+        "supertuxkart did not produce hardware (AHB) buffer imports within {:?}",
+        STK_LAUNCH_TIMEOUT);
+
+    assert!(stk.is_running(),
+        "supertuxkart exited after reaching first render");
+
+    // Verify compositor sees STK's toplevel
+    let state = compositor::query_state(TIMEOUT)
+        .expect("Failed to query compositor state while STK running");
+    assert!(state.toplevels >= 1,
+        "Compositor should see at least 1 toplevel while STK running, got {:?}", state);
+    assert!(state.clients >= 1,
+        "Compositor should see at least 1 client while STK running, got {:?}", state);
+
+    stk.stop().expect("supertuxkart process group failed to stop cleanly");
+    assert_compositor_clean();
+}
+
 /// GTK4 on libhybris always renders through android_wlegl (no software path:
 /// the SHM fallback is GTK3-specific). This test drives the GTK4 debug app
 /// through the same text-input flow as the GTK3 cursor test and asserts the
