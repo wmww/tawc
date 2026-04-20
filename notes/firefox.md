@@ -83,6 +83,14 @@ These live as patches in our libhybris fork (see `libhybris/TAWC_FORK.md`):
    from `queueBuffer` so the submission path doesn't depend on
    `eglSwapBuffers`. Without this patch: confirmed black screen on
    Pixel 4a (Adreno 618).
+3. **`NATIVE_WINDOW_BUFFER_AGE` returns `0`** — upstream libhybris
+   returned a hardcoded `2`. WebRender believes that, layers partial-
+   present damage on top of what was "2 frames ago", but the pool-slot
+   rotation means the slot actually holds some other old frame's
+   content. Result: the hamburger menu on Wikipedia flickers between
+   old scrolled states for ~10 frames after a tap burst. Returning `0`
+   ("content undefined") disables partial-present on the client and
+   fixes it. See `notes/wsi-layer.md`.
 
 ## Known Issues
 

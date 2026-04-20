@@ -182,6 +182,22 @@ the already-released AHB could be mid-write on the client side while
 we sampled it again. See the git history around "Remove early-release
 flicker race for wlegl buffers" for the prior scheme.
 
+## `EGL_BUFFER_AGE_EXT` and partial-present clients
+
+Upstream libhybris hardcoded `NATIVE_WINDOW_BUFFER_AGE` to `2` (in
+`hybris/platforms/common/nativewindowbase.cpp`). The vendor EGL driver
+reports that same value via `eglQuerySurface(EGL_BUFFER_AGE_EXT)`, so
+clients believe the just-dequeued pool slot holds exactly what was on
+screen 2 frames ago. With libhybris's 3-slot pool and a partial-present
+client — Firefox/WebRender on Adreno is the one we hit — damage gets
+layered on top of whatever *actually* lived in that slot, not on top
+of the 2-frames-ago state, and you get a visible A-B-A alternation as
+the slot rotation disagrees with the reported age. Fork patches this to
+return `0` ("content undefined, redraw everything"), which disables
+partial-present at a small cost in client work but is always correct.
+See `libhybris/TAWC_FORK.md`. Accurate per-slot ages would recover
+partial-present but we don't track them yet.
+
 ## What this replaces
 
 Prior to migration we carried:
