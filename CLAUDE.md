@@ -47,6 +47,7 @@ Goal: run on all modern Android phones without firmware modifications. Requiring
 
 ## Safety
 I'm letting you play with my phone, try not to fuck it up.
+- Do not reboot the Android device unless explicitly asked to.
 
 ## Organization
 Avoid junking up devices (delete screenshots when done). On the phone, things stay in `/data/local/arch-chroot/`, `/data/local/claude-debug` (**NOT** `/data/local/tmp`).
