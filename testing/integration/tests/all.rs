@@ -276,6 +276,44 @@ fn test_supertuxkart_launches_with_hardware_buffers() {
     assert_compositor_clean();
 }
 
+/// Sanity-check that libhybris can load the Android Vulkan driver via
+/// `android_dlopen` and that our `vulkanplatform_wayland.so` advertises
+/// `VK_KHR_wayland_surface` by remapping `VK_KHR_android_surface`. Runs
+/// `vulkaninfo --summary` in the chroot; `/usr/local/lib` is first on
+/// `LD_LIBRARY_PATH` so libhybris's `libvulkan.so.1` shadows the standard
+/// `vulkan-icd-loader` copy. Doesn't exercise swapchain/present — see
+/// issues/vulkan-vkcube-not-visible.md for that.
+#[test]
+fn test_vulkaninfo_loads_android_driver() {
+    ensure_compositor();
+
+    let out = adb::chroot_run("vulkaninfo --summary")
+        .expect("failed to run vulkaninfo in chroot");
+    assert!(out.status.success(),
+        "vulkaninfo exited non-zero: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr));
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // libhybris's CFI patch message goes to stderr on every load — confirms
+    // our libvulkan.so (not the distro vulkan-icd-loader) was picked up.
+    assert!(stderr.contains("libhybris: patched __cfi_slowpath"),
+        "libhybris not active — distro vulkan-icd-loader shadowed our libvulkan.so?\nstderr:\n{stderr}");
+
+    // The WSI platform layer rewrites VK_KHR_android_surface to
+    // VK_KHR_wayland_surface in the instance extension list.
+    assert!(stdout.contains("VK_KHR_wayland_surface"),
+        "VK_KHR_wayland_surface not advertised — vulkanplatform_wayland.so not loaded?\nstdout:\n{stdout}");
+
+    // Some Android Vulkan driver got loaded. The exact vendor depends on the
+    // phone (Adreno / Mali / ...) — just check we have a driver at all.
+    assert!(stdout.contains("driverID") && stdout.contains("DRIVER_ID_"),
+        "no Vulkan physical device reported\nstdout:\n{stdout}");
+}
+
 /// GTK4 on libhybris always renders through android_wlegl (no software path:
 /// the SHM fallback is GTK3-specific). This test drives the GTK4 debug app
 /// through the same text-input flow as the GTK3 cursor test and asserts the
