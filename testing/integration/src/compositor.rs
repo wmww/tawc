@@ -142,7 +142,7 @@ pub fn stop_if_started() {
 /// Ensure the tawc compositor is running and visible on the phone.
 /// Restarts it if not running or if backgrounded/paused.
 pub fn ensure_running() -> io::Result<()> {
-    let output = adb::shell("dumpsys activity activities | grep me.phie.tawc/.MainActivity")?;
+    let output = adb::shell("dumpsys activity activities | grep me.phie.tawc")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Check for both presence AND visibility. A paused/backgrounded compositor
     // won't have a functioning Wayland socket or receive touch events.
