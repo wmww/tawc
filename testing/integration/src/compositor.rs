@@ -162,17 +162,19 @@ pub fn ensure_running() -> io::Result<()> {
     }
 
     adb::shell("am start -n me.phie.tawc/.MainActivity")?;
-    // Poll for the Wayland socket to appear (compositor is ready)
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // Poll for the Wayland socket to appear (compositor is ready).
+    // The socket symlink target is in the app's private data dir, so
+    // we need root to follow it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
     loop {
-        let output = adb::shell("test -e /data/local/arch-chroot/tmp/wayland-0 && echo ready")?;
+        let output = adb::shell("su -c 'test -e /data/local/arch-chroot/tmp/wayland-0 && echo ready'")?;
         if String::from_utf8_lossy(&output.stdout).contains("ready") {
             break;
         }
         if std::time::Instant::now() > deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "Wayland socket did not appear within 10s",
+                "Wayland socket did not appear within 15s",
             ));
         }
         thread::sleep(Duration::from_millis(100));
