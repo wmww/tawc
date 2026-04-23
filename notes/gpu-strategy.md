@@ -160,8 +160,6 @@ in `vulkanplatform_wayland.so`, presents via `android_wlegl`. Used in Sailfish O
 **Status on tawc (OnePlus 9 / Adreno 660 / Android 16 LineageOS):** ✅ working.
 - `bash client/build-libhybris` builds the `vulkan` subdir and installs
   `/usr/local/lib/libvulkan.so.1` and `/usr/local/lib/libhybris/vulkanplatform_wayland.so`.
-  Because the chroot profile puts `/usr/local/lib` ahead of `/usr/lib` on
-  `LD_LIBRARY_PATH`, libhybris's `libvulkan.so.1` shadows the `vulkan-icd-loader` copy.
 - `vulkaninfo --summary` works end-to-end: `android_dlopen("libvulkan.so")` succeeds,
   the Adreno Vulkan driver enumerates as GPU0, `VK_KHR_wayland_surface` is advertised.
   Covered by `test_vulkaninfo_loads_android_driver`.
@@ -220,10 +218,27 @@ NV Cuda symbols are no longer in `vulkan_core.h` (moved behind a beta/compile-ti
 flag). We switched the guard to `#ifdef VK_NV_cuda_kernel_launch`, which
 correctly follows the extension's feature-test macro.
 
+### Vulkan IFUNC crash (SOLVED)
+
+Upstream libhybris's `vulkan.c` uses `VULKAN_IDLOAD()` which creates GNU IFUNC
+symbols for every Vulkan entry point. IFUNC resolvers run during the dynamic
+linker's early relocation phase. Each resolver calls `_init_androidvulkan()` →
+`android_dlopen("libvulkan.so")`, which loads the entire Android runtime (bionic
+linker, vendor Vulkan driver) while the process is still in the ELF startup phase.
+This crashes when loaded alongside complex library trees like GTK4 (which links
+`libvulkan.so.1` at build time via its `vulkan-icd-loader` dependency).
+
+**Fix (in our fork):** Replaced `VULKAN_IDLOAD` with arm64 assembly trampolines.
+Each symbol gets a 3-instruction stub (`adrp`+`ldr`+`br x16`) that tail-calls
+through a function pointer. A `__attribute__((constructor))` resolves all pointers
+via a linker-set after relocation completes. No IFUNC resolvers, no android_dlopen
+during relocation. See `vulkan.c` and `libhybris/TAWC_FORK.md`.
+
+Upstream PR #607 takes a different approach (hand-written C wrappers for every
+function); ours is smaller because the macro generates the assembly.
+
 **Upstream PRs worth re-evaluating if we push further on vkcube:**
 - PR #604: Mali `currentExtent` fix, `maxImageExtent` raise, opaque alpha support
-- PR #607: Replace `gnu_indirect_function` with regular wrappers (musl/relocation fix;
-  not needed for glibc but the IDLOAD design has other sharp edges)
 
 ## Termux:X11 Comparison
 

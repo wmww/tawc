@@ -5,10 +5,9 @@ Wayland apps set `HYBRIS_EGLPLATFORM=wayland`, libhybris's
 `libEGL.so` at `/usr/local/lib` is loaded by name, and buffer sharing
 goes over the `android_wlegl` Wayland protocol. We carry no custom
 client-side EGL code — the only local changes are inside our libhybris
-fork. Two tiny shim libraries (`libgl-shim.c`, `libglesv2-shim.c`,
-~30 lines each) sit in front of the distro's libGL.so/libGLESv2.so to
-keep libglvnd/Mesa GLX out of the picture; see "Why GL shims still
-exist" below.
+fork. GL shim libraries in `/tmp/gl-shims/` sit in front of distro
+libraries to prevent incompatible code paths:
+- `libGL.so`, `libGLESv2.so.2`: GLX stubs + GLES forwarding (see below)
 
 ## Chroot environment
 
@@ -22,11 +21,13 @@ HYBRIS_EGLPLATFORM=wayland
 LD_PRELOAD=/tmp/memfd-selinux-shim/libmemfd-selinux-shim.so
 ```
 
-`/tmp/gl-shims` holds the GL shims. `/usr/local/lib` is where
+`/tmp/gl-shims` holds the shim libraries (built by
+`client/build-libhybris-chroot.sh`). `/usr/local/lib` is where
 `bash client/build-libhybris` installs libhybris (libEGL.so,
-libGLESv2.so, libGLESv1_CM.so, plus its eglplatform_*.so plugins under
-`/usr/local/lib/libhybris/`). The memfd SELinux shim is unrelated to
-WSI but still required on stock firmware.
+libGLESv2.so, libGLESv1_CM.so, libvulkan.so.1, plus eglplatform_*.so
+and vulkanplatform_*.so plugins under `/usr/local/lib/libhybris/`).
+The memfd SELinux shim is unrelated to WSI but still required on
+stock firmware.
 
 We deliberately build libhybris **without** `--enable-glvnd` (see
 `client/build-libhybris`): the glvnd path drags `libglvnd` in as a hard

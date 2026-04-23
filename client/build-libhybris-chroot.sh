@@ -112,8 +112,8 @@ rm -f /usr/local/share/glvnd/egl_vendor.d/10_libhybris.json /usr/share/glvnd/egl
 ldconfig
 
 # ── GL shims ──
-# Thin wrappers that sit ahead of distro libGL/libGLESv2 on LD_LIBRARY_PATH.
-# They export NULL-returning glX* stubs so Mesa GLX is never probed (it can't
+# Thin wrappers that sit ahead of distro libraries on LD_LIBRARY_PATH.
+# Export NULL-returning glX* stubs so Mesa GLX is never probed (it can't
 # init in this chroot), while DT_NEEDED-linking the real libhybris GLES.
 echo '==> Building GL shims...'
 SHIM_DIR=/tmp/gl-shims
