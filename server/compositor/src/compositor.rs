@@ -159,6 +159,13 @@ impl TawcState {
         // Advertise pointer, keyboard, and touch capabilities
         seat.add_pointer();
         std::env::set_var("XKB_CONFIG_ROOT", "/data/data/me.phie.tawc/files/xkb");
+        // Smithay falls back to writing the keymap to a tempfile under
+        // XDG_RUNTIME_DIR (or std::env::temp_dir() = /tmp) for wl_keyboard
+        // versions < 7. /tmp doesn't exist on a stock Android emulator and
+        // an untrusted_app can't write to it where it does. Without the
+        // keymap, smithay skips wl_keyboard.enter, GTK never activates the
+        // wayland IM, and text-input.enable never fires.
+        std::env::set_var("XDG_RUNTIME_DIR", "/data/data/me.phie.tawc");
         seat.add_keyboard(XkbConfig::default(), 200, 25)
             .expect("Failed to add keyboard to seat");
         seat.add_touch();
