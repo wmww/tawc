@@ -38,26 +38,41 @@ android {
     }
 }
 
-// Task to build the Rust native library via cargo-ndk
-tasks.register<Exec>("buildRustLibrary") {
-    workingDir = file("${rootProject.projectDir}/compositor")
-    environment("ANDROID_NDK_HOME", "${android.ndkDirectory}")
-    commandLine(
-        "cargo", "ndk",
-        "--target", "arm64-v8a",
-        "--platform", "29",
-        "--",
-        "build", "--release"
-    )
-}
+// Build the Rust compositor for one or both Android ABIs and copy the
+// resulting .so into jniLibs/. Override the default by setting the
+// `tawcAbis` Gradle property: `-PtawcAbis=arm64-v8a` or
+// `-PtawcAbis=x86_64` or `-PtawcAbis=arm64-v8a,x86_64`.
+val tawcAbis: List<String> = (project.findProperty("tawcAbis") as String?
+    ?: "arm64-v8a").split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
-// Copy the built .so into jniLibs
-tasks.register<Copy>("copyRustLibrary") {
-    dependsOn("buildRustLibrary")
-    from("${rootProject.projectDir}/compositor/target/aarch64-linux-android/release/libcompositor.so")
-    into("src/main/jniLibs/arm64-v8a/")
-}
+val rustTripleFor = mapOf(
+    "arm64-v8a" to "aarch64-linux-android",
+    "x86_64" to "x86_64-linux-android",
+)
 
-tasks.named("preBuild") {
-    dependsOn("copyRustLibrary")
+tawcAbis.forEach { abi ->
+    val triple = rustTripleFor[abi] ?: error("Unsupported ABI: $abi")
+    val capAbi = abi.replaceFirstChar { it.uppercase() }
+
+    val buildTask = tasks.register<Exec>("buildRustLibrary$capAbi") {
+        workingDir = file("${rootProject.projectDir}/compositor")
+        environment("ANDROID_NDK_HOME", "${android.ndkDirectory}")
+        commandLine(
+            "cargo", "ndk",
+            "--target", abi,
+            "--platform", "29",
+            "--",
+            "build", "--release"
+        )
+    }
+
+    val copyTask = tasks.register<Copy>("copyRustLibrary$capAbi") {
+        dependsOn(buildTask)
+        from("${rootProject.projectDir}/compositor/target/$triple/release/libcompositor.so")
+        into("src/main/jniLibs/$abi/")
+    }
+
+    tasks.named("preBuild") {
+        dependsOn(copyTask)
+    }
 }

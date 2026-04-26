@@ -21,7 +21,7 @@ The Gradle build invokes `cargo ndk` for the Rust compositor automatically.
 ```bash
 adb install -r server/app/build/outputs/apk/debug/app-debug.apk && \
 adb shell am force-stop me.phie.tawc && \
-adb shell am start -n me.phie.tawc/.MainActivity
+adb shell am start -n me.phie.tawc/.compositor.CompositorActivity
 ```
 
 After reinstalling: the compositor restarts with a new Wayland socket. Any running
@@ -37,7 +37,7 @@ cd ../.. && \
 server/gradlew -p server assembleDebug && \
 adb install -r server/app/build/outputs/apk/debug/app-debug.apk && \
 adb shell am force-stop me.phie.tawc && \
-adb shell am start -n me.phie.tawc/.MainActivity
+adb shell am start -n me.phie.tawc/.compositor.CompositorActivity
 ```
 
 ## Device Setup

@@ -6,8 +6,8 @@ Touch events flow: Android `onTouchEvent` -> JNI `nativeOnTouchEvent` -> `calloo
 -> Smithay `TouchHandle` -> `wl_touch` protocol events to client.
 
 **Architecture:**
-- `MainActivity.kt` sets an `OnTouchListener` on the SurfaceView. It dispatches DOWN,
-  MOVE, UP, POINTER_DOWN, POINTER_UP, and CANCEL events per-pointer via JNI.
+- `compositor/CompositorActivity.kt` sets an `OnTouchListener` on the SurfaceView. It
+  dispatches DOWN, MOVE, UP, POINTER_DOWN, POINTER_UP, and CANCEL events per-pointer via JNI.
 - `input.rs` holds a global `Mutex<Option<channel::Sender<TouchEvent>>>` so the JNI
   thread can send events to the compositor thread without shared mutable state.
   Uses Mutex instead of OnceLock so the channel can be replaced on compositor restart.

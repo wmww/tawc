@@ -1,4 +1,4 @@
-package me.phie.tawc
+package me.phie.tawc.compositor
 
 import android.os.Handler
 import android.os.Looper
@@ -12,7 +12,7 @@ object NativeBridge {
     private const val TAG = "tawc"
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** Weak ref to the view for keyboard show/hide. Set by MainActivity. */
+    /** Weak ref to the view for keyboard show/hide. Set by CompositorActivity. */
     private var inputViewRef: WeakReference<View>? = null
 
     var inputView: View?

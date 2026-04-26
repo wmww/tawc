@@ -48,7 +48,7 @@ const WAYLAND_SOCKET_PATH: &str = "/data/data/me.phie.tawc/wayland-0";
 static STATE_QUERY_SENDER: Mutex<Option<smithay::reexports::calloop::channel::Sender<()>>> = Mutex::new(None);
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceCreated(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnSurfaceCreated(
     mut env: JNIEnv,
     _class: JClass,
     surface: jobject,
@@ -71,7 +71,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceCreated(
 
     // Cache NativeBridge class ref for static method callbacks
     if NATIVE_BRIDGE_CLASS.get().is_none() {
-        if let Ok(class) = env.find_class("me/phie/tawc/NativeBridge") {
+        if let Ok(class) = env.find_class("me/phie/tawc/compositor/NativeBridge") {
             let obj = JObject::from(class);
             if let Ok(global) = env.new_global_ref(&obj) {
                 let _ = NATIVE_BRIDGE_CLASS.set(global);
@@ -112,7 +112,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceCreated(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceChanged(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnSurfaceChanged(
     _env: JNIEnv,
     _class: JClass,
     _width: i32,
@@ -122,7 +122,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceChanged(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceDestroyed(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnSurfaceDestroyed(
     _env: JNIEnv,
     _class: JClass,
 ) {
@@ -131,7 +131,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnSurfaceDestroyed(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnTouchEvent(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnTouchEvent(
     _env: JNIEnv,
     _class: JClass,
     action: i32,
@@ -162,7 +162,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeOnTouchEvent(
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeCommitText(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeCommitText(
     mut env: JNIEnv,
     _class: JClass,
     text: jni::objects::JString,
@@ -177,7 +177,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeCommitText(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeSetComposingText(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetComposingText(
     mut env: JNIEnv,
     _class: JClass,
     text: jni::objects::JString,
@@ -187,7 +187,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeSetComposingText(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeFinishComposingText(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeFinishComposingText(
     _env: JNIEnv,
     _class: JClass,
 ) {
@@ -195,7 +195,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeFinishComposingText(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeDeleteSurroundingText(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeDeleteSurroundingText(
     _env: JNIEnv,
     _class: JClass,
     before: i32,
@@ -208,7 +208,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeDeleteSurroundingTex
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeSendKeyEvent(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSendKeyEvent(
     _env: JNIEnv,
     _class: JClass,
     keycode: i32,
@@ -240,7 +240,7 @@ pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeSendKeyEvent(
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_NativeBridge_nativeQueryState(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeQueryState(
     _env: JNIEnv,
     _class: JClass,
 ) {

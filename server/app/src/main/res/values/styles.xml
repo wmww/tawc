@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Default theme for normal Android Activities (home page, future
+         settings/management screens). Standard system chrome. -->
     <style name="Theme.Tawc" parent="android:Theme.DeviceDefault.NoActionBar">
-        <item name="android:windowFullscreen">true</item>
         <item name="android:windowNoTitle">true</item>
+    </style>
+
+    <!-- Theme for the compositor activity: full-screen, immersive,
+         draws under cutouts. -->
+    <style name="Theme.Tawc.Compositor" parent="Theme.Tawc">
+        <item name="android:windowFullscreen">true</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 </resources>

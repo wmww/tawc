@@ -79,6 +79,28 @@ easily confused with the chroot's GNU bash.
   `overridePendingTransition(0, 0)`
 - Activities may be killed under memory pressure -- handle surface loss gracefully
 
+## Kotlin App Structure
+
+The Android app code (`server/app/src/main/java/me/phie/tawc/`) is split so that
+everything talking to the Rust compositor lives in its own package, separate from
+the rest of the app's UI/management features.
+
+- `MainActivity.kt` — home screen. Plain Android UI (no fullscreen, no Wayland).
+  Hosts buttons that launch the compositor and (eventually) other features.
+- `compositor/` — everything that interacts with the Rust compositor:
+  - `CompositorActivity.kt` — fullscreen immersive Activity that owns the
+    `SurfaceView`, dispatches touch/IME, and registers the test broadcast
+    receiver. Started via Intent from `MainActivity`. Uses the
+    `Theme.Tawc.Compositor` style.
+  - `NativeBridge.kt` — JNI surface (matches Rust JNI symbols
+    `Java_me_phie_tawc_compositor_NativeBridge_*` and `find_class
+    "me/phie/tawc/compositor/NativeBridge"` in `server/compositor/src/lib.rs`).
+  - `TawcInputConnection.kt` — IME bridge.
+
+When adding new app features (chroot management, settings, app launcher, …),
+put them in their own packages under `me.phie.tawc.*` rather than mixing them
+into the compositor package.
+
 ## Audio (Out of Scope)
 
 Linux desktop apps typically expect PulseAudio or PipeWire. Audio forwarding from the

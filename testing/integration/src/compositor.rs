@@ -138,7 +138,7 @@ pub fn ensure_running() -> io::Result<()> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Check for both presence AND visibility. A paused/backgrounded compositor
     // won't have a functioning Wayland socket or receive touch events.
-    let is_running = stdout.contains("me.phie.tawc/.MainActivity");
+    let is_running = stdout.contains("me.phie.tawc/.compositor.CompositorActivity");
     let is_visible = stdout.contains("visible=true");
 
     if is_running && is_visible {
@@ -153,7 +153,7 @@ pub fn ensure_running() -> io::Result<()> {
         eprintln!("Starting compositor...");
     }
 
-    adb::shell("am start -n me.phie.tawc/.MainActivity")?;
+    adb::shell("am start -n me.phie.tawc/.compositor.CompositorActivity")?;
     // Poll for the Wayland socket to appear (compositor is ready).
     // The socket symlink target is in the app's private data dir, so
     // we need root to follow it.

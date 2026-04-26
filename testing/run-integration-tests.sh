@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}"
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
 
 # shellcheck source=../client/select-device.sh
 source "$ROOT_DIR/client/select-device.sh"
@@ -25,9 +26,17 @@ source "$ROOT_DIR/client/select-device.sh"
 echo "=== Checking adb connection ($ANDROID_SERIAL) ==="
 adb get-state >/dev/null 2>&1 || { echo "ERROR: No adb device connected"; exit 1; }
 
-echo "=== Building compositor APK ==="
+# Pick the right native ABI for the target. The Rust compositor links
+# against a locally-built static libxkbcommon per arch; building both
+# only works if both libxkbcommon trees exist.
+case "$ANDROID_SERIAL" in
+    emulator-*) TAWC_ABIS="x86_64" ;;
+    *)          TAWC_ABIS="arm64-v8a" ;;
+esac
+
+echo "=== Building compositor APK ($TAWC_ABIS) ==="
 cd "$ROOT_DIR/server"
-./gradlew assembleDebug --quiet
+./gradlew "-PtawcAbis=$TAWC_ABIS" assembleDebug --quiet
 cd "$ROOT_DIR"
 
 echo "=== Installing APK ==="

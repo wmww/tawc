@@ -72,14 +72,14 @@ Avoid junking up devices (delete screenshots when done). On the phone, things st
 ## Quick Reference
 - **Build (compositor):** `cd server && JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew assembleDebug`
 - **Build (libhybris):** `bash client/build-libhybris` (or `--clean` to reconfigure). Edit `./libhybris` locally, script syncs to phone.
-- **Install & launch:** `adb install -r server/app/build/outputs/apk/debug/app-debug.apk && adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.MainActivity`
+- **Install & launch:** `adb install -r server/app/build/outputs/apk/debug/app-debug.apk && adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.compositor.CompositorActivity`
 - **Chroot:** `adb push client/arch-chroot-run /data/local/tmp/ && adb shell "/system/bin/sh /data/local/tmp/arch-chroot-run"`
 - **Run Wayland app:** `adb shell "/system/bin/sh /data/local/tmp/arch-chroot-run '<command>'"` (env vars set by profile)
 - **Firefox:** `adb shell "/system/bin/sh /data/local/tmp/arch-chroot-run 'GDK_GL=gles:always MOZ_ENABLE_WAYLAND=1 MOZ_ACCELERATED=1 MOZ_DISABLE_CONTENT_SANDBOX=1 MOZ_DISABLE_GMP_SANDBOX=1 MOZ_DISABLE_RDD_SANDBOX=1 MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1 DISPLAY= firefox --no-remote'"`
 - **Screenshot:** `adb shell "su -c 'screencap -p /sdcard/screenshot.png'" && adb pull /sdcard/screenshot.png /tmp/screenshot.png` (analyze with sub-agent, then clean up both files)
 - **Logs:** `adb logcat -s tawc-native` (Rust) or `adb logcat -s tawc` (Kotlin). Filter frame spam: `grep -v renderer_gles2_frame`
 - **Kill Firefox:** `adb shell "su -c 'killall firefox'"`
-- **Restart compositor:** `adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.MainActivity`
+- **Restart compositor:** `adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.compositor.CompositorActivity`
 - **Simulate touch:** `adb shell input tap X Y` (screen pixel coords, 1:1 with SurfaceView due to immersive fullscreen)
 - **Touch debug loop:** Screenshot -> identify coords -> tap -> screenshot -> verify. Compositor uses 2x scale (logical = physical/2). Nearby UI elements are easy to confuse.
 - **Integration tests (full):** `bash testing/run-integration-tests.sh` (builds everything, deploys, runs both groups. Feel free to do these as-needed instead of using this script)
