@@ -57,6 +57,24 @@ SELinux must be permissive: `adb shell "su -c 'setenforce 0'"` (resets on reboot
   This is not a tawc or ALARM bug; it's just how pacman works when you
   skip the sync step.
 
+## Vendored xkb data
+
+The compositor needs xkeyboard-config data files for xkbcommon to load keymaps.
+These are vendored in `server/app/src/main/assets/xkb/` and extracted to the
+app's data dir on first launch. The data came from the chroot's
+`/usr/share/xkeyboard-config-2/` (Arch Linux ARM `xkeyboard-config` package).
+
+To update from the chroot:
+```bash
+adb shell "su -c 'cd /data/local/arch-chroot/usr/share/xkeyboard-config-2 && tar cf /data/local/tmp/xkb-data.tar .'"
+adb pull /data/local/tmp/xkb-data.tar /tmp/xkb-data.tar
+rm -rf server/app/src/main/assets/xkb
+mkdir -p server/app/src/main/assets/xkb
+tar xf /tmp/xkb-data.tar -C server/app/src/main/assets/xkb/
+rm /tmp/xkb-data.tar
+adb shell "rm /data/local/tmp/xkb-data.tar"
+```
+
 ## Build System Details
 
 - Rust compositor cross-compiled for `aarch64-linux-android` via `cargo-ndk`

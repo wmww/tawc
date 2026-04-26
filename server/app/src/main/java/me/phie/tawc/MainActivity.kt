@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.view.MotionEvent
@@ -14,6 +15,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import java.io.File
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var surfaceView: SurfaceView
@@ -53,6 +55,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     @Suppress("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        extractXkbData()
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -111,6 +114,34 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or EditorInfo.IME_ACTION_NONE
             return TawcInputConnection(this)
         }
+    }
+
+    private fun extractXkbData() {
+        val destDir = File(filesDir, "xkb")
+        val versionFile = File(destDir, ".version")
+        val currentVersion = try {
+            packageManager.getPackageInfo(packageName, 0).longVersionCode
+        } catch (_: PackageManager.NameNotFoundException) { 0L }
+
+        if (versionFile.exists() && versionFile.readText().trim() == currentVersion.toString()) return
+
+        destDir.deleteRecursively()
+        fun extractDir(assetPath: String, destPath: File) {
+            val children = assets.list(assetPath) ?: return
+            if (children.isEmpty()) {
+                assets.open(assetPath).use { input ->
+                    destPath.outputStream().use { output -> input.copyTo(output) }
+                }
+            } else {
+                destPath.mkdirs()
+                for (child in children) {
+                    extractDir("$assetPath/$child", File(destPath, child))
+                }
+            }
+        }
+        extractDir("xkb", destDir)
+        versionFile.writeText(currentVersion.toString())
+        Log.d("tawc", "Extracted xkb data to $destDir")
     }
 
     private fun dispatchTouchToCompositor(event: MotionEvent): Boolean {

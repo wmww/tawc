@@ -158,11 +158,7 @@ impl TawcState {
         let mut seat = seat_state.new_wl_seat(&dh, "tawc");
         // Advertise pointer, keyboard, and touch capabilities
         seat.add_pointer();
-        // xkbcommon needs XKB data files; point it at the chroot's copy.
-        // Note: set_var is technically not thread-safe (UB per POSIX), but this
-        // runs once early and nothing else reads XKB_CONFIG_ROOT concurrently.
-        // Rust 2024 edition will require `unsafe` here.
-        std::env::set_var("XKB_CONFIG_ROOT", "/data/local/arch-chroot/usr/share/xkeyboard-config-2");
+        std::env::set_var("XKB_CONFIG_ROOT", "/data/data/me.phie.tawc/files/xkb");
         seat.add_keyboard(XkbConfig::default(), 200, 25)
             .expect("Failed to add keyboard to seat");
         seat.add_touch();

@@ -1,0 +1,152 @@
+default  hidden partial modifier_keys
+xkb_symbols "capslock" {
+    replace key <CAPS> { [ Caps_Lock ], type[group1] = "ONE_LEVEL" };
+    modifier_map Lock { Caps_Lock };
+};
+
+hidden partial modifier_keys
+xkb_symbols "shiftlock" {
+    replace key <CAPS> { [ Shift_Lock ], type[group1] = "ONE_LEVEL" };
+    modifier_map Shift { Shift_Lock };
+};
+
+hidden partial modifier_keys
+xkb_symbols "swapescape" {
+    key <CAPS> { [ Escape ], type[group1] = "ONE_LEVEL" };
+    key <ESC>  { [ Caps_Lock ] };
+};
+
+hidden partial modifier_keys
+xkb_symbols "escape" {
+    key <CAPS> { [ Escape ], type[group1] = "ONE_LEVEL" };
+};
+
+hidden partial modifier_keys
+xkb_symbols "escape_shifted_capslock" {
+    key <CAPS> {
+        type[Group1] = "TWO_LEVEL",
+        symbols[Group1] = [ Escape, Caps_Lock ],
+        actions[Group1] = [ NoAction(), LockMods(modifiers = Lock) ]
+    };
+};
+
+hidden partial modifier_keys
+xkb_symbols "escape_shifted_compose" {
+    key <CAPS> {
+        type[Group1] = "TWO_LEVEL",
+        symbols[Group1] = [ Escape, Multi_key ],
+        actions[Group1] = [ NoAction(), NoAction() ]
+    };
+};
+
+hidden partial modifier_keys
+xkb_symbols "backspace" {
+    key <CAPS> { [ BackSpace ], type[group1] = "ONE_LEVEL" };
+};
+
+hidden partial modifier_keys
+xkb_symbols "return" {
+    key <CAPS> { [ Return ], type[group1] = "ONE_LEVEL" };
+};
+
+hidden partial modifier_keys
+xkb_symbols "super" {
+    key <CAPS> { [ Super_L ], type[group1] = "ONE_LEVEL" };
+    modifier_map Mod4 { <CAPS> };
+};
+
+hidden partial modifier_keys
+xkb_symbols "hyper" {
+    key <CAPS> { [ Hyper_L ], type[group1] = "ONE_LEVEL" };
+    modifier_map None { <CAPS> };
+    include "hyper(mod3)"
+};
+
+hidden partial modifier_keys
+xkb_symbols "menu" {
+    key <CAPS> { [ Menu ], type[group1] = "ONE_LEVEL" };
+};
+
+hidden partial modifier_keys
+xkb_symbols "numlock" {
+    key <CAPS> { [ Num_Lock ], type[group1] = "ONE_LEVEL" };
+};
+
+hidden partial modifier_keys
+xkb_symbols "ctrl_shifted_capslock" {
+    key <CAPS> {
+        type[Group1] = "TWO_LEVEL",
+        symbols[Group1] = [ Control_L, Caps_Lock ],
+	// Explicit actions are preferred over modMap None/Control { Caps_Lock }
+        // because they have no side effect
+        actions[Group1] = [ SetMods(modifiers=Control), LockMods(modifiers=Lock) ]
+    };
+};
+
+// This changes the <CAPS> key to become a Control modifier,
+// but it will still produce the Caps_Lock keysym; this is
+// useful for apps that need to distinguish it from usual
+// Control_L and Control_R.
+hidden partial modifier_keys
+xkb_symbols "ctrl_modifier" {
+    replace key <CAPS> {
+        type[Group1] = "ONE_LEVEL",
+        symbols[Group1] = [ Caps_Lock ],
+        actions[Group1] = [ SetMods(modifiers=Control) ]
+    };
+    modifier_map Control { <CAPS> };
+};
+
+hidden partial modifier_keys
+xkb_symbols "none" {
+    key <CAPS> { [ VoidSymbol ], type[group1] = "ONE_LEVEL" };
+};
+
+// For layouts having digits on the 2nd level on the digits row and key type
+// FOUR_LEVEL (e.g. fr(basic) and be(basic)), this makes CapsLock give the digits
+// by changing their key type to FOUR_LEVEL_SEMIALPHABETIC. Note that this has the
+// drawback that the uppercases À, È, É and Ç are no longer available, as those
+// layouts rely on internal capitalization rules for those letters.
+hidden partial alphanumeric_keys
+xkb_symbols "digits_row" {
+    key.type[group1] = "FOUR_LEVEL_SEMIALPHABETIC";
+
+    // No symbol defined: we just want to change the key type
+    key <AE01>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE02>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE03>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE04>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE05>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE06>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE07>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE08>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE09>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE10>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+};
+
+// The Shift + Caps Lock combination inverts the first two levels only.
+// Originally designed for layouts with digits on the second level of the
+// digits row (e.g. Azerty layouts).
+// This allows users to have direct access to digits while keeping
+// usual capitalization via Caps Lock.
+hidden partial alphanumeric_keys
+xkb_symbols "digits_row_independent_lock" {
+    key <CAPS> {
+        type[Group1] = "TWO_LEVEL",
+        symbols[Group1] = [ NoSymbol, ISO_Level5_Lock ]
+    };
+
+    key.type[group1] = "FOUR_LEVEL_LOCKABLE_LEVEL2";
+
+    // No symbol defined: we just want to change the key type
+    key <AE01>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE02>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE03>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE04>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE05>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE06>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE07>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE08>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE09>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+    key <AE10>	{ [ NoSymbol, NoSymbol, NoSymbol, NoSymbol ] };
+};

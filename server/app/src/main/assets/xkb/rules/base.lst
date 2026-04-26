@@ -1,0 +1,1025 @@
+! model
+  pc86            Generic 86-key PC
+  pc101           Generic 101-key PC
+  pc102           Generic 102-key PC
+  pc104           Generic 104-key PC
+  pc104alt        Generic 104-key PC with L-shaped Enter key
+  pc105           Generic 105-key PC
+  a4techKB21      A4Tech KB-21
+  a4techKBS8      A4Tech KBS-8
+  a4_rfkb23       A4Tech Wireless Desktop RFKB-23
+  airkey          Acer AirKey V
+  acer_c300       Acer C300
+  acer_ferrari4k  Acer Ferrari 4000
+  acer_laptop     Acer laptop
+  scorpius        Advance Scorpius KI
+  apple           Apple
+  applealu_ansi   Apple Aluminium (ANSI)
+  applealu_iso    Apple Aluminium (ISO)
+  applealu_jis    Apple Aluminium (JIS)
+  asus_laptop     Asus laptop
+  azonaRF2300     Azona RF2300 Wireless Internet
+  benqx           BenQ X-Touch
+  benqx730        BenQ X-Touch 730
+  benqx800        BenQ X-Touch 800
+  abnt2           Brazilian ABNT2
+  brother         Brother Internet
+  btc5090         BTC 5090
+  btc5113rf       BTC 5113RF Multimedia
+  btc5126t        BTC 5126T
+  btc6301urf      BTC 6301URF
+  btc9000         BTC 9000
+  btc9000a        BTC 9000A
+  btc9001ah       BTC 9001AH
+  btc9019u        BTC 9019U
+  btc9116u        BTC 9116U Mini Wireless Internet and Gaming
+  cherryblue      Cherry Blue Line CyBo@rd
+  cherrybluea     Cherry Blue Line CyBo@rd (alt.)
+  cherrybunlim    Cherry B.UNLIMITED
+  cherrycyboard   Cherry CyBo@rd USB-Hub
+  cherrycmexpert  Cherry CyMotion Expert
+  cymotionlinux   Cherry CyMotion Master Linux
+  cherryblueb     Cherry CyMotion Master XPress
+  chicony         Chicony Internet
+  chicony9885     Chicony KB-9885
+  chicony0108     Chicony KU-0108
+  chicony0420     Chicony KU-0420
+  chromebook      Chromebook
+  compalfl90      Compal FL90
+  armada          Compaq Armada laptop
+  compaqeak8      Compaq Easy Access
+  compaqik7       Compaq Internet (7 keys)
+  compaqik13      Compaq Internet (13 keys)
+  compaqik18      Compaq Internet (18 keys)
+  ipaq            Compaq iPaq
+  presario        Compaq Presario laptop
+  creativedw7000  Creative Desktop Wireless 7000
+  dell            Dell
+  dell101         Dell 101-key PC
+  latitude        Dell Latitude laptop
+  inspiron        Dell Inspiron 6000/8000 laptop
+  precision_m     Dell Precision M laptop
+  dellm65         Dell Precision M65 laptop
+  dellsk8125      Dell SK-8125
+  dellsk8135      Dell SK-8135
+  dellusbmm       Dell USB Multimedia
+  dexxa           Dexxa Wireless Desktop
+  diamond         Diamond 9801/9802
+  dtk2000         DTK2000
+  emachines       eMachines m6800 laptop
+  ennyah_dkb1008  Ennyah DKB-1008
+  everex          Everex STEPnote
+  fscaa1667g      Fujitsu-Siemens Amilo laptop
+  genius          Genius Comfy KB-16M/Multimedia KWD-910
+  geniuscomfy     Genius Comfy KB-12e
+  geniuscomfy2    Genius Comfy KB-21e-Scroll
+  geniuskb19e     Genius KB-19e NB
+  geniuskkb2050hs Genius KKB-2050HS
+  gyration        Gyration
+  hhk             Happy Hacking
+  hpi6            Hewlett-Packard Internet
+  hpmini110       Hewlett-Packard Mini 110 laptop
+  hpnx9020        Hewlett-Packard nx9020
+  hp5xx           Hewlett-Packard Omnibook 500
+  hp500fa         Hewlett-Packard Omnibook 500 FA
+  hp6000          Hewlett-Packard Omnibook 6000/6100
+  hpxe3gc         Hewlett-Packard Omnibook XE3 GC
+  hpxe3gf         Hewlett-Packard Omnibook XE3 GF
+  hpxt1000        Hewlett-Packard Omnibook XT1000
+  hpdv5           Hewlett-Packard Pavilion dv5
+  hpzt11xx        Hewlett-Packard Pavilion ZT1100
+  hp250x          Hewlett-Packard SK-2501 Multimedia
+  honeywell_euroboard Honeywell Euroboard
+  rapidaccess     IBM Rapid Access
+  rapidaccess2    IBM Rapid Access II
+  ibm_spacesaver  IBM Space Saver
+  thinkpad        IBM ThinkPad 560Z/600/600E/A22E
+  thinkpad60      IBM ThinkPad R60/T60/R61/T61
+  thinkpadz60     IBM ThinkPad Z60m/Z60t/Z61m/Z61t
+  jp106           Japanese 106-key
+  flexpro         Keytronic FlexPro
+  kinesis         Kinesis
+  kr106           Korean 106-key
+  logitech_base   Logitech
+  logiaccess      Logitech Access
+  logicd          Logitech Cordless Desktop
+  logicda         Logitech Cordless Desktop (alt.)
+  logiex110       Logitech Cordless Desktop EX110
+  logicd_it       Logitech Cordless Desktop iTouch
+  logiclx300      Logitech Cordless Desktop LX-300
+  logicd_nav      Logitech Cordless Desktop Navigator
+  logicd_opt      Logitech Cordless Desktop Optical
+  logidinovo      Logitech diNovo
+  logidinovoedge  Logitech diNovo Edge
+  logitech_g15    Logitech G15 extra keys via G15daemon
+  logiik          Logitech Internet
+  logii350        Logitech Internet 350
+  logimel         Logitech Internet 350
+  logicink        Logitech Internet Navigator
+  itouch          Logitech iTouch
+  logiitc         Logitech iTouch Cordless Y-RB6
+  logiinkse       Logitech iTouch Internet Navigator SE
+  logiinkseusb    Logitech iTouch Internet Navigator SE USB
+  logiultrax      Logitech Ultra-X
+  logiultraxc     Logitech Ultra-X Cordless Media Desktop
+  mx1998          Memorex MX1998
+  mx2500          Memorex MX2500 EZ-Access
+  mx2750          Memorex MX2750
+  microsoftccurve2k Microsoft Comfort Curve 2000
+  microsoftinet   Microsoft Internet
+  microsoftprose  Microsoft Internet Pro (Swedish)
+  microsoft       Microsoft Natural
+  microsoftelite  Microsoft Natural Elite
+  microsoft4000   Microsoft Natural Ergonomic 4000
+  microsoft7000   Microsoft Natural Wireless Ergonomic 7000
+  microsoftpro    Microsoft Natural Pro/Internet Pro
+  microsoftprousb Microsoft Natural Pro USB/Internet Pro
+  microsoftprooem Microsoft Natural Pro OEM
+  microsoftoffice Microsoft Office Keyboard
+  microsoftsurface Microsoft Surface
+  microsoftmult   Microsoft Wireless Multimedia 1.0A
+  sk1300          NEC SK-1300
+  sk2500          NEC SK-2500
+  sk6200          NEC SK-6200
+  sk7100          NEC SK-7100
+  omnikey101      Northgate OmniKey 101
+  olpc            OLPC
+  oretec          Ortek Multimedia/Internet MCK-800
+  pc98            PC-98
+  ppkb            PinePhone Keyboard
+  propeller       Propeller Voyager KTEZ-1000
+  qtronix         QTronix Scorpius 98N+
+  samsung4500     Samsung SDM 4500P
+  samsung4510     Samsung SDM 4510P
+  sanwaskbkg3     Sanwa Supply SKB-KG3
+  silvercrest     Silvercrest Multimedia Wireless
+  apex300         SteelSeries Apex 300 (Apex RAW)
+  sun_type6_jp    Sun Type 6 (Japanese)
+  sun_type6_jp_usb Sun Type 6 USB (Japanese)
+  sun_type6_unix_usb Sun Type 6 USB (Unix)
+  sun_type6_usb   Sun Type 6/7 USB
+  sun_type6_euro_usb Sun Type 6/7 USB (European)
+  sun_type7_usb   Sun Type 7 USB
+  sun_type7_euro_usb Sun Type 7 USB (European)
+  sun_type7_jp_usb Sun Type 7 USB (Japanese)/Japanese 106-key
+  sun_type7_unix_usb Sun Type 7 USB (Unix)
+  sp_inet         Super Power Multimedia
+  sven            SVEN Ergonomic 2500
+  sven303         SVEN Slim 303
+  symplon         Symplon PaceBook tablet
+  targa_v811      Targa Visionary 811
+  toshiba_s3000   Toshiba Satellite S3000
+  teck227         Truly Ergonomic 227
+  teck229         Truly Ergonomic 229
+  trustda         Trust Direct Access
+  trust_slimline  Trust Slimline
+  trust           Trust Wireless Classic
+  tm2020          TypeMatrix EZ-Reach 2020
+  tm2030PS2       TypeMatrix EZ-Reach 2030 PS2
+  tm2030USB       TypeMatrix EZ-Reach 2030 USB
+  tm2030USB-102   TypeMatrix EZ-Reach 2030 USB (102/105:EU mode)
+  tm2030USB-106   TypeMatrix EZ-Reach 2030 USB (106:JP mode)
+  unitekkb1925    Unitek KB-1925
+  vsonku306       ViewSonic KU-306 Internet
+  winbook         Winbook Model XP5
+  yahoo           Yahoo! Internet
+
+! layout
+  al              Albanian
+  et              Amharic
+  am              Armenian
+  ara             Arabic
+  eg              Arabic (Egypt)
+  iq              Arabic (Iraq)
+  ma              Arabic (Morocco)
+  sy              Arabic (Syria)
+  az              Azerbaijani
+  ml              Bambara
+  bd              Bangla
+  by              Belarusian
+  be              Belgian
+  dz              Berber (Algeria, Latin)
+  ba              Bosnian
+  brai            Braille
+  bg              Bulgarian
+  mm              Burmese
+  cn              Chinese
+  hr              Croatian
+  cz              Czech
+  dk              Danish
+  af              Dari
+  mv              Dhivehi
+  nl              Dutch
+  bt              Dzongkha
+  au              English (Australia)
+  cm              English (Cameroon)
+  gh              English (Ghana)
+  nz              English (New Zealand)
+  ng              English (Nigeria)
+  za              English (South Africa)
+  gb              English (UK)
+  us              English (US)
+  epo             Esperanto
+  ee              Estonian
+  fo              Faroese
+  ph              Filipino
+  fi              Finnish
+  fr              French
+  ca              French (Canada)
+  cd              French (Democratic Republic of the Congo)
+  tg              French (Togo)
+  ge              Georgian
+  de              German
+  at              German (Austria)
+  ch              German (Switzerland)
+  gr              Greek
+  il              Hebrew
+  hu              Hungarian
+  is              Icelandic
+  in              Indian
+  id              Indonesian (Latin)
+  ie              Irish
+  it              Italian
+  jp              Japanese
+  kz              Kazakh
+  kh              Khmer (Cambodia)
+  kr              Korean
+  kg              Kyrgyz
+  la              Lao
+  lv              Latvian
+  lt              Lithuanian
+  mk              Macedonian
+  my              Malay (Jawi, Arabic Keyboard)
+  mt              Maltese
+  md              Moldavian
+  mn              Mongolian
+  me              Montenegrin
+  np              Nepali
+  gn              N'Ko (AZERTY)
+  no              Norwegian
+  ir              Persian
+  pl              Polish
+  pt              Portuguese
+  br              Portuguese (Brazil)
+  ro              Romanian
+  ru              Russian
+  rs              Serbian
+  lk              Sinhala (phonetic)
+  sk              Slovak
+  si              Slovenian
+  es              Spanish
+  latam           Spanish (Latin American)
+  ke              Swahili (Kenya)
+  tz              Swahili (Tanzania)
+  se              Swedish
+  tw              Taiwanese
+  tj              Tajik
+  th              Thai
+  bw              Tswana
+  tm              Turkmen
+  tr              Turkish
+  ua              Ukrainian
+  pk              Urdu (Pakistan)
+  uz              Uzbek
+  vn              Vietnamese
+  sn              Wolof
+  custom          A user-defined custom Layout
+
+! variant
+  plisi           al: Albanian (Plisi)
+  veqilharxhi     al: Albanian (Veqilharxhi)
+  phonetic        am: Armenian (phonetic)
+  phonetic-alt    am: Armenian (alt. phonetic)
+  eastern         am: Armenian (eastern)
+  eastern-alt     am: Armenian (alt. eastern)
+  western         am: Armenian (western)
+  digits          ara: Arabic (Eastern Arabic numerals)
+  azerty          ara: Arabic (AZERTY)
+  azerty_digits   ara: Arabic (AZERTY, Eastern Arabic numerals)
+  buckwalter      ara: Arabic (Buckwalter)
+  mac             ara: Arabic (Macintosh)
+  mac-phonetic    ara: Arabic (Macintosh, phonetic)
+  olpc            ara: Arabic (OLPC)
+  ku              iq: Kurdish (Iraq, Latin Q)
+  ku_alt          iq: Kurdish (Iraq, Latin Alt-Q)
+  ku_f            iq: Kurdish (Iraq, F)
+  ku_ara          iq: Kurdish (Iraq, Arabic-Latin)
+  tifinagh        ma: Berber (Morocco, Tifinagh)
+  tifinagh-alt    ma: Berber (Morocco, Tifinagh alt.)
+  tifinagh-alt-phonetic ma: Berber (Morocco, Tifinagh phonetic, alt.)
+  tifinagh-extended ma: Berber (Morocco, Tifinagh extended)
+  tifinagh-phonetic ma: Berber (Morocco, Tifinagh phonetic)
+  tifinagh-extended-phonetic ma: Berber (Morocco, Tifinagh extended phonetic)
+  french          ma: French (Morocco)
+  rif             ma: Tarifit
+  syc             sy: Syriac
+  syc_phonetic    sy: Syriac (phonetic)
+  ku              sy: Kurdish (Syria, Latin Q)
+  ku_alt          sy: Kurdish (Syria, Latin Alt-Q)
+  ku_f            sy: Kurdish (Syria, F)
+  cyrillic        az: Azerbaijani (Cyrillic)
+  fr-oss          ml: French (Mali, alt.)
+  us-mac          ml: English (Mali, US, Macintosh)
+  us-intl         ml: English (Mali, US, intl.)
+  probhat         bd: Bangla (Probhat)
+  legacy          by: Belarusian (legacy)
+  latin           by: Belarusian (Latin)
+  intl            by: Belarusian (intl.)
+  phonetic        by: Belarusian (phonetic)
+  ru              by: Russian (Belarus)
+  oss             be: Belgian (alt.)
+  oss_latin9      be: Belgian (Latin-9 only, alt.)
+  iso-alternate   be: Belgian (ISO, alt.)
+  nodeadkeys      be: Belgian (no dead keys)
+  wang            be: Belgian (Wang 724 AZERTY)
+  ber             dz: Berber (Algeria, Tifinagh)
+  azerty-deadkeys dz: Kabyle (AZERTY, with dead keys)
+  qwerty-gb-deadkeys dz: Kabyle (QWERTY, UK, with dead keys)
+  qwerty-us-deadkeys dz: Kabyle (QWERTY, US, with dead keys)
+  ar              dz: Arabic (Algeria)
+  alternatequotes ba: Bosnian (with guillemets)
+  unicode         ba: Bosnian (with Bosnian digraphs)
+  unicodeus       ba: Bosnian (US, with Bosnian digraphs)
+  us              ba: Bosnian (US)
+  left_hand       brai: Braille (one-handed, left)
+  left_hand_invert brai: Braille (one-handed, left, inverted thumb)
+  right_hand      brai: Braille (one-handed, right)
+  right_hand_invert brai: Braille (one-handed, right, inverted thumb)
+  phonetic        bg: Bulgarian (traditional phonetic)
+  bas_phonetic    bg: Bulgarian (new phonetic)
+  bekl            bg: Bulgarian (enhanced)
+  zawgyi          mm: Burmese (Zawgyi)
+  mnw             mm: Mon
+  mnw-a1          mm: Mon (A1)
+  shn             mm: Shan
+  zgt             mm: Shan (Zawgyi)
+  altgr-pinyin    cn: Hanyu Pinyin Letters (with AltGr dead keys)
+  mon_trad        cn: Mongolian (Bichig)
+  mon_trad_todo   cn: Mongolian (Todo)
+  mon_trad_xibe   cn: Mongolian (Xibe)
+  mon_trad_manchu cn: Mongolian (Manchu)
+  mon_trad_galik  cn: Mongolian (Galik)
+  mon_todo_galik  cn: Mongolian (Todo Galik)
+  mon_manchu_galik cn: Mongolian (Manchu Galik)
+  tib             cn: Tibetan
+  tib_asciinum    cn: Tibetan (with ASCII numerals)
+  ug              cn: Uyghur
+  alternatequotes hr: Croatian (with guillemets)
+  unicode         hr: Croatian (with Croatian digraphs)
+  unicodeus       hr: Croatian (US, with Croatian digraphs)
+  us              hr: Croatian (US)
+  bksl            cz: Czech (extra backslash)
+  qwerty          cz: Czech (QWERTY)
+  qwerty_bksl     cz: Czech (QWERTY, extra backslash)
+  winkeys         cz: Czech (QWERTZ, Windows)
+  winkeys-qwerty  cz: Czech (QWERTY, Windows)
+  qwerty-mac      cz: Czech (QWERTY, Macintosh)
+  ucw             cz: Czech (UCW, only accented letters)
+  dvorak-ucw      cz: Czech (US, Dvorak, UCW support)
+  rus             cz: Russian (Czechia, phonetic)
+  nodeadkeys      dk: Danish (no dead keys)
+  winkeys         dk: Danish (Windows)
+  mac             dk: Danish (Macintosh)
+  mac_nodeadkeys  dk: Danish (Macintosh, no dead keys)
+  dvorak          dk: Danish (Dvorak)
+  ps              af: Pashto
+  uz              af: Uzbek (Afghanistan)
+  fa-olpc         af: Dari (Afghanistan, OLPC)
+  ps-olpc         af: Pashto (Afghanistan, OLPC)
+  uz-olpc         af: Uzbek (Afghanistan, OLPC)
+  us              nl: Dutch (US)
+  mac             nl: Dutch (Macintosh)
+  std             nl: Dutch (standard)
+  french          cm: French (Cameroon)
+  qwerty          cm: Cameroon Multilingual (QWERTY, intl.)
+  azerty          cm: Cameroon (AZERTY, intl.)
+  dvorak          cm: Cameroon (Dvorak, intl.)
+  mmuock          cm: Mmuock
+  generic         gh: English (Ghana, multilingual)
+  gillbt          gh: English (Ghana, GILLBT)
+  akan            gh: Akan
+  avn             gh: Avatime
+  ewe             gh: Ewe
+  fula            gh: Fula
+  ga              gh: Ga
+  hausa           gh: Hausa (Ghana)
+  mao             nz: Maori
+  hausa           ng: Hausa (Nigeria)
+  igbo            ng: Igbo
+  yoruba          ng: Yoruba
+  extd            gb: English (UK, extended, Windows)
+  intl            gb: English (UK, intl., with dead keys)
+  dvorak          gb: English (UK, Dvorak)
+  dvorakukp       gb: English (UK, Dvorak, with UK punctuation)
+  mac             gb: English (UK, Macintosh)
+  mac_intl        gb: English (UK, Macintosh, intl.)
+  colemak         gb: English (UK, Colemak)
+  colemak_dh      gb: English (UK, Colemak-DH)
+  gla             gb: Scottish Gaelic
+  pl              gb: Polish (British keyboard)
+  euro            us: English (US, euro on 5)
+  intl            us: English (US, intl., with dead keys)
+  alt-intl        us: English (US, alt. intl.)
+  altgr-intl      us: English (intl., with AltGr dead keys)
+  mac             us: English (Macintosh, ABC, ANSI)
+  mac-iso         us: English (Macintosh, ABC, ISO)
+  colemak         us: English (Colemak)
+  colemak_dh      us: English (Colemak-DH)
+  colemak_dh_wide us: English (Colemak-DH Wide)
+  colemak_dh_ortho us: English (Colemak-DH Ortholinear)
+  colemak_dh_iso  us: English (Colemak-DH ISO)
+  colemak_dh_wide_iso us: English (Colemak-DH Wide ISO)
+  dvorak          us: English (Dvorak)
+  dvorak-intl     us: English (Dvorak, intl., with dead keys)
+  dvorak-alt-intl us: English (Dvorak, alt. intl.)
+  dvorak-l        us: English (Dvorak, one-handed, left)
+  dvorak-r        us: English (Dvorak, one-handed, right)
+  dvorak-classic  us: English (classic Dvorak)
+  dvp             us: English (programmer Dvorak)
+  dvorak-mac      us: English (Dvorak, Macintosh, ANSI)
+  dvorak-mac-iso  us: English (Dvorak, Macintosh, ISO)
+  norman          us: English (Norman)
+  symbolic        us: English (US, Symbolic)
+  workman         us: English (Workman)
+  workman-intl    us: English (Workman, intl., with dead keys)
+  olpc2           us: English (the divide/multiply toggle the layout)
+  chr             us: Cherokee
+  haw             us: Hawaiian
+  rus             us: Russian (US, phonetic)
+  hbs             us: Serbo-Croatian (US)
+  legacy          epo: Esperanto (legacy)
+  nodeadkeys      ee: Estonian (no dead keys)
+  dvorak          ee: Estonian (Dvorak)
+  us              ee: Estonian (US)
+  nodeadkeys      fo: Faroese (no dead keys)
+  qwerty-bay      ph: Filipino (QWERTY, Baybayin)
+  capewell-dvorak ph: Filipino (Capewell-Dvorak, Latin)
+  capewell-dvorak-bay ph: Filipino (Capewell-Dvorak, Baybayin)
+  capewell-qwerf2k6 ph: Filipino (Capewell-QWERF 2006, Latin)
+  capewell-qwerf2k6-bay ph: Filipino (Capewell-QWERF 2006, Baybayin)
+  colemak         ph: Filipino (Colemak, Latin)
+  colemak-bay     ph: Filipino (Colemak, Baybayin)
+  dvorak          ph: Filipino (Dvorak, Latin)
+  dvorak-bay      ph: Filipino (Dvorak, Baybayin)
+  winkeys         fi: Finnish (Windows)
+  classic         fi: Finnish (classic)
+  nodeadkeys      fi: Finnish (classic, no dead keys)
+  mac             fi: Finnish (Macintosh)
+  smi             fi: Northern Saami (Finland)
+  nodeadkeys      fr: French (no dead keys)
+  oss             fr: French (alt.)
+  oss_nodeadkeys  fr: French (alt., no dead keys)
+  oss_latin9      fr: French (alt., Latin-9 only)
+  latin9          fr: French (legacy, alt.)
+  latin9_nodeadkeys fr: French (legacy, alt., no dead keys)
+  azerty          fr: French (AZERTY)
+  afnor           fr: French (AZERTY, AFNOR)
+  bepo            fr: French (BEPO)
+  bepo_latin9     fr: French (BEPO, Latin-9 only)
+  bepo_afnor      fr: French (BEPO, AFNOR)
+  dvorak          fr: French (Dvorak)
+  ergol           fr: French (Ergo‑L)
+  ergol_iso       fr: French (Ergo‑L, ISO variant)
+  mac             fr: French (Macintosh)
+  us              fr: French (US)
+  bre             fr: Breton (France)
+  oci             fr: Occitan
+  geo             fr: Georgian (France, AZERTY Tskapo)
+  fr-dvorak       ca: French (Canada, Dvorak)
+  fr-legacy       ca: French (Canada, legacy)
+  multix          ca: Canadian (CSA)
+  eng             ca: English (Canada)
+  ike             ca: Inuktitut
+  ergonomic       ge: Georgian (ergonomic)
+  mess            ge: Georgian (MESS)
+  os              ge: Ossetian (Georgia)
+  ru              ge: Russian (Georgia)
+  deadacute       de: German (dead acute)
+  deadgraveacute  de: German (dead grave acute)
+  deadtilde       de: German (dead tilde)
+  nodeadkeys      de: German (no dead keys)
+  e1              de: German (E1)
+  e2              de: German (E2)
+  T3              de: German (T3)
+  us              de: German (US)
+  dvorak          de: German (Dvorak)
+  mac             de: German (Macintosh)
+  mac_nodeadkeys  de: German (Macintosh, no dead keys)
+  neo             de: German (Neo 2)
+  qwerty          de: German (QWERTY)
+  dsb             de: Lower Sorbian
+  dsb_qwertz      de: Lower Sorbian (QWERTZ)
+  ro              de: Romanian (Germany)
+  ro_nodeadkeys   de: Romanian (Germany, no dead keys)
+  ru              de: Russian (Germany, phonetic)
+  tr              de: Turkish (Germany)
+  nodeadkeys      at: German (Austria, no dead keys)
+  mac             at: German (Austria, Macintosh)
+  de_nodeadkeys   ch: German (Switzerland, no dead keys)
+  de_mac          ch: German (Switzerland, Macintosh)
+  legacy          ch: German (Switzerland, legacy)
+  fr              ch: French (Switzerland)
+  fr_nodeadkeys   ch: French (Switzerland, no dead keys)
+  fr_mac          ch: French (Switzerland, Macintosh)
+  simple          gr: Greek (simple)
+  nodeadkeys      gr: Greek (no dead keys)
+  polytonic       gr: Greek (polytonic)
+  si2             il: Hebrew (SI-1452-2)
+  lyx             il: Hebrew (lyx)
+  phonetic        il: Hebrew (phonetic)
+  biblical        il: Hebrew (Biblical, Tiro)
+  standard        hu: Hungarian (standard)
+  nodeadkeys      hu: Hungarian (no dead keys)
+  qwerty          hu: Hungarian (QWERTY)
+  101_qwertz_comma_dead hu: Hungarian (QWERTZ, 101-key, comma, dead keys)
+  101_qwertz_comma_nodead hu: Hungarian (QWERTZ, 101-key, comma, no dead keys)
+  101_qwertz_dot_dead hu: Hungarian (QWERTZ, 101-key, dot, dead keys)
+  101_qwertz_dot_nodead hu: Hungarian (QWERTZ, 101-key, dot, no dead keys)
+  101_qwerty_comma_dead hu: Hungarian (QWERTY, 101-key, comma, dead keys)
+  101_qwerty_comma_nodead hu: Hungarian (QWERTY, 101-key, comma, no dead keys)
+  101_qwerty_dot_dead hu: Hungarian (QWERTY, 101-key, dot, dead keys)
+  101_qwerty_dot_nodead hu: Hungarian (QWERTY, 101-key, dot, no dead keys)
+  102_qwertz_comma_dead hu: Hungarian (QWERTZ, 102-key, comma, dead keys)
+  102_qwertz_comma_nodead hu: Hungarian (QWERTZ, 102-key, comma, no dead keys)
+  102_qwertz_dot_dead hu: Hungarian (QWERTZ, 102-key, dot, dead keys)
+  102_qwertz_dot_nodead hu: Hungarian (QWERTZ, 102-key, dot, no dead keys)
+  102_qwerty_comma_dead hu: Hungarian (QWERTY, 102-key, comma, dead keys)
+  102_qwerty_comma_nodead hu: Hungarian (QWERTY, 102-key, comma, no dead keys)
+  102_qwerty_dot_dead hu: Hungarian (QWERTY, 102-key, dot, dead keys)
+  102_qwerty_dot_nodead hu: Hungarian (QWERTY, 102-key, dot, no dead keys)
+  mac_legacy      is: Icelandic (Macintosh, legacy)
+  mac             is: Icelandic (Macintosh)
+  dvorak          is: Icelandic (Dvorak)
+  asm-kagapa      in: Assamese (KaGaPa, phonetic)
+  ben             in: Bangla (India)
+  ben_probhat     in: Bangla (India, Probhat)
+  ben_baishakhi   in: Bangla (India, Baishakhi)
+  ben_bornona     in: Bangla (India, Bornona)
+  ben-kagapa      in: Bangla (India, KaGaPa, phonetic)
+  ben_gitanjali   in: Bangla (India, Gitanjali)
+  ben_inscript    in: Bangla (India, Baishakhi InScript)
+  eng             in: English (India, with rupee)
+  guj             in: Gujarati
+  guj-kagapa      in: Gujarati (KaGaPa, phonetic)
+  bolnagri        in: Hindi (Bolnagri)
+  hin-wx          in: Hindi (Wx)
+  hin-kagapa      in: Hindi (KaGaPa, phonetic)
+  kan             in: Kannada
+  kan-kagapa      in: Kannada (KaGaPa, phonetic)
+  mal             in: Malayalam
+  mal_lalitha     in: Malayalam (Lalitha)
+  mal_enhanced    in: Malayalam (enhanced InScript, with rupee)
+  mal_poorna      in: Malayalam (Poorna, extended InScript)
+  mni             in: Manipuri (Meitei)
+  mar-kagapa      in: Marathi (KaGaPa, phonetic)
+  marathi         in: Marathi (enhanced InScript)
+  ori             in: Oriya
+  ori-bolnagri    in: Oriya (Bolnagri)
+  ori-wx          in: Oriya (Wx)
+  guru            in: Punjabi (Gurmukhi)
+  jhelum          in: Punjabi (Gurmukhi Jhelum)
+  san-kagapa      in: Sanskrit (KaGaPa, phonetic)
+  sat             in: Santali (Ol Chiki)
+  tamilnet        in: Tamil (TamilNet '99)
+  tamilnet_tamilnumbers in: Tamil (TamilNet '99 with Tamil numerals)
+  tamilnet_TAB    in: Tamil (TamilNet '99, TAB encoding)
+  tamilnet_TSCII  in: Tamil (TamilNet '99, TSCII encoding)
+  tam             in: Tamil (InScript, with Arabic numerals)
+  tam_tamilnumbers in: Tamil (InScript, with Tamil numerals)
+  tel             in: Telugu
+  tel-kagapa      in: Telugu (KaGaPa, phonetic)
+  tel-sarala      in: Telugu (Sarala)
+  urd-phonetic    in: Urdu (phonetic)
+  urd-phonetic3   in: Urdu (alt. phonetic)
+  urd-winkeys     in: Urdu (Windows)
+  iipa            in: Indic IPA
+  melayu-phonetic id: Indonesian (Arab Melayu, phonetic)
+  melayu-phoneticx id: Indonesian (Arab Melayu, extended phonetic)
+  pegon-phonetic  id: Indonesian (Arab Pegon, phonetic)
+  javanese        id: Javanese
+  UnicodeExpert   ie: Irish (UnicodeExpert)
+  CloGaelach      ie: CloGaelach
+  ogam            ie: Ogham
+  ogam_is434      ie: Ogham (IS434)
+  nodeadkeys      it: Italian (no dead keys)
+  winkeys         it: Italian (Windows)
+  mac             it: Italian (Macintosh)
+  us              it: Italian (US)
+  ibm             it: Italian (IBM 142)
+  fur             it: Friulian (Italy)
+  scn             it: Sicilian
+  geo             it: Georgian (Italy)
+  kana            jp: Japanese (Kana)
+  OADG109A        jp: Japanese (OADG 109A)
+  mac             jp: Japanese (Macintosh)
+  dvorak          jp: Japanese (Dvorak)
+  kazrus          kz: Kazakh (with Russian)
+  ext             kz: Kazakh (extended)
+  latin           kz: Kazakh (Latin)
+  ruskaz          kz: Russian (Kazakhstan, with Kazakh)
+  kr104           kr: Korean (101/104-key compatible)
+  phonetic        kg: Kyrgyz (phonetic)
+  stea            la: Lao (STEA)
+  apostrophe      lv: Latvian (apostrophe)
+  tilde           lv: Latvian (tilde)
+  fkey            lv: Latvian (F)
+  modern          lv: Latvian (Modern Latin)
+  modern-cyr      lv: Latvian (Modern Cyrillic)
+  ergonomic       lv: Latvian (ergonomic, ŪGJRMV)
+  adapted         lv: Latvian (adapted)
+  std             lt: Lithuanian (standard)
+  us              lt: Lithuanian (US)
+  ibm             lt: Lithuanian (IBM)
+  lekp            lt: Lithuanian (LEKP)
+  lekpa           lt: Lithuanian (LEKPa)
+  ratise          lt: Lithuanian (Ratise)
+  sgs             lt: Samogitian
+  nodeadkeys      mk: Macedonian (no dead keys)
+  phonetic        my: Malay (Jawi, phonetic)
+  us              mt: Maltese (US)
+  alt-us          mt: Maltese (US, with AltGr overrides)
+  alt-gb          mt: Maltese (UK, with AltGr overrides)
+  gag             md: Gagauz (Moldova)
+  cyrillic        me: Montenegrin (Cyrillic)
+  cyrillicyz      me: Montenegrin (Cyrillic, ZE and ZHE swapped)
+  cyrillicalternatequotes me: Montenegrin (Cyrillic, with guillemets)
+  latinunicode    me: Montenegrin (Latin, Unicode)
+  latinyz         me: Montenegrin (Latin, QWERTY)
+  latinunicodeyz  me: Montenegrin (Latin, Unicode, QWERTY)
+  latinalternatequotes me: Montenegrin (Latin, with guillemets)
+  nodeadkeys      no: Norwegian (no dead keys)
+  winkeys         no: Norwegian (Windows)
+  mac             no: Norwegian (Macintosh)
+  mac_nodeadkeys  no: Norwegian (Macintosh, no dead keys)
+  colemak         no: Norwegian (Colemak)
+  colemak_dh      no: Norwegian (Colemak-DH)
+  colemak_dh_wide no: Norwegian (Colemak-DH Wide)
+  dvorak          no: Norwegian (Dvorak)
+  smi             no: Northern Saami (Norway)
+  smi_nodeadkeys  no: Northern Saami (Norway, no dead keys)
+  pes_keypad      ir: Persian (with Persian keypad)
+  winkeys         ir: Persian (Windows)
+  azb             ir: Azerbaijani (Iran)
+  ku              ir: Kurdish (Iran, Latin Q)
+  ku_alt          ir: Kurdish (Iran, Latin Alt-Q)
+  ku_f            ir: Kurdish (Iran, F)
+  ku_ara          ir: Kurdish (Iran, Arabic-Latin)
+  legacy          pl: Polish (legacy)
+  qwertz          pl: Polish (QWERTZ)
+  dvorak          pl: Polish (Dvorak)
+  dvorak_quotes   pl: Polish (Dvorak, with Polish quotes on quotemark key)
+  dvorak_altquotes pl: Polish (Dvorak, with Polish quotes on key 1)
+  dvp             pl: Polish (programmer Dvorak)
+  csb             pl: Kashubian
+  szl             pl: Silesian
+  ru_phonetic_dvorak pl: Russian (Poland, phonetic Dvorak)
+  nodeadkeys      pt: Portuguese (no dead keys)
+  mac             pt: Portuguese (Macintosh)
+  mac_nodeadkeys  pt: Portuguese (Macintosh, no dead keys)
+  nativo          pt: Portuguese (Nativo)
+  nativo-us       pt: Portuguese (Nativo for US keyboards)
+  nativo-epo      pt: Esperanto (Portugal, Nativo)
+  nodeadkeys      br: Portuguese (Brazil, no dead keys)
+  dvorak          br: Portuguese (Brazil, Dvorak)
+  nativo          br: Portuguese (Brazil, Nativo)
+  nativo-us       br: Portuguese (Brazil, Nativo for US keyboards)
+  thinkpad        br: Portuguese (Brazil, IBM/Lenovo ThinkPad)
+  nativo-epo      br: Esperanto (Brazil, Nativo)
+  rus             br: Russian (Brazil, phonetic)
+  std             ro: Romanian (standard)
+  winkeys         ro: Romanian (Windows)
+  phonetic        ru: Russian (phonetic)
+  phonetic_winkeys ru: Russian (phonetic, Windows)
+  phonetic_YAZHERTY ru: Russian (phonetic, YAZHERTY)
+  phonetic_azerty ru: Russian (phonetic, AZERTY)
+  phonetic_dvorak ru: Russian (phonetic, Dvorak)
+  typewriter      ru: Russian (typewriter)
+  ruchey_ru       ru: Russian (engineering, RU)
+  ruchey_en       ru: Russian (engineering, EN)
+  legacy          ru: Russian (legacy)
+  typewriter-legacy ru: Russian (typewriter, legacy)
+  dos             ru: Russian (DOS)
+  mac             ru: Russian (Macintosh)
+  ab              ru: Abkhazian (Russia)
+  bak             ru: Bashkirian
+  cv              ru: Chuvash
+  cv_latin        ru: Chuvash (Latin)
+  xal             ru: Kalmyk
+  kom             ru: Komi
+  chm             ru: Mari
+  os_legacy       ru: Ossetian (legacy)
+  os_winkeys      ru: Ossetian (Windows)
+  srp             ru: Serbian (Russia)
+  tt              ru: Tatar
+  udm             ru: Udmurt
+  sah             ru: Yakut
+  alternatequotes rs: Serbian (Cyrillic, with guillemets)
+  yz              rs: Serbian (Cyrillic, ZE and ZHE swapped)
+  latin           rs: Serbian (Latin)
+  latinalternatequotes rs: Serbian (Latin, with guillemets)
+  latinunicode    rs: Serbian (Latin, Unicode)
+  latinyz         rs: Serbian (Latin, QWERTY)
+  latinunicodeyz  rs: Serbian (Latin, Unicode, QWERTY)
+  rue             rs: Pannonian Rusyn
+  us              lk: Sinhala (US)
+  tam_unicode     lk: Tamil (Sri Lanka, TamilNet '99)
+  tam_TAB         lk: Tamil (Sri Lanka, TamilNet '99, TAB encoding)
+  bksl            sk: Slovak (extra backslash)
+  qwerty          sk: Slovak (QWERTY)
+  qwerty_bksl     sk: Slovak (QWERTY, extra backslash)
+  alternatequotes si: Slovenian (with guillemets)
+  us              si: Slovenian (US)
+  nodeadkeys      es: Spanish (no dead keys)
+  deadtilde       es: Spanish (dead tilde)
+  winkeys         es: Spanish (Windows)
+  dvorak          es: Spanish (Dvorak)
+  ast             es: Asturian (Spain, with bottom-dot H and L)
+  cat             es: Catalan (Spain, with middle-dot L)
+  nodeadkeys      latam: Spanish (Latin American, no dead keys)
+  deadtilde       latam: Spanish (Latin American, dead tilde)
+  dvorak          latam: Spanish (Latin American, Dvorak)
+  colemak         latam: Spanish (Latin American, Colemak)
+  kik             ke: Kikuyu
+  nodeadkeys      se: Swedish (no dead keys)
+  dvorak          se: Swedish (Dvorak)
+  us_dvorak       se: Swedish (Dvorak, intl.)
+  svdvorak        se: Swedish (Svdvorak)
+  colemak         se: Swedish (Colemak)
+  mac             se: Swedish (Macintosh)
+  us              se: Swedish (US)
+  swl             se: Swedish Sign Language
+  smi             se: Northern Saami (Sweden)
+  rus             se: Russian (Sweden, phonetic)
+  indigenous      tw: Taiwanese (indigenous)
+  saisiyat        tw: Saisiyat (Taiwan)
+  legacy          tj: Tajik (legacy)
+  tis             th: Thai (TIS-820.2538)
+  pat             th: Thai (Pattachote)
+  mnc             th: Thai (Manoonchai)
+  alt             tm: Turkmen (Alt-Q)
+  f               tr: Turkish (F)
+  e               tr: Turkish (E)
+  alt             tr: Turkish (Alt-Q)
+  intl            tr: Turkish (intl., with dead keys)
+  ku              tr: Kurdish (Turkey, Latin Q)
+  ku_f            tr: Kurdish (Turkey, F)
+  ku_alt          tr: Kurdish (Turkey, Latin Alt-Q)
+  phonetic        ua: Ukrainian (phonetic)
+  typewriter      ua: Ukrainian (typewriter)
+  winkeys         ua: Ukrainian (Windows)
+  winkeysenhanced ua: Ukrainian (Windows Enhanced)
+  macOS           ua: Ukrainian (macOS)
+  legacy          ua: Ukrainian (legacy)
+  homophonic      ua: Ukrainian (homophonic)
+  crh             ua: Crimean Tatar (Turkish Q)
+  crh_f           ua: Crimean Tatar (Turkish F)
+  crh_alt         ua: Crimean Tatar (Turkish Alt-Q)
+  urd-crulp       pk: Urdu (Pakistan, CRULP)
+  urd-nla         pk: Urdu (Pakistan, NLA)
+  pak_urdu_phonetic pk: Urdu (Pak Urdu Phonetic)
+  ara             pk: Arabic (Pakistan)
+  snd             pk: Sindhi
+  latin           uz: Uzbek (Latin)
+  us              vn: Vietnamese (US)
+  fr              vn: Vietnamese (France)
+
+! option
+  grp                  Switching to another layout
+  grp:switch           Right Alt (while pressed)
+  grp:lswitch          Left Alt (while pressed)
+  grp:lwin_switch      Left Win (while pressed)
+  grp:rwin_switch      Right Win (while pressed)
+  grp:win_switch       Any Win (while pressed)
+  grp:menu_switch      Menu (while pressed), Shift+Menu for Menu
+  grp:caps_switch      Caps Lock (while pressed), Alt+Caps Lock for the original Caps Lock action
+  grp:rctrl_switch     Right Ctrl (while pressed)
+  grp:toggle           Right Alt
+  grp:lalt_toggle      Left Alt
+  grp:caps_toggle      Caps Lock
+  grp:shift_caps_toggle Shift+Caps Lock
+  grp:caps_select      Caps Lock to first layout; Shift+Caps Lock to second layout
+  grp:win_menu_select  Left Win to first layout; Right Win/Menu to second layout
+  grp:ctrl_select      Left Ctrl to first layout; Right Ctrl to second layout
+  grp:alt_caps_toggle  Alt+Caps Lock
+  grp:shifts_toggle    Both Shifts together
+  grp:alts_toggle      Both Alts together
+  grp:alt_altgr_toggle Both Alts together; AltGr alone chooses third level
+  grp:ctrls_toggle     Both Ctrls together
+  grp:ctrl_shift_toggle Ctrl+Shift
+  grp:lctrl_lshift_toggle Left Ctrl+Left Shift
+  grp:rctrl_rshift_toggle Right Ctrl+Right Shift
+  grp:ctrl_shift_toggle_bidir Left Ctrl+Left Shift chooses previous layout, Right Ctrl + Right Shift chooses next layout
+  grp:ctrl_alt_toggle  Alt+Ctrl
+  grp:lctrl_lalt_toggle Left Alt+Left Ctrl
+  grp:rctrl_ralt_toggle Right Alt+Right Ctrl
+  grp:ctrl_alt_toggle_bidir Left Ctrl+Left Alt chooses previous layout, Right Ctrl + Right Alt chooses next layout
+  grp:alt_shift_toggle Alt+Shift
+  grp:lalt_lshift_toggle Left Alt+Left Shift
+  grp:ralt_rshift_toggle Right Alt+Right Shift
+  grp:alt_shift_toggle_bidir Left Alt+Left Shift chooses previous layout, Right Alt + Right Shift chooses next layout
+  grp:menu_toggle      Menu
+  grp:lwin_toggle      Left Win
+  grp:alt_space_toggle Alt+Space
+  grp:win_space_toggle Win+Space
+  grp:ctrl_space_toggle Ctrl+Space
+  grp:rwin_toggle      Right Win
+  grp:lshift_toggle    Left Shift
+  grp:rshift_toggle    Right Shift
+  grp:lctrl_toggle     Left Ctrl
+  grp:rctrl_toggle     Right Ctrl
+  grp:sclk_toggle      Scroll Lock
+  grp:lctrl_lwin_rctrl_menu Ctrl+Left Win to first layout; Ctrl+Menu to second layout
+  grp:lctrl_lwin_toggle Left Ctrl+Left Win
+  lv2                  Key to choose the 2nd level
+  lv2:lsgt_switch      The "&lt; &gt;" key
+  lv3                  Key to choose the 3rd level
+  lv3:switch           Right Ctrl
+  lv3:menu_switch      Menu
+  lv3:win_switch       Any Win
+  lv3:lwin_switch      Left Win
+  lv3:rwin_switch      Right Win
+  lv3:alt_switch       Any Alt
+  lv3:lalt_switch      Left Alt
+  lv3:ralt_switch      Right Alt
+  lv3:ralt_switch_multikey Right Alt; Shift+Right Alt as Compose
+  lv3:ralt_alt         Right Alt never chooses 3rd level
+  lv3:enter_switch     Enter on keypad
+  lv3:caps_switch      Caps Lock
+  lv3:caps_switch_capslock_with_ctrl Caps Lock; Ctrl+Caps Lock for original Caps Lock action
+  lv3:bksl_switch      Backslash
+  lv3:lsgt_switch      The "&lt; &gt;" key
+  lv3:caps_switch_latch Caps Lock; acts as onetime lock when pressed together with another 3rd-level chooser
+  lv3:bksl_switch_latch Backslash; acts as onetime lock when pressed together with another 3rd level chooser
+  lv3:lsgt_switch_latch The "&lt; &gt;" key; acts as onetime lock when pressed together with another 3rd level chooser
+  ctrl                 Ctrl position
+  ctrl:nocaps          Caps Lock as Ctrl
+  ctrl:lctrl_meta      Left Ctrl as Meta
+  ctrl:swapcaps        Swap Ctrl and Caps Lock
+  ctrl:grouptoggle_capscontrol Caps Lock as Ctrl,  Left Control switches to another layout
+  ctrl:hyper_capscontrol Caps Lock as Ctrl, Ctrl as Hyper
+  ctrl:ac_ctrl         To the left of "A"
+  ctrl:aa_ctrl         At the bottom left
+  ctrl:rctrl_ralt      Right Ctrl as Right Alt
+  ctrl:ralt_rctrl      Right Alt as Right Control
+  ctrl:menu_rctrl      Menu as Right Ctrl
+  ctrl:swap_lalt_lctl  Swap Left Alt with Left Ctrl
+  ctrl:swap_ralt_rctl  Swap Right Alt with Right Ctrl
+  ctrl:swap_lwin_lctl  Swap Left Win with Left Ctrl
+  ctrl:swap_rwin_rctl  Swap Right Win with Right Ctrl
+  ctrl:swap_lalt_lctl_lwin Left Alt as Ctrl, Left Ctrl as Win, Left Win as Left Alt
+  grp_led              Use keyboard LED to show alternative layout
+  grp_led:num          Num Lock
+  grp_led:caps         Caps Lock
+  grp_led:scroll       Scroll Lock
+  mod_led              Use keyboard LED to indicate modifiers
+  mod_led:compose      Compose
+  keypad               Layout of numeric keypad
+  keypad:legacy        Legacy
+  keypad:oss           Unicode arrows and math operators
+  keypad:future        Unicode arrows and math operators on default level
+  keypad:legacy_wang   Legacy Wang 724
+  keypad:oss_wang      Wang 724 keypad with Unicode arrows and math operators
+  keypad:future_wang   Wang 724 keypad with Unicode arrows and math operators on default level
+  keypad:hex           Hexadecimal
+  keypad:atm           Phone and ATM style
+  kpdl                 Numeric keypad Delete behavior
+  kpdl:dot             Legacy key with dot
+  kpdl:comma           Legacy key with comma
+  kpdl:dotoss          Four-level key with dot
+  kpdl:dotoss_latin9   Four-level key with dot, Latin-9 only
+  kpdl:commaoss        Four-level key with comma
+  kpdl:momayyezoss     Four-level key with momayyez
+  kpdl:kposs           Four-level key with abstract separators
+  kpdl:semi            Semicolon on third level
+  caps                 Caps Lock behavior
+  caps:internal        Caps Lock uses internal capitalization; Shift "pauses" Caps Lock
+  caps:internal_nocancel Caps Lock uses internal capitalization; Shift does not affect Caps Lock
+  caps:shift           Caps Lock acts as Shift with locking; Shift "pauses" Caps Lock
+  caps:shift_nocancel  Caps Lock acts as Shift with locking; Shift does not affect Caps Lock
+  caps:capslock        Caps Lock toggles normal capitalization of alphabetic characters
+  caps:shiftlock       Caps Lock toggles Shift Lock (affects all keys)
+  caps:swapescape      Swap Esc and Caps Lock
+  caps:escape          Make Caps Lock an additional Esc
+  caps:escape_shifted_capslock Make Caps Lock an additional Esc, but Shift + Caps Lock is the regular Caps Lock
+  caps:backspace       Make Caps Lock an additional Backspace
+  caps:return          Make Caps Lock an additional Return key
+  caps:super           Make Caps Lock an additional Super
+  caps:hyper           Make Caps Lock an additional Hyper
+  caps:menu            Make Caps Lock an additional Menu key
+  caps:numlock         Make Caps Lock an additional Num Lock
+  caps:ctrl_shifted_capslock Make Caps Lock an additional Ctrl and Shift + Caps Lock the regular Caps Lock
+  caps:ctrl_modifier   Make Caps Lock act as an additional Ctrl modifier, but keep identifying as Caps Lock
+  caps:digits_row      Caps Lock gives digits on the digits row (Azerty layouts)
+  caps:digits_row_independent_lock Shift + Caps locks the digits on the digits row, Caps Lock alone behaves as usual (Azerty layouts)
+  caps:none            Caps Lock is disabled
+  altwin               Alt and Win behavior
+  altwin:menu          Add the standard behavior to Menu key
+  altwin:menu_win      Menu is mapped to Win
+  altwin:meta_alt      Alt and Meta are on Alt
+  altwin:alt_win       Alt is mapped to Win and the usual Alt
+  altwin:ctrl_win      Ctrl is mapped to Win and the usual Ctrl
+  altwin:ctrl_rwin     Ctrl is mapped to Right Win and the usual Ctrl
+  altwin:ctrl_alt_win  Ctrl is mapped to Alt, Alt to Win
+  altwin:meta_win      Meta is mapped to Win
+  altwin:left_meta_win Meta is mapped to Left Win
+  altwin:hyper_win     Hyper is mapped to Win
+  altwin:alt_super_win Alt is mapped to Right Win, Super to Menu
+  altwin:swap_lalt_lwin Left Alt is swapped with Left Win
+  altwin:swap_ralt_rwin Right Alt is swapped with Right Win
+  altwin:swap_alt_win  Alt is swapped with Win
+  altwin:prtsc_rwin    Win is mapped to PrtSc and the usual Win
+  Compose key          Position of Compose key
+  compose:ralt         Right Alt
+  compose:lwin         Left Win
+  compose:lwin-altgr   3rd level of Left Win
+  compose:rwin         Right Win
+  compose:rwin-altgr   3rd level of Right Win
+  compose:menu         Menu
+  compose:menu-altgr   3rd level of Menu
+  compose:lctrl        Left Ctrl
+  compose:lctrl-altgr  3rd level of Left Ctrl
+  compose:rctrl        Right Ctrl
+  compose:rctrl-altgr  3rd level of Right Ctrl
+  compose:caps         Caps Lock
+  compose:caps-altgr   3rd level of Caps Lock
+  compose:102          The "&lt; &gt;" key
+  compose:102-altgr    3rd level of the "&lt; &gt;" key
+  compose:paus         Pause
+  compose:ins          Insert
+  compose:prsc         PrtSc
+  compose:sclk         Scroll Lock
+  compat               Compatibility options
+  numpad:pc            Default numeric keypad keys
+  numpad:mac           Numeric keypad always enters digits (as in macOS)
+  numpad:microsoft     Num Lock on: digits; Shift for arrows. Num Lock off: arrows (as in Windows)
+  numpad:shift3        Shift does not cancel Num Lock, chooses 3rd level instead
+  hyper:mod2           Map Hyper to Mod2 (conflict with NumLock)
+  hyper:mod3           Map Hyper to Mod3 (conflict with LevelFive)
+  hyper:mod4           Map Hyper to Mod4 (conflict with Super)
+  scrolllock:mod3      Map Scroll Lock to Mod3
+  srvrkeys:none        Special keys (Ctrl+Alt+&lt;key&gt;) handled in a server
+  apple:alupckeys      Apple Aluminium emulates Pause, PrtSc, Scroll Lock
+  apple:jp_oadg109a    Japanese Apple keyboards emulate OADG109A backslash
+  apple:jp_pc106       Japanese Apple keyboards emulate PC106 backslash
+  shift:breaks_caps    Shift cancels Caps Lock
+  misc:typo            Enable extra typographic characters
+  misc:apl             Enable APL overlay characters
+  shift:both_capslock  Both Shifts together enable Caps Lock
+  shift:both_capslock_cancel Both Shifts together enable Caps Lock; one Shift key disables it
+  shift:both_shiftlock Both Shifts together enable Shift Lock
+  keypad:pointerkeys   Shift + Num Lock enables PointerKeys
+  grab:break_actions   Allow breaking grabs with keyboard actions (warning: security risk)
+  grab:debug           Allow grab and window tree logging
+  currencysign         Currency signs
+  eurosign:e           Euro on E, third level
+  eurosign:E           Euro on E, fourth level
+  eurosign:2           Euro on 2
+  eurosign:4           Euro on 4
+  eurosign:5           Euro on 5
+  rupeesign:4          Rupee on 4
+  lv5                  Key to choose the 5th level
+  lv5:caps_switch      Caps Lock chooses 5th level
+  lv5:lsgt_switch      The "&lt; &gt;" key chooses 5th level
+  lv5:ralt_switch      Right Alt chooses 5th level
+  lv5:menu_switch      Menu chooses 5th level
+  lv5:rctrl_switch     Right Ctrl chooses 5th level
+  lv5:lsgt_switch_lock The "&lt; &gt;" key chooses 5th level and acts as a one-time lock if pressed with another 5th level chooser
+  lv5:ralt_switch_lock Right Alt chooses 5th level and acts as a one-time lock if pressed with another 5th level chooser
+  lv5:lwin_switch_lock Left Win chooses 5th level and acts as a one-time lock if pressed with another 5th level chooser
+  lv5:rwin_switch_lock Right Win chooses 5th level and acts as a one-time lock if pressed with another 5th level chooser
+  nbsp                 Non-breaking space input
+  nbsp:none            Usual space at any level
+  nbsp:level2          Non-breaking space at the 2nd level
+  nbsp:level3          Non-breaking space at the 3rd level
+  nbsp:level3n         Non-breaking space at the 3rd level, thin non-breaking space at the 4th level
+  nbsp:level4          Non-breaking space at the 4th level
+  nbsp:level4n         Non-breaking space at the 4th level, thin non-breaking space at the 6th level
+  nbsp:level4nl        Non-breaking space at the 4th level, thin non-breaking space at the 6th level (via Ctrl+Shift)
+  nbsp:zwnj2           Zero-width non-joiner at the 2nd level
+  nbsp:zwnj2zwj3       Zero-width non-joiner at the 2nd level, zero-width joiner at the 3rd level
+  nbsp:zwnj2zwj3nb4    Zero-width non-joiner at the 2nd level, zero-width joiner at the 3rd level, non-breaking space at the 4th level
+  nbsp:zwnj2nb3        Zero-width non-joiner at the 2nd level, non-breaking space at the 3rd level
+  nbsp:zwnj2nb3zwj4    Zero-width non-joiner at the 2nd level, non-breaking space at the 3rd level, zero-width joiner at the 4th level
+  nbsp:zwnj2nb3nnb4    Zero-width non-joiner at the 2nd level, non-breaking space at the 3rd level, thin non-breaking space at the 4th level
+  nbsp:zwnj3zwj4       Zero-width non-joiner at the 3rd level, zero-width joiner at the 4th level
+  japan                Japanese keyboard options
+  japan:kana_lock      Kana Lock key is locking
+  japan:nicola_f_bs    NICOLA-F style Backspace
+  japan:hztg_escape    Make Zenkaku Hankaku an additional Esc
+  korean               Korean Hangul/Hanja keys
+  korean:ralt_hangul   Make right Alt a Hangul key
+  korean:rctrl_hangul  Make right Ctrl a Hangul key
+  korean:ralt_hanja    Make right Alt a Hanja key
+  korean:rctrl_hanja   Make right Ctrl a Hanja key
+  esperanto            Esperanto letters with superscripts
+  esperanto:qwerty     At the corresponding key in a QWERTY layout
+  esperanto:dvorak     At the corresponding key in a Dvorak layout
+  esperanto:colemak    At the corresponding key in a Colemak layout
+  solaris              Old Solaris keycodes compatibility
+  solaris:sun_compat   Sun key compatibility
+  terminate            Key sequence to kill the X server
+  terminate:ctrl_alt_bksp Ctrl+Alt+Backspace
+  fkeys                Function keys
+  fkeys:basic_13-24    Use F13-F24 as usual function keys
+  custom               Miscellaneous options
+  custom:types         Use user-defined custom XKB types

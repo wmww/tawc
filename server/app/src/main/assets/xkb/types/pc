@@ -1,0 +1,89 @@
+default partial xkb_types "default" {
+
+    // Some types that are necessary
+    // for a full implementation of
+    // a PC-compatible keyboard.
+
+    virtual_modifiers  Alt, LevelThree, Super;
+
+    type "PC_ALT_LEVEL2" {
+	modifiers = Alt;
+	map[None] = Level1;
+	map[Alt] = Level2;
+	level_name[Level1] = "Base";
+	level_name[Level2] = "Alt";
+    };
+
+    type "PC_SUPER_LEVEL2" {
+	modifiers = Super;
+	map[None] = Level1;
+	map[Super] = Level2;
+	level_name[Level1] = "Base";
+	level_name[Level2] = "Super";
+    };
+
+    type "PC_SHIFT_SUPER_LEVEL2" {
+	modifiers = Shift + Super;
+	map[None] = Level1;
+	map[Super + Shift] = Level2;
+	level_name[Level1] = "Base";
+	level_name[Level2] = "Super";
+    };
+
+    type "PC_CONTROL_LEVEL2" {
+	modifiers = Control;
+	map[None] = Level1;
+	map[Control] = Level2;
+	level_name[Level1] = "Base";
+	level_name[Level2] = "Control";
+    };
+
+    type "PC_CONTROL_SUPER_LEVEL2" {
+	modifiers = Control + Super;
+	map[None] = Level1;
+	map[Control+Super] = Level2;
+	preserve[Control] = Control;
+	preserve[Super] = Super;
+	level_name[Level1] = "Base";
+	level_name[Level2] = "Control + Super";
+    };
+
+    type "CTRL+ALT" {
+	modifiers = Shift + LevelThree + Control + Alt;
+	map[None] = Level1;
+	map[Shift] = Level2;
+	map[LevelThree] = Level3;
+	map[LevelThree+Shift] = Level4;
+	map[Control] = Level1;
+	map[Control+Shift] = Level2;
+	map[Control+LevelThree] = Level3;
+	map[Control+LevelThree+Shift] = Level4;
+	map[Alt] = Level1;
+	map[Alt+Shift] = Level2;
+	map[Alt+LevelThree] = Level3;
+	map[Alt+LevelThree+Shift] = Level4;
+	map[Control+Alt] = Level5;
+	map[Control+Alt+Shift] = Level2;
+	map[Control+Alt+LevelThree] = Level3;
+	map[Control+Alt+LevelThree+Shift] = Level4;
+	preserve[Shift] = Shift;
+	preserve[Shift+LevelThree] = Shift;
+	preserve[Alt] = Alt;
+	preserve[Alt+Shift] = Alt+Shift;
+	preserve[Alt+LevelThree] = Alt;
+	preserve[Alt+LevelThree+Shift] = Alt+Shift;
+	preserve[Control] = Control;
+	preserve[Control+Shift] = Control+Shift;
+	preserve[Control+LevelThree] = Control;
+	preserve[Control+LevelThree+Shift] = Control+Shift;
+	preserve[Control+Alt+Shift] = Control+Alt+Shift;
+	preserve[Control+Alt+LevelThree] = Control+Alt;
+	preserve[Control+Alt+LevelThree+Shift] = Control+Alt+Shift;
+	level_name[Level1] = "Base";
+	level_name[Level2] = "Shift";
+	level_name[Level3] = "AltGr";
+	level_name[Level4] = "Shift AltGr";
+	level_name[Level5] = "Ctrl+Alt";
+    };
+
+};

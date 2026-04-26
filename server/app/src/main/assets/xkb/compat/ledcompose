@@ -1,0 +1,19 @@
+
+default partial xkb_compatibility "compose"  {
+
+    virtual_modifiers   Compose;
+
+    latchMods.clearLocks= True;
+    latchMods.latchToLock= True;
+
+    interpret Multi_key+Any {
+	virtualModifier= Compose;
+	action = LatchMods(modifiers=modMapMods);
+    };
+
+   indicator "Compose" {
+	allowExplicit;
+	whichModState= Latched;
+	modifiers= Compose;
+   };
+};

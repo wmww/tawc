@@ -1,0 +1,13 @@
+default partial
+xkb_symbols "mod3" {
+    modifier_map Mod3 { <HYPR> };
+};
+
+partial
+xkb_symbols "mod2" {
+    modifier_map Mod2 { <HYPR> };
+};
+
+xkb_symbols "mod4" {
+    modifier_map Mod4 { <HYPR> };
+};
