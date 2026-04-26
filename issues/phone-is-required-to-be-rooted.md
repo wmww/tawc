@@ -1,4 +1,0 @@
-- Currently scripts and workflow assume device rooted with Magisk
-- Root is required for `chroot`, which is what all the client stuff is based on, and it may be used in other parts of the workflow as well
-- `proot` might be viable on unrooted devices at a performance cost, but this is yet to be tested
-- Currently no immediate plans for supporting unrooted devices
