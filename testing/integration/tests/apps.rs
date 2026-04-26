@@ -205,9 +205,9 @@ fn test_gtk3_app_uses_hardware_buffers() {
     assert_compositor_clean();
 }
 
-/// GTK4 on libhybris always renders through android_wlegl (no SHM fallback
-/// for GTK4's GSK renderer here), so launching `gtk4-widget-factory` must
-/// produce AHB imports. Catches GTK4-specific regressions in the GL path.
+/// GTK4's default GSK renderer goes through android_wlegl on libhybris, so
+/// launching `gtk4-widget-factory` must produce AHB imports. Catches
+/// GTK4-specific regressions in the GL path.
 ///
 /// (We use `gtk4-widget-factory` rather than `gtk4-demo-application` because
 /// the latter pulls in a session-bus / GApplication setup that errors out
@@ -219,6 +219,69 @@ fn test_gtk4_app_uses_hardware_buffers() {
         "gtk4-widget-factory",
         "gtk4-widget-factory",
         GTK_LAUNCH_TIMEOUT,
+    );
+
+    let state = compositor::query_state(TIMEOUT)
+        .expect("Failed to query compositor state while gtk4-widget-factory running");
+    assert!(
+        state.toplevels >= 1,
+        "Compositor should see at least 1 toplevel, got {:?}",
+        state
+    );
+
+    app.stop().expect("gtk4-widget-factory failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+/// GTK4 with `GSK_RENDERER=cairo` uses the software cairo renderer and
+/// presents via `wl_shm`. Exercises the GTK4 SHM path, which is distinct
+/// from GTK3's (GTK4 ping-pongs fresh wl_buffers per frame and caches the
+/// first released cairo surface — a regression that double-releases SHM
+/// buffers will crash GTK4 here while leaving GTK3 working).
+#[test]
+fn test_gtk4_app_uses_shm_buffers() {
+    ensure_compositor();
+    chroot::ensure_pkgs(&["gtk4"]).expect("install gtk4");
+    adb::logcat_clear().expect("Failed to clear logcat");
+
+    let mut app = ChrootProcess::spawn("GSK_RENDERER=cairo gtk4-widget-factory")
+        .expect("spawn gtk4-widget-factory");
+    app.ensure_pgid();
+
+    // Wait for at least one SHM buffer import. The double-release bug would
+    // typically only manifest on the *second* SHM commit, so also keep the
+    // process alive for a moment afterwards and re-check the compositor sees
+    // it as a healthy client.
+    let deadline = std::time::Instant::now() + GTK_LAUNCH_TIMEOUT;
+    let mut saw_buffer = false;
+    while std::time::Instant::now() < deadline {
+        if !app.is_running() {
+            app.stop().ok();
+            panic!("gtk4-widget-factory crashed/exited before rendering");
+        }
+        let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
+        if saw_shm_import(&logs) {
+            saw_buffer = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::thread::sleep(Duration::from_millis(1000));
+
+    assert!(
+        saw_buffer,
+        "gtk4-widget-factory did not produce SHM buffer imports within {:?} (GSK_RENDERER=cairo should use SHM)",
+        GTK_LAUNCH_TIMEOUT
+    );
+    assert!(
+        app.is_running(),
+        "gtk4-widget-factory exited shortly after first SHM commit (regression of the cairo double-release bug?)"
+    );
+
+    let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
+    assert!(
+        !saw_ahb_import(&logs),
+        "Unexpected AHB import — gtk4-widget-factory with GSK_RENDERER=cairo should not use hardware buffers"
     );
 
     let state = compositor::query_state(TIMEOUT)
