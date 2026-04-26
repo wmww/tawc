@@ -1,6 +1,6 @@
-//! Shared test helpers used by both the `apps` and `input` test
-//! groups. Each test binary gets its own copy of the OnceLock state, so
-//! per-binary one-time setup runs once per `cargo test` invocation.
+//! Shared test helpers used by the per-group submodules under `tests/`.
+//! OnceLock state means one-time setup (compositor start, debug-app
+//! build) runs once per `cargo test` invocation.
 
 use std::sync::OnceLock;
 use std::thread;

@@ -2,11 +2,10 @@
 //! paths (text-input-v3 commits, key events, touch taps) and assert the
 //! debug app observes the expected client-side behaviour.
 //!
-//! These tests deliberately avoid asserting anything about buffer types
-//! (AHB vs SHM). The point is to verify how the compositor *dispatches
-//! input*, not how clients render. That makes them safe to run on the
-//! emulator (where libhybris/AHB is unavailable) — for application/buffer
-//! coverage see `tests/apps.rs`.
+//! Deliberately avoid asserting anything about buffer types (AHB vs
+//! SHM): the point is how the compositor *dispatches input*, not how
+//! clients render. That keeps these tests safe to run on the emulator
+//! (where libhybris/AHB is unavailable).
 
 use tawc_integration::adb;
 use tawc_integration::helpers::{assert_compositor_clean, start_text_input, TIMEOUT};

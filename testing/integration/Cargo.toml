@@ -2,6 +2,7 @@
 name = "tawc-integration-tests"
 version = "0.1.0"
 edition = "2021"
+autotests = false
 
 [dependencies]
 
@@ -10,3 +11,10 @@ name = "tawc_integration"
 path = "src/lib.rs"
 test = false
 doctest = false
+
+# One test binary; `tests/integration.rs` declares per-group submodules.
+# Test names are `<module>::test_…`, so libtest's normal substring filter
+# (e.g. `cargo test <module>::`) picks a subset.
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

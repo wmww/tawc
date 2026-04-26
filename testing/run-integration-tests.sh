@@ -2,9 +2,9 @@
 # Run the tawc integration test suite.
 #
 # Builds all components (compositor APK, debug app, libhybris on device),
-# deploys to the target, then runs the cargo integration tests. Both
-# apps and input groups by default; pass arguments to narrow
-# down to a single group or a single test name.
+# deploys to the target, then runs the cargo integration tests. Pass an
+# optional libtest substring filter to narrow the run; pass --no-build
+# to skip the rebuild/redeploy phase.
 #
 # Prerequisites:
 #   - Android device or emulator connected via adb with root (su) access
@@ -15,14 +15,10 @@
 #   - JAVA_HOME set or java-21-openjdk installed at default path
 #
 # Usage:
-#   bash testing/run-integration-tests.sh                   # everything
-#   bash testing/run-integration-tests.sh apps              # only the apps group
-#   bash testing/run-integration-tests.sh input             # only the input group
-#   bash testing/run-integration-tests.sh test_firefox_launches_with_hardware_buffers
-#                                                           # one test by name
-#   bash testing/run-integration-tests.sh input test_text_input_and_backspace
-#                                                           # one test in a specific group
-#   bash testing/run-integration-tests.sh --no-build apps   # skip the rebuild/redeploy phase
+#   bash testing/run-integration-tests.sh                       # everything
+#   bash testing/run-integration-tests.sh <filter>              # libtest substring filter,
+#                                                                 e.g. `<module>::` or `<module>::test_foo`
+#   bash testing/run-integration-tests.sh --no-build [filter]   # skip rebuild/redeploy
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,21 +27,12 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
 
-# Parse args: optional --no-build, optional group, optional test-name filter.
 DO_BUILD=1
-GROUP=""
 TEST_FILTER=""
 for arg in "$@"; do
     case "$arg" in
         --no-build|-n)
             DO_BUILD=0
-            ;;
-        apps|input)
-            if [ -n "$GROUP" ]; then
-                echo "ERROR: group already set to '$GROUP', got '$arg'" >&2
-                exit 2
-            fi
-            GROUP="$arg"
             ;;
         -h|--help)
             sed -n '2,/^set -/p' "$0" | sed 's/^# \?//;$d'
@@ -102,32 +89,18 @@ if [ "$DO_BUILD" -eq 1 ]; then
     esac
 fi
 
-# Build the cargo invocation. `--test <group>` selects a specific tests/*.rs
-# binary; the trailing positional arg after `--` is libtest's test-name
-# substring filter.
-CARGO_ARGS=()
-if [ -n "$GROUP" ]; then
-    CARGO_ARGS+=(--test "$GROUP")
-fi
 LIBTEST_ARGS=(--nocapture --test-threads=1)
 if [ -n "$TEST_FILTER" ]; then
     LIBTEST_ARGS+=("$TEST_FILTER")
-fi
-
-if [ -n "$GROUP" ] && [ -n "$TEST_FILTER" ]; then
-    echo "=== Running integration test: $GROUP::$TEST_FILTER ==="
-elif [ -n "$GROUP" ]; then
-    echo "=== Running integration tests: $GROUP group ==="
-elif [ -n "$TEST_FILTER" ]; then
     echo "=== Running integration tests matching: $TEST_FILTER ==="
 else
-    echo "=== Running integration tests (all groups) ==="
+    echo "=== Running integration tests ==="
 fi
 # Note: debug app build + deps are handled by the Rust test harness
 # (chroot::ensure_debug_app) with freshness caching.
 cd "$SCRIPT_DIR/integration"
 set +e
-cargo test "${CARGO_ARGS[@]}" -- "${LIBTEST_ARGS[@]}"
+cargo test -- "${LIBTEST_ARGS[@]}"
 TEST_EXIT=$?
 set -e
 

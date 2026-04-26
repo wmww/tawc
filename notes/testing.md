@@ -2,49 +2,31 @@
 
 ## Overview
 
-Automated integration tests for the compositor. Two test groups, run as
-separate cargo `tests/` targets so they can be exercised independently.
+Automated integration tests for the compositor. Each `tests/<name>.rs`
+file is a submodule of a single `tests/integration.rs` test binary, so
+`cargo test` produces one combined libtest summary and selecting a
+subset is just a libtest substring filter (`<module>::test_name`).
 
 ```
 testing/
-  gtk4-debug-app/         C + GTK4, runs on phone in chroot, structured stdout
-  integration/            Rust tests on host
-    tests/apps.rs           real-app coverage (Firefox, STK, GTK demos, vulkaninfo)
-    tests/input.rs          input-dispatch coverage (uses gtk4-debug-app)
-  build-debug-app.sh      Manual debug-app build script
+  gtk4-debug-app/             C + GTK4, runs on phone in chroot, structured stdout
+  integration/                Rust tests on host
+    tests/integration.rs        single test binary, declares the submodules
+    tests/<module>.rs           one file per group; see its docstring
+  build-debug-app.sh          Manual debug-app build script
 ```
 
-## Test Groups
-
-### `apps` — what runs on which toolkit
-
-Launches real existing programs (Firefox, supertuxkart, `gtk3-demo-application`,
-`gtk4-demo-application`, vulkaninfo) and verifies they don't crash, render
-through the expected buffer path (AHB / SHM), and look sane to the
-compositor. **No debug app involved** — these tests catch regressions in
-the rendering / GPU pipeline against real-world clients.
-
-These tests need libhybris and an Android GPU driver, so they only pass on
-a real device.
-
-### `input` — how the compositor dispatches input
-
-Uses `gtk4-debug-app` to drive text-input-v3 commits, key events, and
-touch taps, asserting the client observes the expected results. **No
-buffer-type assertions** — input dispatch is independent of the rendering
-path, so these tests force `GSK_RENDERER=cairo` and run equally well on
-the device or the emulator. This means we can iterate on input/IME work
-on the emulator without paying the cost of GPU/AHB setup.
+Each test module's own docstring documents what it covers and what its
+prerequisites are. As of writing the modules are `apps` (real desktop
+clients — Firefox/STK/GTK demos/vulkaninfo, exercises the rendering /
+GPU stack) and `input` (gtk4-debug-app driven through compositor input
+dispatch).
 
 ## Debug App (`gtk4-debug-app`)
 
 A small C program built against GTK4 that exposes a subcommand CLI and
 emits structured `TAWC_DEBUG:` lines for the test harness to parse. Builds
 inside the chroot with `gcc` + `pkg-config --cflags --libs gtk4`.
-
-We used to also have a `gtk3-debug-app`, but it was redundant: GTK3-vs-GTK4
-toolkit coverage now lives in the `apps` group via the upstream
-demo apps.
 
 ### Output Protocol
 
@@ -86,32 +68,23 @@ adb shell "/system/bin/sh /data/local/tmp/arch-chroot-run '/tmp/gtk4-debug-app/g
 
 ## Integration Tests
 
-Rust tests using `std::process::Command` to call adb. The only runtime
-dependency is `libc` (for an `atexit` shutdown hook).
+Rust tests using `std::process::Command` to call adb. Zero external
+runtime dependencies on the host.
 
 ### Running
 
-`testing/run-integration-tests.sh` is the recommended entry point for
-both full runs and narrowed-down ones. It picks the device via
-`client/select-device.sh` (`TAWC_TARGET=device|emulator` if both are
-connected), builds and deploys everything, then runs cargo with the
-right `--test` / libtest filter.
+`testing/run-integration-tests.sh` is the recommended entry point. It
+picks the device via `client/select-device.sh` (`TAWC_TARGET=device|emulator`
+if both are connected), builds and deploys everything, then runs cargo.
+
+The script takes one optional positional arg — a libtest substring
+filter forwarded to `cargo test` — plus `--no-build` / `-n`.
 
 ```bash
-# Everything (both groups):
-bash testing/run-integration-tests.sh
-
-# One group:
-bash testing/run-integration-tests.sh apps
-bash testing/run-integration-tests.sh input
-
-# One test by name (libtest substring filter):
-bash testing/run-integration-tests.sh test_firefox_launches_with_hardware_buffers
-bash testing/run-integration-tests.sh input test_text_input_and_backspace
-
-# Skip the rebuild/redeploy phase when iterating on the tests
-# themselves (APK, libhybris, chroot helpers are reused as-is):
-bash testing/run-integration-tests.sh --no-build input
+bash testing/run-integration-tests.sh                 # everything
+bash testing/run-integration-tests.sh <module>::      # one module's tests
+bash testing/run-integration-tests.sh <test_name>     # one test by name
+bash testing/run-integration-tests.sh --no-build ...  # skip rebuild/redeploy
 ```
 
 Direct `cargo test` invocations work too — they just need
@@ -119,11 +92,10 @@ Direct `cargo test` invocations work too — they just need
 `ANDROID_SERIAL`. Without it the harness's `adb` calls fail silently
 when more than one target is connected.
 
-Tests require:
-- Phone (or emulator, for `input` group) connected via adb
-- Compositor APK installed and running (the harness force-restarts if needed)
-- `arch-chroot-run` pushed to phone
-- For the `apps` group: libhybris already built (see `client/build-libhybris`)
+Prerequisites: a phone (or emulator) connected via adb, the compositor
+APK installed, `arch-chroot-run` pushed to the device. Some modules
+have additional prerequisites (e.g. libhybris on a real device for the
+GPU-rendering tests); see each module's docstring.
 
 ### Test Input Mechanism
 
@@ -172,28 +144,21 @@ Host (cargo test)                    Phone
 
 - **`adb.rs`**: Shell commands, chroot execution, broadcast-based input injection
 - **`chroot.rs`**: `ensure_debug_app()` (build gtk4-debug-app, cached by mtime)
-  and `ensure_pkgs()` (idempotent pacman install, used by application tests
-  to make sure `gtk3` / `gtk4` are present in the chroot)
+  and `ensure_pkgs()` (idempotent pacman install used to make sure
+  upstream packages are present in the chroot)
 - **`debug_app.rs`**: Start/stop lifecycle, stdout reader thread, `wait_for()` with timeout
 - **`compositor.rs`**: Ensure compositor is running, query state via broadcast
 - **`helpers.rs`**: Shared test helpers (`ensure_compositor`, `start_text_input`,
   `assert_compositor_clean`, `launch_and_wait_for_ahb`, `saw_ahb_import`,
-  `saw_shm_import`). Each test binary gets its own copy of the OnceLock
-  state, so per-binary one-time setup runs once per `cargo test` invocation.
+  `saw_shm_import`). The OnceLock state means one-time setup
+  (compositor start, debug-app build) runs once per `cargo test` invocation.
 
 ## Adding New Tests
 
-Pick a group:
-
-- **Render / toolkit / GPU regressions** → `tests/apps.rs`. Spawn a
-  real existing program via `ChrootProcess::spawn` (or the
-  `launch_and_wait_for_ahb` helper) and assert on logcat / compositor
-  state. Use `chroot::ensure_pkgs(&["..."])` to install any missing
-  packages from the chroot's Arch repos. Don't reach for the debug app.
-- **Input / IME / focus regressions** → `tests/input.rs`. Use
-  `helpers::start_text_input(env)` to launch the gtk4-debug-app and drive
-  it via `adb::input_text` / `input_keyevent` / `input_tap`. Avoid
-  asserting on buffer types so the test stays emulator-friendly.
+Add to an existing `tests/<module>.rs` if it fits an existing group, or
+create a new module: drop `tests/<new>.rs` next to the others and add a
+`mod <new>;` line to `tests/integration.rs`. Tests pick up the module
+prefix automatically and the run script's substring filter just works.
 
 If a new compositor protocol is needed, extend `gtk4-debug-app.c`:
 
@@ -209,17 +174,15 @@ text input, keep the deferred-READY pattern in `on_map()`.
 
 ## Design Decisions
 
-- **Two test targets, not one:** Splitting `apps` and `input` into
-  separate `tests/*.rs` files means each group is its own cargo test
-  binary, so `cargo test --test input` runs only the input tests.
-  Different groups have different prerequisites (input works on emulator,
-  apps needs libhybris) and different iteration cadences (input is fast,
-  apps coverage is slow because of Firefox/STK).
+- **One test binary, submodules per group:** Each group lives in its
+  own file but they all compile into the same `tests/integration.rs`
+  binary, so libtest prints one combined `test result: ...` summary
+  and the run script picks subsets via the normal substring filter
+  (`<module>::`). Avoids the per-binary summary fragmentation cargo
+  produces when each `tests/*.rs` is its own target. `Cargo.toml` has
+  `autotests = false` plus an explicit `[[test]]` entry so the
+  per-group files aren't auto-discovered as separate binaries.
 - **C for debug app:** Sub-second builds, no cargo on phone, `base-devel` already in chroot.
-- **One debug app, not one per toolkit:** GTK3 vs GTK4 toolkit coverage is
-  the *apps* group's job, exercised through the upstream demo programs.
-  The debug app exists only to give us programmatic stdout hooks for
-  input-dispatch tests; one toolkit (GTK4) is enough for that.
 - **Broadcast intents over `adb shell input text`:** The IME (Gboard)
   intercepts `input text` key events and may buffer/autocorrect them.
   Broadcasts go directly through `nativeCommitText`, the same JNI path
@@ -230,8 +193,5 @@ text input, keep the deferred-READY pattern in `on_map()`.
   `adb -> su -> bash -> chroot -> bash -> app` doesn't propagate signals;
   Firefox spawns content processes in their own PGIDs. We track the root
   PID via a small pidfile helper, walk descendants, and signal each PGID.
-- **Full buffer in TEXT_CHANGED:** Tests assert exact equality without
-  tracking incremental changes.
 - **`--test-threads=1`:** Tests share the phone and compositor and can't
-  run in parallel within a binary. Cargo runs the two test binaries
-  sequentially by default.
+  run in parallel.

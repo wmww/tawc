@@ -3,9 +3,8 @@
 //! through the expected buffer path (AHB hardware buffers / SHM software
 //! buffers), and look correct to the compositor.
 //!
-//! These tests require libhybris and an Android GPU driver — they will
-//! fail on the emulator. For tests that exercise compositor input dispatch
-//! independently of rendering, see `tests/input.rs`.
+//! Requires libhybris and an Android GPU driver, so these tests fail on
+//! the emulator.
 
 use std::time::Duration;
 
