@@ -4,46 +4,32 @@ use std::process::Command;
 
 use crate::adb;
 
-/// A debug-app variant we know how to build and deploy in the chroot.
-/// `name` is both the source directory (under `testing/`) and the binary name.
-pub struct DebugAppSpec {
-    pub name: &'static str,
-    pub pkgs: &'static [&'static str],
+const APP_NAME: &str = "gtk4-debug-app";
+const BUILD_PKGS: &[&str] = &["gtk4", "pkg-config"];
+
+fn chroot_build_dir() -> String {
+    format!("/tmp/{}", APP_NAME)
 }
 
-pub const GTK3: DebugAppSpec = DebugAppSpec {
-    name: "gtk3-debug-app",
-    pkgs: &["gtk3", "pkg-config"],
-};
-
-pub const GTK4: DebugAppSpec = DebugAppSpec {
-    name: "gtk4-debug-app",
-    pkgs: &["gtk4", "pkg-config"],
-};
-
-fn chroot_build_dir(spec: &DebugAppSpec) -> String {
-    format!("/tmp/{}", spec.name)
+fn chroot_fs_build_dir() -> String {
+    format!("/data/local/arch-chroot/tmp/{}", APP_NAME)
 }
 
-fn chroot_fs_build_dir(spec: &DebugAppSpec) -> String {
-    format!("/data/local/arch-chroot/tmp/{}", spec.name)
+fn host_staging() -> String {
+    format!("/data/local/tmp/{}-src", APP_NAME)
 }
 
-fn host_staging(spec: &DebugAppSpec) -> String {
-    format!("/data/local/tmp/{}-src", spec.name)
-}
-
-fn binary_path(spec: &DebugAppSpec) -> String {
-    format!("{}/{}", chroot_build_dir(spec), spec.name)
+fn binary_path() -> String {
+    format!("{}/{}", chroot_build_dir(), APP_NAME)
 }
 
 /// Check deps and build freshness in a single adb call.
 /// Returns (deps_ok, stamp_value).
-fn check_status(spec: &DebugAppSpec) -> io::Result<(bool, String)> {
-    let build_dir = chroot_build_dir(spec);
+fn check_status() -> io::Result<(bool, String)> {
+    let build_dir = chroot_build_dir();
     let stamp_chroot = format!("{}/build-stamp", build_dir);
-    let binary_chroot = binary_path(spec);
-    let pkgs = spec.pkgs.join(" ");
+    let binary_chroot = binary_path();
+    let pkgs = BUILD_PKGS.join(" ");
     // Use sentinel-framed output so unrelated warnings (e.g. from pacman) can't
     // be mistaken for the stamp value.
     let cmd = format!(
@@ -63,18 +49,22 @@ fn check_status(spec: &DebugAppSpec) -> io::Result<(bool, String)> {
     Ok((deps_ok, stamp))
 }
 
-/// Ensure the named packages are installed in the chroot.
-fn ensure_build_deps(spec: &DebugAppSpec) -> io::Result<()> {
-    eprintln!("Installing build deps in chroot: {}", spec.pkgs.join(" "));
-    let output = adb::chroot_run(&format!(
-        "pacman -Sy --noconfirm {}",
-        spec.pkgs.join(" ")
-    ))?;
+/// Ensure the named packages are installed in the chroot (pacman).
+/// Idempotent — skips the install if pacman -Q already succeeds for all.
+pub fn ensure_pkgs(pkgs: &[&str]) -> io::Result<()> {
+    let joined = pkgs.join(" ");
+    let check = adb::chroot_run(&format!("pacman -Q {} >/dev/null 2>&1 && echo OK", joined))?;
+    if String::from_utf8_lossy(&check.stdout).contains("OK") {
+        return Ok(());
+    }
+    eprintln!("Installing chroot packages: {}", joined);
+    let output = adb::chroot_run(&format!("pacman -Sy --noconfirm {}", joined))?;
     if !output.status.success() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!(
-                "Failed to install build deps:\n{}",
+                "Failed to install packages {}:\n{}",
+                joined,
                 String::from_utf8_lossy(&output.stdout)
             ),
         ));
@@ -82,20 +72,20 @@ fn ensure_build_deps(spec: &DebugAppSpec) -> io::Result<()> {
     Ok(())
 }
 
-/// Ensure deps are installed and the debug app is built.
+/// Ensure deps are installed and the gtk4-debug-app is built.
 /// Returns the path to the binary inside the chroot.
 /// Skips work that's already done.
-pub fn ensure_debug_app(spec: &DebugAppSpec) -> io::Result<String> {
-    let binary_chroot = binary_path(spec);
+pub fn ensure_debug_app() -> io::Result<String> {
+    let binary_chroot = binary_path();
     let source_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join(spec.name);
+        .join(APP_NAME);
 
-    let (deps_ok, stamp) = check_status(spec)?;
+    let (deps_ok, stamp) = check_status()?;
 
     if !deps_ok {
-        ensure_build_deps(spec)?;
+        ensure_pkgs(BUILD_PKGS)?;
     }
 
     // Check if build is fresh
@@ -105,8 +95,8 @@ pub fn ensure_debug_app(spec: &DebugAppSpec) -> io::Result<String> {
         return Ok(binary_chroot);
     }
 
-    let staging = host_staging(spec);
-    let fs_build_dir = chroot_fs_build_dir(spec);
+    let staging = host_staging();
+    let fs_build_dir = chroot_fs_build_dir();
 
     // Push source files to staging area
     adb::shell(&format!("rm -rf {}", staging))?;
@@ -121,10 +111,7 @@ pub fn ensure_debug_app(spec: &DebugAppSpec) -> io::Result<String> {
     ))?;
 
     // Build
-    let output = adb::chroot_run(&format!(
-        "/bin/bash {}/build.sh",
-        chroot_build_dir(spec)
-    ))?;
+    let output = adb::chroot_run(&format!("/bin/bash {}/build.sh", chroot_build_dir()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -138,7 +125,7 @@ pub fn ensure_debug_app(spec: &DebugAppSpec) -> io::Result<String> {
     adb::chroot_run(&format!(
         "echo {} > {}/build-stamp",
         source_mtime,
-        chroot_build_dir(spec)
+        chroot_build_dir()
     ))?;
 
     Ok(binary_chroot)

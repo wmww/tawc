@@ -79,10 +79,12 @@ Avoid junking up devices (delete screenshots when done). On the phone, things st
 - **Restart compositor:** `adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.MainActivity`
 - **Simulate touch:** `adb shell input tap X Y` (screen pixel coords, 1:1 with SurfaceView due to immersive fullscreen)
 - **Touch debug loop:** Screenshot -> identify coords -> tap -> screenshot -> verify. Compositor uses 2x scale (logical = physical/2). Nearby UI elements are easy to confuse.
-- **Integration tests (full):** `bash testing/run-integration-tests.sh` (builds everything, deploys, runs tests. Feel free to do these as-needed instead of using this script)
-- **Integration tests (tests only):** `cd testing/integration && cargo test -- --nocapture --test-threads=1`
-- **Build debug apps:** `bash testing/build-debug-app.sh` (both gtk3+gtk4; or `... gtk3` / `... gtk4`)
-- **Run GTK3 debug app:** `adb shell "/system/bin/sh /data/local/tmp/arch-chroot-run 'GDK_GL=gles:always /tmp/gtk3-debug-app/gtk3-debug-app text-input'"` (must build first)
+- **Integration tests (full):** `bash testing/run-integration-tests.sh` (builds everything, deploys, runs both groups. Feel free to do these as-needed instead of using this script)
+- **Integration tests (tests only, all):** `source client/select-device.sh && cd testing/integration && cargo test -- --nocapture --test-threads=1`
+- **Integration tests (applications only):** `source client/select-device.sh && cd testing/integration && cargo test --test applications -- --nocapture --test-threads=1` (Firefox/STK/GTK demos/vulkaninfo — needs libhybris, real device only)
+- **Integration tests (input only):** `source client/select-device.sh && cd testing/integration && cargo test --test input -- --nocapture --test-threads=1` (text-input + touch via gtk4-debug-app — works on emulator too)
+- (When both targets are connected, `select-device.sh` needs `TAWC_TARGET=device` or `TAWC_TARGET=emulator` set first; otherwise the test harness's `adb` calls fail silently because adb refuses an ambiguous target.)
+- **Build debug app:** `bash testing/build-debug-app.sh` (gtk4-debug-app)
 - **Run GTK4 debug app:** `adb shell "/system/bin/sh /data/local/tmp/arch-chroot-run '/tmp/gtk4-debug-app/gtk4-debug-app text-input'"`
 - **Inject text (for testing):** `adb shell am broadcast -a me.phie.tawc.TEXT_INPUT --es text "hello"`
 - **Inject keyevent (for testing):** `adb shell am broadcast -a me.phie.tawc.KEY_EVENT --ei keycode 67`

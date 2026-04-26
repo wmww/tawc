@@ -1,5 +1,4 @@
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -129,18 +128,11 @@ pub fn wait_for_rendered_toplevels(
     }
 }
 
-static STARTED: AtomicBool = AtomicBool::new(false);
-
-/// Stop the compositor if we started it. Called from the test shutdown hook.
-pub fn stop_if_started() {
-    if STARTED.load(Ordering::Relaxed) {
-        eprintln!("Stopping compositor...");
-        let _ = adb::shell("am force-stop me.phie.tawc");
-    }
-}
-
 /// Ensure the tawc compositor is running and visible on the phone.
-/// Restarts it if not running or if backgrounded/paused.
+/// Restarts it if not running or if backgrounded/paused. The harness
+/// never stops the compositor itself — `run-integration-tests.sh` does
+/// the final force-stop after the suite, and leaving it running between
+/// test binaries lets the next one hit the already-running fast-path.
 pub fn ensure_running() -> io::Result<()> {
     let output = adb::shell("dumpsys activity activities | grep me.phie.tawc")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -179,6 +171,5 @@ pub fn ensure_running() -> io::Result<()> {
         }
         thread::sleep(Duration::from_millis(100));
     }
-    STARTED.store(true, Ordering::Relaxed);
     Ok(())
 }
