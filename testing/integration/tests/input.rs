@@ -6,7 +6,7 @@
 //! (AHB vs SHM). The point is to verify how the compositor *dispatches
 //! input*, not how clients render. That makes them safe to run on the
 //! emulator (where libhybris/AHB is unavailable) — for application/buffer
-//! coverage see `tests/applications.rs`.
+//! coverage see `tests/apps.rs`.
 
 use tawc_integration::adb;
 use tawc_integration::helpers::{assert_compositor_clean, start_text_input, TIMEOUT};

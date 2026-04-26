@@ -1,4 +1,4 @@
-//! Shared test helpers used by both the `applications` and `input` test
+//! Shared test helpers used by both the `apps` and `input` test
 //! groups. Each test binary gets its own copy of the OnceLock state, so
 //! per-binary one-time setup runs once per `cargo test` invocation.
 

@@ -82,11 +82,11 @@ Avoid junking up devices (delete screenshots when done). On the phone, things st
 - **Restart compositor:** `adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.compositor.CompositorActivity`
 - **Simulate touch:** `adb shell input tap X Y` (screen pixel coords, 1:1 with SurfaceView due to immersive fullscreen)
 - **Touch debug loop:** Screenshot -> identify coords -> tap -> screenshot -> verify. Compositor uses 2x scale (logical = physical/2). Nearby UI elements are easy to confuse.
-- **Integration tests (full):** `bash testing/run-integration-tests.sh` (builds everything, deploys, runs both groups. Feel free to do these as-needed instead of using this script)
-- **Integration tests (tests only, all):** `source client/select-device.sh && cd testing/integration && cargo test -- --nocapture --test-threads=1`
-- **Integration tests (applications only):** `source client/select-device.sh && cd testing/integration && cargo test --test applications -- --nocapture --test-threads=1` (Firefox/STK/GTK demos/vulkaninfo — needs libhybris, real device only)
-- **Integration tests (input only):** `source client/select-device.sh && cd testing/integration && cargo test --test input -- --nocapture --test-threads=1` (text-input + touch via gtk4-debug-app — works on emulator too)
-- (When both targets are connected, `select-device.sh` needs `TAWC_TARGET=device` or `TAWC_TARGET=emulator` set first; otherwise the test harness's `adb` calls fail silently because adb refuses an ambiguous target.)
+- **Integration tests (full):** `bash testing/run-integration-tests.sh` (builds everything, deploys, runs both groups)
+- **Integration tests (one group):** `bash testing/run-integration-tests.sh apps` (or `input`)
+- **Integration tests (one test):** `bash testing/run-integration-tests.sh test_firefox_launches_with_hardware_buffers` (libtest substring filter; combine with a group: `... input test_text_input_and_backspace`)
+- **Integration tests (skip rebuild):** add `--no-build` to any of the above to reuse the already-deployed APK / libhybris / chroot helpers
+- (`run-integration-tests.sh` sources `client/select-device.sh` itself; when both targets are connected, run with `TAWC_TARGET=device` or `TAWC_TARGET=emulator`.)
 - **Build debug app:** `bash testing/build-debug-app.sh` (gtk4-debug-app)
 - **Run GTK4 debug app:** `adb shell "/system/bin/sh /data/local/tmp/arch-chroot-run '/tmp/gtk4-debug-app/gtk4-debug-app text-input'"`
 - **Inject text (for testing):** `adb shell am broadcast -a me.phie.tawc.TEXT_INPUT --es text "hello"`
