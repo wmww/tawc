@@ -95,9 +95,6 @@ These live as patches in our libhybris fork (see `libhybris/TAWC_FORK.md`):
 ## Known Issues
 
 - All Firefox sandboxing disabled. The chroot doesn't support clone/namespace operations.
-- `setenforce 0` required (GDK's memfds bypass the LD_PRELOAD SELinux shim).
-- If Firefox connects but shows a black screen, check SELinux: `adb shell "su -c 'getenforce'"`
-  (resets to Enforcing on every device reboot).
 
 ## Killing and Restarting
 

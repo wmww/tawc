@@ -87,16 +87,11 @@ per surface. Surfaces using the AHB channel protocol are never checked for SHM b
 
 ### SELinux and Memfd Sharing
 
-When root processes in the chroot create memfds, they get label `u:object_r:tmpfs:s0`.
-The `untrusted_app` domain lacks permission on `tmpfs`, so the compositor can't mmap them.
-The failure causes the Wayland protocol parser to get out of sync.
-
-**Solution (with root):** An LD_PRELOAD shim (`client/memfd-selinux-shim/`) intercepts
-`memfd_create()` and calls `fsetxattr` to relabel the memfd as `appdomain_tmpfs`.
-
-**Shim limitation:** GDK/GLib calls `syscall(SYS_memfd_create, ...)` directly, bypassing
-the LD_PRELOAD. Workaround: `setenforce 0`. Proper fix: intercept `syscall()` itself, or
-run clients as the compositor's UID.
+Chroot processes run in the `magisk` SELinux context. By default, their memfds
+get label `u:object_r:tmpfs:s0`, which the compositor (`untrusted_app`) can't
+access. The `arch-chroot-run` script applies a `magiskpolicy` type_transition
+rule so that magisk-created memfds automatically get `appdomain_tmpfs:s0`
+instead — the same label that normal Android app memfds receive.
 
 **Without root:** Run client processes as the same app/UID. Their memfds natively get
 `appdomain_tmpfs` label.

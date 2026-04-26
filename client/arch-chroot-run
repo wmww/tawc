@@ -81,6 +81,12 @@ if ! grep -q " $CHROOT_DIR/sys " /proc/mounts 2>/dev/null; then
         mount_if_needed "$TAWC_DATA" "$CHROOT_DIR$TAWC_DATA"
     fi
 
+    # SELinux: allow compositor (untrusted_app) to mmap memfds from chroot
+    # clients (magisk context). Without this, magisk-created memfds get
+    # tmpfs:s0 label which untrusted_app can't access. This rule makes them
+    # get appdomain_tmpfs:s0 instead (same as normal Android app memfds).
+    magiskpolicy --live "type_transition magisk tmpfs file appdomain_tmpfs" 2>/dev/null || true
+
     # Ensure chroot environment fixes are in place (PATH, TMPDIR)
     # Android's /system/bin leaks into PATH and breaks everything otherwise
     if [ ! -f "$CHROOT_DIR/etc/profile.d/00-path.sh" ]; then
@@ -107,7 +113,6 @@ export XDG_RUNTIME_DIR=/tmp
 # this chroot and Firefox/libepoxy abort if it's reachable.
 export LD_LIBRARY_PATH=/tmp/gl-shims:/usr/local/lib
 export HYBRIS_EGLPLATFORM=wayland
-export LD_PRELOAD=/tmp/memfd-selinux-shim/libmemfd-selinux-shim.so
 ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
 PROFEOF
 chmod 644 "$CHROOT_DIR/etc/profile.d/01-tawc.sh"

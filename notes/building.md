@@ -42,7 +42,9 @@ adb shell am start -n me.phie.tawc/.MainActivity
 
 ## Device Setup
 
-SELinux must be permissive: `adb shell "su -c 'setenforce 0'"` (resets on reboot).
+SELinux enforcing mode is supported. The `arch-chroot-run` script applies the
+needed SELinux policy rule (`type_transition magisk tmpfs file appdomain_tmpfs`)
+via `magiskpolicy --live` during chroot setup.
 
 ## Chroot package gotchas
 
@@ -86,7 +88,6 @@ adb shell "rm /data/local/tmp/xkb-data.tar"
 Client-side libraries (built inside the chroot, not cross-compiled):
 - libhybris provides EGL/GLES by loading Android's GPU drivers
 - GL shims (libgl-shim.c, libglesv2-shim.c) stub out GLX so Mesa is never probed
-- memfd-selinux-shim relabels memfds for cross-process SHM sharing
 
 ## libhybris
 
