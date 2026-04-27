@@ -39,8 +39,8 @@ system image. The repo does not bundle these. Quickest route:
     export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
     export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
     yes | sdkmanager --licenses >/dev/null
-    sdkmanager 'platform-tools' 'emulator' 'platforms;android-34' \
-        'system-images;android-34;google_apis;x86_64'
+    sdkmanager 'platform-tools' 'emulator' 'platforms;android-36' \
+        'system-images;android-36;google_apis;x86_64'
 
 (`platform-tools` will shadow Arch's system `adb`. Either remove it
 from PATH or rely on the system one — both versions work the same
@@ -48,7 +48,7 @@ against the AVD.)
 
 ### 2. AVD
     echo no | avdmanager create avd -n tawc \
-        -k 'system-images;android-34;google_apis;x86_64' -d 'pixel_5'
+        -k 'system-images;android-36;google_apis;x86_64' -d 'pixel_5'
 
 ### 3. First boot (no Magisk yet)
     emulator -avd tawc -no-window -no-audio -no-boot-anim -no-snapshot &
@@ -59,10 +59,16 @@ against the AVD.)
 `client/start-emulator` helper — see "Day-to-day" below.)
 
 ### 4. Root with Magisk via rootAVD
-    git clone --depth 1 https://gitlab.com/newbit/rootAVD.git ~/rootAVD
+The rootAVD checkout lives at `./rootAVD/` (gitignored, like `./libhybris`).
+Clone if missing:
+
+    git clone --depth 1 https://gitlab.com/newbit/rootAVD.git ./rootAVD
+
+Then patch the AVD's ramdisk:
+
     ANDROID_SERIAL=emulator-5554 \
-    bash ~/rootAVD/rootAVD.sh \
-        system-images/android-34/google_apis/x86_64/ramdisk.img
+    bash ./rootAVD/rootAVD.sh \
+        system-images/android-36/google_apis/x86_64/ramdisk.img
 This patches the AVD's `ramdisk.img` with Magisk init, installs the
 Magisk APK, and shuts the emulator down. Cold-boot it again:
 

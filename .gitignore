@@ -13,10 +13,12 @@ target/
 # IDE
 .idea/
 *.iml
+.claude/
 
 # External repos
 libhybris/
 smithay/
+rootAVD/
 
 # OS
 .DS_Store
