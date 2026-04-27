@@ -7,34 +7,36 @@ import android.util.Log
 
 /**
  * Lets external tooling (adb shell, integration tests, …) drive the
- * installation system without going through the UI. Mirrors what
- * `client/arch-chroot-create*`, `arch-chroot-destroy`, and
- * `arch-chroot-run` do, with output sent back to logcat under the
- * `tawc-install` tag.
+ * installation system without going through the UI. Output is sent to
+ * logcat under the `tawc-install` tag.
  *
- * Examples:
+ * INSTALL / UNINSTALL are deliberately NOT broadcasts: they need a
+ * foreground-service start, which background broadcast receivers can't
+ * do reliably on Android 14+ (BAL_BLOCK from cold). Use `am start`
+ * straight into [ManageInstallationsActivity] — Activities have full
+ * FGS-launch privileges:
  *
- *   adb shell am broadcast -a me.phie.tawc.install.LIST
+ *   adb shell am start \
+ *       -n me.phie.tawc/.install.ManageInstallationsActivity \
+ *       --es autoAction install --es id arch
  *
- *   adb shell am broadcast -a me.phie.tawc.install.INSTALL \
- *       --es id arch
+ *   adb shell am start \
+ *       -n me.phie.tawc/.install.ManageInstallationsActivity \
+ *       --es autoAction uninstall --es id arch
  *
- *   adb shell am broadcast -a me.phie.tawc.install.UNINSTALL \
- *       --es id arch
+ * The cheap, synchronous operations stay on the receiver:
  *
- *   adb shell am broadcast -a me.phie.tawc.install.RUN \
- *       --es id arch \
- *       --es cmd 'uname -m'
+ *   adb shell am broadcast -W \
+ *       -n me.phie.tawc/.install.InstallationCommandReceiver \
+ *       -a me.phie.tawc.install.LIST
  *
- * INSTALL / UNINSTALL kick off [InstallationService] (foreground) and
- * return immediately. The ongoing log appears under
- * `adb logcat -s tawc-install`.
+ *   adb shell am broadcast -W \
+ *       -n me.phie.tawc/.install.InstallationCommandReceiver \
+ *       -a me.phie.tawc.install.RUN --es id arch --es cmd 'uname -m'
  *
- * RUN runs synchronously inside the receiver and prints its result to
- * logcat (and to the broadcast result via setResultData, which
- * `am broadcast` prints when `-W` is used). Mounts come up inside the
- * RUN's su shell and disappear with it — there is no separate mount
- * lifecycle to manage (same model as `client/arch-chroot-run`).
+ * RUN uses `goAsync()` so the chroot command can outlive the receiver's
+ * ~10s ANR budget. Mounts come up inside the RUN's su shell and
+ * disappear with it — same model as `client/arch-chroot-run`.
  */
 class InstallationCommandReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -57,38 +59,6 @@ class InstallationCommandReceiver : BroadcastReceiver() {
                     Log.i(TAG, "LIST:\n$text")
                     setResult(0, text, null)
                 }
-            }
-
-            ACTION_INSTALL -> {
-                // Try to launch the activity from here. This works when the
-                // app is in the foreground or has Background Activity Launch
-                // (BAL) privileges; otherwise Android 14 silently BAL_BLOCKs
-                // it. The reliable cold-state CLI path is `am start` directly:
-                //   am start -n me.phie.tawc/.install.ManageInstallationsActivity \
-                //       --es autoAction install --es id <id>
-                // (See notes/installation.md.) We attempt it here so callers
-                // with the activity already up don't need a second command.
-                launchActivityWithAction(app, id, "install")
-                setResult(
-                    0,
-                    "Best-effort launch of ManageInstallationsActivity for install '$id'. " +
-                        "If the app is cold, BAL may be blocked — fall back to: " +
-                        "am start -n me.phie.tawc/.install.ManageInstallationsActivity " +
-                        "--es autoAction install --es id $id",
-                    null,
-                )
-            }
-
-            ACTION_UNINSTALL -> {
-                launchActivityWithAction(app, id, "uninstall")
-                setResult(
-                    0,
-                    "Best-effort launch of ManageInstallationsActivity for uninstall '$id'. " +
-                        "If the app is cold, fall back to: " +
-                        "am start -n me.phie.tawc/.install.ManageInstallationsActivity " +
-                        "--es autoAction uninstall --es id $id",
-                    null,
-                )
             }
 
             ACTION_RUN -> {
@@ -122,21 +92,14 @@ class InstallationCommandReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun launchActivityWithAction(context: Context, id: String, autoAction: String) {
-        val i = Intent(context, ManageInstallationsActivity::class.java)
-            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra(EXTRA_ID, id)
-            .putExtra(EXTRA_AUTO_ACTION, autoAction)
-        context.startActivity(i)
-    }
-
     companion object {
         private const val TAG = "tawc-install"
         const val ACTION_LIST = "me.phie.tawc.install.LIST"
-        const val ACTION_INSTALL = "me.phie.tawc.install.INSTALL"
-        const val ACTION_UNINSTALL = "me.phie.tawc.install.UNINSTALL"
         const val ACTION_RUN = "me.phie.tawc.install.RUN"
         const val EXTRA_ID = "id"
+        // Read by ManageInstallationsActivity when launched via `am start
+        // … --es autoAction install|uninstall`. Lives here so the receiver
+        // and the activity agree on the contract.
         const val EXTRA_AUTO_ACTION = "autoAction"
     }
 }

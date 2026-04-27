@@ -132,18 +132,23 @@ mount), but no tool actually walks into it.
 
 Every installation operation is reachable from the host so existing
 scripted workflows can be ported off the legacy `arch-chroot-*` scripts.
-There are two flavours:
+Two flavours, picked per operation by what they need to do:
 
-- **`am start`** drives the activity directly. This is the reliable
-  cold-state path for INSTALL / UNINSTALL because foreground-service
-  starts from a background broadcast receiver are blocked on Android 14
-  (`mAllowStartForeground=false`). Activities always have FGS-launch
-  privileges.
-- **`am broadcast -W`** drives `InstallationCommandReceiver` synchronously.
-  This is the fast path for LIST and RUN. **Always use the explicit
-  component form (`-n …/.install.InstallationCommandReceiver`)** — Android
-  14 silently drops implicit broadcasts to manifest-declared receivers
-  when the sender isn't in the same package.
+- **`am start`** into [ManageInstallationsActivity] — INSTALL and
+  UNINSTALL. They need a foreground-service start, which background
+  broadcast receivers can't reliably do on Android 14+ (BAL_BLOCK from
+  cold). Activities launched by `am start` always have FGS-launch
+  privileges, so the activity can start `InstallationService`
+  immediately. The activity briefly surfaces, then the install runs to
+  completion in the foreground service whether the activity stays open
+  or not.
+- **`am broadcast -W`** to `InstallationCommandReceiver` — LIST and
+  RUN. Cheap and synchronous (LIST) or `goAsync()`'d onto a worker
+  (RUN); both return their result via `am broadcast -W`'s data field.
+  **Always use the explicit component form
+  (`-n …/.install.InstallationCommandReceiver`)** — Android 14 silently
+  drops implicit broadcasts to manifest-declared receivers when the
+  sender isn't in the same package.
 
 ```sh
 # Show what's installed.
@@ -205,26 +210,25 @@ tarball, so `res/xml/network_security_config.xml` carves out plaintext
 HTTP for `archlinuxarm.org` and **only** that domain. Everything else
 stays HTTPS-only.
 
-## Android 14 FGS gotcha
+## Android 14 FGS rules and why INSTALL/UNINSTALL aren't broadcasts
 
 `startForegroundService()` from a background broadcast receiver is
-blocked on Android 14 (`mAllowStartForeground=false`), and Background
+blocked on Android 14+ (`mAllowStartForeground=false`), and Background
 Activity Launches from the same context are also blocked
-(`BAL_BLOCK`). So `am broadcast … INSTALL` only works when the app
-already has FGS-launch privileges (TOP-recent, etc.); from a cold
-state, the receiver's best-effort `startActivity` is BAL-blocked.
+(`BAL_BLOCK`). That rules out a clean broadcast endpoint for INSTALL /
+UNINSTALL, which need an FGS to run anything long-running.
 
-The reliable cold-state path is `am start` directly into
-`ManageInstallationsActivity` with the `autoAction` extra — Activities
-launched by `am start` have full FGS-launch privileges, so the activity
-can start the install service immediately. The CLI examples above use
-this form for INSTALL/UNINSTALL.
+`am start` directly into `ManageInstallationsActivity` is the
+documented CLI for those operations: Activities launched by `am start`
+have full FGS-launch privileges, so the activity can start
+`InstallationService` immediately and the install runs to completion
+whether the activity stays open or not.
 
-If you need a no-UI broadcast trigger later (e.g. for headless test
-workflows), the next step is probably WorkManager
-`OneTimeWorkRequest.setExpedited()` with a foreground info — that's
-explicitly carved out of the Android 14 restriction. Not implemented
-yet because `am start` is good enough for current uses.
+If a no-UI INSTALL/UNINSTALL trigger is ever needed (e.g. headless
+test workflows that can't run `am start`), the right answer is
+WorkManager `OneTimeWorkRequest.setExpedited()` with a foreground info
+— that's explicitly carved out of the FGS restriction. Not implemented
+because every current caller can run `am start`.
 
 ## Future directions (designed-for, not implemented)
 

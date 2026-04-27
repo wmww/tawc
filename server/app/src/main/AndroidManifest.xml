@@ -70,12 +70,14 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- INSTALL/UNINSTALL aren't broadcasts: they need a foreground
+             service start, which background receivers can't reliably do
+             on Android 14+. Use `am start` into ManageInstallationsActivity
+             with the autoAction extra instead. See notes/installation.md. -->
         <receiver
             android:name=".install.InstallationCommandReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="me.phie.tawc.install.INSTALL" />
-                <action android:name="me.phie.tawc.install.UNINSTALL" />
                 <action android:name="me.phie.tawc.install.RUN" />
                 <action android:name="me.phie.tawc.install.LIST" />
             </intent-filter>
