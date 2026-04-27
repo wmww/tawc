@@ -448,17 +448,35 @@ Hard rules:
 ALARM is the weaker of the two bootstrap paths because upstream
 publishes only an MD5 sidecar, not a PGP signature. The cross-mirror
 HTTPS check is much better than the previous plaintext-HTTP-no-check
-setup but it's not as strong as the Arch x86_64 PGP path: an
-attacker who can compromise both `fl.us.mirror.archlinuxarm.org` and
-`ca.us.mirror.archlinuxarm.org` (or get Let's Encrypt to mis-issue
-for both subdomains, or compromise the underlying ALARM CDN
-operator) could lie consistently and we'd accept it. PGP would
-defeat any of those.
+setup but it's not as strong as the Arch x86_64 PGP path.
 
-This is tracked in `issues/install-alarm-bootstrap-no-pgp.md` with
-the upgrade path: when ALARM upstream starts signing the bootstrap,
-swap the verification to `BootstrapVerification.Pgp`. Until then,
-the cross-mirror MD5 is the floor.
+What cross-mirror MD5 over HTTPS catches:
+
+- Passive WiFi / coffee-shop / ISP MITM (TLS handles this).
+- A single mirror or CDN POP being compromised in isolation.
+- Random transmission corruption.
+
+What it does **not** catch:
+
+- Both `fl.us.mirror.archlinuxarm.org` AND
+  `ca.us.mirror.archlinuxarm.org` being compromised concurrently (same
+  upstream operator, plausible for a nation-state attacker against
+  the underlying CDN/hosting).
+- Let's Encrypt mis-issuing certs for both subdomains.
+- An MD5 second-preimage attack on a tarball binary (still expensive
+  in 2026, but it's MD5 — not where you want your floor).
+
+PGP would defeat all three: the signature is bound to a key whose
+fingerprint we ship with the app, independent of mirror infra entirely.
+
+**The plan is not to bolt PGP onto ALARM** — upstream doesn't sign
+the tarball and isn't likely to start. The real fix is to **switch
+the aarch64 chroot off ALARM entirely** to a distro with a stronger
+upstream trust path (Debian's `debootstrap` against the Debian
+archive keyring is the leading candidate; see
+[distro-options.md](distro-options.md)). Until that migration
+happens, the cross-mirror MD5 over HTTPS is the floor and must not
+be weakened.
 
 ### Verifier code
 

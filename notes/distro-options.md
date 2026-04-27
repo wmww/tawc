@@ -9,6 +9,14 @@ We currently ship **Arch Linux ARM** (aarch64) and **Arch Linux**
 under-maintained and somewhat bloated for our needs, and we keep
 getting asked "what about $distro?".
 
+A specific reason ALARM should eventually be replaced: **its
+bootstrap tarball is unsigned upstream**, so we can only verify it
+via cross-mirror MD5 over HTTPS (see
+[installation.md](installation.md) → *Known weaker spot: ALARM
+bootstrap*). Switching to a distro with a real signature chain
+(Debian's archive keyring, etc.) is a strict integrity upgrade on
+top of the maintenance/freshness wins listed below.
+
 ## The hard constraint: glibc
 
 We require **glibc**, not musl. The reason is libhybris.
