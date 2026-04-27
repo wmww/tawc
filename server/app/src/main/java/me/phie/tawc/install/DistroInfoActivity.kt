@@ -1,16 +1,18 @@
 package me.phie.tawc.install
 
-import android.app.Activity
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.format.Formatter
-import android.view.Gravity
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import android.content.DialogInterface
+import com.google.android.material.color.MaterialColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import me.phie.tawc.R
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CoroutineScope
@@ -18,16 +20,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.phie.tawc.ui.buildChildScreen
+import me.phie.tawc.ui.destructiveButton
+import me.phie.tawc.ui.verticalLp
 
 /**
  * Per-installation detail screen. Shows id/distro/arch/method/source
  * URL/installed-at/full rootfs path, kicks off an async `du -sk`-via-su
- * to fill in size, and exposes the Delete button that opens
- * [UninstallActivity]. Reached by tapping a row on the home screen;
- * size lives here (not on the home list) so opening the launcher
- * doesn't pay the multi-second su cost per row.
+ * to fill in size, and exposes the (red, destructive) Uninstall button
+ * that opens [UninstallActivity]. Reached by tapping a row on the home
+ * screen; size lives here (not on the home list) so opening the
+ * launcher doesn't pay the multi-second su cost per row.
  */
-class DistroInfoActivity : Activity() {
+class DistroInfoActivity : AppCompatActivity() {
 
     private val store by lazy { InstallationStore(this) }
     private var targetId: String = Installation.DISTRO_ARCH
@@ -39,45 +44,36 @@ class DistroInfoActivity : Activity() {
         super.onCreate(savedInstanceState)
         targetId = intent?.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH
 
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-        }
-
         val installation = store.load(targetId)
         val titleText = installation?.let {
             "${it.distro.replaceFirstChar { c -> c.titlecase() }} (${it.arch})"
         } ?: targetId
 
-        TextView(this).apply {
-            text = titleText
-            textSize = 22f
-            gravity = Gravity.START
-        }.also { root.addView(it, lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad)) }
+        val scaffold = buildChildScreen(titleText)
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val content = scaffold.content
 
         if (installation == null) {
             TextView(this).apply { text = "Installation '$targetId' not found." }
-                .also { root.addView(it, lp(MATCH_PARENT, WRAP_CONTENT)) }
-            setContentView(root)
+                .also { content.addView(it, verticalLp(MATCH_PARENT, WRAP_CONTENT)) }
+            setContentView(scaffold.root)
             return
         }
 
-        root.addView(infoRow("ID:", installation.id), rowLp(pad))
-        root.addView(infoRow("Distro:", installation.distro), rowLp(pad))
-        root.addView(infoRow("Architecture:", installation.arch), rowLp(pad))
-        root.addView(infoRow("Method:", installation.method), rowLp(pad))
-        root.addView(infoRow("State:", installation.state.name.lowercase()), rowLp(pad))
+        content.addView(infoRow("ID:", installation.id), rowLp(pad))
+        content.addView(infoRow("Distro:", installation.distro), rowLp(pad))
+        content.addView(infoRow("Architecture:", installation.arch), rowLp(pad))
+        content.addView(infoRow("Method:", installation.method), rowLp(pad))
+        content.addView(infoRow("State:", installation.state.name.lowercase()), rowLp(pad))
         if (installation.failure != null) {
-            root.addView(infoRow("Failure:", installation.failure), rowLp(pad))
+            content.addView(infoRow("Failure:", installation.failure), rowLp(pad))
         }
-        root.addView(infoRow("Source:", installation.sourceUrl), rowLp(pad))
-        root.addView(
+        content.addView(infoRow("Source:", installation.sourceUrl), rowLp(pad))
+        content.addView(
             infoRow("Installed:", DateFormat.getDateTimeInstance().format(Date(installation.installedAtMillis))),
             rowLp(pad),
         )
-        root.addView(
+        content.addView(
             infoRow("Rootfs path:", store.rootfsDir(installation.id).absolutePath),
             rowLp(pad),
         )
@@ -89,18 +85,20 @@ class DistroInfoActivity : Activity() {
             textSize = 14f
             typeface = Typeface.MONOSPACE
         }
-        root.addView(infoRowWithValue("Size:", sizeValue), rowLp(pad))
+        content.addView(infoRowWithValue("Size:", sizeValue), rowLp(pad))
 
-        Button(this).apply {
-            text = "Delete"
-            setOnClickListener {
-                val i = Intent(this@DistroInfoActivity, UninstallActivity::class.java)
-                    .putExtra(UninstallActivity.EXTRA_ID, installation.id)
-                startActivity(i)
-            }
-        }.also { root.addView(it, lp(MATCH_PARENT, WRAP_CONTENT)) }
+        // Push Uninstall to the bottom with a flexible spacer so it
+        // doesn't crowd the info rows.
+        content.addView(
+            android.view.View(this),
+            LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
+        )
+        content.addView(
+            destructiveButton("Delete") { confirmUninstall(installation) },
+            verticalLp(MATCH_PARENT, WRAP_CONTENT),
+        )
 
-        setContentView(root)
+        setContentView(scaffold.root)
     }
 
     override fun onResume() {
@@ -119,6 +117,33 @@ class DistroInfoActivity : Activity() {
         super.onPause()
         sizeScope?.cancel()
         sizeScope = null
+    }
+
+    private fun confirmUninstall(installation: Installation) {
+        val name = "${installation.distro.replaceFirstChar { it.titlecase() }} (${installation.arch})"
+        val message = "This permanently deletes the rootfs at\n" +
+            "${store.rootfsDir(installation.id).absolutePath},\n" +
+            "including all files in your Linux home directory."
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("Delete $name?")
+            .setMessage(message)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                val i = Intent(this, UninstallActivity::class.java)
+                    .putExtra(UninstallActivity.EXTRA_ID, installation.id)
+                startActivity(i)
+            }
+            .show()
+        // Tint the destructive action red so it pops, and the Cancel
+        // neutral so it doesn't compete with it. Default Material3 uses
+        // colorPrimary (yellow-orange) for both, which made Cancel look
+        // like the recommended path next to a red Delete.
+        dialog.getButton(DialogInterface.BUTTON_POSITIVE)?.setTextColor(getColor(R.color.tawc_danger))
+        dialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { btn ->
+            btn.setTextColor(
+                MaterialColors.getColor(btn, com.google.android.material.R.attr.colorOnSurfaceVariant)
+            )
+        }
     }
 
     private fun startSizeProbe() {
@@ -153,9 +178,6 @@ class DistroInfoActivity : Activity() {
 
     private fun rowLp(pad: Int): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).also { it.bottomMargin = pad / 2 }
-
-    private fun lp(w: Int, h: Int, bottomMargin: Int = 0): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(w, h).also { it.bottomMargin = bottomMargin }
 
     companion object {
         const val EXTRA_ID = "id"

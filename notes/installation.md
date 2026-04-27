@@ -107,13 +107,24 @@ recovery is uninstall + install.
 | `OperationLogPanel.kt`         | Reusable Android view (status line + progress bar + scrolling log) that binds to the service's `progress`/`log` flows. Used by both [InstallActivity] and [UninstallActivity] so the per-operation UI lives in one place. |
 | `InstallActivity.kt`           | Install flow: read-only summary (distro, detected CPU arch, install path) → Install button → swap to [OperationLogPanel] for live progress. Recognises `autoStart=true` to skip the form and start immediately. The button is disabled (with state-aware label) when the gate would refuse. |
 | `UninstallActivity.kt`         | Uninstall flow: confirmation prompt → Uninstall button → swap to [OperationLogPanel]. Recognises `autoStart=true` to skip the confirmation. |
-| `DistroInfoActivity.kt`        | Per-distro detail page (id/distro/arch/method/source URL/installed-at/state/failure/full rootfs path) + an async `du -sk` size readout (only for `READY`) + Delete button (which opens [UninstallActivity]). Reached from a tap on a home-screen row. |
+| `DistroInfoActivity.kt`        | Per-distro detail page (id/distro/arch/method/source URL/installed-at/state/failure/full rootfs path) + an async `du -sk` size readout (only for `READY`) + a red Uninstall button (which opens [UninstallActivity]). Reached from a tap on a home-screen row. |
 
 The `MainActivity` home screen lists the on-disk installations
 (distro + arch only — size lives on [DistroInfoActivity] because
 `du -sk` over a multi-GB rootfs costs seconds via `su` and would slow
 down opening the launcher). Each row is tappable and opens the info
-page; the page itself hosts the Delete button.
+page; the page itself hosts the Uninstall button.
+
+The non-compositor activities (`MainActivity`, `InstallActivity`,
+`UninstallActivity`, `DistroInfoActivity`) extend `AppCompatActivity`
+and share a small `me.phie.tawc.ui.Scaffold` helper that builds a
+`MaterialToolbar` (with a back/up arrow on child screens) plus a
+content column. The theme is `Theme.Material3.DayNight.NoActionBar`
+with a yellow-orange `colorPrimary` (`@color/tawc_accent`) for primary
+buttons and `@color/tawc_danger` (red) for destructive ones; both have
+night-mode variants in `res/values-night/`. The compositor activity
+keeps the device-default theme — it draws its own surface and never
+inflates Material widgets.
 
 ## Install pipeline
 

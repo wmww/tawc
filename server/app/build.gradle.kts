@@ -46,6 +46,12 @@ dependencies {
     implementation("com.github.luben:zstd-jni:1.5.6-9@aar")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Material Components powers the app's chrome on non-compositor screens:
+    // Material3 DayNight theme (auto light/dark), MaterialToolbar with the
+    // back-arrow up affordance, and MaterialButton for the accented /
+    // destructive button styles. AppCompat is pulled in transitively.
+    implementation("com.google.android.material:material:1.12.0")
 }
 
 // Build the Rust compositor for one or both Android ABIs and copy the

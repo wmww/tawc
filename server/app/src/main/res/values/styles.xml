@@ -1,15 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Default theme for normal Android Activities (home page, future
-         settings/management screens). Standard system chrome. -->
-    <style name="Theme.Tawc" parent="android:Theme.DeviceDefault.NoActionBar">
+
+    <!-- Default theme for Activities that show normal Android UI (home,
+         install, uninstall, distro info). Material3 DayNight gives us
+         automatic light/dark theming; the accent (colorPrimary) is a
+         yellow-orange that drives Install/Open buttons. Destructive
+         actions opt out of the accent and use @color/tawc_danger. -->
+    <style name="Theme.Tawc" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowNoTitle">true</item>
+
+        <item name="colorPrimary">@color/tawc_accent</item>
+        <item name="colorOnPrimary">@color/tawc_on_accent</item>
+        <item name="colorPrimaryContainer">@color/tawc_accent</item>
+        <item name="colorOnPrimaryContainer">@color/tawc_on_accent</item>
+
+        <item name="colorError">@color/tawc_danger</item>
+        <item name="colorOnError">@color/tawc_on_danger</item>
+
+        <!-- Tint the system bars to the window surface so the yellow
+             accent doesn't bleed into the status bar. windowLightStatusBar
+             flips icons to dark for light mode; values-night/styles.xml
+             overrides it back to false for dark mode. -->
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 
-    <!-- Theme for the compositor activity: full-screen, immersive,
-         draws under cutouts. -->
-    <style name="Theme.Tawc.Compositor" parent="Theme.Tawc">
+    <!-- Compositor activity stays on the device-default theme: it draws
+         its own surface end-to-end and never inflates Material widgets,
+         so pulling Material3 in here would just bloat the resource
+         table for no win. Full-screen + draws under cutouts. -->
+    <style name="Theme.Tawc.Compositor" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
+
 </resources>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark-theme overrides. Only the accent shifts in night mode (a
+     darker, more saturated burnt-orange that reads as a deliberate
+     accent rather than an amber pill); danger stays the same deep red
+     because white-on-deep-red works on both light and dark surfaces. -->
+<resources>
+    <color name="tawc_accent">#E04410</color>
+</resources>

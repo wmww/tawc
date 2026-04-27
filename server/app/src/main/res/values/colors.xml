@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App accent + danger colors. The accent is a yellow-orange ("amber")
+  used for primary actions (Install, Open, etc.). Danger is a saturated
+  red used for destructive actions (Uninstall). Both have day/night
+  variants — see values-night/colors.xml.
+-->
+<resources>
+    <color name="tawc_accent">#C2410C</color>
+    <color name="tawc_on_accent">#FFFFFF</color>
+
+    <color name="tawc_danger">#C62828</color>
+    <color name="tawc_on_danger">#FFFFFF</color>
+</resources>

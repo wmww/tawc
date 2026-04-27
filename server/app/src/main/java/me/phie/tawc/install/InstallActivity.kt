@@ -1,17 +1,19 @@
 package me.phie.tawc.install
 
-import android.app.Activity
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.button.MaterialButton
+import me.phie.tawc.ui.buildChildScreen
+import me.phie.tawc.ui.primaryButton
+import me.phie.tawc.ui.verticalLp
 
 /**
  * "Install new distro" screen. Shows a read-only summary of what's
@@ -28,13 +30,13 @@ import android.widget.TextView
  * be refused at the [InstallationService] level — this is the UX
  * shortcut, not the safety net.
  */
-class InstallActivity : Activity() {
+class InstallActivity : AppCompatActivity() {
 
     private val store by lazy { InstallationStore(this) }
     private var targetId: String = Installation.DISTRO_ARCH
 
     private lateinit var formSection: LinearLayout
-    private lateinit var installButton: Button
+    private lateinit var installButton: MaterialButton
     private lateinit var panel: OperationLogPanel
 
     private var started = false
@@ -44,28 +46,18 @@ class InstallActivity : Activity() {
         targetId = intent?.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH
         started = savedInstanceState?.getBoolean(KEY_STARTED) == true
 
+        val scaffold = buildChildScreen("Install distro")
+
         val pad = (16 * resources.displayMetrics.density).toInt()
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-        }
-
-        TextView(this).apply {
-            text = "Install distro"
-            textSize = 22f
-            gravity = Gravity.START
-        }.also { root.addView(it, lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad)) }
-
         formSection = buildFormSection(pad)
-        root.addView(formSection, lp(MATCH_PARENT, WRAP_CONTENT))
+        scaffold.content.addView(formSection, verticalLp(MATCH_PARENT, WRAP_CONTENT))
 
         panel = OperationLogPanel(this)
         panel.view.visibility = if (started) View.VISIBLE else View.GONE
         if (started) formSection.visibility = View.GONE
-        root.addView(panel.view, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        scaffold.content.addView(panel.view, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
-        setContentView(root)
+        setContentView(scaffold.root)
 
         // Fire autoStart only on the very first onCreate of this
         // activity instance. Re-creations restore [started]=true from
@@ -112,17 +104,14 @@ class InstallActivity : Activity() {
     private fun buildFormSection(pad: Int): LinearLayout {
         val s = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        s.addView(formRow("Distro:", "Arch"), lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
-        s.addView(formRow("Architecture:", primaryArch()), lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        s.addView(formRow("Distro:", "Arch"), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        s.addView(formRow("Architecture:", primaryArch()), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
         s.addView(
             formRow("Install location:", store.installationDir(targetId).absolutePath),
-            lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
 
-        installButton = Button(this).apply {
-            text = "Install"
-            setOnClickListener { beginInstall() }
-        }
+        installButton = primaryButton("Install") { beginInstall() }
         // Mirror the service-level gate so the form makes the refusal
         // obvious before the user taps. The service is still the
         // source of truth — the button is just a hint.
@@ -130,13 +119,13 @@ class InstallActivity : Activity() {
         if (current != null) {
             installButton.isEnabled = false
             installButton.text = when (current.state) {
-                Installation.State.READY -> "Install (already installed — uninstall first)"
-                Installation.State.INSTALLING -> "Install (in progress — uninstall to abort)"
-                Installation.State.UNINSTALLING -> "Install (uninstall in progress)"
-                Installation.State.FAILED -> "Install (failed — uninstall first)"
+                Installation.State.READY -> "Install (already installed — delete first)"
+                Installation.State.INSTALLING -> "Install (in progress — delete to abort)"
+                Installation.State.UNINSTALLING -> "Install (delete in progress)"
+                Installation.State.FAILED -> "Install (failed — delete first)"
             }
         }
-        s.addView(installButton, lp(MATCH_PARENT, WRAP_CONTENT))
+        s.addView(installButton, verticalLp(MATCH_PARENT, WRAP_CONTENT))
         return s
     }
 
@@ -172,9 +161,6 @@ class InstallActivity : Activity() {
 
     private fun primaryArch(): String =
         Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
-
-    private fun lp(w: Int, h: Int, bottomMargin: Int = 0): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(w, h).also { it.bottomMargin = bottomMargin }
 
     companion object {
         const val EXTRA_ID = "id"

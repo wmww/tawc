@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark-theme overrides. Most styling lives in values/styles.xml; we
+     just flip the system-bar icon brightness so they read correctly
+     against the dark surface. -->
+<resources>
+
+    <style name="Theme.Tawc" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowNoTitle">true</item>
+
+        <item name="colorPrimary">@color/tawc_accent</item>
+        <item name="colorOnPrimary">@color/tawc_on_accent</item>
+        <item name="colorPrimaryContainer">@color/tawc_accent</item>
+        <item name="colorOnPrimaryContainer">@color/tawc_on_accent</item>
+
+        <item name="colorError">@color/tawc_danger</item>
+        <item name="colorOnError">@color/tawc_on_danger</item>
+
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+</resources>

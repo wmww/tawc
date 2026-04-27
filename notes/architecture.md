@@ -39,8 +39,13 @@ The compositor (`server/compositor/src/`) is split into:
 
 Kotlin side (`server/app/src/main/java/me/phie/tawc/`):
 
-- **MainActivity.kt** -- Launcher (only Activity in `category.LAUNCHER`); a button starts
-  `CompositorActivity` for the primary host.
+- **MainActivity.kt** -- Launcher (only Activity in `category.LAUNCHER`). Starts
+  `CompositorService` so the Wayland socket is up, then renders the installed-distros
+  list + "Install new distro" button. `CompositorActivity` is spawned indirectly: a
+  Wayland app mapping a window triggers the native `spawnActivity` reverse-JNI.
+- **ui/Scaffold.kt** -- Helpers shared by the non-compositor activities — builds the
+  `MaterialToolbar` (with back/up arrow on child screens) plus the content column, and
+  exposes `primaryButton` (yellow-orange accent) / `destructiveButton` (red) factories.
 - **compositor/CompositorService.kt** -- Foreground service (`specialUse` type) that owns
   the Rust compositor thread. Activities bind to it; it tracks them by `activityId` so
   reverse-JNI calls can find the right Activity.
