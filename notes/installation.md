@@ -47,11 +47,13 @@ class, and [InstallationStore] already handle it.
 | `OperationLogPanel.kt`         | Reusable Android view (status line + progress bar + scrolling log) that binds to the service's `progress`/`log` flows. Used by both [InstallActivity] and [UninstallActivity] so the per-operation UI lives in one place. |
 | `InstallActivity.kt`           | Install flow: read-only summary (distro, detected CPU arch, install path) → Install button → swap to [OperationLogPanel] for live progress. Recognises `autoStart=true` to skip the form and start immediately. |
 | `UninstallActivity.kt`         | Uninstall flow: confirmation prompt → Uninstall button → swap to [OperationLogPanel]. Recognises `autoStart=true` to skip the confirmation. |
+| `DistroInfoActivity.kt`        | Per-distro detail page (id/distro/arch/method/source URL/installed-at/full rootfs path) + an async `du -sk` size readout + Delete button (which opens [UninstallActivity]). Reached from a tap on a home-screen row. |
 
 The `MainActivity` home screen lists the on-disk installations
-(distro/arch + size via `du -sk` over `su`) with a Delete button per
-row that opens [UninstallActivity], plus an "Install new distro"
-button that opens [InstallActivity].
+(distro + arch only — size lives on [DistroInfoActivity] because
+`du -sk` over a multi-GB rootfs costs seconds via `su` and would slow
+down opening the launcher). Each row is tappable and opens the info
+page; the page itself hosts the Delete button.
 
 ## Stages of an Arch install
 
