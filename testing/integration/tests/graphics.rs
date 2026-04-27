@@ -21,7 +21,7 @@ use tawc_integration::helpers::{
     assert_client_animating, assert_compositor_clean, launch_and_wait_for_ahb, require_compositor,
     saw_ahb_import, saw_shm_import, TIMEOUT,
 };
-use tawc_integration::{adb, chroot, compositor};
+use tawc_integration::{adb, compositor};
 
 const WESTON_LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 const VKCUBE_LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -80,7 +80,6 @@ fn test_vulkaninfo_loads_android_driver() {
 #[test]
 fn test_eglinfo_loads_android_driver() {
     require_compositor();
-    chroot::ensure_pkgs(&["mesa-utils"]).expect("install mesa-utils");
 
     let out = adb::chroot_run("eglinfo -B").expect("failed to run eglinfo in chroot");
     assert!(
@@ -121,7 +120,6 @@ fn test_eglinfo_loads_android_driver() {
 #[test]
 fn test_weston_simple_shm_uses_shm_buffers() {
     require_compositor();
-    chroot::ensure_pkgs(&["weston"]).expect("install weston");
     adb::logcat_clear().expect("Failed to clear logcat");
 
     let mut app = ChrootProcess::spawn("weston-simple-shm").expect("spawn weston-simple-shm");
@@ -176,7 +174,6 @@ fn test_weston_simple_shm_uses_shm_buffers() {
 /// AHB — exactly the path the compositor's `wlegl` module imports.
 #[test]
 fn test_weston_simple_egl_uses_hardware_buffers() {
-    chroot::ensure_pkgs(&["weston"]).expect("install weston");
     let mut app = launch_and_wait_for_ahb(
         "weston-simple-egl",
         "weston-simple-egl",
@@ -205,7 +202,6 @@ fn test_weston_simple_egl_uses_hardware_buffers() {
 /// only inspects extension strings) by actually exercising present.
 #[test]
 fn test_vulkan_client_uses_hardware_buffers() {
-    chroot::ensure_pkgs(&["vulkan-tools"]).expect("install vulkan-tools");
     // `--c` caps the frame count; we still kill via stop() so the value
     // mostly just guards against the test runner hanging if stop() fails.
     // Cap is set well above what the animation check below needs so vkcube

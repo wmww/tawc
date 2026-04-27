@@ -93,9 +93,11 @@ Direct `cargo test` invocations work too — they just need
 when more than one target is connected.
 
 Prerequisites: a phone (or emulator) connected via adb, the compositor
-APK installed, `arch-chroot-run` pushed to the device. Some modules
-have additional prerequisites (e.g. libhybris on a real device for the
-GPU-rendering tests); see each module's docstring.
+APK installed, `arch-chroot-run` pushed to the device, and the test
+suite's chroot packages installed (run `bash testing/install-test-deps.sh`
+once per chroot install — covers gtk3/gtk4/weston/mesa-utils/vulkan-tools).
+Some modules have additional prerequisites (e.g. libhybris on a real
+device for the GPU-rendering tests); see each module's docstring.
 
 ### Test Input Mechanism
 
@@ -143,9 +145,9 @@ Host (cargo test)                    Phone
 ### Key Modules
 
 - **`adb.rs`**: Shell commands, chroot execution, broadcast-based input injection
-- **`chroot.rs`**: `ensure_debug_app()` (build gtk4-debug-app, cached by mtime)
-  and `ensure_pkgs()` (idempotent pacman install used to make sure
-  upstream packages are present in the chroot)
+- **`chroot.rs`**: `ensure_debug_app()` (build gtk4-debug-app, cached by mtime).
+  Tests do **not** install chroot packages at runtime — required packages
+  must be installed up-front via `testing/install-test-deps.sh`.
 - **`debug_app.rs`**: Start/stop lifecycle, stdout reader thread, `wait_for()` with timeout
 - **`compositor.rs`**: Check whether the compositor is running (`is_running`,
   `assert_running`) and query its state via broadcast. The compositor itself

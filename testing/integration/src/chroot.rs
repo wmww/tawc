@@ -5,7 +5,6 @@ use std::process::Command;
 use crate::adb;
 
 const APP_NAME: &str = "gtk4-debug-app";
-const BUILD_PKGS: &[&str] = &["gtk4", "pkg-config"];
 
 fn chroot_build_dir() -> String {
     format!("/tmp/{}", APP_NAME)
@@ -23,58 +22,30 @@ fn binary_path() -> String {
     format!("{}/{}", chroot_build_dir(), APP_NAME)
 }
 
-/// Check deps and build freshness in a single adb call.
-/// Returns (deps_ok, stamp_value).
-fn check_status() -> io::Result<(bool, String)> {
-    let build_dir = chroot_build_dir();
-    let stamp_chroot = format!("{}/build-stamp", build_dir);
-    let binary_chroot = binary_path();
-    let pkgs = BUILD_PKGS.join(" ");
-    // Use sentinel-framed output so unrelated warnings (e.g. from pacman) can't
-    // be mistaken for the stamp value.
+/// Read the build stamp value (mtime of the source tree at last build),
+/// or "missing" if no successful build is on the device yet.
+fn read_stamp() -> io::Result<String> {
+    let stamp_chroot = format!("{}/build-stamp", chroot_build_dir());
+    // Sentinel-framed so unrelated warnings can't be mistaken for the value.
     let cmd = format!(
-        "pacman -Q {} >/dev/null 2>&1 && echo DEPS_OK; \
-         printf 'STAMP:%s\\n' \"$(test -f {} && cat {} 2>/dev/null || echo missing)\"",
-        pkgs, binary_chroot, stamp_chroot
+        "printf 'STAMP:%s\\n' \"$(test -f {} && cat {} 2>/dev/null || echo missing)\"",
+        stamp_chroot, stamp_chroot
     );
     let output = adb::chroot_run(&cmd)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let deps_ok = stdout.lines().any(|l| l.trim() == "DEPS_OK");
-    let stamp = stdout
+    Ok(stdout
         .lines()
         .find_map(|l| l.trim().strip_prefix("STAMP:"))
         .unwrap_or("missing")
         .trim()
-        .to_string();
-    Ok((deps_ok, stamp))
+        .to_string())
 }
 
-/// Ensure the named packages are installed in the chroot (pacman).
-/// Idempotent — skips the install if pacman -Q already succeeds for all.
-pub fn ensure_pkgs(pkgs: &[&str]) -> io::Result<()> {
-    let joined = pkgs.join(" ");
-    let check = adb::chroot_run(&format!("pacman -Q {} >/dev/null 2>&1 && echo OK", joined))?;
-    if String::from_utf8_lossy(&check.stdout).contains("OK") {
-        return Ok(());
-    }
-    eprintln!("Installing chroot packages: {}", joined);
-    let output = adb::chroot_run(&format!("pacman -Sy --noconfirm {}", joined))?;
-    if !output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Failed to install packages {}:\n{}",
-                joined,
-                String::from_utf8_lossy(&output.stdout)
-            ),
-        ));
-    }
-    Ok(())
-}
-
-/// Ensure deps are installed and the gtk4-debug-app is built.
-/// Returns the path to the binary inside the chroot.
-/// Skips work that's already done.
+/// Build the gtk4-debug-app in the chroot if the sources have changed
+/// since the last successful build. Returns the in-chroot binary path.
+///
+/// Build deps (gtk4, pkg-config) are expected to already be installed —
+/// run `testing/install-test-deps.sh` once per chroot install.
 pub fn ensure_debug_app() -> io::Result<String> {
     let binary_chroot = binary_path();
     let source_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -82,11 +53,7 @@ pub fn ensure_debug_app() -> io::Result<String> {
         .unwrap()
         .join(APP_NAME);
 
-    let (deps_ok, stamp) = check_status()?;
-
-    if !deps_ok {
-        ensure_pkgs(BUILD_PKGS)?;
-    }
+    let stamp = read_stamp()?;
 
     // Check if build is fresh
     let source_mtime = latest_mtime(&source_dir)?;
@@ -117,7 +84,12 @@ pub fn ensure_debug_app() -> io::Result<String> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("Build failed:\nstdout: {}\nstderr: {}", stdout, stderr),
+            format!(
+                "gtk4-debug-app build failed (missing test deps? \
+                 try `bash testing/install-test-deps.sh`):\n\
+                 stdout: {}\nstderr: {}",
+                stdout, stderr
+            ),
         ));
     }
 

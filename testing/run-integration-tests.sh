@@ -10,6 +10,8 @@
 #   - Android device or emulator connected via adb with root (su) access
 #     (multiple targets: set TAWC_TARGET=device|emulator first)
 #   - Arch Linux ARM chroot installed at /data/local/arch-chroot
+#   - Test-suite chroot packages installed (run
+#     `bash testing/install-test-deps.sh` once per chroot install)
 #   - libhybris already built and installed in the chroot (run
 #     `bash client/build-libhybris` once); skipped on emulator
 #   - JAVA_HOME set or java-21-openjdk installed at default path
@@ -127,8 +129,10 @@ if [ -n "$TEST_FILTER" ]; then
 else
     echo "=== Running integration tests ==="
 fi
-# Note: debug app build + deps are handled by the Rust test harness
-# (chroot::ensure_debug_app) with freshness caching.
+# Note: the debug app build is handled by the Rust test harness
+# (chroot::ensure_debug_app) with freshness caching. Chroot packages
+# are NOT auto-installed — run `bash testing/install-test-deps.sh` once
+# per chroot install.
 cd "$SCRIPT_DIR/integration"
 set +e
 cargo test -- "${LIBTEST_ARGS[@]}"

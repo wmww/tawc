@@ -16,7 +16,7 @@ use tawc_integration::helpers::{
     assert_compositor_clean, launch_and_wait_for_ahb, require_compositor, saw_ahb_import,
     saw_shm_import, TIMEOUT,
 };
-use tawc_integration::{adb, chroot, compositor};
+use tawc_integration::{adb, compositor};
 
 const FIREFOX_CMD: &str = "GDK_GL=gles:always firefox --no-remote";
 
@@ -89,7 +89,6 @@ fn test_supertuxkart_launches_with_hardware_buffers() {
 #[test]
 fn test_gtk3_app_uses_shm_buffers() {
     require_compositor();
-    chroot::ensure_pkgs(&["gtk3"]).expect("install gtk3");
     adb::logcat_clear().expect("Failed to clear logcat");
 
     let mut app = ChrootProcess::spawn("GDK_GL=disabled gtk3-demo-application")
@@ -141,7 +140,6 @@ fn test_gtk3_app_uses_shm_buffers() {
 /// via AHB hardware buffers.
 #[test]
 fn test_gtk3_app_uses_hardware_buffers() {
-    chroot::ensure_pkgs(&["gtk3"]).expect("install gtk3");
     let mut app = launch_and_wait_for_ahb(
         "GDK_GL=gles:always gtk3-demo-application",
         "gtk3-demo-application",
@@ -169,7 +167,6 @@ fn test_gtk3_app_uses_hardware_buffers() {
 /// in this rootfs and never actually maps a window.)
 #[test]
 fn test_gtk4_app_uses_hardware_buffers() {
-    chroot::ensure_pkgs(&["gtk4"]).expect("install gtk4");
     let mut app = launch_and_wait_for_ahb(
         "gtk4-widget-factory",
         "gtk4-widget-factory",
@@ -196,7 +193,6 @@ fn test_gtk4_app_uses_hardware_buffers() {
 #[test]
 fn test_gtk4_app_uses_shm_buffers() {
     require_compositor();
-    chroot::ensure_pkgs(&["gtk4"]).expect("install gtk4");
     adb::logcat_clear().expect("Failed to clear logcat");
 
     let mut app = ChrootProcess::spawn("GSK_RENDERER=cairo gtk4-widget-factory")

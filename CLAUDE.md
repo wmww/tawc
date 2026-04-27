@@ -86,6 +86,7 @@ Avoid junking up devices (delete screenshots when done). On the phone, things st
 - **Restart compositor:** `adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.compositor.CompositorActivity`
 - **Simulate touch:** `adb shell input tap X Y` (screen pixel coords, 1:1 with SurfaceView due to immersive fullscreen)
 - **Touch debug loop:** Screenshot -> identify coords -> tap -> screenshot -> verify. Compositor uses 2x scale (logical = physical/2). Nearby UI elements are easy to confuse.
+- **Install test deps in chroot:** `bash testing/install-test-deps.sh` (run once per chroot install — gtk3/gtk4/weston/mesa-utils/vulkan-tools/pkg-config; tests do not auto-install)
 - **Integration tests:** `bash testing/run-integration-tests.sh [filter]` (builds everything, deploys, runs all tests; the optional arg is a libtest substring filter, e.g. `apps::` or `apps::test_firefox`)
 - **Integration tests (skip rebuild):** add `--no-build` to reuse the already-deployed APK / libhybris / chroot helpers
 - (`run-integration-tests.sh` sources `client/select-device.sh` itself; when both targets are connected, run with `TAWC_TARGET=device` or `TAWC_TARGET=emulator`.)
