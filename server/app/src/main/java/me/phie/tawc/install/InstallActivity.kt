@@ -2,7 +2,6 @@ package me.phie.tawc.install
 
 import android.content.Intent
 import android.graphics.Typeface
-import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -11,6 +10,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
+import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.verticalLp
@@ -104,8 +104,17 @@ class InstallActivity : AppCompatActivity() {
     private fun buildFormSection(pad: Int): LinearLayout {
         val s = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        s.addView(formRow("Distro:", "Arch"), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
-        s.addView(formRow("Architecture:", primaryArch()), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        // Resolve the host's default Distro so the form shows the
+        // exact thing that's about to be installed (display name +
+        // Linux arch label). If no Distro matches the host we still
+        // render the form — the install button click is the
+        // authoritative gate and will reject with a readable error.
+        val distro = DistroRegistry.defaultForHost()
+        val distroLabel = distro?.displayName ?: "(no supported distro for this device)"
+        val archLabel = distro?.linuxArch ?: "(unknown)"
+
+        s.addView(formRow("Distro:", distroLabel), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        s.addView(formRow("Architecture:", archLabel), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
         s.addView(
             formRow("Install location:", store.installationDir(targetId).absolutePath),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
@@ -158,9 +167,6 @@ class InstallActivity : AppCompatActivity() {
         started = true
         InstallationService.startInstall(this, targetId)
     }
-
-    private fun primaryArch(): String =
-        Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
 
     companion object {
         const val EXTRA_ID = "id"

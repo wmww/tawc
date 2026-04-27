@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import me.phie.tawc.MainActivity
+import me.phie.tawc.install.distro.Distro
+import me.phie.tawc.install.distro.DistroRegistry
 
 /**
  * Foreground service that runs install / uninstall jobs in a coroutine
@@ -99,8 +101,16 @@ class InstallationService : Service() {
                 return
             }
         }
+        // Resolve the host's default distro before any disk state is
+        // written so an unsupported ABI (e.g. 32-bit-only or armeabi)
+        // is a clean reject rather than a half-installed FAILED slot.
+        val distro = DistroRegistry.defaultForHost()
+        if (distro == null) {
+            reject("install '$id'", "no Distro supports ABI ${android.os.Build.SUPPORTED_ABIS.joinToString(",")}")
+            return
+        }
         currentJob = scope.launch {
-            val installer = ArchInstaller(store, BootstrapCache(applicationContext), id)
+            val installer = Installer(store, BootstrapCache(applicationContext), distro, id)
             try {
                 installer.install(::publishProgress, ::appendLog)
             } catch (t: Throwable) {
@@ -127,8 +137,17 @@ class InstallationService : Service() {
             return
         }
         val store = InstallationStore(applicationContext)
+        // Uninstall doesn't need a Distro — RootfsCleaner.wipe is
+        // distro-agnostic. Resolve one for symmetry / future logging
+        // but fall back to the host default and ultimately to a
+        // dummy-but-non-null impl is unnecessary; we just pass the
+        // first registered distro if no metadata exists. The Installer
+        // never invokes Distro.* on the uninstall path.
+        val distro: Distro = store.load(id)?.let { DistroRegistry.forInstallation(it) }
+            ?: DistroRegistry.defaultForHost()
+            ?: DistroRegistry.all.first()
         currentJob = scope.launch {
-            val installer = ArchInstaller(store, BootstrapCache(applicationContext), id)
+            val installer = Installer(store, BootstrapCache(applicationContext), distro, id)
             try {
                 installer.uninstall(::publishProgress, ::appendLog)
             } catch (t: Throwable) {

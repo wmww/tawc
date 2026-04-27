@@ -9,8 +9,10 @@ enum class InstallStage {
     DOWNLOADING,
     EXTRACTING,
     CONFIGURING,
-    PACMAN_INIT,
-    PACMAN_INSTALL,
+    /** Distro-agnostic name for "init the package manager / its keyring". */
+    PKG_KEYRING,
+    /** Distro-agnostic name for "install the base package set". */
+    PKG_INSTALL,
     UNMOUNTING,
     DELETING,
     DONE,

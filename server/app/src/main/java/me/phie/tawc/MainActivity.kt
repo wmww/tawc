@@ -12,6 +12,7 @@ import me.phie.tawc.install.DistroInfoActivity
 import me.phie.tawc.install.InstallActivity
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.ui.buildHomeScreen
 import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.verticalLp
@@ -103,13 +104,18 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun displayName(inst: Installation): String {
-        val distro = inst.distro.replaceFirstChar { it.titlecase() }
+        // Prefer the registry's canonical display name + Linux arch
+        // ("Arch Linux ARM (aarch64)") and fall back to the raw
+        // on-disk strings for unknown distros.
+        val resolved = DistroRegistry.forInstallation(inst)
+        val name = resolved?.displayName ?: inst.distro.replaceFirstChar { it.titlecase() }
+        val arch = resolved?.linuxArch ?: inst.arch
         val suffix = when (inst.state) {
             Installation.State.READY -> ""
             Installation.State.INSTALLING -> " — installing…"
             Installation.State.UNINSTALLING -> " — uninstalling…"
             Installation.State.FAILED -> " — failed"
         }
-        return "$distro (${inst.arch})$suffix ›"
+        return "$name ($arch)$suffix ›"
     }
 }

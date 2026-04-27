@@ -13,6 +13,8 @@ import android.content.DialogInterface
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import me.phie.tawc.R
+import me.phie.tawc.install.distro.Distro
+import me.phie.tawc.install.distro.DistroRegistry
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CoroutineScope
@@ -45,9 +47,8 @@ class DistroInfoActivity : AppCompatActivity() {
         targetId = intent?.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH
 
         val installation = store.load(targetId)
-        val titleText = installation?.let {
-            "${it.distro.replaceFirstChar { c -> c.titlecase() }} (${it.arch})"
-        } ?: targetId
+        val resolvedDistro: Distro? = installation?.let { DistroRegistry.forInstallation(it) }
+        val titleText = installation?.let { renderDistroLabel(it, resolvedDistro) } ?: targetId
 
         val scaffold = buildChildScreen(titleText)
         val pad = (16 * resources.displayMetrics.density).toInt()
@@ -61,8 +62,14 @@ class DistroInfoActivity : AppCompatActivity() {
         }
 
         content.addView(infoRow("ID:", installation.id), rowLp(pad))
-        content.addView(infoRow("Distro:", installation.distro), rowLp(pad))
-        content.addView(infoRow("Architecture:", installation.arch), rowLp(pad))
+        content.addView(
+            infoRow("Distro:", resolvedDistro?.displayName ?: installation.distro),
+            rowLp(pad),
+        )
+        content.addView(
+            infoRow("Architecture:", resolvedDistro?.linuxArch ?: installation.arch),
+            rowLp(pad),
+        )
         content.addView(infoRow("Method:", installation.method), rowLp(pad))
         content.addView(infoRow("State:", installation.state.name.lowercase()), rowLp(pad))
         if (installation.failure != null) {
@@ -120,7 +127,7 @@ class DistroInfoActivity : AppCompatActivity() {
     }
 
     private fun confirmUninstall(installation: Installation) {
-        val name = "${installation.distro.replaceFirstChar { it.titlecase() }} (${installation.arch})"
+        val name = renderDistroLabel(installation, DistroRegistry.forInstallation(installation))
         val message = "This permanently deletes the rootfs at\n" +
             "${store.rootfsDir(installation.id).absolutePath},\n" +
             "including all files in your Linux home directory."
@@ -159,6 +166,18 @@ class DistroInfoActivity : AppCompatActivity() {
             }
         }
     }
+
+    /**
+     * Render a "<distro> (<arch>)" label using the resolved [Distro]
+     * when known (canonical display name + Linux arch), and falling
+     * back to the on-disk strings otherwise.
+     */
+    private fun renderDistroLabel(installation: Installation, distro: Distro?): String =
+        if (distro != null) {
+            "${distro.displayName} (${distro.linuxArch})"
+        } else {
+            "${installation.distro.replaceFirstChar { it.titlecase() }} (${installation.arch})"
+        }
 
     private fun infoRow(label: String, value: String): LinearLayout =
         infoRowWithValue(label, TextView(this).apply {

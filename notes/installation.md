@@ -95,6 +95,12 @@ recovery is uninstall + install.
 
 ## Code layout (`me.phie.tawc.install`)
 
+The package is split into three layers:
+
+1. **Pipeline primitives** — distro-agnostic helpers used by every install.
+2. **Distro abstraction** — per-(distro × Linux arch) policy in `distro/`.
+3. **Service / state machine / UI** — gate, foreground service, activities.
+
 | File | Role |
 | --- | --- |
 | `Installation.kt`              | Immutable metadata for one installed environment (id/distro/arch/method/state/failure). |
@@ -106,13 +112,21 @@ recovery is uninstall + install.
 | `RootfsCleaner.kt`             | The one and only delete path: kill chroot processes → unmount strictly → `find -xdev -depth -delete`. Used by uninstall; never by install. |
 | `ChrootMounter.kt`             | Builds the bind-mount shell snippet, renders the canonical `enter.sh` (mount + chroot wrapper), and provides defensive-cleanup `unmount` (used by [RootfsCleaner]). Mounts live inside a single `su` invocation's private namespace, not globally. |
 | `ChrootRunner.kt`              | Concatenates `ChrootMounter.mountScript(rootfs)` with the chroot exec into one `su -c` shell so the mounts and the command share that shell's mount namespace. Base64-encodes the command into the wrapper script to dodge quoting hell. |
-| `ArchInstaller.kt`             | Stage machine: download → extract → configure → pacman init → pacman install. Writes `INSTALLING` at the top, `READY` on success, `FAILED` on throw. |
-| `InstallProgress.kt`           | Stage enum + progress event used by the service. |
-| `InstallationService.kt`       | The state-machine gate. Foreground service that consults [InstallationStore], decides whether to run, and exposes `progress` (StateFlow) + `log` (SharedFlow). |
+| `Installer.kt`                 | Generic install/uninstall orchestrator. Drives `setState(INSTALLING) → BootstrapCache.download → Archive.extractAsRoot → distro.configure → writeEnterScript → distro.initPackageManager → distro.installBasePackages → setState(READY)`. Distro-agnostic; per-distro behaviour comes from the [Distro] passed in. |
+| `distro/Distro.kt`             | Interface for a (distro × Linux arch). Owns `bootstrap` (URL/format/stripPrefix), `basePackages`, and the three policy hooks (`configure`, `initPackageManager`, `installBasePackages`). Also defines `DistroBootstrap`. |
+| `distro/DistroRegistry.kt`     | The only place that maps `(metadata.distro, metadata.arch)` → [Distro] and `Build.SUPPORTED_ABIS` → host-default [Distro]. `defaultForHost()` is consulted by the service before any disk state is written, so an unsupported ABI is a clean reject rather than a half-installed FAILED slot. |
+| `distro/arch/ArchPacmanCommon.kt` | Helpers shared by every Arch flavour: pacman.conf munging (SigLevel/DisableSandbox/CheckSpace/IgnorePkg), mirrorlist write, profile.d/00-path.sh, the `pacman-key --init` boilerplate, and `pacman -Syu` / `pacman -S --needed`. Also exports the canonical `DEFAULT_BASE_PACKAGES` list. |
+| `distro/arch/ArchLinuxX86_64.kt` | Arch Linux x86_64 (`pkgbuild.com` zstd bootstrap, `archlinux` keyring, geo-redirector mirrorlist). |
+| `distro/arch/ArchLinuxArm.kt`  | Arch Linux ARM aarch64 (`archlinuxarm.org` gzip bootstrap, `archlinuxarm` keyring, curated multi-mirror list — see *ALARM mirror failover* below). |
+| `util/HostArch.kt`             | `primaryAbi()` and `linuxArchFor(abi)` — the only place that knows the Android ABI ↔ Linux `uname -m` mapping. |
+| `util/HumanSize.kt`            | Byte-count → "1.2 MiB" formatter for download progress. |
+| `util/AppOwnership.kt`         | `chownAppDirNonRecursive` — resets a freshly-mkdir'd dir to app uid:gid so subsequent app-uid writes succeed. |
+| `InstallProgress.kt`           | Stage enum + progress event used by the service. The pkg-manager-bootstrap stages are `PKG_KEYRING` and `PKG_INSTALL` (distro-agnostic names). |
+| `InstallationService.kt`       | The state-machine gate. Foreground service that consults [InstallationStore], resolves the right [Distro] from [DistroRegistry], and exposes `progress` (StateFlow) + `log` (SharedFlow). |
 | `OperationLogPanel.kt`         | Reusable Android view (status line + progress bar + scrolling log) that binds to the service's `progress`/`log` flows. Used by both [InstallActivity] and [UninstallActivity] so the per-operation UI lives in one place. |
-| `InstallActivity.kt`           | Install flow: read-only summary (distro, detected CPU arch, install path) → Install button → swap to [OperationLogPanel] for live progress. Recognises `autoStart=true` to skip the form and start immediately. The button is disabled (with state-aware label) when the gate would refuse. |
+| `InstallActivity.kt`           | Install flow: read-only summary (Distro display name, Linux arch, install path) → Install button → swap to [OperationLogPanel] for live progress. Recognises `autoStart=true` to skip the form and start immediately. The button is disabled (with state-aware label) when the gate would refuse. |
 | `UninstallActivity.kt`         | Uninstall flow: confirmation prompt → Uninstall button → swap to [OperationLogPanel]. Recognises `autoStart=true` to skip the confirmation. |
-| `DistroInfoActivity.kt`        | Per-distro detail page (id/distro/arch/method/source URL/installed-at/state/failure/full rootfs path) + an async `du -sk` size readout (only for `READY`) + a red Uninstall button (which opens [UninstallActivity]). Reached from a tap on a home-screen row. |
+| `DistroInfoActivity.kt`        | Per-distro detail page (id, registry-resolved distro/arch, method, source URL, installed-at, state/failure, full rootfs path) + an async `du -sk` size readout (only for `READY`) + a red Uninstall button (which opens [UninstallActivity]). Reached from a tap on a home-screen row. |
 
 The `MainActivity` home screen lists the on-disk installations
 (distro + arch only — size lives on [DistroInfoActivity] because
@@ -401,14 +415,36 @@ because every current caller can run `am start`.
 
 ## Future directions (designed-for, not implemented)
 
-- **Other distros** — add `<Distro>Installer.kt` next to `ArchInstaller`,
-  bump `Installation.distro`, and pick the installer in
-  `InstallationService` based on metadata. Nothing else changes.
+- **Other distros** — add a new file in `distro/<family>/`
+  implementing the `Distro` interface and append it to
+  `DistroRegistry.all`. The generic `Installer` and the activities
+  pick it up automatically. The `(distro, arch)` lookup in
+  [DistroRegistry.forInstallation] is what dispatches to the right
+  one at runtime.
 - **proot (rootless) installations** — add a `ProotMethod.kt` next to
   `ChrootMounter` / `ChrootRunner`, route through a strategy chosen
   from `Installation.method`. The `metadata.json` field exists for this.
 - **Multiple installs** — vary the id passed in via the `--es id …`
   extra. The store/service/activity already carry the id end-to-end.
+  The `(distro, arch)` registry lookup means two installations of
+  different Arch flavours on the same device (e.g. an x86_64
+  emulator running both ALARM-via-qemu and Arch x86) is also
+  unblocked once the install activity grows a "pick distro" UI.
+
+## Refactor history
+
+- **2026-04-27** — split `ArchInstaller` into a generic [Installer]
+  pipeline plus a `distro/` package (`Distro` interface,
+  `DistroRegistry`, two Arch implementations sharing
+  `ArchPacmanCommon`). Pipeline stages renamed
+  `PACMAN_INIT`/`PACMAN_INSTALL` →
+  `PKG_KEYRING`/`PKG_INSTALL`. UI labels now use
+  `Distro.displayName` + `Distro.linuxArch` instead of the raw
+  Android ABI. Unsupported-ABI installs are now refused at the
+  service gate before any disk state is written. Generic helpers
+  (`HostArch`, `HumanSize`, `AppOwnership`) moved to
+  `install/util/`. See `notes/distro-abstraction.md` for the full
+  design rationale.
 
 ## Host-side bridge
 

@@ -51,11 +51,15 @@ data class Installation(
 
         fun fromJson(text: String): Installation {
             val obj = JSONObject(text)
+            // distro / method default to the historical-only values
+            // ("arch" / "chroot") so any pre-distro-field record loads
+            // without a hard error. arch has no sensible default; if
+            // it's missing the record is too broken to use.
             return Installation(
                 id = obj.getString("id"),
-                distro = obj.getString("distro"),
+                distro = obj.optString("distro", DISTRO_ARCH),
                 arch = obj.getString("arch"),
-                method = obj.getString("method"),
+                method = obj.optString("method", METHOD_CHROOT),
                 installedAtMillis = obj.optLong("installedAtMillis", 0L),
                 sourceUrl = obj.optString("sourceUrl", ""),
                 state = obj.optString("state", State.READY.name)
