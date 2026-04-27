@@ -188,11 +188,21 @@ object ChrootMounter {
      * traverse a live bind mount into real system files (deleting the
      * host's /dev/socket etc.).
      *
+     * Runs via `su -mm` (Magisk's mount-master mode) so `umount` actually
+     * affects the global mount table. The default `su` we get when
+     * `ProcessBuilder("su")` is invoked from an Android app sits in a
+     * per-app mount namespace — `umount` there silently succeeds without
+     * touching PID 1's view, which leaves the leaked bind mounts in
+     * place and the uninstall step then refuses to delete the rootfs.
+     *
      * The path Kotlin gives us (`/data/user/0/<pkg>/...`) is a symlink
      * target; /proc/mounts reports the canonical `/data/data/<pkg>/...`
      * form. We `realpath` once before matching so both forms work, and
      * use a strict prefix check (not regex) so paths with dots don't
-     * over-match.
+     * over-match. Each leaked mount is also exposed at the
+     * `/data/user/0/...` and `/data_mirror/data_ce/null/0/...` paths
+     * via Android's storage propagation; unmounting the canonical
+     * `/data/data/...` form propagates the unmount through all three.
      */
     fun unmount(rootfs: String): Su.Result {
         val script = """
@@ -201,7 +211,11 @@ object ChrootMounter {
                 awk -v r="${'$'}CANON" '${'$'}2 == r || index(${'$'}2, r"/") == 1 {print ${'$'}2}' /proc/mounts
             }
             for m in ${'$'}(list_mounts | sort -r); do
-                umount "${'$'}m" 2>/dev/null || umount -l "${'$'}m" 2>/dev/null || true
+                # Try a regular umount silently; on failure fall back to a
+                # lazy umount and let its stderr through so the cause shows
+                # up in the log if even lazy fails.
+                umount "${'$'}m" 2>/dev/null && continue
+                umount -l "${'$'}m" || true
             done
             remaining=${'$'}(list_mounts | wc -l)
             if [ "${'$'}remaining" -gt 0 ]; then
@@ -211,6 +225,6 @@ object ChrootMounter {
             fi
             echo OK
         """.trimIndent()
-        return Su.run(script)
+        return Su.run(script, mountMaster = true)
     }
 }

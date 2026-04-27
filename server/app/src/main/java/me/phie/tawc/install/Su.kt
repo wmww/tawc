@@ -52,13 +52,22 @@ object Su {
      * vanish when the call returns. Callers that need mounts must keep
      * mount + chroot in the same script — the canonical entry point is
      * `<installation-dir>/enter.sh`, rendered by [ChrootMounter.enterScript].
+     *
+     * Set [mountMaster] to launch via `su -mm` (Magisk's "mount master"
+     * mode) — joins the global mount namespace instead of a private one,
+     * so `mount` / `umount` calls affect every other process on the
+     * device. Used by [ChrootMounter.unmount] to clean up bind mounts
+     * leaked into the global namespace by host-side `tawc-chroot-run`
+     * invocations (which inherit the adb shell's mount-master `su`).
      */
     fun run(
         script: String,
         timeoutSeconds: Long = 0,
+        mountMaster: Boolean = false,
         onLine: ((String) -> Unit)? = null,
     ): Result {
-        val pb = ProcessBuilder("su").redirectErrorStream(true)
+        val cmd = if (mountMaster) listOf("su", "-mm") else listOf("su")
+        val pb = ProcessBuilder(cmd).redirectErrorStream(true)
         // Magisk's su inherits a sane PATH itself; nothing to do here.
         val proc = pb.start()
         proc.outputStream.bufferedWriter().use { w ->
