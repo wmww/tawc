@@ -17,6 +17,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [android.md](notes/android.md) -- socket sharing, SELinux, chroot setup
 - [emulator.md](notes/emulator.md) -- AVD setup, Magisk root, x86_64 chroot, what works/doesn't
 - [installation.md](notes/installation.md) -- in-app Kotlin chroot installer (separate from `client/arch-chroot-*`); broadcast command interface for adb-driven workflows
+- [distro-options.md](notes/distro-options.md) -- survey of viable glibc distros (Debian, Void, Manjaro ARM, …) and why musl/bionic alternatives don't fit
 
 Keep notes up to date with new choices, discoveries and project state. This is an agent-written project, existing code/notes may be wrong. Stay vigilant, and fix/record problems as you find them (even when working on something else).
 
