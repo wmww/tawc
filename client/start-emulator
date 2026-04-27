@@ -93,6 +93,11 @@ echo "==> booted: emulator-5554"
 "$ADB" -s emulator-5554 shell 'su -c "setenforce 0"' >/dev/null 2>&1 || \
     echo "WARNING: failed to set SELinux permissive; SHM client surfaces will not render" >&2
 
+# Suppress the one-shot "swipe down to exit fullscreen" education popup on
+# fresh AVDs. It otherwise eats the first taps tests send.
+"$ADB" -s emulator-5554 shell 'settings put secure immersive_mode_confirmations confirmed' >/dev/null 2>&1 || \
+    echo "WARNING: failed to suppress immersive-mode confirmation popup" >&2
+
 # tawc-app-specific runtime setup (no-op if APK isn't installed yet).
 # Both grants reset on emulator wipe; setenforce 0 above resets every
 # boot — re-run this script after `adb install` to refresh them all.

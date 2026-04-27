@@ -125,6 +125,9 @@ Post-boot it also brings the AVD into a known-good state for tawc dev:
   survives normal reboots, the notification grant survives upgrades.
   These steps are no-ops when the APK isn't installed yet — install
   the APK then re-run the script to apply them.
+- `settings put secure immersive_mode_confirmations confirmed` to
+  suppress the fresh-AVD "swipe down to exit fullscreen" education
+  popup, which otherwise eats the first taps tests send.
 
 Windowed mode notes:
 - The emulator's bundled Qt only ships an xcb (X11) plugin, no wayland
