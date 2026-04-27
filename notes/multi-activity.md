@@ -335,11 +335,16 @@ State transitions:
 - `nativeOnActivityDestroyed(activityId)` → policy fires close on the
   toplevels (see Lifecycle); host record cleaned up by the cleanup pass.
 
-Smithay note: `ToplevelSurface::send_configure()` only sends if the
-pending state changed, so toggling Activated/Suspended is cheap and
-idempotent. Track per-host state on the host record (`HostState::{
-Foreground, Background, Pending }`) so we don't spam configures every
-frame.
+Smithay note: `ToplevelSurface::send_configure()` always sends (it
+exists for the initial configure where pending == current is the
+expected state). For Activated/Suspended toggles the right call is
+`send_pending_configure()`, which is a no-op when the pending state
+already matches what was last configured — sending a redundant configure
+between a Vulkan client's first and second commit confuses the WSI
+swapchain enough that vkcube wedges after two frames. This applies to
+`reconfigure_all_toplevels` too: Register and SurfaceChanged often arrive
+back-to-back with the same size and the second configure is what trips
+the WSI.
 
 Efficiency consequences:
 

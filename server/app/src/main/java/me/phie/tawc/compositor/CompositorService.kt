@@ -13,6 +13,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import android.view.WindowManager
 import java.lang.ref.WeakReference
 
 /**
@@ -71,7 +72,15 @@ class CompositorService : Service() {
         // reverse-JNI spawnActivity/finishActivity entry points work even
         // when no Activity is currently in the foreground.
         NativeBridge.attachService(this)
-        NativeBridge.nativeStartCompositor()
+        // Pass the display size so the compositor can advertise a real
+        // initial output_logical_size before any CompositorActivity has
+        // registered. Otherwise a client (notably vkcube) that connects
+        // before the first Activity boots receives configure(0,0), creates
+        // a default-sized swapchain, then receives a real size mid-flight
+        // when the Activity finally registers — Vulkan WSI doesn't recover
+        // from that and the cube hangs after committing two buffers.
+        val (w, h) = currentDisplaySize()
+        NativeBridge.nativeStartCompositor(w, h)
 
         @Suppress("UnspecifiedRegisterReceiverFlag")
         registerReceiver(
@@ -117,6 +126,17 @@ class CompositorService : Service() {
             activities.remove(activityId)
         }
         return activity
+    }
+
+    /** Read the current display size (physical pixels) without needing an
+     *  Activity. WindowManager.maximumWindowMetrics returns the full
+     *  display bounds — close enough to the per-Activity SurfaceView size
+     *  (CompositorActivity uses immersive fullscreen) to seed the initial
+     *  configure correctly; refined on the first nativeRegister. */
+    private fun currentDisplaySize(): Pair<Int, Int> {
+        val wm = getSystemService(WindowManager::class.java) ?: return 0 to 0
+        val bounds = wm.maximumWindowMetrics.bounds
+        return bounds.width() to bounds.height()
     }
 
     private fun ensureNotificationChannel() {

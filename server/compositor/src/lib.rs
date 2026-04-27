@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::jobject;
+use jni::sys::{jint, jobject};
 use jni::JavaVM;
 use log::info;
 
@@ -86,6 +86,8 @@ fn cache_jni_globals(env: &mut JNIEnv) {
 pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartCompositor(
     mut env: JNIEnv,
     _class: JClass,
+    initial_width: jint,
+    initial_height: jint,
 ) {
     android_logger::init_once(
         android_logger::Config::default()
@@ -117,12 +119,14 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
         smithay::reexports::calloop::channel::channel();
     *STATE_QUERY_SENDER.lock().unwrap() = Some(state_query_sender);
 
+    let initial_size = (initial_width.max(0), initial_height.max(0));
     std::thread::spawn(move || {
         if let Err(e) = run_compositor(
             touch_channel,
             text_input_channel,
             surface_event_channel,
             state_query_channel,
+            initial_size,
         ) {
             log::error!("Compositor failed: {}", e);
         }
@@ -462,6 +466,7 @@ fn run_compositor(
     text_input_channel: smithay::reexports::calloop::channel::Channel<text_input::TextInputEvent>,
     surface_event_channel: smithay::reexports::calloop::channel::Channel<SurfaceEvent>,
     state_query_channel: smithay::reexports::calloop::channel::Channel<()>,
+    initial_physical_size: (i32, i32),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- EGL context (no surface yet — first Activity provides one) ---
     let (raw_display, raw_config, raw_context) =
@@ -496,12 +501,22 @@ fn run_compositor(
     };
 
     // --- Wayland display + protocol state ---
-    // Initial sizing comes from the first registered Activity surface;
-    // until then, configure events use 0x0 which is fine as the wayland
-    // socket is open but no client has connected yet.
+    // Seed `output_logical_size` from the display size that
+    // CompositorService passed in. A client connecting before the first
+    // CompositorActivity has registered (test harness drives this — vkcube
+    // launches faster than Android can spawn the Activity) would otherwise
+    // see configure(0,0) on its xdg_toplevel, allocate a default-sized
+    // swapchain, then receive a real size mid-flight when the Activity
+    // finally registers — Vulkan WSI doesn't recover from that and the
+    // cube hangs after committing two buffers.
     let mut wl_display: Display<TawcState> = Display::new()?;
     let scale = DEFAULT_OUTPUT_SCALE;
-    let initial_logical = (0, 0);
+    let (init_pw, init_ph) = initial_physical_size;
+    let initial_logical = if init_pw > 0 && init_ph > 0 {
+        (init_pw / scale, init_ph / scale)
+    } else {
+        (0, 0)
+    };
     let state = TawcState::new(&mut wl_display, scale, initial_logical);
 
     // --- Output (geometry updated when first Activity surface arrives) ---
@@ -514,8 +529,10 @@ fn run_compositor(
             model: "Android".into(),
         },
     );
+    let initial_mode_size: smithay::utils::Size<i32, smithay::utils::Physical> =
+        if init_pw > 0 && init_ph > 0 { (init_pw, init_ph).into() } else { (1, 1).into() };
     output.change_current_state(
-        Some(smithay::output::Mode { size: (1, 1).into(), refresh: 60_000 }),
+        Some(smithay::output::Mode { size: initial_mode_size, refresh: 60_000 }),
         Some(Transform::Normal),
         Some(smithay::output::Scale::Integer(scale)),
         Some((0, 0).into()),

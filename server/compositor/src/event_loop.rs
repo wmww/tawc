@@ -585,10 +585,13 @@ fn handle_surface_event(data: &mut LoopData, evt: SurfaceEvent) {
     }
 }
 
-/// Flip a host's foreground state and notify all assigned toplevels
-/// via `Activated`/`Suspended` configure events. Smithay's
-/// `send_configure` is idempotent on no-op state changes so re-firing
-/// the same focus event is cheap.
+/// Flip a host's foreground state and notify assigned toplevels via
+/// `Activated`/`Suspended` configure events. Only sends a configure when
+/// the pending state actually changed — Vulkan WSI clients (vkcube) hang
+/// after recreating their swapchain on a redundant Activated configure
+/// that arrives mid-frame, so we go through `send_pending_configure`
+/// rather than the unconditional `send_configure` and skip the no-op
+/// case where the state already matched.
 fn set_host_foreground(state: &mut TawcState, host_id: &crate::host::ActivityId, foreground: bool) {
     use wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
 
@@ -611,7 +614,7 @@ fn set_host_foreground(state: &mut TawcState, host_id: &crate::host::ActivityId,
                 s.states.set(XdgState::Suspended);
             }
         });
-        t.send_configure();
+        t.send_pending_configure();
     }
     if let Some(host) = state.hosts.get_mut(host_id) {
         host.foreground = foreground;
@@ -635,7 +638,12 @@ fn first_alive_toplevel_of_host(
 
 fn reconfigure_all_toplevels(state: &mut TawcState) {
     // Each toplevel uses ITS OWN host's logical_size if known, else the
-    // primary-output cached size as a fallback.
+    // primary-output cached size as a fallback. Going through
+    // `send_pending_configure` keeps us from re-sending an identical
+    // configure when nothing changed (e.g. Register and SurfaceChanged
+    // arrive back-to-back with the same dimensions): vkcube's Vulkan WSI
+    // wedges if it sees a duplicate configure between its first and
+    // second commit.
     let primary = state.output_logical_size;
     for toplevel in &state.toplevels {
         let (w, h) = state
@@ -647,6 +655,6 @@ fn reconfigure_all_toplevels(state: &mut TawcState) {
         toplevel.with_pending_state(|s| {
             s.size = Some((w, h).into());
         });
-        toplevel.send_configure();
+        toplevel.send_pending_configure();
     }
 }
