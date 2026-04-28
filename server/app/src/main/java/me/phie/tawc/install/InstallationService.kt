@@ -74,7 +74,10 @@ class InstallationService : Service() {
         ensureChannel()
         startForeground(NOTIFICATION_ID, buildNotification("tawc"))
         when (intent?.action) {
-            ACTION_INSTALL -> startInstall(intent.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH)
+            ACTION_INSTALL -> startInstall(
+                intent.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH,
+                intent.getStringExtra(EXTRA_METHOD),
+            )
             ACTION_UNINSTALL -> startUninstall(intent.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH)
             else -> Log.w(TAG, "InstallationService started without a known action")
         }
@@ -86,8 +89,15 @@ class InstallationService : Service() {
         super.onDestroy()
     }
 
-    /** Begin an install for [id]. Refuses if the gate forbids it. */
-    fun startInstall(id: String) {
+    /**
+     * Begin an install for [id] using [methodKey] (or auto-pick if
+     * null). Refuses if the gate forbids it.
+     */
+    fun startInstall(id: String, methodKey: String? = null) {
+        if (!Installation.isValidId(id)) {
+            reject("install '$id'", "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
+            return
+        }
         if (currentJob?.isActive == true) {
             reject("install '$id'", "another job is already running")
             return
@@ -111,8 +121,27 @@ class InstallationService : Service() {
             reject("install '$id'", "no Distro supports ABI ${android.os.Build.SUPPORTED_ABIS.joinToString(",")}")
             return
         }
+        // Resolve the install method (chroot vs proot). An explicit
+        // bad key is a clean reject; null falls back to the host
+        // default (chroot if `su` works, proot otherwise — see
+        // [InstallationMethod.defaultForHost]).
+        val method = if (methodKey != null) {
+            InstallationMethod.forKey(applicationContext, methodKey) ?: run {
+                reject("install '$id'", "unknown method '$methodKey' (try chroot or proot)")
+                return
+            }
+        } else {
+            InstallationMethod.defaultForHost(applicationContext)
+        }
+        if (!method.isAvailable(applicationContext)) {
+            reject("install '$id'", "method '${method.key}' is not available on this device")
+            return
+        }
         currentJob = scope.launch {
-            val installer = Installer(applicationContext, store, BootstrapCache(applicationContext), distro, id)
+            val installer = Installer(
+                applicationContext, store, BootstrapCache(applicationContext),
+                distro, method, id,
+            )
             try {
                 installer.install(::publishProgress, ::appendLog)
             } catch (t: Throwable) {
@@ -134,22 +163,34 @@ class InstallationService : Service() {
 
     /** Begin an uninstall for [id]. Refuses only if a job is already running. */
     fun startUninstall(id: String) {
+        if (!Installation.isValidId(id)) {
+            reject("uninstall '$id'", "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
+            return
+        }
         if (currentJob?.isActive == true) {
             reject("uninstall '$id'", "another job is already running")
             return
         }
         val store = InstallationStore(applicationContext)
-        // Uninstall doesn't need a Distro — RootfsCleaner.wipe is
-        // distro-agnostic. Resolve one for symmetry / future logging
-        // but fall back to the host default and ultimately to a
-        // dummy-but-non-null impl is unnecessary; we just pass the
+        // Uninstall doesn't need a Distro — `method.wipe(...)` is
+        // distro-agnostic. Resolve one for symmetry / future logging,
+        // falling back to the host default and ultimately to the
         // first registered distro if no metadata exists. The Installer
         // never invokes Distro.* on the uninstall path.
         val distro: Distro = store.load(id)?.let { DistroRegistry.forInstallation(it) }
             ?: DistroRegistry.defaultForHost()
             ?: DistroRegistry.all.first()
+        // Method is recorded in metadata at install time; honour what's
+        // there, with the host default as last-resort fallback for
+        // (rare) records missing the field.
+        val method: InstallationMethod = store.load(id)?.let {
+            InstallationMethod.forKey(applicationContext, it.method)
+        } ?: InstallationMethod.defaultForHost(applicationContext)
         currentJob = scope.launch {
-            val installer = Installer(applicationContext, store, BootstrapCache(applicationContext), distro, id)
+            val installer = Installer(
+                applicationContext, store, BootstrapCache(applicationContext),
+                distro, method, id,
+            )
             try {
                 installer.uninstall(::publishProgress, ::appendLog)
             } catch (t: Throwable) {
@@ -250,11 +291,13 @@ class InstallationService : Service() {
         const val ACTION_INSTALL = "me.phie.tawc.install.SERVICE_INSTALL"
         const val ACTION_UNINSTALL = "me.phie.tawc.install.SERVICE_UNINSTALL"
         const val EXTRA_ID = "id"
+        const val EXTRA_METHOD = "method"
 
-        fun startInstall(context: Context, id: String) {
+        fun startInstall(context: Context, id: String, methodKey: String? = null) {
             val i = Intent(context, InstallationService::class.java)
                 .setAction(ACTION_INSTALL)
                 .putExtra(EXTRA_ID, id)
+            if (methodKey != null) i.putExtra(EXTRA_METHOD, methodKey)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(i)
             } else {

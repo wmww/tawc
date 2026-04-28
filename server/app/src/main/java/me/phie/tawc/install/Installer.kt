@@ -28,8 +28,10 @@ import java.io.IOException
  *                             upstream publishes no signature). On
  *                             mismatch the install fails before any
  *                             byte hits the rootfs.
- *   4. EXTRACTING           — [Archive.extractAsRoot] honouring the
- *                             optional `bootstrap.stripPrefix`.
+ *   4. EXTRACTING           — [InstallationMethod.extractBootstrap]
+ *                             (chroot → toybox tar via su; proot →
+ *                             pure-Kotlin [ProotArchiveExtractor]),
+ *                             honouring `bootstrap.stripPrefix`.
  *   5. CONFIGURING          — [Distro.configure] writes /etc files,
  *                             then [writeEnterScript] renders
  *                             `enter.sh`.
@@ -50,6 +52,7 @@ class Installer(
     private val store: InstallationStore,
     private val cache: BootstrapCache,
     private val distro: Distro,
+    private val method: InstallationMethod,
     private val id: String,
 ) {
     /** Throws on failure. Reports progress + log lines via the callbacks. */
@@ -61,10 +64,18 @@ class Installer(
         val rootfsPath = rootfsDir.absolutePath
 
         // Lay down the metadata first thing, in INSTALLING. The parent
-        // dir is created with app uid (chown-fixed below) so this
-        // writeText is a plain Java file write — no su needed.
+        // dir is created with app uid (chown-fixed below for chroot)
+        // so this writeText is a plain Java file write — no su needed.
         store.installationDir(id).mkdirs()
-        AppOwnership.chownAppDirNonRecursive(store.installationDir(id))
+        // The chown only matters for the chroot path: a previous `su`
+        // invocation could have left `<distros>/<id>/` root-owned, and
+        // we then can't write `metadata.json` from app uid. Proot
+        // installs are app-uid-owned end-to-end, and on a non-rooted
+        // device `Su.run` would throw IOException on `ProcessBuilder
+        // .start("su")` and tank the install before stage 0.
+        if (method.requiresRoot) {
+            AppOwnership.chownAppDirNonRecursive(store.installationDir(id))
+        }
         // Stamp the app version that performed this install. The rootfs
         // is treated as immutable across app updates (see
         // notes/installation.md "Upgrade policy"), so this is the
@@ -78,7 +89,7 @@ class Installer(
                 id = id,
                 distro = distro.key,
                 arch = distro.androidAbi,
-                method = Installation.METHOD_CHROOT,
+                method = method.key,
                 installedAtMillis = System.currentTimeMillis(),
                 sourceUrl = distro.bootstrap.url,
                 state = Installation.State.INSTALLING,
@@ -125,49 +136,58 @@ class Installer(
         SignatureVerifier.verify(context, cacheFile, distro.bootstrap.verification)
 
         // Stage 3: extract. The rootfs dir does not exist yet — the
-        // gate only invokes install on a `(no dir)` slot — so tar lays
-        // everything onto a fresh tree. Archive.extractAsRoot does not
-        // wipe; never has reason to. For zstd bootstraps we pass the
-        // cache-owned FIFO path so all `cache/install/` files have
-        // one owner.
+        // gate only invokes install on a `(no dir)` slot — so the
+        // method's extractor lays everything onto a fresh tree.
+        // Neither extractor wipes; never has reason to. For zstd
+        // bootstraps we pass the cache-owned FIFO path (used by the
+        // chroot path; proot ignores it and decompresses via
+        // zstd-jni) so all `cache/install/` files have one owner.
         progress(InstallProgress(InstallStage.EXTRACTING, "Extracting rootfs…"))
-        log("extract: ${cacheFile.name} -> $rootfsPath (strip=${distro.bootstrap.stripPrefix})")
-        Archive.extractAsRoot(
+        log("extract: ${cacheFile.name} -> $rootfsPath (strip=${distro.bootstrap.stripPrefix}, method=${method.key})")
+        method.extractBootstrap(
             tarball = cacheFile,
-            destDir = rootfsPath,
-            tempFifo = cache.tempFifoFor(distro.linuxArch),
+            rootfs = rootfsPath,
+            format = distro.bootstrap.format,
             stripPrefix = distro.bootstrap.stripPrefix,
+            tempFifo = cache.tempFifoFor(distro.linuxArch),
         ) { line ->
             log("tar: $line")
         }
 
         // Stage 3: configure. /etc files via Distro.configure, then
-        // the auto-generated enter.sh (mount + chroot wrapper) that
-        // both ChrootRunner.run and host-side client/tawc-chroot-run
-        // invoke. enter.sh is generic, so Installer writes it (not
-        // Distro). Without enter.sh later pacman steps can't run.
+        // the auto-generated enter.sh that both in-app callers (via
+        // method.runInside) and host-side client/tawc-chroot-run
+        // invoke. enter.sh is generic across distros, so Installer
+        // writes it (not Distro). Without enter.sh later pacman steps
+        // can't run.
         progress(InstallProgress(InstallStage.CONFIGURING, "Configuring chroot…"))
-        distro.configure(rootfsPath, log)
+        distro.configure(method, rootfsPath, log)
         writeEnterScript(rootfsPath, log)
         // Symlink the APK-bundled libhybris tree into /usr/local/lib.
         // Must follow distro.configure (which may create /usr/local
         // structure) and precede package-manager bootstrap (so any
         // package that touches /usr/local/lib sees a coherent state).
-        LibhybrisLinker.link(context, rootfsPath, log)
+        // Both methods get libhybris: chroot bind-mounts /apex +
+        // /vendor + /system + /linkerconfig in [ChrootMounter];
+        // [ProotMethod] adds the same paths via `-b` flags and
+        // pre-creates the in-rootfs targets. The libhybris asset itself
+        // is ABI-gated (no x86_64 emulator build), so [link] returns
+        // false on the emulator and the binds are harmless leftovers.
+        LibhybrisLinker.link(context, method, rootfsPath, log)
 
         // Stage 4: package-manager bootstrap. State stays INSTALLING
         // throughout — if either pacman invocation fails the service
         // wraps it as FAILED and the only recovery is uninstall +
         // install again.
         progress(InstallProgress(InstallStage.PKG_KEYRING, "Initializing package manager…"))
-        distro.initPackageManager(rootfsPath, log)
+        distro.initPackageManager(method, rootfsPath, log)
 
         // Stage 5: install base packages.
         progress(InstallProgress(
             InstallStage.PKG_INSTALL,
             "Installing base packages (this takes a few minutes)…",
         ))
-        distro.installBasePackages(rootfsPath, log)
+        distro.installBasePackages(method, rootfsPath, log)
 
         // All stages succeeded — flip to READY. From this point the
         // gate refuses install and only allows uninstall.
@@ -176,14 +196,15 @@ class Installer(
     }
 
     /**
-     * Permanently remove [id]: state → UNINSTALLING, [RootfsCleaner.wipe],
+     * Permanently remove [id]: state → UNINSTALLING, [InstallationMethod.wipe],
      * then the directory (including metadata.json) is gone. On a
      * `(no dir)` slot this is a no-op. Throws on wipe failure; the
      * service wraps as `FAILED` so a subsequent uninstall can retry.
      *
-     * No [Distro] is needed for uninstall — every chroot dir is wiped
-     * the same way, by dev:inode of `/proc/<pid>/root` and `find -xdev
-     * -depth -delete`.
+     * No [Distro] is needed — wipe is method-dispatched (chroot kills
+     * tracked-by-`/proc/<pid>/root` processes + unmounts + `find
+     * -xdev -delete`; proot just kills any in-flight tracees and
+     * recursive-deletes).
      */
     fun uninstall(
         progress: (InstallProgress) -> Unit,
@@ -196,24 +217,31 @@ class Installer(
         }
         store.setState(id, Installation.State.UNINSTALLING)
 
+        // The UNMOUNTING stage is meaningful for chroot (real bind
+        // mounts to tear down). Proot has no global mounts, just an
+        // app-uid recursive delete — but the stage rolls past quickly,
+        // and the install pipeline / UI is structured around these
+        // labels, so we keep both for symmetry.
         progress(InstallProgress(InstallStage.UNMOUNTING, "Unmounting chroot…"))
         progress(InstallProgress(InstallStage.DELETING, "Deleting rootfs…"))
-        RootfsCleaner.wipe(installDir, log)
+        method.wipe(installDir, log)
 
         progress(InstallProgress(InstallStage.DONE, "Uninstalled."))
     }
 
     /**
-     * Render `<installation-dir>/enter.sh` from
-     * [ChrootMounter.enterScript]. Owned by app uid, so a plain file
-     * write is enough — no `su` needed. Made +x so `su -c '<path>'`
-     * can exec it directly. Both [ChrootRunner.run] and host tooling
-     * call this single file, so the mount logic only lives in
-     * [ChrootMounter].
+     * Render `<installation-dir>/enter.sh` from the install method.
+     * Owned by app uid, so a plain file write is enough. Made +x so
+     * either `su -c '<path>'` (chroot) or `run-as <pkg> <path>`
+     * (proot) can exec it directly. Both in-app callers
+     * ([InstallationMethod.runInside] in chroot mode, or
+     * [InstallationMethod.runInside] in proot mode) and host tooling
+     * call this single file, so the launcher logic only lives in the
+     * method's [InstallationMethod.enterScript] renderer.
      */
     private fun writeEnterScript(rootfsPath: String, log: (String) -> Unit) {
         val file = store.enterScriptFile(id)
-        file.writeText(ChrootMounter.enterScript(rootfsPath))
+        file.writeText(method.enterScript(context, rootfsPath))
         if (!file.setExecutable(true, false)) {
             log("warn: failed to chmod +x ${file.absolutePath}")
         } else {

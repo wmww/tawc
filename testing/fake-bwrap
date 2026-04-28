@@ -1,0 +1,62 @@
+#!/bin/bash
+# Drop-in /usr/bin/bwrap replacement for kernels without CONFIG_USER_NS.
+#
+# This phone's kernel (and most stock Android kernels) ships with
+# `# CONFIG_USER_NS is not set`, so even setuid bwrap can't `clone(NEWUSER)`.
+# That kills every glycin SVG load (gtk uses Adwaita's scalable icons via
+# glycin → bwrap), every Firefox content sandbox, and every other consumer.
+#
+# We can't get the kernel to grow user-namespace support, so for the
+# integration test rootfs we install this script over `/usr/bin/bwrap`
+# (see `testing/install-test-deps.sh`). It walks bwrap's known argument
+# list, skips the sandbox-flavour flags, and execs the COMMAND that
+# follows. The result is "no sandbox at all" — the loader process just
+# runs in the calling process's environment. Fine for tests on a
+# trusted local machine; not safe to ship to end users.
+set -u
+
+# Each table maps `--flag` to the number of positional args it consumes
+# AFTER the flag itself. Pulled from `bwrap --help` (bubblewrap 0.11.x).
+# An entry missing here is treated as "1 arg" (most bwrap flags take 1).
+declare -A ZERO=(
+    [--help]=1 [--version]=1 [--level-prefix]=1
+    [--unshare-all]=1 [--share-net]=1
+    [--unshare-user]=1 [--unshare-user-try]=1
+    [--unshare-ipc]=1 [--unshare-pid]=1 [--unshare-net]=1
+    [--unshare-uts]=1 [--unshare-cgroup]=1 [--unshare-cgroup-try]=1
+    [--disable-userns]=1 [--assert-userns-disabled]=1
+    [--clearenv]=1 [--new-session]=1 [--die-with-parent]=1 [--as-pid-1]=1
+)
+declare -A TWO=(
+    [--bind]=1 [--bind-try]=1 [--dev-bind]=1 [--dev-bind-try]=1
+    [--ro-bind]=1 [--ro-bind-try]=1 [--bind-fd]=1 [--ro-bind-fd]=1
+    [--symlink]=1 [--setenv]=1 [--bind-data]=1 [--ro-bind-data]=1
+    [--file]=1 [--chmod]=1
+)
+declare -A THREE=(
+    [--overlay]=1
+)
+
+while [[ $# -gt 0 ]]; do
+    a=$1
+    case "$a" in
+        --) shift; break ;;
+    esac
+    if [[ -n "${ZERO[$a]:-}" ]]; then
+        shift
+    elif [[ -n "${TWO[$a]:-}" ]]; then
+        shift 3
+    elif [[ -n "${THREE[$a]:-}" ]]; then
+        shift 4
+    elif [[ "$a" == --* ]]; then
+        # Unknown flag — bubblewrap's "1 arg" majority. Trades a bit of
+        # robustness against future flags for small size; revisit if a
+        # caller starts using a 0-arg flag we don't list.
+        shift 2
+    else
+        break
+    fi
+done
+
+# Whatever's left is the COMMAND. exec it with no isolation.
+exec "$@"

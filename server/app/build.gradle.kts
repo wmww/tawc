@@ -42,7 +42,16 @@ android {
     // and the Android packager refuses to merge identically-named
     // resources by default. Picking the first is safe — the manifests
     // are OSGi metadata, irrelevant at Android runtime.
+    //
+    // jniLibs.useLegacyPackaging=true pairs with
+    // android:extractNativeLibs="true" in AndroidManifest.xml. AGP 8
+    // prefers page-aligned-in-APK loading by default, but our proot
+    // binary needs to be a real on-disk executable for execve(2);
+    // legacy packaging forces extraction at install time.
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             pickFirsts.add("META-INF/versions/9/OSGI-INF/MANIFEST.MF")
         }

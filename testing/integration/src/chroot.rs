@@ -75,10 +75,17 @@ pub fn ensure_debug_app() -> io::Result<String> {
         .args(["push", &source_dir.to_string_lossy(), &staging])
         .output()?;
 
-    // Copy into chroot filesystem
+    // Copy into chroot filesystem. su lets us reach the staging
+    // dir (shell-uid-owned in /data/local/tmp) and the rootfs path
+    // regardless of install method, but the resulting files land
+    // owned by uid 0. For proot installs the in-chroot build runs
+    // as the app uid (see [adb::chroot_run] dispatch), so chmod the
+    // tree world-writable afterwards — otherwise `ld` can't replace
+    // the build output. Harmless for chroot installs since the
+    // build runs as root there.
     adb::shell(&format!(
-        "su -c 'mkdir -p {} && cp {}/* {}'",
-        fs_build_dir, staging, fs_build_dir
+        "su -c 'mkdir -p {dir} && cp {src}/* {dir} && chmod -R a+rwX {dir}'",
+        dir = fs_build_dir, src = staging
     ))?;
 
     // Build

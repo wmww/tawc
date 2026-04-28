@@ -2,6 +2,7 @@ package me.phie.tawc.install.distro
 
 import me.phie.tawc.install.BootstrapFormat
 import me.phie.tawc.install.BootstrapVerification
+import me.phie.tawc.install.InstallationMethod
 
 /**
  * Per-distro policy: bootstrap tarball, `/etc` configuration,
@@ -54,25 +55,26 @@ interface Distro {
     /**
      * Write `/etc` configuration into the freshly-extracted [rootfs]:
      * DNS, package-manager config, mirrorlist, profile.d. Runs via
-     * [me.phie.tawc.install.Su] (root), with [log] receiving every
-     * stdout/stderr line. The `enter.sh` wrapper is *not* written
-     * here — `Installer` does that after `configure` because it's
-     * generic to every distro.
+     * [method].runOutside (which is `su` for chroot installs and a
+     * plain app-uid shell for proot installs — the latter works
+     * because the rootfs is app-uid-owned in proot mode). The
+     * `enter.sh` wrapper is *not* written here — `Installer` does
+     * that after `configure` because it's generic to every distro.
      */
-    fun configure(rootfs: String, log: (String) -> Unit)
+    fun configure(method: InstallationMethod, rootfs: String, log: (String) -> Unit)
 
     /**
      * Bootstrap the package manager inside the chroot at [rootfs]
      * (e.g. `pacman-key --init && pacman-key --populate <keyring> &&
-     * pacman -Syu`). Runs via [me.phie.tawc.install.ChrootRunner].
+     * pacman -Syu`). Runs via [method].runInside.
      */
-    fun initPackageManager(rootfs: String, log: (String) -> Unit)
+    fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit)
 
     /**
      * Install [basePackages] inside the chroot at [rootfs]. Runs via
-     * [me.phie.tawc.install.ChrootRunner].
+     * [method].runInside.
      */
-    fun installBasePackages(rootfs: String, log: (String) -> Unit)
+    fun installBasePackages(method: InstallationMethod, rootfs: String, log: (String) -> Unit)
 }
 
 /**

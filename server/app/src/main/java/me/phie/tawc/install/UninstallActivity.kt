@@ -25,6 +25,13 @@ class UninstallActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         targetId = intent?.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH
+        // Reject hostile `--es id` extras early; UninstallActivity is
+        // exported. [InstallationService] re-validates as the gate.
+        if (!Installation.isValidId(targetId)) {
+            android.util.Log.w("tawc-install", "UninstallActivity: rejected invalid id '$targetId'")
+            finish()
+            return
+        }
 
         val scaffold = buildChildScreen("Delete")
         panel = OperationLogPanel(this)
@@ -43,7 +50,12 @@ class UninstallActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        targetId = intent.getStringExtra(EXTRA_ID) ?: targetId
+        val newId = intent.getStringExtra(EXTRA_ID) ?: targetId
+        if (!Installation.isValidId(newId)) {
+            android.util.Log.w("tawc-install", "UninstallActivity: rejected invalid id '$newId' on re-intent")
+            return
+        }
+        targetId = newId
         beginUninstall(reLaunch = true)
     }
 
@@ -58,8 +70,15 @@ class UninstallActivity : AppCompatActivity() {
     }
 
     private fun beginUninstall(reLaunch: Boolean) {
-        if (!Su.rootAvailable()) {
-            panel.setStatus("ERROR: root (su) not available — Magisk must grant this app.")
+        // su is only needed for chroot uninstalls (mount unwinding,
+        // killing chroot processes by root-owned /proc/<pid>/root).
+        // Proot installs are app-uid-owned end-to-end, so an
+        // unprivileged uninstall works. Look at the recorded method
+        // before deciding.
+        val installation = InstallationStore(this).load(targetId)
+        val method = installation?.method ?: Installation.METHOD_CHROOT
+        if (method == Installation.METHOD_CHROOT && !Su.rootAvailable()) {
+            panel.setStatus("ERROR: root (su) not available — chroot uninstalls need it.")
             return
         }
         // [InstallationService] is the authoritative gate; we just

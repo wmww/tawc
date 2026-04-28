@@ -25,6 +25,8 @@ smithay/
 rootAVD/
 libxkbcommon/
 android-headers/
+proot/
+proot-deps/
 
 # OS
 .DS_Store

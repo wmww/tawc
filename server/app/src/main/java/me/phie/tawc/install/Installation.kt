@@ -51,7 +51,22 @@ data class Installation(
 
     companion object {
         const val DISTRO_ARCH = "arch"
+        // Kept as constants for the metadata schema; the runtime
+        // mapping to InstallationMethod implementations lives in
+        // [InstallationMethod.forKey] and the impl objects' KEY fields.
         const val METHOD_CHROOT = "chroot"
+        const val METHOD_PROOT = "proot"
+
+        // Allowlist for the id component of `<app data>/distros/<id>/`.
+        // The id flows into shell scripts (via `installDir.absolutePath`)
+        // that are run as root on the chroot path, so anything outside
+        // [a-z0-9_-] would be a path-traversal / shell-metachar foothold
+        // (InstallActivity is exported and any installed app can launch
+        // it with a hostile `--es id` extra). 32 chars is plenty for
+        // foreseeable use; tighten further later if we ever care.
+        private val ID_PATTERN = Regex("^[a-z0-9][a-z0-9_-]{0,31}$")
+
+        fun isValidId(id: String): Boolean = ID_PATTERN.matches(id)
 
         // Bump when adding a field that downstream code can't safely
         // default. Pure additive fields with safe defaults don't need a

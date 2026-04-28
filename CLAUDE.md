@@ -20,6 +20,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [android.md](notes/android.md) -- socket sharing, SELinux, chroot setup
 - [emulator.md](notes/emulator.md) -- AVD setup, Magisk root, x86_64 chroot, what works/doesn't
 - [installation.md](notes/installation.md) -- in-app Kotlin chroot installer (separate from `client/arch-chroot-*`); broadcast command interface for adb-driven workflows
+- [proot.md](notes/proot.md) -- rootless install method: vendored Termux/proot fork, why upstream proot doesn't work on Android, Android quirks worked around
 - [distro-options.md](notes/distro-options.md) -- survey of viable glibc distros (Debian, Void, Manjaro ARM, …) and why musl/bionic alternatives don't fit
 
 Keep notes up to date with new choices, discoveries and project state. This is an agent-written project, existing code/notes may be wrong. Stay vigilant, and fix/record problems as you find them (even when working on something else).
@@ -92,6 +93,8 @@ bitten us with hardcoded `/home/ai/libxkbcommon` paths in
 - **Build (compositor + libhybris asset):** `cd server && JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew assembleDebug` — Gradle invokes `client/build-libhybris-aarch64` automatically.
 - **Build (libhybris standalone):** `bash client/build-libhybris-aarch64 [--clean]`. Aarch64 glibc cross-build, output in `build/libhybris-aarch64/install/`; bundled into the APK by the Gradle `packLibhybris` task.
 - **Build (libxkbcommon):** `bash client/build-libxkbcommon [--abi=aarch64|x86_64|both] [--clean]`. Clones a pinned upstream tag into `./libxkbcommon/` (gitignored) if missing — no patches. Run once after fresh clone or when bumping the version pin.
+- **Build (proot):** `bash client/build-proot [--abi=aarch64|x86_64|both] [--clean]`. Clones the pinned [Termux fork](https://github.com/termux/proot) into `./proot/` and downloads talloc into `./proot-deps/` (both gitignored). Outputs `libproot.so` + `libproot-loader.so` jniLibs. See [notes/proot.md](notes/proot.md) for why we use Termux's fork and not upstream proot-me.
+- **Install (proot, rootless):** add `--es method proot` to the install activity intent: `adb shell am start -n me.phie.tawc/.install.InstallActivity --es autoStart true --es id arch --es method proot`. The radio in InstallActivity defaults to chroot when `su` works, proot otherwise. `client/tawc-chroot-run` works against either method (reads `metadata.json` to dispatch).
 - **Install & launch:** `adb install -r server/app/build/outputs/apk/debug/app-debug.apk && adb shell am force-stop me.phie.tawc && adb shell am start -n me.phie.tawc/.compositor.CompositorActivity`
 - **Install chroot:** `adb shell am start -n me.phie.tawc/.install.InstallActivity --es autoStart true --es id arch` (then `adb logcat -s tawc-install` to watch). The chroot lives at `/data/data/me.phie.tawc/distros/arch/rootfs/`.
 - **Chroot (interactive):** `bash client/tawc-chroot-run`

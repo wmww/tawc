@@ -1,7 +1,6 @@
 package me.phie.tawc.install.distro.arch
 
-import me.phie.tawc.install.ChrootRunner
-import me.phie.tawc.install.Su
+import me.phie.tawc.install.InstallationMethod
 import java.io.IOException
 
 /**
@@ -172,6 +171,7 @@ internal object ArchPacmanCommon {
      * @param log per-line log sink.
      */
     fun configure(
+        method: InstallationMethod,
         rootfs: String,
         mirrorListBody: String,
         ignoredPackages: List<String>,
@@ -270,7 +270,7 @@ PACMAN_EOF
                 """.trimIndent()
             )
         }
-        val r = Su.run(script) { log("conf: $it") }
+        val r = method.runOutside(script) { log("conf: $it") }
         if (!r.ok) {
             throw IOException("Configure failed:\n${r.output}")
         }
@@ -308,13 +308,14 @@ PACMAN_EOF
      *   and filtered through `pacman -Qq` before the `-Rdd` pass.
      */
     fun initPackageManager(
+        method: InstallationMethod,
         rootfs: String,
         keyring: String,
         archSpecificCruft: List<String>,
         log: (String) -> Unit,
     ) {
         val cruft = (archSpecificCruft + SHARED_CRUFT_PACKAGES).joinToString(" ")
-        val res = ChrootRunner.run(
+        val res = method.runInside(
             rootfs,
             """
             export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -347,13 +348,25 @@ PACMAN_EOF
      * `pacman -Syu --needed --noconfirm <packages>`, then clear the
      * package cache.
      *
-     * Combining `-Syu` with the explicit package list (instead of two
+     * Combining `-Syyu` with the explicit package list (instead of two
      * separate `pacman -Syu` then `pacman -S --needed` calls)
      * eliminates the version-skew window: a single transaction sees
      * one DB snapshot, so it can never pacman-Sy a stale DB and then
      * try to fetch a `pkg.tar.xz` that the mirror has already rolled
      * past (observed: `weston-15.0.0-1` 404 across every mirror right
      * after the upstream rolled 15.0.0 → 15.0.1).
+     *
+     * `-Syy` (double y) forces a DB refresh even if pacman thinks the
+     * local copy is current. The bootstrap tarball ships with its own
+     * pacman sync DB snapshot under `/var/lib/pacman/sync/`, and after
+     * extract those files have mtime=now. pacman's normal `-Sy` uses
+     * `If-Modified-Since: <mtime>` which the mirror answers with 304
+     * because its actual `Last-Modified` is the snapshot date (older
+     * than now). Result: pacman silently keeps the bootstrap's
+     * possibly-stale DB and then 404s on packages the mirror has
+     * since rolled past — the very thing we're trying to avoid.
+     * `-Syy` short-circuits the conditional GET and downloads the
+     * current DB unconditionally.
      *
      * Wiping `/var/cache/pacman/pkg/` afterwards drops every cached
      * `.pkg.tar.xz` (uninstalled and currently-installed alike). On a
@@ -365,22 +378,23 @@ PACMAN_EOF
      * Plain `rm` is the only path that actually clears it.)
      */
     fun installBasePackages(
+        method: InstallationMethod,
         rootfs: String,
         packages: List<String>,
         log: (String) -> Unit,
     ) {
-        val res = ChrootRunner.run(
+        val res = method.runInside(
             rootfs,
             """
             export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             set -e
-            pacman -Syu --needed --noconfirm ${packages.joinToString(" ")}
+            pacman -Syyu --needed --noconfirm ${packages.joinToString(" ")}
             rm -rf /var/cache/pacman/pkg/*
             """.trimIndent(),
             onLine = { log("pacman: $it") },
         )
         if (!res.ok) {
-            throw IOException("pacman -Syu --needed install failed (exit=${res.exitCode})")
+            throw IOException("pacman -Syyu --needed install failed (exit=${res.exitCode})")
         }
     }
 

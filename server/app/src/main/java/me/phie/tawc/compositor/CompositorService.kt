@@ -212,23 +212,25 @@ class CompositorService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "tawc_compositor"
 
+        /** Lock for [ensureLibhybrisExtracted] — see method KDoc. */
+        private val LIBHYBRIS_EXTRACT_LOCK = Any()
+
         /**
          * Extract `assets/libhybris/<abi>.tar` into `filesDir/libhybris/`,
          * preserving symlinks. Idempotent — versioned by `longVersionCode`
          * via a `.version` stamp written last, so a partial extract is
          * indistinguishable from "never extracted" and gets retried.
          *
-         * Static so [me.phie.tawc.install.InstallActivity] can call it
-         * before any rootfs symlinking — the chroot install step needs
-         * the tree to exist (and be complete) before it points symlinks
-         * at it. Without that, an APK upgrade racing a chroot install
-         * could end up with chroot symlinks pointing at half-extracted
-         * libhybris.
+         * Called both from this Service's `onCreate` (compositor boot)
+         * and from [me.phie.tawc.install.LibhybrisLinker.link] during
+         * chroot install. On a fresh device with both happening at the
+         * same time we'd have two extractors racing the same staging
+         * dir — synchronize on a process-level lock so only one runs.
          *
          * Returns true if extracted (or was already up-to-date), false
          * if no asset is shipped for this ABI (e.g. emulator build).
          */
-        fun ensureLibhybrisExtracted(context: Context): Boolean {
+        fun ensureLibhybrisExtracted(context: Context): Boolean = synchronized(LIBHYBRIS_EXTRACT_LOCK) {
             val abi = Build.SUPPORTED_ABIS.firstOrNull()
                 ?: return false
             val assetPath = "libhybris/$abi.tar"
@@ -259,12 +261,24 @@ class CompositorService : Service() {
             val stagingDir = File(context.filesDir, "libhybris.new")
             stagingDir.deleteRecursively()
             stagingDir.mkdirs()
+            // Containment guard: defence-in-depth against a libhybris
+            // build that ever produces a tar entry with `..` in its
+            // path. Asset is built from our own cross-compile so this
+            // shouldn't fire, but the extractor in
+            // [me.phie.tawc.install.ProotArchiveExtractor] does the
+            // same check; keep both consistent.
+            val stagingReal = stagingDir.canonicalFile
+            val stagingPrefix = stagingReal.absolutePath + File.separator
 
             context.assets.open(assetPath).use { raw ->
                 TarArchiveInputStream(raw).use { tar ->
                     while (true) {
                         val entry = tar.nextEntry ?: break
-                        val outFile = File(stagingDir, entry.name)
+                        val outFile = File(stagingDir, entry.name).canonicalFile
+                        val abs = outFile.absolutePath
+                        if (abs != stagingReal.absolutePath && !abs.startsWith(stagingPrefix)) {
+                            throw java.io.IOException("libhybris tar entry escapes staging: ${entry.name}")
+                        }
                         when {
                             entry.isDirectory -> outFile.mkdirs()
                             entry.isSymbolicLink -> {
@@ -286,11 +300,17 @@ class CompositorService : Service() {
             }
 
             destDir.deleteRecursively()
+            // No copy fallback for the rename: `copyRecursively` follows
+            // symlinks instead of preserving them, which would silently
+            // turn libhybris's symlink topology into duplicate file
+            // copies. rename(2) within the same parent dir works on
+            // every Android filesystem we ship on; if it ever fails we
+            // want to fail loudly and investigate, not paper over it.
             if (!stagingDir.renameTo(destDir)) {
-                // Best-effort fallback for filesystems where rename
-                // across the same parent is somehow refused.
-                stagingDir.copyRecursively(destDir, overwrite = true)
-                stagingDir.deleteRecursively()
+                throw java.io.IOException(
+                    "rename $stagingDir -> $destDir failed; refusing to fall back to a " +
+                        "symlink-flattening copy. Try clearing app storage and reinstalling."
+                )
             }
             File(destDir, ".version").writeText(currentVersion)
             Log.i(TAG, "Extracted libhybris ($abi) to $destDir")

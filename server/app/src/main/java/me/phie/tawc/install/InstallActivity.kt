@@ -3,10 +3,13 @@ package me.phie.tawc.install
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
@@ -34,8 +37,10 @@ class InstallActivity : AppCompatActivity() {
 
     private val store by lazy { InstallationStore(this) }
     private var targetId: String = Installation.DISTRO_ARCH
+    private var selectedMethod: String? = null
 
     private lateinit var formSection: LinearLayout
+    private lateinit var methodGroup: RadioGroup
     private lateinit var installButton: MaterialButton
     private lateinit var panel: OperationLogPanel
 
@@ -44,6 +49,22 @@ class InstallActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         targetId = intent?.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH
+        // Reject hostile `--es id` extras early — the activity is
+        // exported, so any installed app can launch it. The
+        // [InstallationService] gate also enforces this, but failing
+        // here keeps `installationDir(id)` (which is rendered in the
+        // form) out of attacker reach.
+        if (!Installation.isValidId(targetId)) {
+            android.util.Log.w("tawc-install", "InstallActivity: rejected invalid id '$targetId'")
+            finish()
+            return
+        }
+        // Saved state wins over the launch intent so a user's radio
+        // flip survives rotation: Android re-delivers the original
+        // intent on recreation, which would otherwise shadow the
+        // saved selection.
+        selectedMethod = savedInstanceState?.getString(KEY_METHOD)
+            ?: intent?.getStringExtra(EXTRA_METHOD)
         started = savedInstanceState?.getBoolean(KEY_STARTED) == true
 
         val scaffold = buildChildScreen("Install distro")
@@ -72,7 +93,12 @@ class InstallActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        targetId = intent.getStringExtra(EXTRA_ID) ?: targetId
+        val newId = intent.getStringExtra(EXTRA_ID) ?: targetId
+        if (!Installation.isValidId(newId)) {
+            android.util.Log.w("tawc-install", "InstallActivity: rejected invalid id '$newId' on re-intent")
+            return
+        }
+        targetId = newId
         if (autoStartRequested(intent)) {
             beginInstall()
         }
@@ -81,6 +107,7 @@ class InstallActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(KEY_STARTED, started)
+        selectedMethod?.let { outState.putString(KEY_METHOD, it) }
     }
 
     // `am start --es autoStart true` sends a string extra; `--ez autoStart
@@ -120,6 +147,11 @@ class InstallActivity : AppCompatActivity() {
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
 
+        // Method picker. The radio default reflects the host: chroot if
+        // `su` is available, proot otherwise. The `--es method ...`
+        // intent extra (or saved instance state) overrides.
+        s.addView(buildMethodPicker(), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+
         installButton = primaryButton("Install") { beginInstall() }
         // Mirror the service-level gate so the form makes the refusal
         // obvious before the user taps. The service is still the
@@ -138,6 +170,59 @@ class InstallActivity : AppCompatActivity() {
         return s
     }
 
+    /**
+     * Build the method picker (chroot / proot radio group). Default
+     * follows host capability — `su` available picks chroot, otherwise
+     * proot. The intent extra `method` and saved-instance state both
+     * override the default; the user can still flip the radio after.
+     */
+    private fun buildMethodPicker(): LinearLayout {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val title = TextView(this).apply { text = "Install method:"; textSize = 14f }
+        container.addView(title, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+
+        methodGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        val rootAvailable = Su.rootAvailable()
+
+        // Use generateViewId() rather than hand-picked constants —
+        // any literal we'd reach for in the AAPT range collides with
+        // future R.id.* once we add a layout XML.
+        val chrootId = View.generateViewId()
+        val prootId = View.generateViewId()
+
+        val chroot = RadioButton(this).apply {
+            id = chrootId
+            text = "chroot (root)"
+            // The chroot path needs su; greyed-out on devices without
+            // root makes the limitation visible without surprising
+            // the user mid-install.
+            isEnabled = rootAvailable
+        }
+        val proot = RadioButton(this).apply {
+            id = prootId
+            text = "proot (rootless)"
+        }
+        methodGroup.addView(chroot, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = 16 })
+        methodGroup.addView(proot, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        container.addView(methodGroup, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        // Initial selection: explicit override → use it; else default
+        // for host (chroot if su works, proot if not).
+        val initial = selectedMethod
+            ?: if (rootAvailable) ChrootMethod.KEY else ProotMethod.KEY
+        methodGroup.check(if (initial == ChrootMethod.KEY) chrootId else prootId)
+        selectedMethod = initial
+
+        methodGroup.setOnCheckedChangeListener { _, checkedId ->
+            selectedMethod = when (checkedId) {
+                chrootId -> ChrootMethod.KEY
+                prootId -> ProotMethod.KEY
+                else -> selectedMethod
+            }
+        }
+        return container
+    }
+
     private fun formRow(label: String, value: String): LinearLayout {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val l = TextView(this).apply { text = label; textSize = 14f }
@@ -148,12 +233,16 @@ class InstallActivity : AppCompatActivity() {
     }
 
     private fun beginInstall() {
-        if (!Su.rootAvailable()) {
-            // Surface the error in the log area so the form stays visible
-            // for the user to read the install location alongside.
+        // Only the chroot path needs `su`. Proot is rootless by
+        // definition, so a missing-root device fails this check only
+        // if the user picked chroot anyway. We surface the "no su"
+        // message specifically; other "method not available" reasons
+        // are caught at service-gate level.
+        val methodKey = selectedMethod ?: ChrootMethod.KEY
+        if (methodKey == ChrootMethod.KEY && !Su.rootAvailable()) {
             formSection.visibility = View.GONE
             panel.view.visibility = View.VISIBLE
-            panel.setStatus("ERROR: root (su) not available — Magisk must grant this app.")
+            panel.setStatus("ERROR: root (su) not available — pick proot, or grant Magisk root.")
             return
         }
         formSection.visibility = View.GONE
@@ -162,15 +251,17 @@ class InstallActivity : AppCompatActivity() {
         // off and let it decide whether to run or reject. `started` only
         // tracks UI state (form vs panel) so a process-death recreate
         // restores the panel view.
-        panel.appendLog(if (started) "[ui] re-requesting install of '$targetId'"
-                        else "[ui] starting install of '$targetId'")
+        panel.appendLog(if (started) "[ui] re-requesting install of '$targetId' via $methodKey"
+                        else "[ui] starting install of '$targetId' via $methodKey")
         started = true
-        InstallationService.startInstall(this, targetId)
+        InstallationService.startInstall(this, targetId, methodKey)
     }
 
     companion object {
         const val EXTRA_ID = "id"
+        const val EXTRA_METHOD = "method"
         const val EXTRA_AUTO_START = "autoStart"
         private const val KEY_STARTED = "tawc.install.started"
+        private const val KEY_METHOD = "tawc.install.method"
     }
 }

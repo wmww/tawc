@@ -84,18 +84,44 @@ class InstallationStore(context: Context) {
 
     /**
      * Total bytes used by [id]'s installation dir (rootfs + metadata +
-     * enter.sh). Uses `du -sk` via `su` because the rootfs is owned by
-     * root after extraction, so app-uid `File.length()` traversal would
-     * return 0 for everything inside it. Returns -1 on failure.
+     * enter.sh). For chroot installs the rootfs is root-owned, so
+     * `du` only sees the right size under `su`. For proot installs
+     * everything is app-uid-owned and `du` runs without privileges.
+     * Returns -1 on failure (e.g. chroot-method install on a device
+     * where `su` was revoked between install and now).
      *
-     * Blocks on `su`; call from a background dispatcher.
+     * Blocks on the shell; call from a background dispatcher.
      */
     fun computeSizeBytes(id: String): Long {
         val dir = installationDir(id)
         if (!dir.exists()) return 0L
-        val r = Su.run("du -sk '${dir.absolutePath}' 2>/dev/null | awk '{print \$1}'")
-        if (!r.ok) return -1L
-        val kb = r.output.trim().toLongOrNull() ?: return -1L
+        val needsRoot = load(id)?.method != Installation.METHOD_PROOT
+        val cmd = "du -sk '${dir.absolutePath}' 2>/dev/null | awk '{print \$1}'"
+        val output: String = if (needsRoot) {
+            val r = Su.run(cmd)
+            if (!r.ok) return -1L
+            r.output
+        } else {
+            // Drain stdout BEFORE waitFor — pipe-fills-and-blocks
+            // would deadlock if the command output ever grows past
+            // the single short line `du -sk … | awk` produces today.
+            // Propagate cancellation so DistroInfoActivity's
+            // runInterruptible can abort when the user backs out.
+            val proc = ProcessBuilder("/system/bin/sh", "-c", cmd)
+                .redirectErrorStream(true)
+                .start()
+            val captured = proc.inputStream.bufferedReader().use { it.readText() }
+            try {
+                proc.waitFor()
+            } catch (e: InterruptedException) {
+                proc.destroyForcibly()
+                Thread.currentThread().interrupt()
+                throw e
+            }
+            if (proc.exitValue() != 0) return -1L
+            captured
+        }
+        val kb = output.trim().toLongOrNull() ?: return -1L
         return kb * 1024L
     }
 }

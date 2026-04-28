@@ -3,6 +3,7 @@ package me.phie.tawc.install.distro.arch
 import me.phie.tawc.install.BootstrapFormat
 import me.phie.tawc.install.BootstrapVerification
 import me.phie.tawc.install.Installation
+import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroBootstrap
 
@@ -97,17 +98,18 @@ internal object ArchLinuxArm : Distro {
     /** See `ArchPacmanCommon.initPackageManager` — kernel package name. */
     private val ARCH_SPECIFIC_CRUFT = listOf("linux-aarch64")
 
-    override fun configure(rootfs: String, log: (String) -> Unit) =
-        ArchPacmanCommon.configure(rootfs, MIRROR_LIST, IGNORED_PACKAGES, log)
+    override fun configure(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
+        ArchPacmanCommon.configure(method, rootfs, MIRROR_LIST, IGNORED_PACKAGES, log)
 
-    override fun initPackageManager(rootfs: String, log: (String) -> Unit) =
+    override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
         ArchPacmanCommon.initPackageManager(
+            method,
             rootfs,
             keyring = "archlinuxarm",
             archSpecificCruft = ARCH_SPECIFIC_CRUFT,
             log = log,
         )
 
-    override fun installBasePackages(rootfs: String, log: (String) -> Unit) =
-        ArchPacmanCommon.installBasePackages(rootfs, basePackages, log)
+    override fun installBasePackages(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
+        ArchPacmanCommon.installBasePackages(method, rootfs, basePackages, log)
 }

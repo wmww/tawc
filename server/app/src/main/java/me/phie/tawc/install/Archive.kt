@@ -35,18 +35,23 @@ object Archive {
 
     /**
      * Extract [tarball] (a `.tar`, `.tar.gz`, or `.tar.zst`) into [destDir]
-     * inside the device's filesystem. Creates [destDir] if it doesn't
-     * exist; **does not** clear an existing directory — the install
-     * pipeline's state-machine gate guarantees we only ever run against
-     * a `(no dir)` slot. Root permissions are required.
+     * via toybox `tar` running under [Su]. Used by the chroot install
+     * method only — proot extracts via [ProotArchiveExtractor] in pure
+     * Kotlin to dodge toybox's lack of a "skip-recorded-mode" knob.
+     *
+     * Creates [destDir] if it doesn't exist; **does not** clear an
+     * existing directory — the install pipeline's state-machine gate
+     * guarantees we only ever run against a `(no dir)` slot. Root
+     * permissions are required, so every file lands with the uids
+     * the tarball recorded (which is what the chroot view wants).
      *
      * For `.tar.zst` inputs the bytes flow through [tempFifo] (a named
      * pipe owned by the cache); the FIFO is recreated on entry (so a
      * crash leftover never gets reused) and deleted in the `finally`.
      * For `.tar` / `.tar.gz` inputs [tempFifo] is unused.
      *
-     * (Wiping is the sole job of [RootfsCleaner], called from the
-     * uninstall path. If install ever wiped here, a single missed
+     * (Wiping is the sole job of [InstallationMethod.wipe], called from
+     * the uninstall path. If install ever wiped here, a single missed
      * unmount could let `rm` walk through a live `/dev` bind and unlink
      * host system nodes — see notes/installation.md.)
      *

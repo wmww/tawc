@@ -1,10 +1,16 @@
 use std::io;
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
-/// Path to the on-device chroot wrapper rendered by the in-app installer
-/// (see ChrootMounter.enterScript). Mount + chroot logic lives there;
-/// these helpers just shell into `su -c '<enter.sh> <b64-cmd>'`.
+const PKG: &str = "me.phie.tawc";
+
+/// Path to the on-device chroot wrapper rendered by the in-app
+/// installer (see [`ChrootMounter.enterScript`] /
+/// [`ProotMethod.renderEnterScript`]). Mount + chroot logic lives
+/// there; these helpers just deliver the (base64-encoded) command via
+/// the right adb-side wrapper.
 const ENTER_SCRIPT: &str = "/data/data/me.phie.tawc/distros/arch/enter.sh";
+const META_PATH: &str = "/data/data/me.phie.tawc/distros/arch/metadata.json";
 
 /// Run an adb shell command, wait for completion, return output.
 pub fn shell(cmd: &str) -> io::Result<Output> {
@@ -13,11 +19,13 @@ pub fn shell(cmd: &str) -> io::Result<Output> {
         .output()
 }
 
-/// Run a command inside the in-app Arch chroot on the phone. The command
-/// runs as root via su, inside enter.sh which sets up mounts and
-/// environment (WAYLAND_DISPLAY, XDG_RUNTIME_DIR, etc.). The command is
-/// base64-encoded so it can contain any bytes (quotes, newlines, …)
-/// without quoting through host shell -> adb shell -> su -c -> bash.
+/// Run a command inside the in-app Arch chroot on the phone. Routes
+/// through `su -c` for chroot installs (the mount + chroot syscalls
+/// in `enter.sh` need root) and through `run-as` for proot installs
+/// (proot tracees that run as root via `su` hit a bionic-loader TLS
+/// abort while loading vendor GPU libs; running them as the app uid
+/// matches the packaging context the libs expect). Method is read
+/// from the install's `metadata.json` once per process.
 pub fn chroot_run(cmd: &str) -> io::Result<Output> {
     shell(&chroot_invocation(cmd))
 }
@@ -32,10 +40,72 @@ pub fn chroot_spawn(cmd: &str) -> io::Result<std::process::Child> {
         .spawn()
 }
 
+/// Detected install method (`"chroot"` or `"proot"`), cached after
+/// the first probe. Returning the string keeps callers free to pass
+/// it through to log lines without round-tripping through an enum.
+fn install_method() -> &'static str {
+    static M: OnceLock<String> = OnceLock::new();
+    M.get_or_init(|| {
+        // `run-as` first because it doesn't need root and works on
+        // both rooted and rootless devices for debuggable APKs (we
+        // are debuggable). Fall back to `su` for non-debuggable
+        // builds. If both fail the test will fail loudly later
+        // anyway, so we don't try to be clever about reporting.
+        let probe = format!(
+            "run-as {pkg} cat {meta} 2>/dev/null || su -c 'cat {meta}' 2>/dev/null",
+            pkg = PKG,
+            meta = META_PATH,
+        );
+        let raw = Command::new("adb")
+            .args(["shell", &probe])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        // Pull "method" out of the JSON without a serde dep — single
+        // field, low schema risk. awk -F'"' on the matching line
+        // mirrors what `client/tawc-chroot-run` does.
+        for line in raw.lines() {
+            if let Some(rest) = line.split_once("\"method\"") {
+                if let Some(after_colon) = rest.1.split_once(':') {
+                    let v = after_colon.1.trim().trim_start_matches('"');
+                    if let Some(end) = v.find('"') {
+                        return v[..end].to_string();
+                    }
+                }
+            }
+        }
+        // No metadata yet (or unreadable) — assume chroot. Tests that
+        // depend on chroot_run will fail with a clearer error than a
+        // missing-method panic anyway.
+        "chroot".to_string()
+    }).as_str()
+}
+
 fn chroot_invocation(cmd: &str) -> String {
     // Base64 alphabet has no shell metacharacters, so embedding the
-    // payload bare in the su -c '...' string is safe.
-    format!("su -c '{} {}'", ENTER_SCRIPT, b64_encode(cmd.as_bytes()))
+    // payload bare in the wrapped shell command is safe.
+    let b64 = b64_encode(cmd.as_bytes());
+    match install_method() {
+        "proot" => {
+            // run-as switches to the app uid before exec'ing
+            // enter.sh. mksh's default cwd under run-as is /data/local
+            // where the app uid has no write access, which breaks
+            // its here-doc temp-file logic; cd + TMPDIR to the app's
+            // own cache dir first. Same trick the host launcher
+            // (`client/tawc-chroot-run`) uses.
+            let scratch = format!("/data/data/{}/cache/proot-tmp", PKG);
+            format!(
+                "run-as {pkg} sh -c 'mkdir -p {scratch} && cd {scratch} && export TMPDIR={scratch} && exec {enter} {b64}'",
+                pkg = PKG,
+                scratch = scratch,
+                enter = ENTER_SCRIPT,
+                b64 = b64,
+            )
+        }
+        // Chroot (or unknown — treat as chroot) goes through su.
+        _ => format!("su -c '{} {}'", ENTER_SCRIPT, b64),
+    }
 }
 
 /// Standard base64 (RFC 4648) with `=` padding, no line breaks. Inlined

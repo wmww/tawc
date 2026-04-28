@@ -11,11 +11,12 @@ import android.os.Build
  * any bind mounts done in one `su` call are torn down when that call
  * exits — mount + chroot must therefore live in the same `su -c "..."`
  * shell. To keep that logic in one place across both in-app callers
- * ([ChrootRunner.run]) and host-side tooling (`client/tawc-chroot-run`
- * over `adb shell su`), we render an `enter.sh` shell script into
- * `<installation-dir>/enter.sh` at install time and then everyone
- * invokes the same file. [enterScript] returns its body; [mountScript]
- * is a lower-level building block exposed for the script generator.
+ * ([ChrootMethod.runInside]) and host-side tooling
+ * (`client/tawc-chroot-run` over `adb shell su`), we render an
+ * `enter.sh` shell script into `<installation-dir>/enter.sh` at install
+ * time and then everyone invokes the same file. [enterScript] returns
+ * its body; [mountScript] is a lower-level building block exposed for
+ * the script generator.
  *
  * [unmount] still exists for the case where a previous run somehow
  * leaked mounts into the global namespace (e.g. via `su --mount-master`)
@@ -158,8 +159,9 @@ object ChrootMounter {
      * `adb shell → su -c → chroot bash` chain. Empty `$1` (or no args)
      * drops into an interactive `bash -l` inside the chroot.
      *
-     * Both [ChrootRunner.run] and host-side `client/tawc-chroot-run`
-     * invoke this exact script; the mount logic only lives here.
+     * Both in-app callers (via [ChrootMethod.runInside]) and host-side
+     * `client/tawc-chroot-run` invoke this exact script; the mount
+     * logic only lives here.
      */
     fun enterScript(rootfs: String): String = buildString {
         appendLine("#!/system/bin/sh")

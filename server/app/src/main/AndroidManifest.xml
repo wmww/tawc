@@ -15,12 +15,23 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+      extractNativeLibs="true": the rootless install method ships proot
+      as jniLibs/<abi>/libproot.so and exec's it from nativeLibraryDir.
+      execve needs a real on-disk inode, which only happens when the OS
+      extracts native libs out of the APK. Without this attribute, AGP
+      defaults to page-aligned-in-APK loading (good for dlopen, useless
+      for exec). Same applies to libcompositor.so today (it's dlopen'd
+      via System.loadLibrary so it'd work either way), but we don't want
+      the default to ever shadow the proot binary's executability.
+    -->
     <application
         android:name=".TawcApplication"
         android:allowBackup="false"
         android:label="tawc"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:theme="@style/Theme.Tawc">
+        android:theme="@style/Theme.Tawc"
+        android:extractNativeLibs="true">
 
         <activity
             android:name=".MainActivity"

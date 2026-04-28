@@ -30,14 +30,27 @@ object Su {
         val ok: Boolean get() = exitCode == 0
     }
 
-    /** Quick check that `su` is available and grants uid 0. */
+    @Volatile private var cachedRootAvailable: Boolean? = null
+
+    /**
+     * Quick check that `su` is available and grants uid 0. The result
+     * is memoised for the lifetime of the process — Magisk's policy
+     * doesn't change without an app cold-start, and the underlying
+     * `su id -u` probe blocks up to 10s, which would ANR if called
+     * repeatedly from UI onCreate paths (radio picker, button gates,
+     * uninstall preflight). The first call pays the cost; every later
+     * call is a volatile read.
+     */
     fun rootAvailable(): Boolean {
-        return try {
+        cachedRootAvailable?.let { return it }
+        val result = try {
             val r = run("id -u", timeoutSeconds = 10)
             r.ok && r.output.trim() == "0"
         } catch (e: IOException) {
             false
         }
+        cachedRootAvailable = result
+        return result
     }
 
     /**
@@ -102,7 +115,7 @@ object Su {
             } catch (e: IOException) {
                 Log.w(TAG, "su stdout reader: $e")
             }
-        }.also { it.start() }
+        }.also { it.isDaemon = true; it.start() }
 
         try {
             val finished = if (timeoutSeconds > 0) {

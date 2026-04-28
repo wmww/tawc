@@ -51,6 +51,32 @@ fn test_firefox_launches_with_hardware_buffers() {
         state
     );
 
+    // Steady-state assertion: once Firefox has been running for a
+    // moment, the chrome surface should be presenting through the
+    // libhybris/AHB path, not falling back to `wl_shm`. The original
+    // version of this test only checked that AT LEAST ONE AHB import
+    // happened during launch — and quietly passed the case where
+    // Firefox bound `android_wlegl` for a startup probe but then
+    // committed every chrome frame through cairo/SHM (the
+    // gfx-platform-disables-acceleration regression that the
+    // `firefox.cfg` autoconfig from `testing/install-test-deps.sh`
+    // works around). Clear the log, wait through several frames,
+    // then assert that what came in during that window is wlegl-only.
+    adb::logcat_clear().expect("Failed to clear logcat after Firefox launch");
+    std::thread::sleep(Duration::from_secs(2));
+    let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
+    assert!(
+        saw_ahb_import(&logs),
+        "Firefox stopped emitting AHB imports after launch — fell back to SHM mid-run?\nlogs:\n{logs}"
+    );
+    assert!(
+        !saw_shm_import(&logs),
+        "Firefox committed wl_shm buffers during steady-state rendering — \
+         GPU process / WebRender disabled, chrome falling back to cairo?\n\
+         Re-check `testing/firefox.cfg` autoconfig and the chroot's \
+         `/usr/lib/firefox/defaults/pref/autoconfig.js`.\nlogs:\n{logs}"
+    );
+
     firefox.stop().expect("Firefox process group failed to stop cleanly");
     assert_compositor_clean();
 }

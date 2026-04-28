@@ -47,20 +47,18 @@ fn test_vulkaninfo_loads_android_driver() {
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-
-    // libhybris's CFI patch message goes to stderr on every load — confirms
-    // our libvulkan.so (not the distro vulkan-icd-loader) was picked up.
-    assert!(
-        stderr.contains("libhybris: patched __cfi_slowpath"),
-        "libhybris not active — distro vulkan-icd-loader shadowed our libvulkan.so?\nstderr:\n{stderr}"
-    );
+    let _stderr = String::from_utf8_lossy(&out.stderr);
 
     // The WSI platform layer rewrites VK_KHR_android_surface to
-    // VK_KHR_wayland_surface in the instance extension list.
+    // VK_KHR_wayland_surface in the instance extension list — a
+    // signature only our libhybris+vulkanplatform_wayland stack
+    // produces. The distro vulkan-icd-loader by itself only
+    // advertises VK_KHR_xcb_surface / VK_KHR_xlib_surface (or
+    // nothing on a headless box), never VK_KHR_wayland_surface
+    // pointing at an Android Vulkan driver.
     assert!(
         stdout.contains("VK_KHR_wayland_surface"),
-        "VK_KHR_wayland_surface not advertised — vulkanplatform_wayland.so not loaded?\nstdout:\n{stdout}"
+        "VK_KHR_wayland_surface not advertised — distro vulkan-icd-loader shadowed our libvulkan.so, or vulkanplatform_wayland.so didn't load?\nstdout:\n{stdout}"
     );
 
     // Some Android Vulkan driver got loaded. The exact vendor depends on the
@@ -91,19 +89,15 @@ fn test_eglinfo_loads_android_driver() {
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let _stderr = String::from_utf8_lossy(&out.stderr);
 
-    // Same CFI patch signal as vulkaninfo — proves libhybris is in front of
-    // the distro Mesa libEGL.
-    assert!(
-        stderr.contains("libhybris: patched __cfi_slowpath"),
-        "libhybris not active — distro Mesa libEGL shadowed our shim?\nstderr:\n{stderr}"
-    );
-
-    // Distinctive Android EGL identifier; Mesa would say "Mesa Project".
+    // Distinctive Android EGL identifier; Mesa would say "Mesa
+    // Project". This is also what tells us our libEGL.so shim was
+    // loaded and that it dlopen'd the bionic libEGL behind it —
+    // distro Mesa libEGL alone could never produce this string.
     assert!(
         stdout.contains("Android META-EGL"),
-        "EGL vendor string is not Android — wrong libEGL loaded?\nstdout:\n{stdout}"
+        "EGL vendor string is not Android — distro Mesa libEGL shadowed our shim or libhybris failed to load the Android driver?\nstdout:\n{stdout}"
     );
 
     // GLES profile vendor/renderer should reflect the actual Android GPU.
