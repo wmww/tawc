@@ -170,25 +170,43 @@ reported as `InstallProgress` to the UI and per-line logged to logcat
    shell's stdin loses bytes (the shell pre-buffers past the script).
    The destination is a freshly-mkdir'd directory; the install gate
    guarantees nothing else lives there.
-5. **CONFIGURING** — writes the same files the legacy create scripts do:
+5. **CONFIGURING** — writes the same files the legacy create scripts do, then
+   strips the bootstrap of trees the chroot has no use for:
    - `/etc/resolv.conf` (8.8.8.8)
-   - `/etc/pacman.conf` (`DisableSandbox`, `#CheckSpace`, `IgnorePkg = linux …`; **upstream `SigLevel` is left intact** — see *Bootstrap integrity* below)
+   - `/etc/pacman.conf` (`DisableSandbox`, `#CheckSpace`, `IgnorePkg = linux …`,
+     plus a `tawc-no-extract` block of `NoExtract` patterns — see *Slimming policy*
+     below; **upstream `SigLevel` is left intact** — see *Bootstrap integrity* below)
    - `/etc/pacman.d/mirrorlist` (x86_64: geo-routed `geo.mirror.pkgbuild.com`; aarch64: HTTPS-first curated multi-mirror list — see *ALARM mirror failover* below)
    - `/etc/profile.d/00-path.sh` (PATH/TMPDIR/HOME)
    - `/etc/profile.d/01-tawc.sh` is *not* written here — `ChrootMounter`
      rewrites it on every chroot entry (Wayland env: `WAYLAND_DISPLAY`,
      `XDG_RUNTIME_DIR`, `LD_LIBRARY_PATH`, `HYBRIS_EGLPLATFORM`, `wayland-0`
      symlink) so env changes pick up without a reinstall.
-6. **PACMAN_INIT** — `pacman-key --init`, then `--populate archlinux` /
+   - `rm -rf` of bootstrap cruft: `/boot`, `/usr/lib/firmware`,
+     `/usr/lib/modules`, `/var/cache/pacman/pkg`, and the docs/locale
+     trees under `/usr/share`. ~1.8 GB of immediate reclaim before
+     pacman runs (see *Slimming policy* below).
+6. **PKG_KEYRING** — `pacman-key --init`, then `--populate archlinux` /
    `archlinuxarm` (no `|| true` — populate must succeed since pacman
-   is now run with the upstream default `SigLevel`). (Bind mounts are
-   not a separate stage — they're set up inside the very `su` shell
-   that runs each chroot command, see *Mount lifecycle* below.)
-7. **PACMAN_INSTALL** — `pacman -Syu --noconfirm` then
-   `pacman -S --noconfirm --needed base-devel git libtool wayland
-   wayland-protocols pkg-config autoconf automake patchelf weston gtk3
-   gtk3-demos`. Every package is signature-verified against the
-   keyring populated above.
+   is now run with the upstream default `SigLevel`), then `pacman -Rdd
+   --noconfirm --noscriptlet` on the bootstrap-cruft package set
+   (kernel, firmware split packages, mkinitcpio, console utilities,
+   audit, network/disk userland, vim/nano, …) — files for these were
+   already deleted in step 5; this just cleans up the local pacman DB
+   so future operations don't think they're installed. (Bind mounts
+   are not a separate stage — they're set up inside the very `su`
+   shell that runs each chroot command, see *Mount lifecycle* below.)
+7. **PKG_INSTALL** — `pacman -Syu --needed --noconfirm base-devel git
+   libtool wayland wayland-protocols pkg-config autoconf automake
+   patchelf weston gtk3 gtk3-demos` followed by `pacman -Scc
+   --noconfirm` to drop every cached `.pkg.tar.xz`. The combined
+   `-Syu --needed <pkgs>` form (rather than `-Syu` followed by `-S
+   --needed`) avoids a version-skew window where the in-chroot DB is
+   synced at T1 but the second `pacman` call at T2 fetches a tarball
+   the mirror has already rolled past — observed in practice as a
+   stable 404 on `weston-15.0.0-1-aarch64.pkg.tar.xz` minutes after
+   upstream rolled to 15.0.1. Every package is signature-verified
+   against the keyring populated above.
 8. **(state write)** — `setState(READY)` only after every step above
    succeeds.
 
@@ -454,6 +472,72 @@ the cross-mirror MD5 is the floor.
   layer; the duplicate `META-INF/versions/9/OSGI-INF/MANIFEST.MF`
   across the three jars is resolved with a `pickFirsts` rule in
   `app/build.gradle.kts`.
+
+## Slimming policy
+
+The chroot is a Wayland-userland-only environment — no kernel runs
+inside, no init system manages services, no user logs in
+interactively. Anything in the bootstrap that exists to boot a real
+Linux install or make a package manageable from a local console is
+dead weight on Android's NAND. The slimming logic lives in
+`distro/arch/ArchPacmanCommon.kt` (so both Arch flavours pay the same
+cost) and runs in three pieces:
+
+1. **Post-extract `rm -rf`** during `CONFIGURING` (`POST_EXTRACT_PURGE_PATHS`).
+   These are big standalone trees that pacman itself wouldn't otherwise
+   reclaim: `/boot`, `/usr/lib/firmware`, `/usr/lib/modules`,
+   `/var/cache/pacman/pkg`, plus the `man`/`info`/`doc`/`gtk-doc`/`help`/`locale`/`i18n`
+   trees under `/usr/share`. The exact reclaim size lives next to the
+   constant in code (`POST_EXTRACT_PURGE_PATHS`) — the per-tree numbers
+   in that doc-comment are the source of truth, this note intentionally
+   doesn't repeat them so the two can't drift.
+
+2. **`NoExtract` patterns** appended to `/etc/pacman.conf` during
+   `CONFIGURING` (`NO_EXTRACT_PATTERNS`). These keep future `pacman -S`
+   calls (base-package install, test-deps install, libhybris build deps,
+   …) from re-creating the trees we just deleted. Without them, every
+   `pacman -S` would put back the docs/locales of every package it
+   touches and the rootfs would slowly grow back to its bootstrap size.
+   Patterns match file paths inside the package tarball (no leading
+   slash); multiple `NoExtract = ` lines accumulate.
+
+3. **`pacman -Rdd --noconfirm --noscriptlet`** during `PKG_KEYRING`
+   (`SHARED_CRUFT_PACKAGES` plus the per-arch kernel package). The
+   files are already gone from step 1; this just cleans up the local
+   pacman DB so future operations don't think the cruft is still
+   installed. `-Rdd` skips dep checks (so `linux` doesn't drag the
+   `base` metapackage with it), `--noscriptlet` skips the kernel's
+   pre-remove hook (which tries to regenerate an initramfs that won't
+   run anyway).
+
+Plus `pacman -Scc --noconfirm` after every install transaction
+(`installBasePackages`, `testing/install-test-deps.sh`) to drop the
+fetched `.pkg.tar.xz` files — we never reinstall in place, so caching
+costs only disk.
+
+Adding a new `NoExtract` pattern or `SHARED_CRUFT_PACKAGES` entry is
+the right knob for general cruft-trimming. Adding the kernel package
+name (which varies by arch) goes in the per-arch `ARCH_SPECIFIC_CRUFT`
+list in `ArchLinuxX86_64.kt` / `ArchLinuxArm.kt`.
+
+Two consequences of where each piece lives:
+
+- **`configure()` is idempotent only by marker.** The `tawc-no-extract`
+  block is appended once and rerunning `configure` short-circuits on
+  the marker. Editing `NO_EXTRACT_PATTERNS` therefore does **not**
+  converge an already-installed rootfs — uninstall + install is the
+  only path. (Acceptable because the rootfs is cheap to rebuild and
+  the gate refuses install on a non-empty slot, so there's no
+  in-place "policy update" to worry about.)
+- **`testing/install-test-deps.sh` does a full system upgrade every
+  run.** It uses `pacman -Syu --needed <pkgs>` (matching the install
+  policy in `installBasePackages`) so the local DB is fresh in the
+  same transaction the new packages come down — closes the
+  version-skew window that bricked the install pipeline at one point.
+  The trade-off is that running test-deps weeks apart can pull in
+  glibc/gtk/weston upgrades that the test suite hasn't seen, so a
+  test flake right after a long gap is more likely a real upstream
+  change than a code regression.
 
 ## ALARM mirror failover
 

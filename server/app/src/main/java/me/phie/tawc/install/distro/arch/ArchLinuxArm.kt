@@ -82,16 +82,31 @@ internal object ArchLinuxArm : Distro {
         "Server = http://fr.mirror.archlinuxarm.org/\$arch/\$repo",
     ).joinToString("\n")
 
-    /** ALARM kernel package is `linux-aarch64`; firmware split as on x86. */
+    /**
+     * ALARM kernel package is `linux-aarch64`; firmware split as on
+     * x86. `IgnorePkg` is defence in depth — these are removed via
+     * `pacman -Rdd` after the bootstrap extract (see
+     * [ArchPacmanCommon.initPackageManager]); the IgnorePkg line
+     * keeps a future `pacman -Syu` from pulling them back if some
+     * package marks them as an optional dep.
+     */
     private val IGNORED_PACKAGES = listOf(
         "linux-aarch64", "linux-firmware", "linux-firmware-*",
     )
+
+    /** See `ArchPacmanCommon.initPackageManager` — kernel package name. */
+    private val ARCH_SPECIFIC_CRUFT = listOf("linux-aarch64")
 
     override fun configure(rootfs: String, log: (String) -> Unit) =
         ArchPacmanCommon.configure(rootfs, MIRROR_LIST, IGNORED_PACKAGES, log)
 
     override fun initPackageManager(rootfs: String, log: (String) -> Unit) =
-        ArchPacmanCommon.initPackageManager(rootfs, keyring = "archlinuxarm", log = log)
+        ArchPacmanCommon.initPackageManager(
+            rootfs,
+            keyring = "archlinuxarm",
+            archSpecificCruft = ARCH_SPECIFIC_CRUFT,
+            log = log,
+        )
 
     override fun installBasePackages(rootfs: String, log: (String) -> Unit) =
         ArchPacmanCommon.installBasePackages(rootfs, basePackages, log)

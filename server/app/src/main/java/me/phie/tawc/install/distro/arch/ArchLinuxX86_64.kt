@@ -43,19 +43,29 @@ internal object ArchLinuxX86_64 : Distro {
     /**
      * x86_64 Arch's stock kernel package is `linux`; firmware is in
      * `linux-firmware` and a few `linux-firmware-*` split packages.
-     * Listing them on `IgnorePkg` avoids pacman trying to install a
-     * kernel into the chroot's `/boot` (pointless and fails on
-     * Android's tiny /boot when bind-mounted).
+     * Listing them on `IgnorePkg` is defence in depth — they're
+     * already removed via `pacman -Rdd` after the bootstrap extract
+     * (see [ArchPacmanCommon.initPackageManager]), but `IgnorePkg`
+     * keeps a future `pacman -Syu` from picking them back up if some
+     * package marks them as an optional dep.
      */
     private val IGNORED_PACKAGES = listOf(
         "linux", "linux-firmware", "linux-firmware-*",
     )
 
+    /** See `ArchPacmanCommon.initPackageManager` — kernel package name. */
+    private val ARCH_SPECIFIC_CRUFT = listOf("linux")
+
     override fun configure(rootfs: String, log: (String) -> Unit) =
         ArchPacmanCommon.configure(rootfs, MIRROR_LIST, IGNORED_PACKAGES, log)
 
     override fun initPackageManager(rootfs: String, log: (String) -> Unit) =
-        ArchPacmanCommon.initPackageManager(rootfs, keyring = "archlinux", log = log)
+        ArchPacmanCommon.initPackageManager(
+            rootfs,
+            keyring = "archlinux",
+            archSpecificCruft = ARCH_SPECIFIC_CRUFT,
+            log = log,
+        )
 
     override fun installBasePackages(rootfs: String, log: (String) -> Unit) =
         ArchPacmanCommon.installBasePackages(rootfs, basePackages, log)

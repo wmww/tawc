@@ -9,24 +9,166 @@ import java.io.IOException
  * ([ArchLinuxX86_64], [ArchLinuxArm]). Both use pacman; the only real
  * differences between them are the bootstrap URL/format, the keyring
  * name (`archlinux` vs `archlinuxarm`), the mirrorlist contents, and
- * the kernel package name to put on `IgnorePkg`.
+ * the cruft package set (kernel / firmware split package names).
+ *
+ * The chroot is a Wayland-userland-only environment — no kernel runs
+ * inside, no init system manages services, no user logs in
+ * interactively. Anything in the bootstrap that exists to boot a real
+ * Linux install (kernel, firmware, mkinitcpio, console keymaps) or to
+ * make a package manageable from a local console (man pages, info
+ * pages, doc trees, translation .mo files) is dead weight on
+ * Android's NAND. Both Arch flavours strip the same shape of files,
+ * so the policy lives here.
  */
 internal object ArchPacmanCommon {
 
     /**
+     * Paths under the rootfs to delete after the bootstrap tarball is
+     * extracted. These are big standalone trees (kernel/firmware/locale
+     * data, package docs) that will be re-created by future `pacman -S`
+     * operations unless we also tell pacman not to extract them — see
+     * [NO_EXTRACT_PATTERNS]. Leading slash relative to rootfs.
+     *
+     * Sizes from a fresh ALARM aarch64 bootstrap (2026-04):
+     *   /usr/lib/firmware       920 MB
+     *   /boot                   344 MB
+     *   /usr/lib/modules        185 MB
+     *   /usr/share/locale       111 MB
+     *   /usr/share/man           36 MB
+     *   /usr/share/doc           13 MB
+     *   /usr/share/info           8 MB
+     *   /var/cache/pacman/pkg   197 MB (bootstrap-bundled .pkg.tar.xz)
+     *
+     * That's ~1.8 GB of immediate reclaim before we even run pacman.
+     */
+    private val POST_EXTRACT_PURGE_PATHS: List<String> = listOf(
+        // kernel & boot artefacts — no kernel runs in the chroot
+        "/boot",
+        "/usr/lib/firmware",
+        "/usr/lib/modules",
+        // package manager pre-cached tarballs from the bootstrap
+        "/var/cache/pacman/pkg",
+        // human-readable docs — no interactive shell, no man reader
+        "/usr/share/man",
+        "/usr/share/info",
+        "/usr/share/doc",
+        "/usr/share/gtk-doc",
+        "/usr/share/help",
+        // translation .mo files and locale-gen inputs (we don't run
+        // locale-gen). C/POSIX locale is built into glibc and works
+        // without any of this. Apps that look up missing translations
+        // fall back to English source strings.
+        "/usr/share/locale",
+        "/usr/share/i18n",
+    )
+
+    /**
+     * `NoExtract` glob patterns appended to `/etc/pacman.conf`. These
+     * keep future `pacman -S` invocations from re-creating the trees
+     * we just deleted (test-deps install, libhybris build, etc) and
+     * also skip newly-pulled docs/locales/firmware so the rootfs
+     * doesn't grow back to its bootstrap size.
+     *
+     * Patterns are applied to file paths *inside* the package tarball
+     * (no leading slash). `pacman.conf(5)` accepts shell globs and
+     * `!`-prefixed exceptions; we use plain globs throughout for
+     * clarity. Multiple `NoExtract = ` lines accumulate.
+     */
+    private val NO_EXTRACT_PATTERNS: List<String> = listOf(
+        // kernel / firmware paths (defence in depth — packages we
+        // don't install shouldn't try to drop files here, but if they
+        // do, skip them)
+        "boot/*",
+        "usr/lib/firmware/*",
+        "usr/lib/modules/*",
+        // docs
+        "usr/share/man/*",
+        "usr/share/info/*",
+        "usr/share/doc/*",
+        "usr/share/gtk-doc/*",
+        "usr/share/help/*",
+        // translations & locale inputs (see POST_EXTRACT_PURGE_PATHS)
+        "usr/share/locale/*",
+        "usr/share/i18n/locales/*",
+        "usr/share/i18n/charmaps/*",
+    )
+
+    /**
+     * Bootstrap-installed packages that the chroot has no use for —
+     * removed via `pacman -Rdd` (no dep check) right after
+     * `pacman-key --populate`. The kernel package name varies by arch
+     * (`linux` vs `linux-aarch64`), so the caller passes that in via
+     * [archSpecificCruft]; everything else is shared.
+     *
+     * The on-disk files are mostly already gone (see
+     * [POST_EXTRACT_PURGE_PATHS]); this just cleans up pacman's
+     * database so future operations don't think the cruft is
+     * installed and don't try to upgrade it.
+     *
+     * Anything `base` / `base-devel` / `systemd` / `gnupg` lists as a
+     * `Depends` is intentionally **not** here, because the subsequent
+     * `pacman -Syu --needed <base packages>` would just reinstall it
+     * — that's why `audit`, `kbd`, `hwdata`, `pciutils`, `iputils`,
+     * `iproute2`, `device-mapper`, `cryptsetup`, `e2fsprogs`,
+     * `tpm2-tss`, … are absent. Adding such a package here costs
+     * an extra `pacman -Rdd` round-trip during install for no
+     * net-disk reduction.
+     */
+    private val SHARED_CRUFT_PACKAGES: List<String> = listOf(
+        // firmware split packages — present in both ALARM and Arch x86
+        "linux-firmware",
+        "linux-firmware-amdgpu",
+        "linux-firmware-atheros",
+        "linux-firmware-broadcom",
+        "linux-firmware-cirrus",
+        "linux-firmware-intel",
+        "linux-firmware-mediatek",
+        "linux-firmware-nvidia",
+        "linux-firmware-other",
+        "linux-firmware-radeon",
+        "linux-firmware-realtek",
+        "linux-firmware-whence",
+        // initramfs builder — only useful for booting a kernel
+        "mkinitcpio",
+        "mkinitcpio-busybox",
+        // editors — apps that need an EDITOR can install one
+        // explicitly. (gpm is a console-only soft-dep of vim/emacs;
+        // once vim is gone nothing else here pulls it in.)
+        "ex-vi-compat",
+        "nano",
+        "vim",
+        "vim-runtime",
+        "gpm",
+        // networking userland — DNS resolution comes from
+        // /etc/resolv.conf, no firewall, no SSH, no DHCP client.
+        // (iputils/iproute2 are kept; they are hard deps of `base`.)
+        "dhcpcd",
+        "iptables",
+        "nftables",
+        "netctl",
+        "openssh",
+        "net-tools",
+        // systemd-resolved client — we use plain /etc/resolv.conf and
+        // don't run systemd-resolved, so the libnss-resolve glue is
+        // dead weight.
+        "systemd-resolvconf",
+    )
+
+    /**
      * Write `/etc/resolv.conf`, the pacman.conf tweaks, the mirrorlist
-     * and `profile.d/00-path.sh`. The Wayland env in
+     * and `profile.d/00-path.sh`, then strip the bootstrap of the
+     * trees in [POST_EXTRACT_PURGE_PATHS]. The Wayland env in
      * `profile.d/01-tawc.sh` is *not* written here — `ChrootMounter`
-     * regenerates it on every chroot entry so env changes don't need a
-     * reinstall (see notes/installation.md).
+     * regenerates it on every chroot entry so env changes don't need
+     * a reinstall (see notes/installation.md).
      *
      * @param rootfs absolute path to the chroot rootfs.
      * @param mirrorListBody contents of `/etc/pacman.d/mirrorlist`
      *   (one or more `Server = ...` lines).
      * @param ignoredPackages packages to put on the `IgnorePkg` line —
-     *   the kernel package name varies across arches (`linux` for
-     *   x86_64, `linux-aarch64` for ALARM) and `IgnorePkg` only
-     *   accepts package names that exist in the chroot's repos.
+     *   defence in depth so a future `pacman -Syu` doesn't pull the
+     *   kernel/firmware packages back if some package picks them up
+     *   as an optional dep.
      * @param log per-line log sink.
      */
     fun configure(
@@ -36,6 +178,8 @@ internal object ArchPacmanCommon {
         log: (String) -> Unit,
     ) {
         val ignoreLine = "IgnorePkg = " + ignoredPackages.joinToString(" ")
+        val noExtractLines = NO_EXTRACT_PATTERNS.joinToString("\n") { "NoExtract = $it" }
+        val purgeList = POST_EXTRACT_PURGE_PATHS.joinToString(" ") { "\"\$ROOTFS$it\"" }
 
         val script = buildString {
             appendLine("set -eu")
@@ -62,6 +206,35 @@ internal object ArchPacmanCommon {
                 grep -q '^IgnorePkg' "${'$'}ROOTFS/etc/pacman.conf" || \
                     sed -i "/#CheckSpace/a $ignoreLine" \
                         "${'$'}ROOTFS/etc/pacman.conf"
+
+                # NoExtract: keep future pacman -S calls from putting
+                # back the docs/firmware/locale trees we delete below.
+                # The block has to land *inside* the [options] section
+                # — appending to end-of-file drops it into the last
+                # repo block (e.g. [aur]) and pacman silently warns
+                # "directive 'NoExtract' in section 'aur' not
+                # recognized" while skipping it. We splice it in just
+                # before the first non-[options] section header. The
+                # `# tawc-no-extract` marker makes re-runs idempotent.
+                if ! grep -q '^# tawc-no-extract' "${'$'}ROOTFS/etc/pacman.conf"; then
+                    section_line=${'$'}(awk '/^\[/ && !/^\[options\]/{print NR; exit}' \
+                        "${'$'}ROOTFS/etc/pacman.conf")
+                    if [ -z "${'$'}section_line" ] || [ "${'$'}section_line" -le 1 ]; then
+                        echo "ERROR: pacman.conf has no [<repo>] section after [options]" >&2
+                        exit 1
+                    fi
+                    {
+                        head -n ${'$'}((section_line - 1)) "${'$'}ROOTFS/etc/pacman.conf"
+                        cat <<'PACMAN_EOF'
+# tawc-no-extract: drop docs/locales/firmware/modules/boot from every
+# pacman -S transaction. Reduces install time and disk footprint.
+$noExtractLines
+
+PACMAN_EOF
+                        tail -n +${'$'}section_line "${'$'}ROOTFS/etc/pacman.conf"
+                    } > "${'$'}ROOTFS/etc/pacman.conf.new"
+                    mv "${'$'}ROOTFS/etc/pacman.conf.new" "${'$'}ROOTFS/etc/pacman.conf"
+                fi
                 """.trimIndent()
             )
 
@@ -86,6 +259,13 @@ internal object ArchPacmanCommon {
                 export HOME=/root
                 PROF1_EOF
                 chmod 644 "${'$'}ROOTFS/etc/profile.d/00-path.sh"
+
+                # Bulk-delete bootstrap cruft. The matching pacman -Rdd
+                # for the database side runs in initPackageManager.
+                # `find -delete` (toybox) doesn't take patterns, so we
+                # just rm -rf the lot — these are dirs we never want.
+                rm -rf $purgeList
+
                 echo OK
                 """.trimIndent()
             )
@@ -97,19 +277,43 @@ internal object ArchPacmanCommon {
     }
 
     /**
-     * `pacman-key --init && pacman-key --populate <keyring> && pacman
-     * -Syu`. The keyring populate is now required: pacman.conf's
-     * default SigLevel (`Required DatabaseOptional`) means `pacman
-     * -Syu` will refuse unsigned packages, and `--populate` is what
-     * imports the distro master keys + their signed packager keys
-     * into the chroot's pacman keyring. If populate fails the install
-     * is broken — fail loudly rather than `|| true`-ing past it.
+     * `pacman-key --init && pacman-key --populate <keyring>`, then
+     * `pacman -Rdd` on the bootstrap-cruft package set
+     * ([SHARED_CRUFT_PACKAGES] plus [archSpecificCruft] for the
+     * kernel package). Skipped on packages that aren't actually
+     * installed — both arches share most of the list but ALARM ships
+     * a slightly different set, and we want the helper to be
+     * tolerant of either.
+     *
+     * `--noscriptlet` is passed because the kernel's pre-remove hook
+     * tries to regenerate the initramfs (which pulls in mkinitcpio,
+     * which we're also removing). We don't have a kernel to install
+     * an initramfs for anyway. `-Rdd` skips dependency checks, so
+     * removing e.g. `linux-aarch64` doesn't cascade into uninstalling
+     * the `base` metapackage.
+     *
+     * The `pacman -Syu` step is intentionally *not* here — see
+     * [installBasePackages]. Splitting it out introduces a window
+     * where the in-chroot DB and the upstream mirror state can drift
+     * and pacman fetches a `pkg.tar.xz` that's already been rolled
+     * forward; merging the sync into the same transaction as the
+     * base-package install closes that.
+     */
+    /**
+     * @param archSpecificCruft per-arch additions to
+     *   [SHARED_CRUFT_PACKAGES] — currently just the kernel package
+     *   name, since `linux` (Arch x86) and `linux-aarch64` (ALARM) are
+     *   the only difference between the two flavours' bootstrap
+     *   contents. Caller's list is concatenated with the shared one
+     *   and filtered through `pacman -Qq` before the `-Rdd` pass.
      */
     fun initPackageManager(
         rootfs: String,
         keyring: String,
+        archSpecificCruft: List<String>,
         log: (String) -> Unit,
     ) {
+        val cruft = (archSpecificCruft + SHARED_CRUFT_PACKAGES).joinToString(" ")
         val res = ChrootRunner.run(
             rootfs,
             """
@@ -117,16 +321,49 @@ internal object ArchPacmanCommon {
             set -e
             pacman-key --init
             pacman-key --populate $keyring
-            pacman -Syu --noconfirm
+
+            # Filter the cruft list to packages actually installed,
+            # then -Rdd them in one go. -Q is fast (local DB only) and
+            # not affected by mirror state.
+            installed=""
+            for pkg in $cruft; do
+                if pacman -Qq "${'$'}pkg" >/dev/null 2>&1; then
+                    installed="${'$'}installed ${'$'}pkg"
+                fi
+            done
+            if [ -n "${'$'}installed" ]; then
+                echo "removing bootstrap cruft:${'$'}installed"
+                pacman -Rdd --noconfirm --noscriptlet ${'$'}installed
+            fi
             """.trimIndent(),
             onLine = { log("pacman-key: $it") },
         )
         if (!res.ok) {
-            throw IOException("pacman-key init / -Syu failed (exit=${res.exitCode})")
+            throw IOException("pacman-key init / cruft removal failed (exit=${res.exitCode})")
         }
     }
 
-    /** `pacman -S --noconfirm --needed <packages>`. */
+    /**
+     * `pacman -Syu --needed --noconfirm <packages>`, then clear the
+     * package cache.
+     *
+     * Combining `-Syu` with the explicit package list (instead of two
+     * separate `pacman -Syu` then `pacman -S --needed` calls)
+     * eliminates the version-skew window: a single transaction sees
+     * one DB snapshot, so it can never pacman-Sy a stale DB and then
+     * try to fetch a `pkg.tar.xz` that the mirror has already rolled
+     * past (observed: `weston-15.0.0-1` 404 across every mirror right
+     * after the upstream rolled 15.0.0 → 15.0.1).
+     *
+     * Wiping `/var/cache/pacman/pkg/` afterwards drops every cached
+     * `.pkg.tar.xz` (uninstalled and currently-installed alike). On a
+     * Wayland-only chroot we never reinstall in place, so keeping the
+     * cache around just costs hundreds of MB on NAND. (pacman's own
+     * `-Scc --noconfirm` is intentionally a no-op for safety —
+     * `--noconfirm` forces the "remove also currently-installed
+     * versions?" prompt to default-no, leaving everything cached.
+     * Plain `rm` is the only path that actually clears it.)
+     */
     fun installBasePackages(
         rootfs: String,
         packages: List<String>,
@@ -136,12 +373,14 @@ internal object ArchPacmanCommon {
             rootfs,
             """
             export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-            pacman -S --noconfirm --needed ${packages.joinToString(" ")}
+            set -e
+            pacman -Syu --needed --noconfirm ${packages.joinToString(" ")}
+            rm -rf /var/cache/pacman/pkg/*
             """.trimIndent(),
             onLine = { log("pacman: $it") },
         )
         if (!res.ok) {
-            throw IOException("pacman --needed install failed (exit=${res.exitCode})")
+            throw IOException("pacman -Syu --needed install failed (exit=${res.exitCode})")
         }
     }
 

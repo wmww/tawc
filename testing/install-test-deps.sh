@@ -39,6 +39,14 @@ PKGS=(
 )
 
 echo "=== Installing chroot test deps: ${PKGS[*]} ==="
-"$ROOT_DIR/client/tawc-chroot-run" "pacman -S --noconfirm --needed ${PKGS[*]}"
+# `-Syu` (instead of plain `-S`): refresh the local DB in the same
+# transaction we install in, so we never reference a `pkg.tar.xz` the
+# mirror has already rolled forward of. `rm -rf /var/cache/pacman/pkg/*`
+# afterwards drops the package cache — we never reinstall in place, so
+# caching costs only disk. (pacman's own `-Scc --noconfirm` is a no-op
+# for safety, see ArchPacmanCommon.installBasePackages.)
+# Both halves match the install-time policy.
+"$ROOT_DIR/client/tawc-chroot-run" \
+    "pacman -Syu --noconfirm --needed ${PKGS[*]} && rm -rf /var/cache/pacman/pkg/*"
 
 echo "=== Done ==="
