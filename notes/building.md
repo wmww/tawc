@@ -19,8 +19,6 @@ untested.
 git clone https://github.com/wmww/libhybris.git           ./libhybris
 git clone --branch halium-11.0 --depth 1 \
     https://github.com/Halium/android-headers.git         ./android-headers
-sed -i 's/ANDROID_VERSION_MAJOR 11/ANDROID_VERSION_MAJOR 16/' \
-    ./android-headers/android-version.h
 bash client/build-libxkbcommon       # clones libxkbcommon, cross-builds .a
 bash client/build-libhybris-aarch64  # cross-builds libhybris for aarch64 glibc
 
@@ -87,7 +85,7 @@ runs; the scripts fail fast with the clone command in the error message.
 | Path                  | Source                                       | Pinned to              | Used by                           |
 |-----------------------|----------------------------------------------|------------------------|-----------------------------------|
 | `./libhybris/`        | https://github.com/wmww/libhybris            | tip of our fork        | `client/build-libhybris-aarch64`  |
-| `./android-headers/`  | https://github.com/Halium/android-headers    | branch `halium-11.0` (ANDROID_VERSION_MAJOR sed-bumped to 16) | `client/build-libhybris-aarch64` |
+| `./android-headers/`  | https://github.com/Halium/android-headers    | branch `halium-11.0`   | `client/build-libhybris-aarch64` |
 | `./libxkbcommon/`     | https://github.com/xkbcommon/libxkbcommon    | tag `xkbcommon-1.7.0`  | `client/build-libxkbcommon` (auto-clones) |
 | `./smithay/`          | https://github.com/Smithay/smithay (fork)    | per `compositor/Cargo.toml` | Rust compositor                |
 
