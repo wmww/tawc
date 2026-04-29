@@ -178,3 +178,31 @@ Arrow keys, escape, tab, Ctrl+C/V/Z need wl_keyboard (no text-input-v3 equivalen
 - Fractional scaling (wp-fractional-scale)
 - Clipboard bridge (wl_data_device <-> Android ClipboardManager)
 - Non-root socket sharing (Binder fd passing)
+
+## tawcroot — systrap-based proot replacement
+From-scratch C implementation of a fake chroot using seccomp `RET_TRAP`
++ in-process `SIGSYS` rewriting (no ptrace, no tracer process). Goal:
+strict superset of proot's TAWC use case at ~1.5–3× native instead of
+proot's 5–10× — primarily to unblock painfully slow `pacman` ops on
+the rootless install method. See [notes/tawcroot.md](notes/tawcroot.md)
+for the full design.
+
+- Phase 1 — host-side MVP (Linux x86_64 dev box): scaffold `tawcroot/`,
+  argv parse, rootfs `O_PATH` fd, seccomp filter for openat/stat/access,
+  SIGSYS handler, x86_64 `arch_*` register helpers, basic path
+  translation. Run `/bin/sh -c 'ls /'` against a fake rootfs.
+- Phase 2 — execve handling: ELF/`PT_INTERP` parse, re-exec-into-self
+  trampoline so the SIGSYS handler survives `execve`, multi-process
+  correctness, `/proc/self/exe` synthesis, `getcwd` reverse-translate.
+- Phase 3 — full path-syscall surface: every entry in `notes/tawcroot.md`
+  §"Which syscalls need translation" wired through the dispatch table.
+- Phase 4 — emulator integration (x86_64 AVD): `client/build-tawcroot`,
+  jniLib packaging as `libtawcroot.so`, `TawcrootMethod.kt` next to
+  `ProotMethod.kt`, dispatch in `client/tawc-chroot-run`, wrapper
+  script. Run `pacman -Syu` to completion; verify the lp64-`access`-on-
+  x86_64 stacked-filter case (only fires on x86_64).
+- Phase 5 — aarch64 port (real device): `arch/aarch64.h` + stub asm,
+  libhybris/Firefox smoke tests, measure `pacman -Syu` wall-time vs
+  proot.
+- Phase 6 — hardening + perf: stacked-filter edge cases, Firefox
+  sandbox specifics, tune the trapped-syscall set.
