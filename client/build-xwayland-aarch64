@@ -473,6 +473,60 @@ stage_xkeyboard_config() {
     fi
 }
 
+stage_expat() {
+    stage_should_run expat || return 0
+    # Mesa's DRI driver loader (`util/xmlconfig.c` and friends) parses
+    # driconf XML at startup. Tiny C lib, no extra deps. Pin a recent
+    # tag — older expats had bionic-incompatible getpagesize() use.
+    clone_pinned expat https://github.com/libexpat/libexpat.git R_2_6_4
+    local src="$SRC_ROOT/expat/expat"
+    if [ ! -f "$src/configure" ]; then ( cd "$src" && ./buildconf.sh ); fi
+    ( cd "$src" && \
+        configure_autotools \
+            --without-docbook \
+            --without-examples \
+            --without-tests && \
+        make -j"$(nproc)" && make install )
+}
+
+stage_libxext() {
+    stage_should_run libxext || return 0
+    # Mesa's GLX path links libXext for XSync / generic-event helpers.
+    clone_pinned libxext https://gitlab.freedesktop.org/xorg/lib/libxext.git libXext-1.3.6
+    build_autotools libxext --enable-malloc0returnsnull --disable-specs
+}
+
+stage_libxfixes() {
+    stage_should_run libxfixes || return 0
+    clone_pinned libxfixes https://gitlab.freedesktop.org/xorg/lib/libxfixes.git libXfixes-6.0.1
+    build_autotools libxfixes
+}
+
+stage_libxxf86vm() {
+    stage_should_run libxxf86vm || return 0
+    # Mesa's GLX uses libXxf86vm to query video modes. Tiny.
+    clone_pinned libxxf86vm https://gitlab.freedesktop.org/xorg/lib/libxxf86vm.git libXxf86vm-1.1.6
+    build_autotools libxxf86vm --disable-specs --without-xmlto --without-fop
+}
+
+stage_libxrender() {
+    stage_should_run libxrender || return 0
+    clone_pinned libxrender https://gitlab.freedesktop.org/xorg/lib/libxrender.git libXrender-0.9.12
+    build_autotools libxrender --enable-malloc0returnsnull
+}
+
+stage_libxrandr() {
+    stage_should_run libxrandr || return 0
+    clone_pinned libxrandr https://gitlab.freedesktop.org/xorg/lib/libxrandr.git libXrandr-1.5.4
+    build_autotools libxrandr
+}
+
+stage_libxdamage() {
+    stage_should_run libxdamage || return 0
+    clone_pinned libxdamage https://gitlab.freedesktop.org/xorg/lib/libxdamage.git libXdamage-1.1.6
+    build_autotools libxdamage
+}
+
 stage_libepoxy() {
     stage_should_run libepoxy || return 0
     # GLAMOR meta-loads GL/GLES/EGL through libepoxy (epoxy_gl_function,
@@ -490,82 +544,98 @@ stage_libepoxy() {
         -Dtests=false
 }
 
-stage_dri_pc_stub() {
-    stage_should_run dri-pc-stub || return 0
-    # Xwayland's `meson.build` looks up a `dri.pc` (Mesa's data-only
-    # pkg-config file) when GLX is enabled — `dridriverdir` is baked
-    # into `glxdricommon.c` for legacy DRI driver loading. We don't
-    # ship Mesa DRI drivers; modern Xwayland routes GLX through
-    # GLAMOR's `glamor_provider`, so the path is only consulted as a
-    # never-found fallback. Stub the .pc with a non-existent dir so
-    # configure passes and the runtime simply finds nothing there.
-    cat > "$PC_DIR/dri.pc" <<EOF
-prefix=$PREFIX
-includedir=\${prefix}/include
-dridriverdir=\${prefix}/lib/dri-stub
-
-Name: dri
-Description: tawc Android stub (no DRI drivers; GLX goes through GLAMOR)
-Version: 26.0.0
-Cflags: -I\${includedir}
+stage_cutils_stub() {
+    stage_should_run cutils-stub || return 0
+    # Mesa's DETECT_OS_ANDROID code path pulls in `<cutils/trace.h>`
+    # for ATrace. The header lives in AOSP's `system/core/libcutils`
+    # and isn't shipped in the NDK. We never want tracing in our
+    # build anyway, so drop a header-only stub that no-ops every
+    # entry point. Lives in PREFIX/include so any cross-compiled
+    # stage that walks into Mesa's util headers picks it up.
+    mkdir -p "$PREFIX/include/cutils"
+    cat > "$PREFIX/include/cutils/trace.h" <<'EOF'
+/* tawc no-op stub for AOSP <cutils/trace.h>. Never enable tracing. */
+#ifndef TAWC_CUTILS_TRACE_STUB_H
+#define TAWC_CUTILS_TRACE_STUB_H
+#define ATRACE_TAG_NEVER 0
+#define ATRACE_TAG_ALWAYS 0
+#define ATRACE_TAG_GRAPHICS 0
+#define ATRACE_TAG_INPUT 0
+static inline void atrace_begin(uint64_t tag, const char *name) { (void)tag; (void)name; }
+static inline void atrace_end(uint64_t tag) { (void)tag; }
+static inline void atrace_async_begin(uint64_t tag, const char *name, int32_t cookie) { (void)tag; (void)name; (void)cookie; }
+static inline void atrace_async_end(uint64_t tag, const char *name, int32_t cookie) { (void)tag; (void)name; (void)cookie; }
+static inline void atrace_setcount(uint64_t tag, const char *name, int32_t value) { (void)tag; (void)name; (void)value; }
+static inline void atrace_init(void) {}
+static inline uint64_t atrace_get_enabled_tags(void) { return 0; }
+static inline int atrace_is_tag_enabled(uint64_t tag) { (void)tag; return 0; }
+#endif
 EOF
 }
 
-stage_libgbm_shim() {
-    stage_should_run libgbm-shim || return 0
-    # Tawc-local AHB-backed libgbm shim. Xwayland's xwayland-glamor-gbm.c
-    # is hardcoded against the GBM API (gbm_bo_create + gbm_bo_get_fd
-    # etc); on Android there's no libgbm to satisfy it. We ship a tiny
-    # bionic-built libgbm.so that backs each `gbm_bo` with an
-    # AHardwareBuffer and exposes `gbm.h`-shaped accessors. Source lives
-    # under client/gbm-android-shim/; the build is hand-rolled (no
-    # autotools) because there are only a couple of files.
-    local src="$REPO_DIR/client/gbm-android-shim"
-    local build="$OUT_DIR/build-libgbm-shim"
-    mkdir -p "$build"
-    echo "==> compile libgbm shim"
-    "$CC" $CFLAGS_CROSS -shared -fPIC \
-        -I"$src/include" \
-        -I"$PREFIX/include" \
-        "$src/gbm.c" \
-        -o "$build/libgbm.so" \
-        -Wl,-soname,libgbm.so.1 \
-        $LDFLAGS_CROSS \
-        -lnativewindow -ldl
-    install -m 0644 "$build/libgbm.so" "$PREFIX/lib/libgbm.so"
-    install -m 0644 "$build/libgbm.so" "$PREFIX/lib/libgbm.so.1"
-    install -m 0644 -D "$src/include/gbm.h" "$PREFIX/include/gbm.h"
-    cat > "$PC_DIR/gbm.pc" <<EOF
-prefix=$PREFIX
-exec_prefix=\${prefix}
-libdir=\${prefix}/lib
-includedir=\${prefix}/include
-Name: gbm
-Description: Generic Buffer Management (tawc Android shim)
-Version: 21.0.0
-Libs: -L\${libdir} -lgbm
-Cflags: -I\${includedir}
-EOF
+stage_mesa() {
+    stage_should_run mesa || return 0
+    # Mesa-Zink: `libGL.so` + `libgbm.so` + `libEGL_mesa.so` etc.
+    # crossed for bionic, with Zink as the only Gallium driver. Zink
+    # speaks Vulkan against the device's stock `libvulkan.so` (loader
+    # in NDK; ICD picked up at runtime from the vendor blobs), so
+    # this gives Xwayland's GLAMOR + GLX a hardware-accelerated GL
+    # implementation through the phone's existing Vulkan stack —
+    # no libhybris, no kernel changes, no DRM-render-node access.
+    #
+    # `-Dvulkan-drivers=` empty: we use the system Vulkan loader at
+    # runtime, no Mesa Vulkan ICD. `-Dllvm=disabled`: Zink doesn't
+    # need LLVM (only llvmpipe / softpipe do). `-Dglvnd=disabled`:
+    # ship a self-contained `libGL.so` (no separate libglvnd
+    # dispatch). `-Dxmlconfig=disabled`: skip driconf XML so we
+    # don't have to ship that wrinkle. `-Dosmesa=false`: no
+    # offscreen software path.
+    #
+    # `egl-native-platform=x11` matches Xwayland's expectation that
+    # libEGL drives a Display* on the X11 side; the Wayland platform
+    # is enabled too for symmetry / future use.
+    clone_pinned mesa https://gitlab.freedesktop.org/mesa/mesa.git mesa-25.1.6
+    build_meson mesa \
+        -Dgallium-drivers=zink \
+        -Dvulkan-drivers= \
+        -Dplatforms=x11,wayland \
+        -Degl=enabled \
+        -Degl-native-platform=x11 \
+        -Dgles1=disabled \
+        -Dgles2=enabled \
+        -Dglx=dri \
+        -Dgbm=enabled \
+        -Dopengl=true \
+        -Dosmesa=false \
+        -Dxmlconfig=disabled \
+        -Dllvm=disabled \
+        -Dshared-glapi=enabled \
+        -Dglvnd=disabled \
+        -Dvalgrind=disabled \
+        -Dlibunwind=disabled \
+        -Dzstd=disabled \
+        -Dlmsensors=disabled \
+        -Dvideo-codecs= \
+        -Dintel-rt=disabled \
+        -Dmicrosoft-clc=disabled \
+        -Dbuild-tests=false
 }
 
 stage_xwayland() {
     stage_should_run xwayland || return 0
     clone_pinned xwayland https://gitlab.freedesktop.org/xorg/xserver.git xwayland-24.1.11
     # Xwayland-24.1 has a meson build at the xserver root.
-    # GLAMOR + GLX are STILL OFF for now (-Dglamor=false / -Dglx=false)
-    # — the build deps (libepoxy, libgbm shim, dri.pc stub) are all in
-    # place above so a future change can flip them to true. What's
-    # missing for a real flip is the Mesa side: GLX needs a libGL.so
-    # providing `glClear`/`glDrawArrays`/etc. as ELF symbols, plus the
-    # `<GL/gl.h>` + `<GL/glext.h>` + `<GL/internal/dri_interface.h>`
-    # headers, which we don't ship. See notes/xwayland.md "GLAMOR/GLX
-    # next steps" for the plan.
+    # GLAMOR + GLX are ON: Mesa-Zink (built in `stage_mesa`) provides
+    # libGL.so / libEGL_mesa.so / libgbm.so, all of which Xwayland's
+    # GLX server-side and `xwayland-glamor-gbm.c` link against. At
+    # runtime libEGL_mesa drives Zink, which talks to the device's
+    # stock `libvulkan.so` for hardware-accelerated GL.
     build_meson xwayland \
         -Dxvfb=false \
-        -Dglamor=false \
+        -Dglamor=true \
         -Ddri3=false \
         -Ddrm=false \
-        -Dglx=false \
+        -Dglx=true \
         -Dxres=false \
         -Dxv=false \
         -Dxinerama=false \
@@ -622,8 +692,15 @@ stage_libmd
 stage_xkeyboard_config
 stage_xkbcomp
 stage_libepoxy
-stage_libgbm_shim
-stage_dri_pc_stub
+stage_expat
+stage_libxext
+stage_libxfixes
+stage_libxxf86vm
+stage_libxrender
+stage_libxrandr
+stage_libxdamage
+stage_cutils_stub
+stage_mesa
 stage_xwayland
 
 # More stages (libxcb, libxau, libxkbfile, freetype, libxfont2, wayland,
