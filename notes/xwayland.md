@@ -79,13 +79,23 @@ termux's pinned versions to our slightly-newer upstream tags. The
 | `libdrm` | mesa/drm | libdrm-2.4.125 |
 | `libxshmfence` | xorg/lib/libxshmfence | libxshmfence-1.3.3 |
 | `libmd` | hadrons.org tarball | 1.1.0 |
+| `libepoxy` | anholt/libepoxy | 1.5.10 |
+| `libgbm-shim` | tawc-local | (`client/gbm-android-shim/`) |
+| `dri-pc-stub` | tawc-local (data-only) | — |
 | `xwayland` | xorg/xserver | xwayland-24.1.11 |
 
 ### Out-of-scope features (disabled at configure time)
 
-- **GLAMOR.** No GL accel for X clients — they get pixman / software
-  rendering, which Xwayland composites into a Wayland surface for us.
-- **DRI3 / present-pixmap.** Same reason as GLAMOR.
+- **GLAMOR + GLX.** OFF for now. X clients get pixman / software 2D
+  rendering, but **GL-via-X is unsupported** — anything that calls
+  `glXChooseVisual` / `glXCreateContext` (glxgears, supertuxkart's
+  Irrlicht backend, plenty of legacy GL games) fails. See "GLAMOR /
+  GLX next steps" below for the in-progress plan; build-side deps
+  (libepoxy, AHB-backed libgbm shim, dri.pc stub) are already wired
+  so a future change can flip `-Dglamor=true` / `-Dglx=true`.
+- **DRI3 / present-pixmap.** OFF. DRI3 wants a real DRM render node
+  and dmabuf-fd buffer passing; AHB doesn't expose its dmabuf fd
+  publicly so we can't fake one even with a libgbm shim.
 - **MIT-MAGIC-COOKIE auth.** Single-user on-device server; any client
   can use `:0` without auth.
 - **XDMCP, secure-rpc, xselinux, xinerama, xres, xv, xshmfence-as-futex,
@@ -95,6 +105,70 @@ termux's pinned versions to our slightly-newer upstream tags. The
 `<xf86drm.h>` unconditionally even with `-Ddrm=false`. We ship the
 small generic `libdrm.so` (no vendor drivers) for the few struct
 definitions Xwayland needs at the type level.
+
+### GLAMOR / GLX next steps (in progress, build-side scaffolding done)
+
+Goal: turn `-Dglamor=true` / `-Dglx=true` on so X11 GL clients work
+(glxgears, supertuxkart-via-X11, anything Irrlicht/SDL2-on-X11). The
+bionic-side vendor EGL gives us real Adreno GL — no libhybris needed
+for the server side.
+
+**Done in this branch:**
+
+- `stage_libepoxy` — cross-compiles libepoxy 1.5.10. Meta-loader for
+  GL/GLES/EGL via `dlsym`; resolves against bionic libEGL/libGLESv2
+  at runtime.
+- `stage_libgbm_shim` — tawc-local AHB-backed `libgbm.so` (sources in
+  `client/gbm-android-shim/`). Each `gbm_bo` wraps an
+  `AHardwareBuffer` so the bionic EGL driver can wrap it as an
+  `EGLImage` via `EGL_ANDROID_get_native_client_buffer`. Limits:
+  `gbm_bo_get_fd*` returns -1 (AHB doesn't expose its gralloc fd
+  publicly), so the dmabuf-fd export path can't work as-is.
+- `stage_dri_pc_stub` — stub `dri.pc` pointing at a non-existent
+  `dridriverdir`; lets configure pass without us shipping any Mesa
+  DRI drivers (modern Xwayland routes GLX through GLAMOR's
+  `glamor_provider`, the legacy DRI loader is just a never-found
+  fallback).
+
+**Still missing before we can flip GLAMOR/GLX on:**
+
+1. **`gl.pc` + Mesa libGL stub.** Xwayland's `glx/meson.build` needs
+   `dependency('gl')`. The X server's GLX implementation calls a
+   wide range of desktop-GL functions (`glClear`, `glDrawArrays`,
+   `glAccum`, `glBegin`/`glEnd`, …) directly as ELF symbols, so a
+   libepoxy meta-loader isn't enough — we need either a real Mesa
+   libGL build for bionic or a hand-rolled libGL stub that forwards
+   each entry point to GLES2/EGL via `dlsym`. The libGL stub is
+   probably ~500 lines of mostly mechanical C.
+2. **Mesa GL headers** — `<GL/gl.h>`, `<GL/glext.h>`,
+   `<GL/internal/dri_interface.h>`. Public Khronos / Mesa headers,
+   vendored as another stage.
+3. **EGL platform substitution.** `xwayland-glamor-gbm.c:1732` calls
+   `glamor_egl_get_display(EGL_PLATFORM_GBM_MESA, gbm)` — Android EGL
+   doesn't have `EGL_PLATFORM_GBM_*`. Patch to fall back to
+   `eglGetPlatformDisplay(EGL_PLATFORM_ANDROID_KHR, EGL_DEFAULT_DISPLAY, …)`
+   when the GBM platform isn't advertised. Also skip the
+   `open(/dev/dri/renderDxxx)` step since we don't have one.
+4. **Buffer transport to the compositor.** Xwayland sends GLAMOR
+   output buffers via `zwp_linux_dmabuf_v1`. Android EGL doesn't
+   advertise `EGL_EXT_image_dma_buf_import`, so the compositor side
+   can't re-import. Two options:
+     - (a) Patch Xwayland to use our `android_wlegl` protocol when
+       the compositor advertises it (smaller protocol, AHB-native,
+       matches what other tawc Wayland clients do).
+     - (b) Extract dmabuf fd from `AHardwareBuffer` via private
+       gralloc internals and ship via `zwp_linux_dmabuf_v1`. Hairy:
+       AHB doesn't expose the fd, so this requires either AOSP
+       internal-handle parsing or `AHardwareBuffer_sendHandleToUnixSocket`
+       round-tripping through a socket pair.
+   (a) is cleaner and reuses the AHB import path the compositor
+   already has for native Wayland clients.
+
+This is a multi-day sequel to the initial Xwayland landing. Most of
+the work is items 3 + 4; item 1 (libGL stub) is mechanical but
+tedious. **Until any of this lands, X11 GL clients have to use the
+Wayland path** (`SDL_VIDEODRIVER=wayland,x11` for SDL apps, GTK/Qt
+already prefer Wayland natively).
 
 ## Compositor-side wiring (done; on-disk in this branch)
 

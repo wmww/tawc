@@ -473,12 +473,93 @@ stage_xkeyboard_config() {
     fi
 }
 
+stage_libepoxy() {
+    stage_should_run libepoxy || return 0
+    # GLAMOR meta-loads GL/GLES/EGL through libepoxy (epoxy_gl_function,
+    # epoxy_has_egl_extension, …). The stage links epoxy against
+    # bionic's vendor `libEGL.so` + `libGLESv2.so` directly — no
+    # libhybris involvement. Turn off GLX (no GLX server on bionic
+    # Android) and X11 (no DT_NEEDED on libX11 from inside the X
+    # server). epoxy's meson defaults to building tests/docs that need
+    # an X display; disable both.
+    clone_pinned libepoxy https://github.com/anholt/libepoxy.git 1.5.10
+    build_meson libepoxy \
+        -Dglx=no \
+        -Dx11=false \
+        -Degl=yes \
+        -Dtests=false
+}
+
+stage_dri_pc_stub() {
+    stage_should_run dri-pc-stub || return 0
+    # Xwayland's `meson.build` looks up a `dri.pc` (Mesa's data-only
+    # pkg-config file) when GLX is enabled — `dridriverdir` is baked
+    # into `glxdricommon.c` for legacy DRI driver loading. We don't
+    # ship Mesa DRI drivers; modern Xwayland routes GLX through
+    # GLAMOR's `glamor_provider`, so the path is only consulted as a
+    # never-found fallback. Stub the .pc with a non-existent dir so
+    # configure passes and the runtime simply finds nothing there.
+    cat > "$PC_DIR/dri.pc" <<EOF
+prefix=$PREFIX
+includedir=\${prefix}/include
+dridriverdir=\${prefix}/lib/dri-stub
+
+Name: dri
+Description: tawc Android stub (no DRI drivers; GLX goes through GLAMOR)
+Version: 26.0.0
+Cflags: -I\${includedir}
+EOF
+}
+
+stage_libgbm_shim() {
+    stage_should_run libgbm-shim || return 0
+    # Tawc-local AHB-backed libgbm shim. Xwayland's xwayland-glamor-gbm.c
+    # is hardcoded against the GBM API (gbm_bo_create + gbm_bo_get_fd
+    # etc); on Android there's no libgbm to satisfy it. We ship a tiny
+    # bionic-built libgbm.so that backs each `gbm_bo` with an
+    # AHardwareBuffer and exposes `gbm.h`-shaped accessors. Source lives
+    # under client/gbm-android-shim/; the build is hand-rolled (no
+    # autotools) because there are only a couple of files.
+    local src="$REPO_DIR/client/gbm-android-shim"
+    local build="$OUT_DIR/build-libgbm-shim"
+    mkdir -p "$build"
+    echo "==> compile libgbm shim"
+    "$CC" $CFLAGS_CROSS -shared -fPIC \
+        -I"$src/include" \
+        -I"$PREFIX/include" \
+        "$src/gbm.c" \
+        -o "$build/libgbm.so" \
+        -Wl,-soname,libgbm.so.1 \
+        $LDFLAGS_CROSS \
+        -lnativewindow -ldl
+    install -m 0644 "$build/libgbm.so" "$PREFIX/lib/libgbm.so"
+    install -m 0644 "$build/libgbm.so" "$PREFIX/lib/libgbm.so.1"
+    install -m 0644 -D "$src/include/gbm.h" "$PREFIX/include/gbm.h"
+    cat > "$PC_DIR/gbm.pc" <<EOF
+prefix=$PREFIX
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+Name: gbm
+Description: Generic Buffer Management (tawc Android shim)
+Version: 21.0.0
+Libs: -L\${libdir} -lgbm
+Cflags: -I\${includedir}
+EOF
+}
+
 stage_xwayland() {
     stage_should_run xwayland || return 0
     clone_pinned xwayland https://gitlab.freedesktop.org/xorg/xserver.git xwayland-24.1.11
-    # Xwayland-24.1 has a meson build at the xserver root. Disable
-    # everything we don't need: GLAMOR/GL, DRI3 (needs libdrm/xshmfence),
-    # XAUTH/XDM/secure-rpc/SELinux, IPv6, listen_tcp.
+    # Xwayland-24.1 has a meson build at the xserver root.
+    # GLAMOR + GLX are STILL OFF for now (-Dglamor=false / -Dglx=false)
+    # — the build deps (libepoxy, libgbm shim, dri.pc stub) are all in
+    # place above so a future change can flip them to true. What's
+    # missing for a real flip is the Mesa side: GLX needs a libGL.so
+    # providing `glClear`/`glDrawArrays`/etc. as ELF symbols, plus the
+    # `<GL/gl.h>` + `<GL/glext.h>` + `<GL/internal/dri_interface.h>`
+    # headers, which we don't ship. See notes/xwayland.md "GLAMOR/GLX
+    # next steps" for the plan.
     build_meson xwayland \
         -Dxvfb=false \
         -Dglamor=false \
@@ -540,6 +621,9 @@ stage_libxshmfence
 stage_libmd
 stage_xkeyboard_config
 stage_xkbcomp
+stage_libepoxy
+stage_libgbm_shim
+stage_dri_pc_stub
 stage_xwayland
 
 # More stages (libxcb, libxau, libxkbfile, freetype, libxfont2, wayland,
