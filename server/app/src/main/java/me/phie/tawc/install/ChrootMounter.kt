@@ -135,6 +135,21 @@ object ChrootMounter {
         // install-time-only because it's identical for every install.
         sb.appendLine(
             """
+            # XWayland: the bionic-built Xwayland binary on the Android side
+            # opens its X11 listening socket at /data/data/me.phie.tawc/xtmp/.X11-unix/X<n>
+            # (because Android has no /tmp). Bind that into the chroot so X
+            # clients see it at the standard /tmp/.X11-unix path. mkdir
+            # before binding because /tmp inside the chroot is just a normal
+            # tmpfs / overlay directory; the bind only attaches if both ends
+            # exist.
+            if [ -d "$tawcData/xtmp/.X11-unix" ]; then
+                mkdir -p "${'$'}ROOTFS/tmp/.X11-unix"
+                mount_if_needed "$tawcData/xtmp/.X11-unix" "${'$'}ROOTFS/tmp/.X11-unix"
+            fi
+            """.trimIndent()
+        )
+        sb.appendLine(
+            """
             mkdir -p "${'$'}ROOTFS/etc/profile.d"
             cat > "${'$'}ROOTFS/etc/profile.d/01-tawc.sh" <<'TAWC_PROF_EOF'
             # tawc Wayland compositor environment (refreshed each chroot entry)
@@ -142,6 +157,7 @@ object ChrootMounter {
             export XDG_RUNTIME_DIR=/tmp
             export LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
             export HYBRIS_EGLPLATFORM=wayland
+            export DISPLAY=:0
             ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
             TAWC_PROF_EOF
             chmod 644 "${'$'}ROOTFS/etc/profile.d/01-tawc.sh"

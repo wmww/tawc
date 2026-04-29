@@ -1,0 +1,552 @@
+#!/bin/bash
+# Cross-compile Xwayland for aarch64 Android (bionic) and stage it for
+# packaging into the APK. Loosely modelled on `client/build-libhybris-aarch64`
+# but targets the Android NDK toolchain instead of the host glibc cross-
+# compiler — Xwayland is launched as a child of the compositor (which is
+# the Android app process), so it must be bionic-linked.
+#
+# This is a layered build: each upstream dependency is cloned into
+# `./xwayland-src/<lib>/` (gitignored) and cross-compiled into
+# `build/xwayland-aarch64/install/{bin,lib,include,share}` with the
+# install dir acting as both the staging area and the pkg-config sysroot
+# for downstream libs.
+#
+# Output (when the script eventually completes — currently WIP, see below):
+#   build/xwayland-aarch64/install/bin/Xwayland     # the binary the compositor exec()s
+#   build/xwayland-aarch64/install/lib/*.so         # libraries Xwayland dlopen/DT_NEEDED's
+#   build/xwayland-aarch64/install/share/X11/xkb/   # XKB data (subset)
+#
+# Usage:
+#   bash client/build-xwayland-aarch64           # incremental
+#   bash client/build-xwayland-aarch64 --clean   # wipe install + builddirs
+#   bash client/build-xwayland-aarch64 --only=<lib>   # build just one stage
+#
+# Build-time deps (host packages): meson, ninja, pkg-config, python3,
+# python3-libxml2, xsltproc, autoconf, automake, libtool, perl. The NDK
+# is located via $ANDROID_NDK_HOME (or under $ANDROID_HOME/ndk/<version>/).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SRC_ROOT="$REPO_DIR/xwayland-src"
+PATCH_ROOT="$REPO_DIR/xwayland-patches"
+OUT_DIR="$REPO_DIR/build/xwayland-aarch64"
+PREFIX="$OUT_DIR/install"
+PC_DIR="$PREFIX/lib/pkgconfig"
+
+# Where the X11 / XIM / ICE / wayland sockets live in our world. Patches
+# substitute @TAWC_TMP_PREFIX@ → this; the compositor mkdirs it on
+# startup; chroot's /tmp/.X11-unix is a symlink into here so X clients
+# inside the chroot find :0 normally.
+TAWC_TMP_PREFIX="/data/data/me.phie.tawc/xtmp"
+
+CLEAN=0
+ONLY=""
+for arg in "$@"; do
+    case "$arg" in
+        --clean) CLEAN=1 ;;
+        --only=*) ONLY="${arg#--only=}" ;;
+        *) echo "ERROR: unknown arg: $arg" >&2; exit 1 ;;
+    esac
+done
+
+# ── NDK toolchain ──
+if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+    DEFAULT_SDK="${ANDROID_HOME:-$HOME/android-sdk}"
+    if [ -d "$DEFAULT_SDK/ndk" ]; then
+        ANDROID_NDK_HOME="$DEFAULT_SDK/ndk/$(ls -1 "$DEFAULT_SDK/ndk" | sort -V | tail -1)"
+    fi
+fi
+if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "$ANDROID_NDK_HOME" ]; then
+    echo "ERROR: ANDROID_NDK_HOME not set and no NDK found under \$ANDROID_HOME/ndk." >&2
+    exit 1
+fi
+NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+NDK_SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+NDK_API=29
+TRIPLE=aarch64-linux-android
+CC="$NDK_BIN/${TRIPLE}${NDK_API}-clang"
+CXX="$NDK_BIN/${TRIPLE}${NDK_API}-clang++"
+AR="$NDK_BIN/llvm-ar"
+RANLIB="$NDK_BIN/llvm-ranlib"
+STRIP="$NDK_BIN/llvm-strip"
+NM="$NDK_BIN/llvm-nm"
+LD="$NDK_BIN/ld.lld"
+[ -x "$CC" ] || { echo "ERROR: clang not at $CC" >&2; exit 1; }
+
+# ── Host build tools ──
+for tool in meson ninja pkg-config python3 autoreconf libtool make perl; do
+    command -v "$tool" >/dev/null || {
+        echo "ERROR: '$tool' not on PATH." >&2
+        exit 1
+    }
+done
+
+# ── Cleanup / dirs ──
+if [ "$CLEAN" = "1" ]; then
+    echo "==> wiping $OUT_DIR"
+    rm -rf "$OUT_DIR"
+fi
+mkdir -p "$SRC_ROOT" "$PREFIX/lib" "$PREFIX/include" "$PREFIX/share" "$PC_DIR"
+
+# For autotools builds: set host (cross) pkg-config search path
+# explicitly via env. For meson builds: don't set the env (it shadows
+# both native and host pkg-config calls when meson invokes them); the
+# meson cross-file's `pkg_config_libdir` property handles the host side
+# while native deps fall through to the default /usr/lib/pkgconfig.
+PC_LIBDIR_CROSS="$PC_DIR:$PREFIX/share/pkgconfig"
+# So autoreconf in downstream stages picks up xorg-macros / xtrans / etc.
+# from our staging dir rather than (only) the host /usr/share/aclocal.
+export ACLOCAL_PATH="$PREFIX/share/aclocal:${ACLOCAL_PATH:-}"
+
+# Universal flags for every cross-compile.
+CFLAGS_CROSS="-fPIC -O2 -DANDROID -D_GNU_SOURCE -I$PREFIX/include"
+LDFLAGS_CROSS="-L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib"
+
+# ── Helpers ──
+
+clone_pinned() {
+    local name="$1" url="$2" tag="$3"
+    local dst="$SRC_ROOT/$name"
+    if [ ! -d "$dst/.git" ]; then
+        echo "==> clone $name @ $tag"
+        git clone --depth 1 --branch "$tag" "$url" "$dst"
+        apply_patches "$name"
+    else
+        local cur
+        cur=$(git -C "$dst" describe --tags --exact-match 2>/dev/null || echo "<unknown>")
+        if [ "$cur" != "$tag" ]; then
+            echo "WARNING: $dst is at '$cur', expected '$tag'. Delete to refresh." >&2
+        fi
+    fi
+}
+
+# Apply every patch file in xwayland-patches/<name>/ to the freshly-cloned
+# tree, substituting @TAWC_TMP_PREFIX@ first. Patches are vendored from
+# termux-packages with light adjustments — see xwayland-patches/<name>/*.
+# Idempotent only by virtue of being called from clone_pinned right after
+# `git clone`, so re-running the script doesn't try to reapply on a tree
+# that's already patched.
+apply_patches() {
+    local name="$1"
+    local patch_dir="$PATCH_ROOT/$name"
+    [ -d "$patch_dir" ] || return 0
+    local dst="$SRC_ROOT/$name"
+    for p in "$patch_dir"/*.patch; do
+        [ -f "$p" ] || continue
+        echo "==> patch $name: $(basename "$p")"
+        sed "s|@TAWC_TMP_PREFIX@|$TAWC_TMP_PREFIX|g" "$p" \
+            | ( cd "$dst" && patch -p1 --no-backup-if-mismatch )
+    done
+}
+
+# Generate a meson cross-file targeting the NDK toolchain. Regenerated
+# every run so the NDK path is always current.
+CROSS_FILE="$OUT_DIR/android-cross.ini"
+gen_meson_cross() {
+    cat >"$CROSS_FILE" <<EOF
+[binaries]
+c       = '$CC'
+cpp     = '$CXX'
+ar      = '$AR'
+strip   = '$STRIP'
+ld      = '$LD'
+pkg-config = 'pkg-config'
+
+[built-in options]
+c_args = ['-fPIC', '-O2', '-DANDROID', '-D_GNU_SOURCE', '-I$PREFIX/include']
+cpp_args = ['-fPIC', '-O2', '-DANDROID', '-D_GNU_SOURCE', '-I$PREFIX/include']
+c_link_args = ['-L$PREFIX/lib', '-Wl,-rpath-link,$PREFIX/lib']
+cpp_link_args = ['-L$PREFIX/lib', '-Wl,-rpath-link,$PREFIX/lib']
+
+[host_machine]
+system = 'android'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[properties]
+# Don't set sys_root — the aarch64-linux-android29-clang wrapper already
+# bakes in -isysroot, and a cross-file sys_root double-prefixes absolute
+# paths in our staged .pc files (Xwayland's wayland-protocols XML lookup
+# breaks with /sysroot/sysroot/... paths).
+pkg_config_libdir = '$PC_DIR:$PREFIX/share/pkgconfig'
+EOF
+}
+gen_meson_cross
+
+# Wrapper invoking autotools configure with NDK toolchain.
+configure_autotools() {
+    local extra=("$@")
+    PKG_CONFIG_LIBDIR="$PC_LIBDIR_CROSS" \
+    PKG_CONFIG_PATH="" \
+    ./configure \
+        --host="$TRIPLE" \
+        --prefix="$PREFIX" \
+        --libdir="$PREFIX/lib" \
+        CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" STRIP="$STRIP" \
+        CFLAGS="$CFLAGS_CROSS" \
+        CPPFLAGS="-I$PREFIX/include" \
+        LDFLAGS="$LDFLAGS_CROSS" \
+        PKG_CONFIG="pkg-config" \
+        "${extra[@]}"
+}
+
+# Run a meson setup + ninja install in $name's builddir under OUT_DIR.
+build_meson() {
+    local name="$1"; shift
+    local src="$SRC_ROOT/$name"
+    local build="$OUT_DIR/build-$name"
+    if [ ! -d "$build" ]; then
+        echo "==> meson setup $name"
+        meson setup "$build" "$src" \
+            --cross-file "$CROSS_FILE" \
+            --prefix="$PREFIX" \
+            --libdir=lib \
+            --buildtype=release \
+            -Ddefault_library=shared \
+            "$@"
+    fi
+    echo "==> ninja install $name"
+    ninja -C "$build" install
+}
+
+build_autotools() {
+    local name="$1"; shift
+    local src="$SRC_ROOT/$name"
+    ( cd "$src" && \
+        if [ ! -f configure ]; then NOCONFIGURE=1 ./autogen.sh 2>/dev/null || autoreconf -fi; fi && \
+        configure_autotools "$@" && \
+        make -j"$(nproc)" && \
+        make install )
+}
+
+stage_should_run() {
+    [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]
+}
+
+# ── Stages ──
+# Each stage:
+#   - clones a pinned upstream tag into $SRC_ROOT/<name>/
+#   - cross-compiles + installs into $PREFIX
+#   - leaves a .pc file in $PC_DIR for downstream stages
+
+stage_xorg_macros() {
+    stage_should_run xorg-macros || return 0
+    clone_pinned util-macros \
+        https://gitlab.freedesktop.org/xorg/util/macros.git \
+        util-macros-1.20.2
+    # Noarch m4 macros — installs share/aclocal + .pc only. No
+    # cross-compile needed; the host autoreconf consumes the macros.
+    local src="$SRC_ROOT/util-macros"
+    if [ ! -f "$src/configure" ]; then ( cd "$src" && autoreconf -fi ); fi
+    ( cd "$src" && \
+        ./configure --prefix="$PREFIX" && \
+        make install )
+}
+
+stage_xorgproto() {
+    stage_should_run xorgproto || return 0
+    clone_pinned xorgproto https://gitlab.freedesktop.org/xorg/proto/xorgproto.git xorgproto-2024.1
+    # xorgproto is header-only — meson install dumps headers + .pc files.
+    # Use a builddir under $OUT_DIR so the source tree stays clean.
+    build_meson xorgproto -Dlegacy=true
+}
+
+stage_xtrans() {
+    stage_should_run xtrans || return 0
+    clone_pinned xtrans https://gitlab.freedesktop.org/xorg/lib/libxtrans.git xtrans-1.6.0
+    build_autotools xtrans --disable-docs
+}
+
+stage_wayland_protocols() {
+    stage_should_run wayland-protocols || return 0
+    clone_pinned wayland-protocols \
+        https://gitlab.freedesktop.org/wayland/wayland-protocols.git \
+        1.45
+    # Build-time only: the XML files + .pc.
+    build_meson wayland-protocols -Dtests=false
+}
+
+stage_libxcvt() {
+    stage_should_run libxcvt || return 0
+    clone_pinned libxcvt https://gitlab.freedesktop.org/xorg/lib/libxcvt.git libxcvt-0.1.3
+    build_meson libxcvt
+}
+
+stage_pixman() {
+    stage_should_run pixman || return 0
+    clone_pinned pixman https://gitlab.freedesktop.org/pixman/pixman.git pixman-0.46.4
+    build_meson pixman -Dtests=disabled -Ddemos=disabled -Dgtk=disabled
+}
+
+stage_libffi() {
+    stage_should_run libffi || return 0
+    clone_pinned libffi https://github.com/libffi/libffi.git v3.5.2
+    build_autotools libffi \
+        --disable-multi-os-directory \
+        --disable-docs
+}
+
+stage_wayland() {
+    stage_should_run wayland || return 0
+    # libwayland upstream builds wayland-scanner (host tool) AND
+    # libwayland-{client,server,egl,cursor}. We only need the client lib
+    # at runtime — Xwayland uses it to talk to the compositor. The
+    # scanner is only needed at build time and we use the host's already.
+    clone_pinned wayland https://gitlab.freedesktop.org/wayland/wayland.git 1.25.0
+    build_meson wayland \
+        -Dscanner=false \
+        -Dtests=false \
+        -Ddocumentation=false \
+        -Ddtd_validation=false \
+        -Dlibraries=true
+}
+
+stage_libxau() {
+    stage_should_run libxau || return 0
+    clone_pinned libxau https://gitlab.freedesktop.org/xorg/lib/libxau.git libXau-1.0.12
+    build_autotools libxau
+}
+
+stage_xcb_proto() {
+    stage_should_run xcb-proto || return 0
+    clone_pinned xcb-proto https://gitlab.freedesktop.org/xorg/proto/xcbproto.git xcb-proto-1.17.0
+    # noarch: Python module + XML protocol files. Configure with python
+    # but no compile.
+    local src="$SRC_ROOT/xcb-proto"
+    if [ ! -f "$src/configure" ]; then ( cd "$src" && autoreconf -fi ); fi
+    ( cd "$src" && \
+        ./configure --prefix="$PREFIX" PYTHON=python3 && \
+        make install )
+}
+
+stage_libxcb() {
+    stage_should_run libxcb || return 0
+    clone_pinned libxcb https://gitlab.freedesktop.org/xorg/lib/libxcb.git libxcb-1.17.0
+    # libxcb uses libxslt + python at build to generate sources from
+    # xcb-proto's XML. Cross-compile the resulting .c, but the codegen
+    # itself runs on host with our staged xcbproto.
+    build_autotools libxcb \
+        --disable-devel-docs \
+        --without-doxygen \
+        PYTHON=python3 \
+        XCBPROTO_CFLAGS="-I$PREFIX/include" \
+        XCBPROTO_LIBS=""
+}
+
+stage_libx11() {
+    stage_should_run libx11 || return 0
+    # libxkbfile actually links libX11 (it pokes Display* internals to
+    # load XKB keymaps); Xwayland transitively pulls libX11 via that
+    # path. Patches inline FIONREAD's value (bionic compat) — see
+    # xwayland-patches/libx11/.
+    clone_pinned libx11 https://gitlab.freedesktop.org/xorg/lib/libx11.git libX11-1.8.13
+    build_autotools libx11 \
+        --disable-xthreads \
+        --disable-thread-safety-constructor \
+        --disable-xcms \
+        --disable-xf86bigfont \
+        --disable-loadable-i18n \
+        --without-fop \
+        --without-xmlto \
+        --without-launchd \
+        --enable-malloc0returnsnull
+}
+
+stage_libxkbfile() {
+    stage_should_run libxkbfile || return 0
+    clone_pinned libxkbfile https://gitlab.freedesktop.org/xorg/lib/libxkbfile.git libxkbfile-1.1.3
+    build_autotools libxkbfile
+}
+
+stage_freetype() {
+    stage_should_run freetype || return 0
+    # Pinned upstream tag rather than the gitlab mirror so we don't need
+    # to track sourceforge layout.
+    clone_pinned freetype https://gitlab.freedesktop.org/freetype/freetype.git VER-2-13-3
+    build_meson freetype \
+        -Dzlib=disabled \
+        -Dbzip2=disabled \
+        -Dpng=disabled \
+        -Dharfbuzz=disabled \
+        -Dbrotli=disabled \
+        -Dtests=disabled
+}
+
+stage_font_util() {
+    stage_should_run font-util || return 0
+    clone_pinned font-util https://gitlab.freedesktop.org/xorg/font/util.git font-util-1.4.1
+    # Noarch m4 macros + scripts; no cross-compile.
+    local src="$SRC_ROOT/font-util"
+    if [ ! -f "$src/configure" ]; then ( cd "$src" && autoreconf -fi ); fi
+    ( cd "$src" && \
+        ./configure --prefix="$PREFIX" && \
+        make install )
+}
+
+stage_libfontenc() {
+    stage_should_run libfontenc || return 0
+    clone_pinned libfontenc https://gitlab.freedesktop.org/xorg/lib/libfontenc.git libfontenc-1.1.8
+    build_autotools libfontenc \
+        --with-encodingsdir="$PREFIX/share/fonts/X11/encodings"
+}
+
+stage_libxfont2() {
+    stage_should_run libxfont2 || return 0
+    clone_pinned libxfont2 https://gitlab.freedesktop.org/xorg/lib/libxfont.git libXfont2-2.0.7
+    build_autotools libxfont2 \
+        --disable-devel-docs \
+        --without-fop \
+        --without-xmlto
+}
+
+stage_libdrm() {
+    stage_should_run libdrm || return 0
+    # xwayland-window.h includes <xf86drm.h> unconditionally even when
+    # `-Ddrm=false`; we have to ship libdrm. Vendor-specific drivers
+    # (intel/radeon/amdgpu) are turned off — only the generic xf86drm
+    # API is needed for header consumption.
+    clone_pinned libdrm https://gitlab.freedesktop.org/mesa/drm.git libdrm-2.4.125
+    build_meson libdrm \
+        -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled \
+        -Dnouveau=disabled -Dvmwgfx=disabled -Dexynos=disabled \
+        -Dfreedreno=disabled -Dvc4=disabled -Detnaviv=disabled \
+        -Dvalgrind=disabled \
+        -Dtests=false \
+        -Dman-pages=disabled
+}
+
+stage_libxshmfence() {
+    stage_should_run libxshmfence || return 0
+    clone_pinned libxshmfence https://gitlab.freedesktop.org/xorg/lib/libxshmfence.git libxshmfence-1.3.3
+    # Bionic has futex via syscall but no libc futex wrappers; the
+    # --disable-futex switch falls back to the eventfd-based path,
+    # which works on every Android kernel.
+    build_autotools libxshmfence \
+        --disable-futex
+}
+
+stage_libmd() {
+    stage_should_run libmd || return 0
+    # Provides SHA-1 for Xwayland's MIT-MAGIC-COOKIE generation.
+    # Upstream is Hadrons; their tarball is the canonical release.
+    local src="$SRC_ROOT/libmd"
+    if [ ! -d "$src" ]; then
+        echo "==> fetch libmd 1.1.0"
+        mkdir -p "$src"
+        curl -fsSL https://archive.hadrons.org/software/libmd/libmd-1.1.0.tar.xz \
+            | tar -xJ -C "$src" --strip-components=1
+    fi
+    build_autotools libmd
+}
+
+stage_xkbcomp() {
+    stage_should_run xkbcomp || return 0
+    # Xwayland still spawns xkbcomp at startup to compile the X server's
+    # keymap (modern Xwayland can use libxkbcommon directly via patches,
+    # but stock 24.1 can't). Small autotools build.
+    clone_pinned xkbcomp https://gitlab.freedesktop.org/xorg/app/xkbcomp.git \
+        xkbcomp-1.4.7
+    build_autotools xkbcomp
+}
+
+stage_xkeyboard_config() {
+    stage_should_run xkeyboard-config || return 0
+    # Noarch data package — XKB rules / symbols / geometry text files
+    # consumed by Xwayland at runtime. We bake the on-device path
+    # (XWL_INSTALL_DIR/share/X11/xkb) into Xwayland via -Dxkb_dir, so
+    # this stage stages those files into $PREFIX/share/X11/xkb.
+    clone_pinned xkeyboard-config https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config.git \
+        xkeyboard-config-2.45
+    build_meson xkeyboard-config \
+        -Dxorg-rules-symlinks=false \
+        -Dcompat-rules=false
+    # The install creates `share/X11/xkb` as an *absolute* symlink to
+    # `<host-prefix>/share/xkeyboard-config-2`, which is meaningless on
+    # the device. Rewrite it relative so the packed APK asset stays
+    # portable. Idempotent — re-runs leave the relative form in place.
+    local link="$PREFIX/share/X11/xkb"
+    if [ -L "$link" ]; then
+        ( cd "$PREFIX/share/X11" && rm xkb && ln -s ../xkeyboard-config-2 xkb )
+    fi
+}
+
+stage_xwayland() {
+    stage_should_run xwayland || return 0
+    clone_pinned xwayland https://gitlab.freedesktop.org/xorg/xserver.git xwayland-24.1.11
+    # Xwayland-24.1 has a meson build at the xserver root. Disable
+    # everything we don't need: GLAMOR/GL, DRI3 (needs libdrm/xshmfence),
+    # XAUTH/XDM/secure-rpc/SELinux, IPv6, listen_tcp.
+    build_meson xwayland \
+        -Dxvfb=false \
+        -Dglamor=false \
+        -Ddri3=false \
+        -Ddrm=false \
+        -Dglx=false \
+        -Dxres=false \
+        -Dxv=false \
+        -Dxinerama=false \
+        -Dxf86bigfont=false \
+        -Dscreensaver=false \
+        -Dxselinux=false \
+        -Dxdmcp=false \
+        -Dxdm-auth-1=false \
+        -Dsecure-rpc=false \
+        -Dipv6=false \
+        -Dlisten_tcp=false \
+        -Dlisten_local=true \
+        -Dlisten_unix=true \
+        -Dsystemd_notify=false \
+        -Dinput_thread=false \
+        -Dlibunwind=false \
+        -Dxwayland_ei=false \
+        -Dsha1=libmd \
+        -Dxkb_default_rules=evdev \
+        -Dxkb_dir="/data/data/me.phie.tawc/files/xwayland/share/X11/xkb" \
+        -Dxkb_bin_dir="/data/data/me.phie.tawc/files/xwayland/bin" \
+        -Dxkb_output_dir="$TAWC_TMP_PREFIX/xkb"
+}
+
+# Run stages in dep order. Each is independent — `--only=<name>` lets
+# you re-run a single stage during iteration.
+echo "=== bionic Xwayland build ==="
+echo "    NDK:        $ANDROID_NDK_HOME"
+echo "    target:     ${TRIPLE}${NDK_API}"
+echo "    prefix:     $PREFIX"
+echo "    cross-file: $CROSS_FILE"
+echo
+
+stage_xorg_macros
+stage_xorgproto
+stage_xtrans
+stage_wayland_protocols
+stage_libxcvt
+stage_pixman
+stage_libffi
+stage_wayland
+stage_libxau
+stage_xcb_proto
+stage_libxcb
+stage_libx11
+stage_libxkbfile
+stage_freetype
+stage_font_util
+stage_libfontenc
+stage_libxfont2
+stage_libdrm
+stage_libxshmfence
+stage_libmd
+stage_xkeyboard_config
+stage_xkbcomp
+stage_xwayland
+
+# More stages (libxcb, libxau, libxkbfile, freetype, libxfont2, wayland,
+# libmd, xwaylandproto, xwayland) are pending. Each will follow the same
+# clone_pinned + build_meson/build_autotools template. See
+# notes/xwayland.md (TODO) for the dep tree.
+
+echo
+echo "==> done (so far). Built into $PREFIX"
+ls "$PREFIX/lib" 2>/dev/null | head -20

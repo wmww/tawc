@@ -144,6 +144,15 @@ if ("arm64-v8a" in tawcAbis) {
     val buildLibhybrisTask = tasks.register<Exec>("buildLibhybris") {
         workingDir = tawcRoot
         commandLine("bash", "client/build-libhybris-aarch64")
+        // The cross-compile script is itself incremental, but invoking
+        // it on every Gradle run still spends ~30s walking 20+ autotools
+        // / meson configure-cache checks. Tell Gradle the only thing
+        // that can affect its output is the build script itself; if
+        // the libhybris install tree already has a `lib/libhybris/`
+        // dir, treat the task as up-to-date.
+        inputs.file("$tawcRoot/client/build-libhybris-aarch64")
+        outputs.dir(libhybrisInstallDir)
+        outputs.upToDateWhen { File("$libhybrisInstallDir/lib/libhybris").exists() }
     }
 
     val packLibhybrisTask = tasks.register<Exec>("packLibhybris") {
@@ -162,9 +171,68 @@ if ("arm64-v8a" in tawcAbis) {
         commandLine("tar", "--format=ustar",
             "--exclude=*.la", "--exclude=pkgconfig",
             "-cf", "${project.projectDir}/$libhybrisAssetFile", "lib")
+        inputs.dir("$libhybrisInstallDir/lib")
+        outputs.file(libhybrisAssetFile)
     }
 
     tasks.named("preBuild") {
         dependsOn(packLibhybrisTask)
+    }
+
+    // Cross-compile Xwayland (and its bionic-ported X11 / font / pixman
+    // dep tree) and pack as `assets/xwayland/<abi>.tar`. Extracted at
+    // runtime by `CompositorService.ensureXwaylandExtracted` into
+    // `<filesDir>/xwayland/`, which the compositor then exec()s as the
+    // X server child for any X11 client. The cross-compile lives in
+    // `client/build-xwayland-aarch64`; see notes/xwayland.md for the
+    // full pipeline. Aarch64-only — same reason as libhybris (no
+    // emulator support; the bionic-Xwayland piece itself would build,
+    // but there's no point shipping it without GPU acceleration).
+    val xwaylandAbi = "arm64-v8a"
+    val xwaylandInstallDir = "$tawcRoot/build/xwayland-aarch64/install"
+    val xwaylandAssetFile = "src/main/assets/xwayland/$xwaylandAbi.tar"
+
+    val buildXwaylandTask = tasks.register<Exec>("buildXwayland") {
+        workingDir = tawcRoot
+        commandLine("bash", "client/build-xwayland-aarch64")
+        // Same incremental story as `buildLibhybris`: the build script
+        // is itself idempotent, but iterating its 21 stages on every
+        // assemble (most of which no-op) still costs tens of seconds.
+        // Skip when the binary + xkb data are already present.
+        inputs.file("$tawcRoot/client/build-xwayland-aarch64")
+        inputs.dir("$tawcRoot/xwayland-patches")
+        outputs.dir(xwaylandInstallDir)
+        outputs.upToDateWhen {
+            File("$xwaylandInstallDir/bin/Xwayland").exists() &&
+                File("$xwaylandInstallDir/share/xkeyboard-config-2/rules/evdev").exists()
+        }
+    }
+
+    val packXwaylandTask = tasks.register<Exec>("packXwayland") {
+        dependsOn(buildXwaylandTask)
+        // Pack only what Xwayland needs at runtime: the binary, the
+        // xkbcomp helper it spawns to compile keymaps, the .so deps,
+        // and the X11 keyboard data dir (a symlink to
+        // xkeyboard-config-2, both included). `--format=ustar` for
+        // portability; symlinks are preserved by default. Headers,
+        // .a / .la / pkg-config / share/man / share/aclocal etc. are
+        // build-only artefacts that we don't need on-device.
+        doFirst { mkdir(file(xwaylandAssetFile).parentFile) }
+        workingDir = file(xwaylandInstallDir)
+        commandLine("tar", "--format=ustar",
+            "--exclude=*.la", "--exclude=*.a",
+            "-cf", "${project.projectDir}/$xwaylandAssetFile",
+            "bin/Xwayland", "bin/xkbcomp",
+            "lib",
+            "share/X11", "share/xkeyboard-config-2")
+        inputs.file("$xwaylandInstallDir/bin/Xwayland")
+        inputs.file("$xwaylandInstallDir/bin/xkbcomp")
+        inputs.dir("$xwaylandInstallDir/lib")
+        inputs.dir("$xwaylandInstallDir/share/xkeyboard-config-2")
+        outputs.file(xwaylandAssetFile)
+    }
+
+    tasks.named("preBuild") {
+        dependsOn(packXwaylandTask)
     }
 }

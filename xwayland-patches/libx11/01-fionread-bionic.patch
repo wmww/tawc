@@ -1,0 +1,17 @@
+From: termux-packages
+Origin: https://github.com/termux/termux-packages/blob/master/packages/libx11/src-XlibInt.c.patch
+
+Bionic's <sys/ioctl.h> doesn't transitively include <asm-generic/ioctls.h>,
+so FIONREAD is undeclared. Inline the constant value (0x541B is the Linux
+asm-generic value, valid on every aarch64/arm/x86 Android target).
+--- a/src/XlibInt.c
++++ b/src/XlibInt.c
+@@ -1255,7 +1255,7 @@ _XEventsQueued(
+     WSASetLastError(last_error);
+ #else
+     last_error = errno;
+-    ioctl(ConnectionNumber(dpy), FIONREAD, &bytes);
++    ioctl(ConnectionNumber(dpy), /* FIONREAD */ 0x541B, &bytes);
+     errno = last_error;
+ #endif
+     return bytes;

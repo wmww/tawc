@@ -1,0 +1,34 @@
+From: termux-packages
+Origin: https://github.com/termux/termux-packages/blob/master/packages/xtrans/
+
+Move X11 / XIM / FS / ICE socket dirs off /tmp (not writable on Android).
+@TAWC_TMP_PREFIX@ is substituted by the build script.
+--- a/Xtranssock.c
++++ b/Xtranssock.c
+@@ -200,20 +200,20 @@
+
+
+ #if defined(X11_t)
+-#define UNIX_PATH "/tmp/.X11-unix/X"
+-#define UNIX_DIR "/tmp/.X11-unix"
++#define UNIX_PATH "@TAWC_TMP_PREFIX@/.X11-unix/X"
++#define UNIX_DIR "@TAWC_TMP_PREFIX@/.X11-unix"
+ #endif /* X11_t */
+ #if defined(XIM_t)
+-#define UNIX_PATH "/tmp/.XIM-unix/XIM"
+-#define UNIX_DIR "/tmp/.XIM-unix"
++#define UNIX_PATH "@TAWC_TMP_PREFIX@/.XIM-unix/XIM"
++#define UNIX_DIR "@TAWC_TMP_PREFIX@/.XIM-unix"
+ #endif /* XIM_t */
+ #if defined(FS_t) || defined(FONT_t)
+-#define UNIX_PATH "/tmp/.font-unix/fs"
+-#define UNIX_DIR "/tmp/.font-unix"
++#define UNIX_PATH "@TAWC_TMP_PREFIX@/.font-unix/fs"
++#define UNIX_DIR "@TAWC_TMP_PREFIX@/.font-unix"
+ #endif /* FS_t || FONT_t */
+ #if defined(ICE_t)
+-#define UNIX_PATH "/tmp/.ICE-unix/"
+-#define UNIX_DIR "/tmp/.ICE-unix"
++#define UNIX_PATH "@TAWC_TMP_PREFIX@/.ICE-unix/"
++#define UNIX_DIR "@TAWC_TMP_PREFIX@/.ICE-unix"
+ #endif /* ICE_t */

@@ -485,6 +485,10 @@ pub fn run(
         last_rendered_toplevels: 0,
     };
 
+    // Spawn Xwayland (best-effort: failure logs and continues — the
+    // Wayland-only subset of the compositor still works without it).
+    crate::xwayland::start_xwayland(&loop_handle, &loop_data.state);
+
     info!("Entering calloop event loop");
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {

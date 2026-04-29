@@ -86,6 +86,13 @@ class CompositorService : Service() {
         // land on a complete tree. Idempotent on the same versionCode.
         ensureLibhybrisExtracted(this)
 
+        // Xwayland is bionic-built and packed in the APK as
+        // `assets/xwayland/<abi>.tar`. Extracted into
+        // `<filesDir>/xwayland/{bin,lib,share}/` so the compositor can
+        // exec it as a child process; PATH + LD_LIBRARY_PATH are set
+        // by the Rust side in `compositor::xwayland::start_xwayland`.
+        ensureXwaylandExtracted(this)
+
         // Hand the application context + service to NativeBridge so its
         // reverse-JNI spawnActivity/finishActivity entry points work even
         // when no Activity is currently in the foreground.
@@ -214,6 +221,8 @@ class CompositorService : Service() {
 
         /** Lock for [ensureLibhybrisExtracted] — see method KDoc. */
         private val LIBHYBRIS_EXTRACT_LOCK = Any()
+        /** Lock for [ensureXwaylandExtracted] — see method KDoc. */
+        private val XWAYLAND_EXTRACT_LOCK = Any()
 
         /**
          * Extract `assets/libhybris/<abi>.tar` into `filesDir/libhybris/`,
@@ -314,6 +323,94 @@ class CompositorService : Service() {
             }
             File(destDir, ".version").writeText(currentVersion)
             Log.i(TAG, "Extracted libhybris ($abi) to $destDir")
+            return true
+        }
+
+        /**
+         * Extract `assets/xwayland/<abi>.tar` into `filesDir/xwayland/`,
+         * preserving symlinks. Same versioned-stamp + staging-dir-then-
+         * rename pattern as [ensureLibhybrisExtracted].
+         *
+         * The tar contains `bin/Xwayland`, `bin/xkbcomp`, `lib/` (the
+         * bionic-built shared libs Xwayland's DT_NEEDED references),
+         * `share/X11/xkb` (a relative symlink to `share/xkeyboard-config-2`
+         * — the build script rewrites the install-time absolute symlink
+         * for portability), and `share/xkeyboard-config-2/` (the actual
+         * XKB rules / symbols / geometry data files).
+         *
+         * Returns true on success or if no asset is shipped for this
+         * ABI. The compositor handles the latter gracefully — Xwayland
+         * just won't spawn (X11 clients that try `:0` get
+         * connection-refused), and Wayland clients keep working.
+         */
+        fun ensureXwaylandExtracted(context: Context): Boolean = synchronized(XWAYLAND_EXTRACT_LOCK) {
+            val abi = Build.SUPPORTED_ABIS.firstOrNull()
+                ?: return false
+            val assetPath = "xwayland/$abi.tar"
+            val available = try {
+                context.assets.open(assetPath).close()
+                true
+            } catch (_: java.io.IOException) {
+                false
+            }
+            if (!available) {
+                Log.i(TAG, "No Xwayland asset shipped for ABI $abi; X11 clients will fail to connect")
+                return false
+            }
+
+            val destDir = File(context.filesDir, "xwayland")
+            val versionFile = File(destDir, ".version")
+            val currentVersion = try {
+                context.packageManager
+                    .getPackageInfo(context.packageName, 0).longVersionCode.toString()
+            } catch (_: PackageManager.NameNotFoundException) { "0" }
+
+            if (versionFile.exists() && versionFile.readText().trim() == currentVersion) {
+                return true
+            }
+
+            val stagingDir = File(context.filesDir, "xwayland.new")
+            stagingDir.deleteRecursively()
+            stagingDir.mkdirs()
+            val stagingReal = stagingDir.canonicalFile
+            val stagingPrefix = stagingReal.absolutePath + File.separator
+
+            context.assets.open(assetPath).use { raw ->
+                TarArchiveInputStream(raw).use { tar ->
+                    while (true) {
+                        val entry = tar.nextEntry ?: break
+                        val outFile = File(stagingDir, entry.name).canonicalFile
+                        val abs = outFile.absolutePath
+                        if (abs != stagingReal.absolutePath && !abs.startsWith(stagingPrefix)) {
+                            throw java.io.IOException("Xwayland tar entry escapes staging: ${entry.name}")
+                        }
+                        when {
+                            entry.isDirectory -> outFile.mkdirs()
+                            entry.isSymbolicLink -> {
+                                outFile.parentFile?.mkdirs()
+                                Os.symlink(entry.linkName, outFile.absolutePath)
+                            }
+                            else -> {
+                                outFile.parentFile?.mkdirs()
+                                outFile.outputStream().use { out -> tar.copyTo(out) }
+                                if ((entry.mode and 0b001_001_001) != 0) {
+                                    outFile.setExecutable(true, false)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            destDir.deleteRecursively()
+            if (!stagingDir.renameTo(destDir)) {
+                throw java.io.IOException(
+                    "rename $stagingDir -> $destDir failed; refusing to fall back to a " +
+                        "symlink-flattening copy. Try clearing app storage and reinstalling."
+                )
+            }
+            File(destDir, ".version").writeText(currentVersion)
+            Log.i(TAG, "Extracted Xwayland ($abi) to $destDir")
             return true
         }
     }

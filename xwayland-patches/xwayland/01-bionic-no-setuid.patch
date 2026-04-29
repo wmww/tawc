@@ -1,0 +1,25 @@
+From: tawc
+Origin: own
+
+Android's seccomp filter for app processes terminates the process with
+SIGSYS on `setgid()` / `setuid()` calls. xorg-server's `Popen()` does
+`setgid(getgid())` / `setuid(getuid())` in the child to drop saved-uid
+privileges before exec'ing — but on Android there are no privileges to
+drop (the compositor process is the app uid, full stop), so the calls
+are a no-op semantically and a hard kill in practice. Skip them on
+Android.
+--- a/os/utils.c
++++ b/os/utils.c
+@@ -1343,10 +1343,12 @@ Popen(const char *command, const char *type)
+ #endif
+         return NULL;
+     case 0:                    /* child */
++#ifndef __ANDROID__
+         if (setgid(getgid()) == -1)
+             _exit(127);
+         if (setuid(getuid()) == -1)
+             _exit(127);
++#endif
+         if (*type == 'r') {
+             if (pdes[1] != 1) {
+                 /* stdout */

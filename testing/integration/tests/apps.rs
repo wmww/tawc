@@ -23,6 +23,7 @@ const FIREFOX_CMD: &str = "GDK_GL=gles:always firefox --no-remote";
 const FIREFOX_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 const STK_LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const GTK_LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
+const XWAYLAND_LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[test]
 fn test_firefox_launches_with_hardware_buffers() {
@@ -284,5 +285,65 @@ fn test_gtk4_app_uses_shm_buffers() {
     );
 
     app.stop().expect("gtk4-widget-factory failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+/// XWayland: launch a pure-X11 client (`xclock`) against the bionic-built
+/// Xwayland the compositor spawns at startup, and verify it actually
+/// reaches our SHM path. Covers everything from `XWayland::spawn` ➜
+/// `X11Wm` ➜ X11 surface ↔ wl_surface association ➜ SHM buffer commit ➜
+/// renderer pickup.
+///
+/// Like the gtk3-shm test, X11 clients pixman-render to RGBA SHM
+/// buffers; AHB is unavailable to them since GLAMOR is disabled in our
+/// Xwayland build (see `notes/xwayland.md`).
+#[test]
+fn test_xwayland_xclock_renders_via_shm() {
+    require_compositor();
+    adb::logcat_clear().expect("Failed to clear logcat");
+
+    // `-update 1` forces a redraw every second so the client keeps
+    // pushing buffers — without it xclock draws once and goes silent,
+    // and the test would race the very first SHM import. DISPLAY=:0 is
+    // already exported by 01-tawc.sh on chroot entry, but be explicit
+    // so the test doesn't depend on env order.
+    let mut app =
+        ChrootProcess::spawn("DISPLAY=:0 xclock -update 1").expect("spawn xclock");
+    app.ensure_pgid();
+
+    let deadline = std::time::Instant::now() + XWAYLAND_LAUNCH_TIMEOUT;
+    let mut saw_buffer = false;
+    while std::time::Instant::now() < deadline {
+        if !app.is_running() {
+            app.stop().ok();
+            panic!("xclock crashed/exited before rendering — Xwayland startup failed?");
+        }
+        let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
+        if saw_shm_import(&logs) {
+            saw_buffer = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    assert!(
+        saw_buffer,
+        "xclock did not produce SHM buffer imports within {:?} — \
+         Xwayland connection or X11 surface association broken?",
+        XWAYLAND_LAUNCH_TIMEOUT
+    );
+
+    // A `compositor::xwayland: associated X11 surface ... to host`
+    // line should also be present, confirming our XwmHandler hooked
+    // the X11 window into a render host. Surface-without-host would
+    // import a buffer but never draw.
+    let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
+    assert!(
+        logs.contains("xwayland: associated X11 surface"),
+        "xclock surface never associated to a render host — \
+         X11Wm + xwayland_shell wiring broken?\nlogs:\n{logs}"
+    );
+
+    app.stop().expect("xclock failed to stop cleanly");
     assert_compositor_clean();
 }

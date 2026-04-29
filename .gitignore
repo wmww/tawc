@@ -13,6 +13,9 @@ target/
 # libhybris asset (built by the buildLibhybris Gradle task)
 server/app/src/main/assets/libhybris/
 
+# Xwayland asset (built by the buildXwayland Gradle task)
+server/app/src/main/assets/xwayland/
+
 # IDE
 .idea/
 *.iml
@@ -33,3 +36,4 @@ proot-deps/
 
 # Local default device selection (see client/select-device.sh)
 .tawctarget
+xwayland-src/

@@ -26,6 +26,7 @@ mod background;
 mod event_loop;
 mod input;
 mod text_input;
+mod xwayland;
 
 use gl_import::AhbTextureImporter;
 use compositor::TawcState;

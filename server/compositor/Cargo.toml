@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "renderer_gl", "desktop"] }
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "renderer_gl", "desktop", "xwayland"] }
 jni = "0.21"
 ndk = { version = "0.9", features = ["api-level-29"] }
 ndk-sys = "0.6"

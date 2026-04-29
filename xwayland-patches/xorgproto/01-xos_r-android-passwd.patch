@@ -1,0 +1,28 @@
+From: termux-packages
+Origin: https://github.com/termux/termux-packages/blob/master/packages/xorgproto/include-x11-Xos_r.h.patch
+
+bionic's `struct passwd` lacks `pw_class`; treat Android like the BSDs.
+--- a/include/X11/Xos_r.h
++++ b/include/X11/Xos_r.h
+@@ -248,7 +248,7 @@
+  */
+
+ #if defined(__NetBSD__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+-    defined(__APPLE__) || defined(__DragonFly__)
++    defined(__APPLE__) || defined(__DragonFly__) || defined(__ANDROID__)
+ static __inline__ void _Xpw_copyPasswd(_Xgetpwparams p)
+ {
+    memcpy(&(p).pws, (p).pwp, sizeof(struct passwd));
+@@ -261,11 +261,7 @@ static __inline__ void _Xpw_copyPasswd(_Xgetpwparams p)
+    (p).len = strlen((p).pwp->pw_passwd);
+    strcpy((p).pws.pw_passwd,(p).pwp->pw_passwd);
+
+-   (p).pws.pw_class = (p).pws.pw_passwd + (p).len + 1;
+-   (p).len = strlen((p).pwp->pw_class);
+-   strcpy((p).pws.pw_class, (p).pwp->pw_class);
+-
+-   (p).pws.pw_gecos = (p).pws.pw_class + (p).len + 1;
++   (p).pws.pw_gecos = (p).pws.pw_passwd + (p).len + 1;
+    (p).len = strlen((p).pwp->pw_gecos);
+    strcpy((p).pws.pw_gecos, (p).pwp->pw_gecos);
+

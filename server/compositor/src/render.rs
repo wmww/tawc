@@ -314,10 +314,16 @@ pub fn import_shm_buffers(state: &mut TawcState, renderer: &mut GlesRenderer) ->
         .collect();
 
     // Collect all root surfaces to walk: toplevels + their popup surfaces
+    // + every X11 surface that has a backing wl_surface.
     let mut all_roots: Vec<_> = toplevel_surfaces.clone();
     for toplevel_wl in &toplevel_surfaces {
         for (popup, _) in PopupManager::popups_for_surface(toplevel_wl) {
             all_roots.push(popup.wl_surface().clone());
+        }
+    }
+    for x11 in &state.x11_surfaces {
+        if let Some(wl) = x11.wl_surface() {
+            all_roots.push(wl);
         }
     }
 
@@ -543,6 +549,23 @@ fn collect_surface_draws(
         }
     }
 
+    // X11 toplevels (XWayland). They live in a parallel list — the
+    // X11Surface holds a backing wl_surface that the standard
+    // commit/buffer path already populates; we just walk it here.
+    for x11 in &state.x11_surfaces {
+        let root = match x11.wl_surface() {
+            Some(s) => s,
+            None => continue,
+        };
+        match state.x11_to_host.get(&root) {
+            Some(assigned) if assigned == host_id => {}
+            _ => continue,
+        }
+        let start = draws.len();
+        collect_tree_draws(&root, 0, 0, &surface_fn, &mut draws);
+        draws[start..].reverse();
+    }
+
     draws
 }
 
@@ -706,5 +729,26 @@ pub fn send_frame_callbacks(state: &TawcState, time: u32) {
         for (popup, _) in PopupManager::popups_for_surface(wl) {
             send_callbacks(popup.wl_surface());
         }
+    }
+
+    // X11 surfaces (XWayland clients) — same foreground gate as
+    // xdg toplevels. Without callbacks, animating X clients (xclock,
+    // glxgears, …) push only their first frame and then sit silent
+    // waiting for the compositor to acknowledge.
+    for x11 in &state.x11_surfaces {
+        let wl = match x11.wl_surface() {
+            Some(s) => s,
+            None => continue,
+        };
+        let host_is_fg = state
+            .x11_to_host
+            .get(&wl)
+            .and_then(|id| state.hosts.get(id))
+            .map(|h| h.foreground)
+            .unwrap_or(false);
+        if !host_is_fg {
+            continue;
+        }
+        send_callbacks(&wl);
     }
 }

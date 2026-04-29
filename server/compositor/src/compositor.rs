@@ -44,7 +44,10 @@ use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorati
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xwayland_shell::XWaylandShellState;
+use smithay::xwayland::{X11Surface, X11Wm, XWaylandClientData};
 use smithay::delegate_viewporter;
+use smithay::delegate_xwayland_shell;
 
 use crate::host::{ActivityId, OutputHost};
 use crate::protocol::android_wlegl::server::android_wlegl::AndroidWlegl;
@@ -185,6 +188,24 @@ pub struct TawcState {
     /// needs_render stays false, and we stop redrawing even though the client
     /// keeps producing frames.
     pub buffer_commit_pending: bool,
+
+    /// XWayland state. The shell state global is created on startup and
+    /// lets X11 clients associate their X11 windows with backing
+    /// wl_surfaces. `xwm` is None until Xwayland reports Ready.
+    pub xwayland_shell_state: XWaylandShellState,
+    pub xwm: Option<X11Wm>,
+    /// X11 toplevels currently mapped. Iterated by the renderer the
+    /// same way `toplevels` is. Override-redirect surfaces (popups,
+    /// menus) live here too — the renderer doesn't yet stack them
+    /// separately above their parent.
+    pub x11_surfaces: Vec<X11Surface>,
+    /// X11Surface's wl_surface → host id, mirror of `toplevel_to_host`
+    /// for X11. Populated when an X11Surface gets a backing wl_surface
+    /// (commit-time association via xwayland_shell_v1).
+    pub x11_to_host: HashMap<WlSurface, ActivityId>,
+    /// X display number Xwayland is listening on. None until the
+    /// XWayland Ready event arrives.
+    pub xdisplay: Option<u32>,
 }
 
 impl TawcState {
@@ -238,6 +259,7 @@ impl TawcState {
 
         dh.create_global::<Self, AndroidWlegl, ()>(2, ());
         dh.create_global::<Self, ZwpTextInputManagerV3, ()>(1, ());
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
 
         Self {
             display_handle: dh,
@@ -264,6 +286,11 @@ impl TawcState {
             // gets its own Android task / recents card.
             single_activity_mode: false,
             foreground_host: None,
+            xwayland_shell_state,
+            xwm: None,
+            x11_surfaces: Vec::new(),
+            x11_to_host: HashMap::new(),
+            xdisplay: None,
         }
     }
 
@@ -333,11 +360,22 @@ impl CompositorHandler for TawcState {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        // XWayland clients carry their own ClientData type; falling
+        // through to ClientState::unwrap would panic on the very first
+        // surface commit from Xwayland.
+        if let Some(state) = client.get_data::<XWaylandClientData>() {
+            return &state.compositor_state;
+        }
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
     fn commit(&mut self, surface: &WlSurface) {
         self.popup_manager.commit(surface);
+        // Cache the host placement we picked at map_window_request.
+        // Smithay drives the X11Surface ↔ wl_surface association inside
+        // the xwayland_shell protocol handlers; we just need to read it
+        // out once it's set.
+        crate::xwayland::associate_x11_surface_if_pending(self, surface);
         // Track the attached android_wlegl (AHB) buffer so the renderer can
         // find its texture. Smithay's `SurfaceAttributes::merge_into` already
         // sent `wl_buffer.release` for the old buffer before this handler runs
@@ -609,3 +647,4 @@ delegate_xdg_decoration!(TawcState);
 delegate_xdg_shell!(TawcState);
 delegate_seat!(TawcState);
 delegate_viewporter!(TawcState);
+delegate_xwayland_shell!(TawcState);

@@ -1,0 +1,16 @@
+From: tawc
+Origin: own (no termux equivalent — termux ships an old xfont)
+
+bionic doesn't define NOFILES_MAX or NOFILE; libxfont2 caps its FONT_OPEN_MAX
+at 256 anyway, so just hardcode 256 on Android.
+--- a/src/fc/fslibos.h
++++ b/src/fc/fslibos.h
+@@ -62,6 +62,8 @@
+ #  ifndef OPEN_MAX
+ #   if defined(SVR4)
+ #    define OPEN_MAX 256
++#   elif defined(__ANDROID__)
++#    define OPEN_MAX 256
+ #   else
+ #    include <sys/param.h>
+ #    ifndef OPEN_MAX

@@ -36,6 +36,11 @@ PKGS=(
     gtk3 gtk3-demos gtk4-demos firefox supertuxkart
     # graphics:: tests
     mesa-utils weston vulkan-tools
+    # apps::test_xwayland_xclock_renders_via_shm — pure-X11 client
+    # exercising our bionic-built Xwayland (see notes/xwayland.md).
+    # libxxf86vm is xclock's transitive dep; pulling it explicitly
+    # avoids surprises if the chroot loses it via a future rollup.
+    xorg-xclock
 )
 
 echo "=== Installing chroot test deps: ${PKGS[*]} ==="

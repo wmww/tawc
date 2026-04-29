@@ -1,0 +1,16 @@
+From: termux-packages
+Origin: https://github.com/termux/termux-packages/blob/master/packages/libxau/libXau-1.0.8_AuLock.c.patch
+
+hard link(2) fails on Android filesystems that don't allow cross-directory
+hard links to the data dir; symlink works.
+--- a/AuLock.c
++++ b/AuLock.c
+@@ -91,7 +91,7 @@ XauLockAuth (
+ 	    } else
+ #endif
+ 	    {
+-	    	if (link (creat_name, link_name) != -1)
++	    	if (symlink (creat_name, link_name) != -1)
+ 		    return LOCK_SUCCESS;
+ 		if (errno == ENOENT) {
+ 		    creat_fd = -1;	/* force re-creat next time around */

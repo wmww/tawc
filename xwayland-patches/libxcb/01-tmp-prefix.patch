@@ -1,0 +1,16 @@
+From: termux-packages
+Origin: https://github.com/termux/termux-packages/blob/master/packages/libxcb/libxcb-1.12_src_xcb_util.c.patch
+
+Move the X11 socket dir off /tmp (which doesn't exist as a writable dir on
+unrooted Android). @TAWC_TMP_PREFIX@ is substituted by the build script.
+--- a/src/xcb_util.c
++++ b/src/xcb_util.c
+@@ -226,7 +226,7 @@ static int _xcb_open_unix(char *protocol, const char *file)
+ #ifdef __hpux
+     static const char unix_base[] = "/usr/spool/sockets/X11/";
+ #else
+-    static const char unix_base[] = "/tmp/.X11-unix/X";
++    static const char unix_base[] = "@TAWC_TMP_PREFIX@/.X11-unix/X";
+ #endif
+     const char *base = unix_base;
+     size_t filelen;

@@ -1,0 +1,36 @@
+From: termux-packages
+Origin: https://github.com/termux/termux-packages/blob/master/packages/xtrans/xtrans-1.4.0_Xtranslcl.c.patch
+
+Move named-pipe dirs off /tmp (Android: not writable). @TAWC_TMP_PREFIX@
+is substituted by the build script.
+--- a/Xtranslcl.c
++++ b/Xtranslcl.c
+@@ -213,23 +213,23 @@
+ #ifndef X11_t
+ #define X_STREAMS_DIR	"/dev/X"
+ #else
+-#define X_STREAMS_DIR	"/tmp/.X11-pipe"
++#define X_STREAMS_DIR	"@TAWC_TMP_PREFIX@/.X11-pipe"
+ #endif
+
+ #define DEV_PTMX	"/dev/ptmx"
+
+ #if defined(X11_t)
+
+-#define NAMEDNODENAME "/tmp/.X11-pipe/X"
++#define NAMEDNODENAME "@TAWC_TMP_PREFIX@/.X11-pipe/X"
+ #endif
+ #if defined(XIM_t)
+-#define NAMEDNODENAME "/tmp/.XIM-pipe/XIM"
++#define NAMEDNODENAME "@TAWC_TMP_PREFIX@/.XIM-pipe/XIM"
+ #endif
+ #if defined(FS_t) || defined (FONT_t)
+-#define NAMEDNODENAME	"/tmp/.font-pipe/fs"
++#define NAMEDNODENAME	"@TAWC_TMP_PREFIX@/.font-pipe/fs"
+ #endif
+ #if defined(ICE_t)
+-#define NAMEDNODENAME	"/tmp/.ICE-pipe/"
++#define NAMEDNODENAME	"@TAWC_TMP_PREFIX@/.ICE-pipe/"
+ #endif
+
+
