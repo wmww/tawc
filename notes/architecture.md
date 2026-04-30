@@ -26,7 +26,8 @@ The compositor (`server/compositor/src/`) is split into:
 - **render.rs** -- `RenderState` (GPU/EGL state), buffer import (AHB + SHM -> GL textures),
   per-host frame rendering, foreground-gated frame callbacks, the SHM magenta tint /
   wlegl-opaque shaders, and `create_egl_surface_for_window` for binding new hosts.
-- **background.rs** -- Black-to-turquoise gradient drawn behind every frame.
+  Each frame is cleared to `BACKGROUND_COLOR` (Material3 dark surface, matches the
+  rest of the app's UI) before any surfaces are drawn.
 - **egl_android.rs** -- Raw EGL context creation (with `EGL_KHR_surfaceless_context`
   default-current) and `AndroidNativeSurface` for Smithay.
 - **wlegl.rs** -- `android_wlegl` server: reconstruct client-allocated gralloc buffers

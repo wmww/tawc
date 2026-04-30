@@ -15,7 +15,7 @@ use smithay::backend::renderer::gles::{
     GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture,
     Uniform, UniformName, UniformType, UniformValue,
 };
-use smithay::backend::renderer::{Bind, Frame, ImportMemWl, Renderer};
+use smithay::backend::renderer::{Bind, Color32F, Frame, ImportMemWl, Renderer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Point, Rectangle, Size, Transform};
@@ -24,13 +24,16 @@ use smithay::wayland::compositor::{
     with_surface_tree_downward, SubsurfaceCachedState, SurfaceAttributes, TraversalAction,
 };
 
-use crate::background::BackgroundRenderer;
 use crate::compositor::TawcState;
 use crate::egl_android::AndroidNativeSurface;
 use crate::gl_import::AhbTextureImporter;
 use crate::host::OutputHost;
 use crate::wlegl::WleglBufferData;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+
+/// Material3 dark surface (#141218) — matches the home/install/distro-info
+/// activities so the compositor's empty space looks like the rest of the app.
+const BACKGROUND_COLOR: Color32F = Color32F::new(0.0784, 0.0706, 0.0941, 1.0);
 
 /// GPU-side rendering state, separate from Wayland protocol state.
 ///
@@ -53,7 +56,6 @@ pub struct RenderState {
     /// alpha), which makes the output fully transparent. See
     /// `variant_for_format` in smithay/src/backend/renderer/gles/shaders/implicit/mod.rs.
     pub wlegl_opaque_shader: Option<GlesTexProgram>,
-    pub background: Option<BackgroundRenderer>,
     pub raw_egl_display: *const c_void,
     pub raw_egl_context: *const c_void,
     /// EGL config + display handles needed to create per-host EGLSurfaces
@@ -643,10 +645,9 @@ pub fn render_frame(
     let output_size = host.physical_size;
     let mut frame = render.renderer.render(&mut target, output_size, Transform::Normal)?;
 
-    // Background gradient (black to dark turquoise)
-    if let Some(ref bg) = render.background {
-        bg.draw(&mut frame, output_size.w, output_size.h)?;
-    }
+    // Flat background matching the Material3 dark surface used by the rest
+    // of the app (home / install / distro-info screens).
+    frame.clear(BACKGROUND_COLOR, &[Rectangle::from_size(output_size)])?;
 
     let scale = state.output_scale;
     let screen_h = output_size.h;

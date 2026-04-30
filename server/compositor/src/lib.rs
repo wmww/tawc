@@ -22,7 +22,6 @@ mod protocol;
 mod wlegl;
 mod compositor;
 mod render;
-mod background;
 mod event_loop;
 mod input;
 mod text_input;
@@ -554,14 +553,12 @@ fn run_compositor(
 
     let shm_tint_shader = render::compile_shm_tint_shader(&mut renderer);
     let wlegl_opaque_shader = render::compile_wlegl_opaque_shader(&mut renderer);
-    let background = background::BackgroundRenderer::new(&mut renderer, &importer);
 
     let render_state = RenderState {
         renderer,
         importer,
         shm_tint_shader,
         wlegl_opaque_shader,
-        background,
         raw_egl_display: raw_display,
         raw_egl_context: raw_context,
         egl_display,
