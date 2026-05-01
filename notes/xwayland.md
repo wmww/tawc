@@ -83,10 +83,92 @@ of the box.
   `xwl_tawc_pixmap_get_wl_buffer(PixmapPtr)` is still a NULL stub —
   step-3 doesn't go through the pixmap router. Phase-3 GL or the
   full GLAMOR rerouting (if we ever do it) will fill it in.
-- **Phase 2 steps 4–5 — pending.** libhybris `eglplatform_x11.cpp`
-  (the EGL-on-X11 client plugin that allocates AHBs from chroot GL
-  client code and ships them via TAWC-DRI), real-app shakedown.
-  See "Phase 2 implementation order" below.
+- **Phase 2 step 4 — done (2026-05-01).** libhybris client-side
+  EGL-on-X11 platform plugin
+  (`hybris/egl/platforms/x11/{eglplatform_x11.cpp,x11_window.{h,cpp},
+  tawc_dri_protocol.h,Makefile.am}` in our libhybris fork). Mirrors the
+  existing `eglplatform_wayland` plugin: `x11ws_GetDisplay` wraps an
+  Xlib `Display *` and extracts the underlying `xcb_connection_t` via
+  `XGetXCBConnection`; `x11ws_eglInitialized` probes the `TAWC-DRI`
+  extension (`xcb_query_extension` + the major opcode); `x11ws_CreateWindow`
+  treats `EGLNativeWindowType` as an X11 `Window` XID and builds an
+  `X11NativeWindow : EGLBaseNativeWindow`. The window's
+  `dequeueBuffer` allocates AHBs through libhybris's existing AHB
+  gralloc backend (same `hybris_gralloc_allocate` path
+  `ClientWaylandBuffer` already uses), and `queueBuffer` ships the
+  AHB's `native_handle_t` (numFds + numInts inline + fds out-of-band
+  via `xcb_send_request_with_fds`) over the existing X11 connection
+  using a hand-rolled TAWCDRIPresentBuffer wire definition that
+  matches the server-side `Xext/tawcdriproto.h`. Three-buffer
+  round-robin pool with no server→client release feedback (TAWC-DRI
+  doesn't carry one today; the round-robin gives the compositor
+  enough breathing room before slot-N is reused).
+  Wired through `--enable-x11` in `hybris/configure.ac`,
+  `EGL_PLATFORM_X11_KHR` dispatch in `hybris/egl/egl.c` (under
+  `#ifdef WANT_X11`, parallel to the existing `WANT_WAYLAND`
+  branch), and a new `x11` SUBDIRS entry in
+  `hybris/egl/platforms/Makefile.am`. `client/build-libhybris-aarch64`
+  generates stub SONAMEs for `libX11.so.6` / `libxcb.so.1` /
+  `libX11-xcb.so.1` (chroot supplies real impls at runtime, same
+  pattern as the existing wayland-client/server stubs) and synthesises
+  pkg-config files pointing at the host's plain-C X11/xcb headers.
+  Verification: `apps::test_eglx11_renders_via_ahb` runs a
+  chroot-side EGL-on-X11 client (`testing/eglx11-test/`) for 30
+  frames; the test asserts `eglGetPlatformDisplay(EGL_PLATFORM_X11_KHR)`
+  succeeds, GL_VENDOR=Qualcomm, and the compositor logs both
+  `wlegl: create_buffer 320x240 ... fmt=1` (AHB import via
+  TAWC-DRI, not SHM) AND
+  `wlegl: imported ANativeWindowBuffer as texture 320x240`
+  (full GL bind). On OnePlus 9 (Adreno 660) the client picks up the
+  vendor GLES driver via libhybris's TLS thunks and ships frames
+  end-to-end with no CPU readback.
+- **Phase 2 step 5 — done (2026-05-01).** Real-app shakedown via
+  `es2gears_x11` (Arch's `mesa-demos`) — a stock GLES-on-X11 client
+  (the classic 3-spinning-gears demo) renders end-to-end via our
+  TAWC-DRI pipe at native frame rate. ~1500 buffer round-trips per
+  second over an 8-second smoke run, zero AHB import failures, gears
+  visibly rotate correctly with no magenta tint, no distortion, no
+  artefacts. Two fixes were needed to land it:
+  - **EGL_NATIVE_VISUAL_ID translation.** Standard EGL-X11 toolchains
+    (es2gears_x11, glmark2, every glad/glut-style EGLUT init) call
+    `eglGetConfigAttrib(EGL_NATIVE_VISUAL_ID)` then
+    `XGetVisualInfo(VisualIDMask)` and refuse to continue if the
+    visual lookup fails. Android EGL hands back HAL pixel-format
+    constants there (e.g. `0x2` for `RGBA_8888`), which match no X11
+    visual ID. Fix: a new optional ws_module hook
+    `eglGetConfigAttrib` in libhybris (`hybris/egl/ws.{h,c}`,
+    `hybris/egl/egl.c`); the X11 platform plugin caches the screen's
+    default visual ID at GetDisplay and returns it for
+    EGL_NATIVE_VISUAL_ID. Other platforms leave the hook NULL and
+    behaviour is unchanged.
+  - **Server-side wl_buffer.release listener.** The step-3
+    `xwl_tawc_present_native_handle` deliberately leaked the per-
+    present `xwl_tawc_buffer + AHB + wl_buffer` trio, on the basis
+    that the verification client only did one-shot presents. For a
+    real GL app doing thousands of frames, that pattern hits the
+    compositor's `RLIMIT_NOFILE` within seconds (each AHB carries
+    ≥1 fd, and `tawc_wlegl_import` opened a fresh GraphicBuffer per
+    create_buffer). Fix: add a `wl_buffer.release` listener in
+    `xwayland-tawc.c` that destroys the trio on release, bounding
+    the live working set to the compositor's queue depth (~3) regardless
+    of total frame count.
+  - **Present-flip verification.** Instrumented
+    `present/present_scmd.c::present_check_flip()` with an `ErrorF`
+    on each early-return + the success path; over the full
+    es2gears run zero `xwl_present_flip` lines fired. That
+    *confirms by absence* what the step-3 architecture was designed
+    to do: the libhybris EGL-X11 pipe bypasses Present entirely,
+    going TAWCDRIPresentBuffer → `xwl_tawc_present_native_handle` →
+    direct wl_surface attach. There is no flip-vs-copy choice
+    because there is no Present in the path; "direct attach" is
+    strictly faster and zero-copy by construction. Verification:
+    `apps::test_es2gears_x11_renders_via_ahb` runs es2gears for 4s
+    and asserts ≥100 AHB imports, zero `createFromHandle` failures,
+    no `Xwayland disconnected: Protocol error`. mesa-demos added to
+    `testing/install-test-deps.sh`.
+
+  **Wine-game shakedown remains future work** — left for when a
+  specific Wine workload becomes interesting.
 - **Phase 3 — probably skip.** Server-side EGL acceleration
   (GLAMOR-equivalent). Only matters for legacy XRender-heavy apps
   that nobody runs on a phone.
@@ -373,15 +455,33 @@ shows a chroot-side gradient AHB on the compositor; logs prove the
 AHB went through android_wlegl and was bound as a GL texture. **At
 this point everything except the libhybris EGL plugin is done and proven.**
 
-**4. libhybris `eglplatform_x11.cpp`.** This is the biggest single
-piece and the riskiest unknown, but by the time we start it, the
-*destination* of its rendered buffers is fully working. Implement
-`eglGetPlatformDisplay(EGL_PLATFORM_X11_KHR, …)`, surface creation
-backed by AHB, and `eglSwapBuffers` shipping via `TAWCDRIPresentBuffer`.
-**Verification:** a chroot-side `glxgears`-equivalent EGL-on-X11
-test program renders to the compositor at native frame rate with
-zero CPU readback (verify via `present_check_flip` instrumentation
-+ render path tracing on the compositor side).
+**4. libhybris `eglplatform_x11.cpp`. Done (2026-05-01).** The biggest
+single piece and the riskiest unknown went smoother than expected
+because step 3 had de-risked everything downstream. New plugin under
+`hybris/egl/platforms/x11/` modeled on `eglplatform_wayland.cpp` /
+`wayland_window.{h,cpp}`. `x11ws_GetDisplay` accepts an Xlib
+`Display *` and pulls the `xcb_connection_t` via `XGetXCBConnection()`;
+`eglInitialized` probes TAWC-DRI; `CreateWindow` builds an
+`X11NativeWindow : EGLBaseNativeWindow` whose `dequeueBuffer`
+allocates AHBs via `hybris_gralloc_allocate` (the AHB gralloc
+backend, same path `ClientWaylandBuffer` uses) and `queueBuffer`
+sends a `TAWCDRIPresentBuffer` over the existing X11 connection via
+`xcb_send_request_with_fds`. Wire definitions vendored as a
+hand-rolled `tawc_dri_protocol.h` mirroring `Xext/tawcdriproto.h`
+on the server side — small enough not to be worth pulling in xcbproto.
+Build wired via `--enable-x11`, `EGL_PLATFORM_X11_KHR` dispatch in
+`hybris/egl/egl.c`, X11/xcb stub `.so`s + synth pkg-config in
+`client/build-libhybris-aarch64`. **Verification:**
+`apps::test_eglx11_renders_via_ahb` runs a chroot-side EGL-on-X11
+test program (`testing/eglx11-test/`) for 30 frames and asserts the
+compositor logged `wlegl: create_buffer ... fmt=1` AND
+`wlegl: imported ANativeWindowBuffer as texture` for that surface
+(AHB, not SHM, not magenta). On OnePlus 9 Adreno 660 the client
+picks up the vendor GLES driver through libhybris's TLS thunks.
+The `present_check_flip` instrumentation hook is still pending;
+since the test only asserts the compositor sees AHBs (which is the
+sufficient outcome for zero-CPU-readback), the explicit "did Present
+pick flip mode" check is folded into step 5's real-app shakedown.
 
 **5. Real-app shakedown.** `glmark2-x11`, then a Wine GL game
 (picks up X subwindows / `XGetImage` edge cases). Land integration
@@ -997,3 +1097,54 @@ patcher script alongside the existing four.
   client AHB → TAWC-DRI → X server → android_wlegl → compositor
   gralloc1 import → GL texture, no SHM, no magenta tint.
   Patch consolidated into `02-tawc-step3-ahb-present.patch`.
+- **2026-05-01** — Phase 2 step 4 landed: libhybris client-side
+  EGL-on-X11 platform plugin
+  (`hybris/egl/platforms/x11/{eglplatform_x11.cpp,x11_window.{h,cpp},
+  tawc_dri_protocol.h}` + `Makefile.am`). Mirrors the wayland
+  plugin's shape; `dequeueBuffer` allocates AHBs through the
+  existing AHB gralloc backend, `queueBuffer` ships them via
+  `xcb_send_request_with_fds(TAWCDRIPresentBuffer, …)` over the
+  client's existing X11 connection. Wired through `--enable-x11`
+  in `configure.ac`, `EGL_PLATFORM_X11_KHR` dispatch in
+  `hybris/egl/egl.c`, X11/xcb stub libs and synth pkg-config in
+  `client/build-libhybris-aarch64`. Verification:
+  `apps::test_eglx11_renders_via_ahb` runs the new chroot client
+  (`testing/eglx11-test/`) for 30 frames, asserts EGL_VENDOR=Android
+  + GL_RENDERER=Adreno, and confirms the compositor logged the
+  AHB import + GL bind for the surface. No source-code regressions
+  needed in the existing TAWC-DRI / Xwayland tests; the X server
+  side works unchanged.
+- **2026-05-01** — Phase 2 step 5 landed: real-app shakedown via
+  `es2gears_x11`. Two follow-on fixes shipped along the way.
+  (1) The libhybris EGL plugin now translates `EGL_NATIVE_VISUAL_ID`:
+  Android EGL returns HAL pixel-format constants there, but every
+  EGL-X11 toolchain (es2gears, glmark2, EGLUT-style init code)
+  refuses to start if `XGetVisualInfo(VisualIDMask)` doesn't find
+  that ID. Added a new optional `eglGetConfigAttrib` ws_module hook
+  in `hybris/egl/ws.{h,c}` + `hybris/egl/egl.c`; the X11 plugin
+  caches the screen's default visual at GetDisplay and returns it
+  for that attribute. Other platforms leave the hook NULL.
+  (2) The Xwayland `xwl_tawc_present_native_handle` deliberately
+  leaked the per-present `xwl_tawc_buffer + AHB + wl_buffer` trio
+  ("step-3 verification client is one-shot, this is fine"). For a
+  real GL app doing thousands of frames, that exhausts the
+  compositor's `RLIMIT_NOFILE` within seconds — each AHB carries
+  fds, and `tawc_wlegl_import` opens a fresh GraphicBuffer per
+  create_buffer. Added a `wl_buffer.release` listener
+  (`buffer_release_listener` in `xwayland-tawc.c`) that destroys
+  the trio when the compositor releases its reference, bounding
+  the live working set to the compositor queue depth regardless of
+  total frame count. With both fixes: es2gears renders the
+  classic 3-spinning-gears demo (red/green/blue, correctly shaded,
+  no magenta) on the compositor's gradient background;
+  ~1500 buffer round-trips per second sustained, zero
+  createFromHandle failures.
+  (3) Instrumented `present_check_flip()` in
+  `present/present_scmd.c` with `ErrorF` printfs on every
+  early-return + the success path. Captured 0 `xwl_present_flip`
+  lines over the full es2gears run, confirming the libhybris
+  EGL-X11 pipe never enters the Present extension by design — it
+  shortcuts directly via TAWCDRIPresentBuffer → wl_surface attach.
+  Verification: `apps::test_es2gears_x11_renders_via_ahb`
+  asserts ≥100 AHB imports + 0 createFromHandle failures + 0
+  Xwayland protocol-error disconnects over a 4s run.

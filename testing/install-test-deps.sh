@@ -41,6 +41,10 @@ PKGS=(
     # libxxf86vm is xclock's transitive dep; pulling it explicitly
     # avoids surprises if the chroot loses it via a future rollup.
     xorg-xclock
+    # apps::test_es2gears_x11_renders_via_ahb — real-app GLES-on-X11
+    # client driving the libhybris X11 EGL platform plugin end-to-end
+    # (Phase 2 step 5).
+    mesa-demos
 )
 
 echo "=== Installing chroot test deps: ${PKGS[*]} ==="

@@ -23,6 +23,13 @@ pub fn ensure_tawc_dri_test() -> io::Result<String> {
     ensure_chroot_app("tawc-dri-test")
 }
 
+/// Build the EGL-on-X11 driver test client in the chroot. Returns the
+/// in-chroot binary path. Exercises the libhybris X11 EGL platform
+/// plugin (eglplatform_x11.so) end-to-end.
+pub fn ensure_eglx11_test() -> io::Result<String> {
+    ensure_chroot_app("eglx11-test")
+}
+
 /// Build a small in-chroot test binary by name, if its sources have
 /// changed since the last successful build. The source dir is
 /// `testing/<name>/` (a sibling of the integration crate); the dir

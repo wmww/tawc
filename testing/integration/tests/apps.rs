@@ -614,3 +614,138 @@ fn test_tawc_dri_ahb_present_animated_loop() {
     );
     assert_compositor_clean();
 }
+
+/// TAWC-DRI Phase 2 step 4: full EGL-on-X11 stack via libhybris's
+/// `eglplatform_x11.so`. The chroot client opens a normal Xlib display,
+/// asks libhybris for `EGL_PLATFORM_X11_KHR`, creates a context, and
+/// runs `glClear` + `eglSwapBuffers` for a few frames. Each swap should
+/// allocate an AHB via the AHB gralloc backend, ship it through
+/// TAWC-DRI to the X server, and end up imported by the compositor.
+///
+/// Asserts:
+///   - The client exits 0 and reaches its `OK` line (no EGL errors).
+///   - The compositor logs at least one `wlegl: create_buffer 320x240
+///     ... fmt=1` (AHB import) AND at least one
+///     `wlegl: imported ANativeWindowBuffer as texture 320x240` (GL bind).
+///
+/// If this fails *with no AHB log lines*, the libhybris X11 plugin is
+/// broken — the client never made it onto the TAWC-DRI wire (probably
+/// `eglGetPlatformDisplay` fell back to NULL or surface creation
+/// errored). If the AHB lands but no GL texture import, the compositor
+/// rejected the AHB format/usage emitted by the plugin's gralloc
+/// allocate (it should match what `tawc-dri-test` already emits cleanly).
+#[test]
+fn test_eglx11_renders_via_ahb() {
+    require_compositor();
+    adb::logcat_clear().expect("logcat clear");
+
+    let bin = chroot::ensure_eglx11_test().expect("build eglx11-test");
+    // 30 frames is plenty to surface init failures and to give the
+    // compositor's per-X11 SurfaceView time to attach (same race the
+    // `tawc-dri-test` HOLD_SECS dance handles).
+    let cmd = format!(
+        "DISPLAY=:0 HYBRIS_EGLPLATFORM=x11 TAWC_EGLX11_FRAMES=30 {}",
+        bin
+    );
+    let output = adb::chroot_run(&cmd).expect("run eglx11-test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "eglx11-test exited non-zero ({:?}). The libhybris X11 EGL platform \
+         plugin failed to initialize, create a surface, or swap a buffer.\n\
+         stdout: {stdout}\nstderr: {stderr}",
+        output.status.code()
+    );
+    assert!(
+        stderr.contains("eglx11-test: OK"),
+        "eglx11-test exited 0 but didn't reach the OK line.\nstderr: {stderr}"
+    );
+
+    let logs = adb::logcat_dump_tawc().expect("logcat dump");
+    assert!(
+        logs.contains("wlegl: create_buffer 320x240") && logs.contains("fmt=1"),
+        "compositor never logged `wlegl: create_buffer 320x240 ... fmt=1`. \
+         The libhybris EGL plugin's swap chain didn't ship an AHB through \
+         TAWC-DRI to the compositor. Either eglGetPlatformDisplay didn't \
+         dispatch to our x11 plugin, or queueBuffer's TAWCDRIPresentBuffer \
+         was silently dropped server-side.\n\
+         eglx11-test stderr:\n{stderr}\n\
+         last 4k of compositor logs:\n{}",
+        &logs[logs.len().saturating_sub(4096)..],
+    );
+    assert!(
+        logs.contains("wlegl: imported ANativeWindowBuffer as texture 320x240"),
+        "compositor imported the AHB but never bound it as a GL texture. \
+         Format/usage mismatch between the libhybris plugin's gralloc \
+         allocate and the compositor's wlegl import path.\nlogs:\n{}",
+        &logs[logs.len().saturating_sub(4096)..],
+    );
+    assert_compositor_clean();
+}
+
+/// Phase 2 step 5: real-app shakedown. Runs Arch's stock `es2gears_x11`
+/// (from `mesa-demos`) for a few seconds against our libhybris X11 EGL
+/// plugin and asserts the full pipe stays healthy under sustained-frame
+/// load:
+///   - Hundreds of `wlegl: create_buffer` lines (one per swap → AHB
+///     import) — proves the plugin isn't falling back to SHM under any
+///     vendor-specific config the GLES driver picks.
+///   - Zero `AHardwareBuffer_createFromHandle failed` lines on the
+///     compositor side — guards against the FD-leak / handle-shape
+///     regressions that bit Phase 2 step 4 (compositor RLIMIT_NOFILE
+///     trip from per-present buffer leaks).
+///   - Compositor and X server still alive after the run (no
+///     `Xwayland disconnected: Protocol error` from a botched
+///     create_buffer).
+///
+/// This is the regression net for the X server's wl_buffer.release
+/// listener and the libhybris plugin's queueBuffer wire shape — both
+/// load-bearing for any non-trivial GL workload.
+#[test]
+fn test_es2gears_x11_renders_via_ahb() {
+    require_compositor();
+    adb::logcat_clear().expect("logcat clear");
+
+    // 4s gives es2gears time to hit hundreds of swap cycles even on a
+    // slow device. The release-listener fix bounds the live AHB
+    // working set to the compositor's queue depth (~3) regardless of
+    // total frame count, so longer runs would only dilute signal.
+    let cmd = "DISPLAY=:0 HYBRIS_EGLPLATFORM=x11 timeout 4 es2gears_x11 \
+               > /dev/null 2>&1; true";
+    let output = adb::chroot_run(cmd).expect("run es2gears_x11");
+    assert!(
+        output.status.success(),
+        "es2gears_x11 wrapper exited non-zero ({:?}). The wrapper ends \
+         with `; true` so timeout's 124 doesn't fail the assertion — \
+         non-zero here means the chroot couldn't even spawn the binary \
+         (missing mesa-demos? run `bash testing/install-test-deps.sh`).",
+        output.status.code()
+    );
+
+    let logs = adb::logcat_dump_tawc().expect("logcat dump");
+    let create_count = logs.matches("wlegl: create_buffer").count();
+    assert!(
+        create_count >= 100,
+        "compositor only imported {create_count} AHBs from es2gears_x11. \
+         Expected >=100 — either the libhybris EGL plugin fell back to a \
+         non-AHB path for the GLES driver's chosen config, or the X server \
+         is dropping presents.\nlast 4k of logs:\n{}",
+        &logs[logs.len().saturating_sub(4096)..],
+    );
+    assert!(
+        !logs.contains("AHardwareBuffer_createFromHandle failed"),
+        "compositor logged AHardwareBuffer_createFromHandle failure during \
+         the run — most likely an FD leak (the X server's wl_buffer.release \
+         listener got disconnected) or a handle-shape regression in the \
+         libhybris plugin.\nlast 4k of logs:\n{}",
+        &logs[logs.len().saturating_sub(4096)..],
+    );
+    assert!(
+        !logs.contains("Xwayland disconnected: Protocol error"),
+        "Xwayland died during the run with a protocol error. \
+         Last 4k of logs:\n{}",
+        &logs[logs.len().saturating_sub(4096)..],
+    );
+    assert_compositor_clean();
+}

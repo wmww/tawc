@@ -885,10 +885,10 @@ index 0000000..8ef44a8
 +#endif /* XWAYLAND_TAWC_LIBNATIVEWINDOW_H */
 diff --git a/hw/xwayland/xwayland-tawc.c b/hw/xwayland/xwayland-tawc.c
 new file mode 100644
-index 0000000..5c5bae0
+index 0000000..e0c6905
 --- /dev/null
 +++ b/hw/xwayland/xwayland-tawc.c
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,423 @@
 +/*
 + * SPDX-License-Identifier: MIT
 + *
@@ -1065,23 +1065,40 @@ index 0000000..5c5bae0
 +    return NULL;
 +}
 +
++/* Compositor signals it's done with one of our shipped wl_buffers.
++ * Free the corresponding xwl_tawc_buffer, which destroys the wl_buffer
++ * and releases the AHB (which in turn closes the dup'd fds). Without
++ * this, every present leaks an FD per fd-in-the-handle and the
++ * compositor process trips RLIMIT_NOFILE within seconds of any
++ * sustained-frame client (es2gears_x11, glmark2-es2, …). */
++static void
++buffer_release(void *data, struct wl_buffer *buffer)
++{
++    struct xwl_tawc_buffer *buf = data;
++    (void) buffer;
++    xwl_tawc_buffer_destroy(buf);
++}
++
++static const struct wl_buffer_listener buffer_release_listener = {
++    .release = buffer_release,
++};
++
 +/* TAWC-DRI step 3: client-shipped native_handle → AHB → wl_buffer →
 + * direct attach + commit on the X11 window's wl_surface.
 + *
 + * This bypasses the X server's normal pixmap flow: rather than wrap the
 + * AHB as an X pixmap and let xwl_window_present_pixmap handle the
-+ * compositor handoff, we attach to the wl_surface ourselves. That means:
-+ *   - Server-side X11 drawing on the same window won't see this AHB
-+ *     (no XGetImage, no XCopyArea integration). Pure GL clients don't
-+ *     do those, which is the only Phase 2 use case. Mixed-rendering
-+ *     would race the X server's normal SHM root pixmap attach over
-+ *     this one.
-+ *   - The AHB+wl_buffer is leaked across calls; subsequent Present
-+ *     calls overwrite the wl_surface attach but the previous AHB
-+ *     stays in the wl_compositor's release queue until the buffer-
-+ *     release event fires. Step 4 (libhybris EGL plugin) and Wine-
-+ *     style real workloads will need explicit release tracking; for
-+ *     the step-3 verification client (one-shot present) this is fine.
++ * compositor handoff, we attach to the wl_surface ourselves. That means
++ * server-side X11 drawing on the same window won't see this AHB
++ * (no XGetImage, no XCopyArea integration). Pure GL clients don't do
++ * those, which is the Phase 2 use case. Mixed-rendering would race the
++ * X server's normal SHM root pixmap attach over this one.
++ *
++ * Lifecycle: a fresh xwl_tawc_buffer + AHB + wl_buffer is allocated per
++ * present. Each wl_buffer carries `buffer_release_listener`, which
++ * destroys the trio when the compositor releases its reference. That
++ * keeps the live working set bounded by the compositor's queue depth
++ * (typically ≤3) regardless of how many frames the client renders.
 + */
 +int
 +xwl_tawc_present_native_handle(WindowPtr window,
@@ -1169,6 +1186,10 @@ index 0000000..5c5bae0
 +        return BadAlloc;
 +    }
 +
++    /* Tie buffer lifetime to the compositor's release event so we don't
++     * leak an FD per present. See `buffer_release_listener` block. */
++    wl_buffer_add_listener(wlbuf, &buffer_release_listener, buf);
++
 +    /* Direct wl_surface attach — bypasses the X-side pixmap flow. See
 +     * the comment above this function. */
 +    wl_surface_attach(xwl_window->surface, wlbuf, 0, 0);
@@ -1178,10 +1199,7 @@ index 0000000..5c5bae0
 +    /* The compositor side logs `wlegl: create_buffer ...` and
 +     * `wlegl: imported ANativeWindowBuffer as texture ...` per AHB
 +     * import; logging here would be redundant noise (a 60 fps client
-+     * would fire it once per frame). Keep silent on the success path.
-+     *
-+     * xwl_tawc_buffer + AHB + wl_buffer leak deliberately for now —
-+     * see the comment block above. */
++     * would fire it once per frame). Keep silent on the success path. */
 +    return Success;
 +
 + err_free_handle:
@@ -1472,3 +1490,135 @@ index 1ddcd7f..5471300 100644
  #ifdef RES
      {ResExtensionInit, "X-Resource", &noResExtension},
  #endif
+diff --git a/present/present_scmd.c b/present/present_scmd.c
+index ba7d7cb..a8b10ed 100644
+--- a/present/present_scmd.c
++++ b/present/present_scmd.c
+@@ -57,6 +57,29 @@ present_flip_pending_pixmap(ScreenPtr screen)
+     return screen_priv->flip_pending->pixmap;
+ }
+ 
++/* tawc instrumentation: trace which gating predicate inside
++ * present_check_flip() forces a copy-mode present. Compiled in
++ * unconditionally (Xwayland's ErrorF() goes to stderr → captured by
++ * the compositor's logcat tag). The cost is one printf per Present —
++ * negligible vs the actual present pipeline, and the data is the
++ * load-bearing diagnostic for "is the EGL-X11 path picking flip?".
++ *
++ * NOTE: the libhybris EGL-X11 plugin (Phase 2 step 4) sends
++ * TAWCDRIPresentBuffer over its own X11 wire and the X server attaches
++ * the wl_buffer to the window's wl_surface directly, bypassing the
++ * Present extension entirely. So for our pipe these printfs never
++ * fire. They DO fire for any other client that goes via standard
++ * Present.PresentPixmap (DRI3-style), e.g. a hypothetical mesa
++ * software-rasteriser path, or a Wine GL game that uses Present
++ * instead of our TAWC-DRI extension.
++ */
++#define TAWC_FLIP_FAIL(why) do { \
++        ErrorF("xwl_present_flip: copy mode (window=0x%08" PRIx32 \
++               " pixmap=0x%08" PRIx32 ") - %s\n", \
++               (uint32_t)window->drawable.id, \
++               (uint32_t)(pixmap ? pixmap->drawable.id : 0), why); \
++    } while (0)
++
+ static Bool
+ present_check_flip(RRCrtcPtr            crtc,
+                    WindowPtr            window,
+@@ -79,18 +102,26 @@ present_check_flip(RRCrtcPtr            crtc,
+     if (reason)
+         *reason = PRESENT_FLIP_REASON_UNKNOWN;
+ 
+-    if (!screen_priv)
++    if (!screen_priv) {
++        TAWC_FLIP_FAIL("no screen_priv");
+         return FALSE;
++    }
+ 
+-    if (!screen_priv->info)
++    if (!screen_priv->info) {
++        TAWC_FLIP_FAIL("no screen_priv->info");
+         return FALSE;
++    }
+ 
+-    if (!crtc)
++    if (!crtc) {
++        TAWC_FLIP_FAIL("no crtc");
+         return FALSE;
++    }
+ 
+     /* Check to see if the driver supports flips at all */
+-    if (!screen_priv->info->flip)
++    if (!screen_priv->info->flip) {
++        TAWC_FLIP_FAIL("driver has no flip");
+         return FALSE;
++    }
+ 
+     /* Ask the driver for permission. Do this now to see if there's TearFree. */
+     if (screen_priv->info->version >= 1 && screen_priv->info->check_flip2) {
+@@ -103,12 +134,16 @@ present_check_flip(RRCrtcPtr            crtc,
+             if (!reason || tmp_reason != PRESENT_FLIP_REASON_BUFFER_FORMAT) {
+                 if (reason)
+                     *reason = tmp_reason;
++                ErrorF("xwl_present_flip: copy mode (window=0x%08" PRIx32
++                       ") - driver check_flip2 rejected (reason=%d)\n",
++                       (uint32_t)window->drawable.id, tmp_reason);
+                 return FALSE;
+             }
+         }
+     } else if (screen_priv->info->check_flip) {
+         if (!(*screen_priv->info->check_flip) (crtc, window, pixmap, sync_flip)) {
+             DebugPresent(("\td %08" PRIx32 " -> %08" PRIx32 "\n", window->drawable.id, pixmap ? pixmap->drawable.id : 0));
++            TAWC_FLIP_FAIL("driver check_flip rejected");
+             return FALSE;
+         }
+     }
+@@ -117,21 +152,26 @@ present_check_flip(RRCrtcPtr            crtc,
+     window_pixmap = screen->GetWindowPixmap(window);
+     if (window_pixmap != screen->GetScreenPixmap(screen) &&
+         window_pixmap != screen_priv->flip_pixmap &&
+-        window_pixmap != present_flip_pending_pixmap(screen))
++        window_pixmap != present_flip_pending_pixmap(screen)) {
++        TAWC_FLIP_FAIL("window redirected (Composite)");
+         return FALSE;
++    }
+ 
+     /* Check for full-screen window */
+     if (!RegionEqual(&window->clipList, &root->winSize)) {
++        TAWC_FLIP_FAIL("window not fullscreen");
+         return FALSE;
+     }
+ 
+     /* Source pixmap must align with window exactly */
+     if (x_off || y_off) {
++        TAWC_FLIP_FAIL("source pixmap offset");
+         return FALSE;
+     }
+ 
+     /* Make sure the area marked as valid fills the screen */
+     if (valid && !RegionEqual(valid, &root->winSize)) {
++        TAWC_FLIP_FAIL("valid region != screen");
+         return FALSE;
+     }
+ 
+@@ -142,15 +182,21 @@ present_check_flip(RRCrtcPtr            crtc,
+ #endif
+         window->drawable.width != pixmap->drawable.width ||
+         window->drawable.height != pixmap->drawable.height) {
++        TAWC_FLIP_FAIL("window/pixmap geometry mismatch");
+         return FALSE;
+     }
+ 
+     if (tmp_reason == PRESENT_FLIP_REASON_BUFFER_FORMAT) {
+         if (reason)
+             *reason = tmp_reason;
++        TAWC_FLIP_FAIL("buffer format reason");
+         return FALSE;
+     }
+ 
++    ErrorF("xwl_present_flip: FLIP OK (window=0x%08" PRIx32
++           " pixmap=0x%08" PRIx32 ")\n",
++           (uint32_t)window->drawable.id,
++           (uint32_t)(pixmap ? pixmap->drawable.id : 0));
+     return TRUE;
+ }
+ 

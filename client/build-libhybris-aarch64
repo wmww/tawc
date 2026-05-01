@@ -116,6 +116,11 @@ gen_stub libwayland-client.so.0
 gen_stub libwayland-server.so.0
 gen_stub libwayland-egl.so.1
 gen_stub libvulkan.so.1
+# X11 EGL platform plugin: chroot ships real libX11/libxcb at runtime,
+# we just need empty SONAMEd stubs to satisfy the cross-link.
+gen_stub libX11.so.6
+gen_stub libxcb.so.1
+gen_stub libX11-xcb.so.1
 
 # ── Synthetic pkg-config files ──
 # We point at the *host's* wayland/vulkan headers (plain C, ABI-clean)
@@ -127,6 +132,9 @@ HOST_WAYLAND_DATADIR="$(pkg-config --variable=pkgdatadir wayland-client 2>/dev/n
 HOST_WAYLAND_PROTOCOLS_DATADIR="$(pkg-config --variable=pkgdatadir wayland-protocols 2>/dev/null || echo /usr/share/wayland-protocols)"
 HOST_WAYLAND_SCANNER="$(command -v wayland-scanner)"
 HOST_VULKAN_INCLUDE="$(pkg-config --variable=includedir vulkan 2>/dev/null || echo /usr/include)"
+# X11 / xcb headers — plain C, ABI-portable across glibc-aarch64 and host.
+HOST_X11_INCLUDE="$(pkg-config --variable=includedir x11 2>/dev/null || echo /usr/include)"
+HOST_XCB_INCLUDE="$(pkg-config --variable=includedir xcb 2>/dev/null || echo /usr/include)"
 
 write_pc() {
     local name="$1" cflags="$2" libs="$3"
@@ -142,6 +150,9 @@ write_pc wayland-client "-I$HOST_WAYLAND_INCLUDE" "-L$STUB_DIR -lwayland-client"
 write_pc wayland-server "-I$HOST_WAYLAND_INCLUDE" "-L$STUB_DIR -lwayland-server"
 write_pc wayland-egl    "-I$HOST_WAYLAND_INCLUDE" "-L$STUB_DIR -lwayland-egl"
 write_pc vulkan         "-I$HOST_VULKAN_INCLUDE"  "-L$STUB_DIR -lvulkan"
+write_pc x11            "-I$HOST_X11_INCLUDE"     "-L$STUB_DIR -lX11"
+write_pc xcb            "-I$HOST_XCB_INCLUDE"     "-L$STUB_DIR -lxcb"
+write_pc x11-xcb        "-I$HOST_X11_INCLUDE"     "-L$STUB_DIR -lX11-xcb"
 
 # wayland-scanner.pc and wayland-protocols.pc are read for variables
 # (wayland_scanner, pkgdatadir) by libhybris's autotools, not for
@@ -198,6 +209,7 @@ if [ ! -f "$BUILD_DIR/Makefile" ] || [ "$CLEAN" = "1" ]; then
         --with-android-headers="$ANDROID_HEADERS_DIR" \
         --enable-arch=arm64 \
         --enable-wayland \
+        --enable-x11 \
         --disable-wayland_serverside_buffers \
         --enable-adreno-quirks \
         --enable-property-cache \
@@ -250,6 +262,7 @@ for lib in \
     libvulkan.so.1 \
     libsync.so.2.0.0 \
     libhybris/eglplatform_wayland.so \
+    libhybris/eglplatform_x11.so \
     libhybris/vulkanplatform_wayland.so \
     libhybris/linker/q.so
 do
