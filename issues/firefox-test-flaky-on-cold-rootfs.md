@@ -1,5 +1,21 @@
 # `apps::test_firefox_launches_with_hardware_buffers` flakes on the very first run after a fresh install
 
+**Likely fixed as of 2026-05-02.** The test's steady-state
+assertion was rewritten from "saw a `wlegl: imported` log line in
+the last 2 s" (which is empty whenever Firefox's WebRender ring of
+2-6 AHBs has settled — i.e., always except the first ~half-second)
+to "compositor state shows ≥1 AHB-attached surface and the frames
+counter is advancing." The new assertion catches the same
+regressions (SHM fallback, wedged client, never-actually-AHB) but
+isn't sensitive to import-line frequency. The cold-rootfs flake
+described below was almost certainly the same blind spot — Firefox
+finishes profile init, settles its buffer ring, and the old test
+saw zero new imports. Re-test under proot to confirm and close
+this issue if it stays green; the rest of this file describes the
+original symptom for archaeology.
+
+---
+
 The Firefox integration test reliably **fails on the first run**
 following a fresh proot install + `install-test-deps.sh`, then
 **passes on every subsequent run** within the same chroot lifetime.

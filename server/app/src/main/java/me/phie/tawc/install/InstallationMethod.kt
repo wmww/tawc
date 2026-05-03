@@ -153,6 +153,7 @@ interface InstallationMethod {
         fun forKey(context: Context, key: String): InstallationMethod? = when (key) {
             ChrootMethod.KEY -> ChrootMethod
             ProotMethod.KEY -> ProotMethod(context)
+            TawcrootMethod.KEY -> TawcrootMethod(context)
             else -> null
         }
 

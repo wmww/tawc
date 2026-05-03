@@ -57,7 +57,16 @@ done
 # shellcheck source=../client/select-device.sh
 source "$ROOT_DIR/client/select-device.sh"
 
-echo "=== Checking adb connection ($ANDROID_SERIAL) ==="
+# Install id under /data/data/me.phie.tawc/distros/<id>/. Defaults to
+# `arch` (the chroot/proot suite); set TAWC_INSTALL_ID=arch-tawcroot to
+# target a parallel tawcroot install on the same device. Mirrors
+# `client/tawc-chroot-run` and is exported so the cargo test harness
+# (which reads it via tawc_integration::install_id) sees the same value.
+INSTALL_ID="${TAWC_INSTALL_ID:-arch}"
+export TAWC_INSTALL_ID="$INSTALL_ID"
+INSTALL_DIR="/data/data/me.phie.tawc/distros/$INSTALL_ID"
+
+echo "=== Checking adb connection ($ANDROID_SERIAL, install=$INSTALL_ID) ==="
 adb get-state >/dev/null 2>&1 || { echo "ERROR: No adb device connected"; exit 1; }
 
 if [ "$DO_BUILD" -eq 1 ]; then
@@ -77,14 +86,15 @@ if [ "$DO_BUILD" -eq 1 ]; then
     echo "=== Installing APK ==="
     adb install -r server/app/build/outputs/apk/debug/app-debug.apk
 
-    echo "=== Verifying in-app chroot is installed ==="
-    if ! adb shell "su -c 'test -x /data/data/me.phie.tawc/distros/arch/enter.sh'" >/dev/null 2>&1; then
-        cat >&2 <<'EOF'
-ERROR: in-app chroot not found at /data/data/me.phie.tawc/distros/arch/.
+    echo "=== Verifying in-app install is present at $INSTALL_DIR ==="
+    if ! adb shell "su -c 'test -x $INSTALL_DIR/enter.sh'" >/dev/null 2>&1; then
+        cat >&2 <<EOF
+ERROR: in-app install not found at $INSTALL_DIR/.
 
 Install it from the host:
-  adb shell am start -n me.phie.tawc/.install.InstallActivity \
-      --es autoStart true --es id arch
+  adb shell am start -n me.phie.tawc/.install.InstallActivity \\
+      --es autoStart true --es id $INSTALL_ID \\
+      [--es method chroot|proot|tawcroot]
 
 Then tail progress:
   adb logcat -s tawc-install
@@ -94,7 +104,7 @@ EOF
 
     echo "=== Pushing pidfile helper ==="
     adb push testing/tawc-pidfile-exec /data/local/tmp/
-    adb shell "su -c 'cp /data/local/tmp/tawc-pidfile-exec /data/data/me.phie.tawc/distros/arch/rootfs/tmp/tawc-pidfile-exec && chmod +x /data/data/me.phie.tawc/distros/arch/rootfs/tmp/tawc-pidfile-exec'"
+    adb shell "su -c 'cp /data/local/tmp/tawc-pidfile-exec $INSTALL_DIR/rootfs/tmp/tawc-pidfile-exec && chmod +x $INSTALL_DIR/rootfs/tmp/tawc-pidfile-exec'"
 fi
 
 # Launch the compositor once for the whole suite. Tests assert it is
@@ -115,7 +125,7 @@ adb shell "am start -n me.phie.tawc/.MainActivity" >/dev/null
 COMPOSITOR_READY=0
 for _ in $(seq 1 150); do
     if adb shell "pidof me.phie.tawc >/dev/null && \
-                  su -c 'test -e /data/data/me.phie.tawc/distros/arch/rootfs/tmp/wayland-0' && \
+                  su -c 'test -e $INSTALL_DIR/rootfs/tmp/wayland-0' && \
                   echo ready" 2>/dev/null | grep -q ready; then
         COMPOSITOR_READY=1
         break

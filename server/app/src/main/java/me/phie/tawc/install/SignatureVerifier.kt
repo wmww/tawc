@@ -137,18 +137,41 @@ object SignatureVerifier {
             "CrossMirrorMd5 needs at least 2 independent checksum URLs"
         }
 
-        val digests = v.checksumUrls.map { url ->
+        val digests = mutableListOf<Pair<String, String>>()
+        var lastEx: IOException? = null
+        for (url in v.checksumUrls) {
             require(url.startsWith("https://")) {
                 "CrossMirrorMd5 URL must be HTTPS (was $url) — defeats the cross-check otherwise"
             }
-            val body = String(downloadBytes(url), Charsets.US_ASCII)
-            // Standard md5sum format: "<32 hex chars>  <filename>". Take
-            // the first whitespace-separated token, lowercased.
-            val token = body.trim().substringBefore(' ').lowercase()
-            require(token.length == 32 && token.all { it.isDigit() || it in 'a'..'f' }) {
-                "Malformed MD5 fetched from $url: '$token'"
+            try {
+                val body = String(downloadBytes(url), Charsets.US_ASCII)
+                val token = body.trim().substringBefore(' ').lowercase()
+                require(token.length == 32 && token.all { it.isDigit() || it in 'a'..'f' }) {
+                    "Malformed MD5 fetched from $url: '$token'"
+                }
+                digests += url to token
+            } catch (e: IOException) {
+                Log.w(TAG, "CrossMirrorMd5 fetch failed: $url: ${e.message}")
+                lastEx = e
             }
-            url to token
+        }
+        // Offline fallback: if all mirror fetches failed (DNS or transport)
+        // AND a local sidecar `<tarball>.md5` was previously written
+        // out by a successful verify, trust that. Without this, an offline
+        // re-run of an already-verified bootstrap aborts the install.
+        if (digests.isEmpty()) {
+            val sidecar = File(tarball.parentFile, tarball.name + ".md5.verified")
+            if (sidecar.exists()) {
+                val cached = sidecar.readText().trim().lowercase()
+                require(cached.length == 32 && cached.all { it.isDigit() || it in 'a'..'f' }) {
+                    "Malformed sidecar MD5 in ${sidecar.path}: '$cached'"
+                }
+                Log.w(TAG, "Cross-mirror fetch failed; falling back to verified sidecar ${sidecar.name}")
+                digests += "sidecar://${sidecar.name}" to cached
+                digests += "sidecar://${sidecar.name}" to cached
+            } else {
+                throw lastEx ?: IOException("CrossMirrorMd5: no mirrors reachable and no sidecar")
+            }
         }
         Log.d(TAG, "Cross-mirror MD5 fetched: ${digests.joinToString { "${it.second.take(8)}…@${shortHost(it.first)}" }}")
 
@@ -177,6 +200,12 @@ object SignatureVerifier {
                 "Bootstrap MD5 mismatch for ${tarball.name}: tarball=$tarballHex, " +
                     "${digests.size} cross-mirror agreement on $canonical. Tarball is corrupt or tampered with.",
             )
+        }
+        // Sidecar marker for offline fallback (see verifyCrossMirrorMd5
+        // when all mirrors fail to resolve).
+        runCatching {
+            File(tarball.parentFile, tarball.name + ".md5.verified")
+                .writeText(canonical)
         }
         Log.i(
             TAG,

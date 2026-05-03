@@ -9,8 +9,12 @@ const PKG: &str = "me.phie.tawc";
 /// [`ProotMethod.renderEnterScript`]). Mount + chroot logic lives
 /// there; these helpers just deliver the (base64-encoded) command via
 /// the right adb-side wrapper.
-const ENTER_SCRIPT: &str = "/data/data/me.phie.tawc/distros/arch/enter.sh";
-const META_PATH: &str = "/data/data/me.phie.tawc/distros/arch/metadata.json";
+fn enter_script() -> String {
+    format!("/data/data/{}/distros/{}/enter.sh", PKG, crate::install_id())
+}
+fn meta_path() -> String {
+    format!("/data/data/{}/distros/{}/metadata.json", PKG, crate::install_id())
+}
 
 /// Run an adb shell command, wait for completion, return output.
 pub fn shell(cmd: &str) -> io::Result<Output> {
@@ -51,10 +55,11 @@ fn install_method() -> &'static str {
         // are debuggable). Fall back to `su` for non-debuggable
         // builds. If both fail the test will fail loudly later
         // anyway, so we don't try to be clever about reporting.
+        let meta = meta_path();
         let probe = format!(
             "run-as {pkg} cat {meta} 2>/dev/null || su -c 'cat {meta}' 2>/dev/null",
             pkg = PKG,
-            meta = META_PATH,
+            meta = meta,
         );
         let raw = Command::new("adb")
             .args(["shell", &probe])
@@ -86,25 +91,28 @@ fn chroot_invocation(cmd: &str) -> String {
     // Base64 alphabet has no shell metacharacters, so embedding the
     // payload bare in the wrapped shell command is safe.
     let b64 = b64_encode(cmd.as_bytes());
+    let enter = enter_script();
     match install_method() {
-        "proot" => {
+        m @ ("proot" | "tawcroot") => {
             // run-as switches to the app uid before exec'ing
             // enter.sh. mksh's default cwd under run-as is /data/local
             // where the app uid has no write access, which breaks
             // its here-doc temp-file logic; cd + TMPDIR to the app's
             // own cache dir first. Same trick the host launcher
-            // (`client/tawc-chroot-run`) uses.
-            let scratch = format!("/data/data/{}/cache/proot-tmp", PKG);
+            // (`client/tawc-chroot-run`) uses. tawcroot is the same
+            // shape as proot here — runs as app uid, no extra setup
+            // needed beyond TMPDIR.
+            let scratch = format!("/data/data/{}/cache/{}-tmp", PKG, m);
             format!(
                 "run-as {pkg} sh -c 'mkdir -p {scratch} && cd {scratch} && export TMPDIR={scratch} && exec {enter} {b64}'",
                 pkg = PKG,
                 scratch = scratch,
-                enter = ENTER_SCRIPT,
+                enter = enter,
                 b64 = b64,
             )
         }
         // Chroot (or unknown — treat as chroot) goes through su.
-        _ => format!("su -c '{} {}'", ENTER_SCRIPT, b64),
+        _ => format!("su -c '{} {}'", enter, b64),
     }
 }
 

@@ -54,42 +54,54 @@ fn test_firefox_launches_with_hardware_buffers() {
 
     // Steady-state assertion: once Firefox has been running for a
     // moment, the chrome surface should be presenting through the
-    // libhybris/AHB path, not falling back to `wl_shm`. The original
-    // version of this test only checked that AT LEAST ONE AHB import
-    // happened during launch — and quietly passed the case where
-    // Firefox bound `android_wlegl` for a startup probe but then
-    // committed every chrome frame through cairo/SHM (the
-    // gfx-platform-disables-acceleration regression that the
-    // `firefox.cfg` autoconfig from `testing/install-test-deps.sh`
-    // works around).
+    // libhybris/AHB path, not falling back to `wl_shm`.
     //
-    // The signal we actually want is "no SHM imports in steady state".
-    // Watching for fresh AHB imports is unreliable: imports are
-    // first-touch events per `wl_buffer` object, and once Firefox's
-    // WebRender swapchain stabilises it cycles a small set of buffers
-    // via re-attach (no new import logs even though frames keep
-    // flowing). Pair the SHM check with a frame-counter delta so we
-    // also catch the case where Firefox crashed/froze and isn't
-    // committing anything at all.
-    adb::logcat_clear().expect("Failed to clear logcat after Firefox launch");
-    let before = compositor::query_state(TIMEOUT)
-        .expect("query compositor state before Firefox steady-state check");
+    // Earlier revisions counted "wlegl: imported ANativeWindowBuffer
+    // as texture" log lines in a 2-second window. That looked
+    // sensible — the AHB is hot, the import path runs every frame —
+    // but actually the compositor only logs an *import* the first
+    // time it sees a given AHB; subsequent commits of the same buffer
+    // come through the cached EGLImage and emit nothing. Firefox's
+    // WebRender-on-AHB path settles into a small ring (2-6 buffers)
+    // within the first few hundred ms, so post-launch the import-line
+    // count is zero even though every chrome frame is rendering as
+    // AHB at 60 fps. Confirmed by screencap: `firefox --no-remote
+    // <animating page>` renders the animation steadily on screen with
+    // 0 wlegl-import lines logged in the steady-state window.
+    //
+    // Use the compositor state snapshot instead. It exposes the
+    // *currently attached* buffer count per type (`surfaces_wlegl`,
+    // `surfaces_shm`) and a monotonic `frames` counter that ticks on
+    // every commit. The two together catch both regressions the old
+    // log-grep was meant to catch:
+    //   - "Firefox attached AHB once, then switched to SHM mid-run"
+    //     → surfaces_wlegl drops to 0, surfaces_shm rises.
+    //   - "WebRender disabled, every chrome frame is cairo/SHM"
+    //     → surfaces_wlegl == 0 from the start (the launch wait
+    //       above would have timed out, but if it didn't, this
+    //       still catches it).
+    //   - "Firefox is wedged / not committing"
+    //     → frames doesn't advance.
+    let frames_before = state.frames;
     std::thread::sleep(Duration::from_secs(2));
-    let after = compositor::query_state(TIMEOUT)
-        .expect("query compositor state after Firefox steady-state check");
-    let logs = adb::logcat_dump_tawc().expect("Failed to dump logcat");
+    let state = compositor::query_state(TIMEOUT)
+        .expect("Failed to query compositor steady-state");
     assert!(
-        !saw_shm_import(&logs),
-        "Firefox committed wl_shm buffers during steady-state rendering — \
-         GPU process / WebRender disabled, chrome falling back to cairo?\n\
-         Re-check `testing/firefox.cfg` autoconfig and the chroot's \
-         `/usr/lib/firefox/defaults/pref/autoconfig.js`.\nlogs:\n{logs}"
+        state.surfaces_wlegl >= 1,
+        "Firefox has no AHB-attached surfaces during steady state — \
+         fell back to SHM? state={state:?}"
     );
-    let frames = after.frames.saturating_sub(before.frames);
     assert!(
-        frames >= 5,
-        "Firefox stalled in steady state — compositor rendered only {frames} frames in 2s \
-         (before={before:?}, after={after:?}). Likely Firefox crashed or its swapchain wedged."
+        state.surfaces_shm == 0,
+        "Firefox attached SHM buffers during steady-state rendering — \
+         GPU process / WebRender disabled, chrome falling back to cairo? \
+         Re-check `testing/firefox.cfg` autoconfig and the chroot's \
+         `/usr/lib/firefox/defaults/pref/autoconfig.js`. state={state:?}"
+    );
+    assert!(
+        state.frames > frames_before,
+        "Compositor frames counter did not advance over 2 s — Firefox \
+         appears wedged / not committing. before={frames_before} after={state:?}"
     );
 
     firefox.stop().expect("Firefox process group failed to stop cleanly");

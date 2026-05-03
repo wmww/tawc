@@ -1,15 +1,16 @@
 # Firefox
 
-Firefox 149 renders via the libhybris Wayland EGL platform against the Adreno
+Firefox 150 renders via the libhybris Wayland EGL platform against the Adreno
 660 vendor driver. Window chrome goes through AHB; fragments of content can
 fall back to SHM (no `zwp_linux_dmabuf_v1` support yet in this compositor).
 
-**Known issue:** on this chroot Firefox reliably lands on its "Firefox closed
-unexpectedly while starting" crash-recovery dialog at startup, so the visible
-content is usually that dialog rather than a real browser. Both the
-pre-migration `tawc-egl.c` WSI and the current libhybris WSI produce identical
-behaviour here — it's a Firefox-side startup problem (see
-`issues/firefox-startup-crash-dialog.md`), not a rendering bug.
+**Status (2026-05-02):** Works under both chroot and tawcroot. The
+`apps::test_firefox_launches_with_hardware_buffers` integration test passes
+on the OnePlus 9 with no `MOZ_DISABLE_*_SANDBOX` workarounds. The earlier
+"Firefox closed unexpectedly while starting" recovery-dialog symptom and
+the tawcroot-side parent-process SEGV (Mozilla's `shm_open(3)` against an
+unbacked `/dev/shm`) are both fixed; details in
+`issues/tawcroot-firefox-segfault.md` (kept as resolution archaeology).
 
 ## Launching
 
@@ -26,17 +27,37 @@ longer required.
 
 ### Sandbox
 
-We do **not** set any `MOZ_DISABLE_*_SANDBOX` vars. Firefox 149 sandboxes
-content / RDD / socket processes via seccomp-bpf + the SandboxBroker file
-ACL even though the OnePlus 9 stock kernel (5.4) lacks `CONFIG_USER_NS`,
-`CONFIG_PID_NS`, and `CONFIG_IPC_NS`. The pieces that are present
-(`UTS_NS`, `NET_NS`, `CGROUP_NS`, `SECCOMP_FILTER`, `BPF_SYSCALL`) plus
-chroot are enough for Firefox to fall back gracefully — child processes
-end up with `Seccomp: 2` (filter mode) and `NoNewPrivs: 1`. Disabling the
+We do **not** set any `MOZ_DISABLE_*_SANDBOX` vars under either chroot
+or tawcroot. Firefox 150 sandboxes content / RDD / socket processes via
+seccomp-bpf + the SandboxBroker file ACL even though the OnePlus 9
+stock kernel (5.4) lacks `CONFIG_USER_NS`, `CONFIG_PID_NS`, and
+`CONFIG_IPC_NS`. The pieces that are present (`UTS_NS`, `NET_NS`,
+`CGROUP_NS`, `SECCOMP_FILTER`, `BPF_SYSCALL`) plus chroot are enough
+for Firefox to fall back gracefully — chroot-mode child processes end
+up with `Seccomp: 2` (filter mode) and `NoNewPrivs: 1`. Disabling the
 sandboxes also makes Firefox display an in-page "your configuration is
-unsupported and less secure" warning banner, so leaving the sandbox on
-is strictly better. SELinux is not a blocker — we run in the `magisk`
-domain with full caps. (See `notes/android.md` for the SELinux setup.)
+unsupported and less secure" warning banner. SELinux isn't a blocker —
+we run in the `magisk` domain with full caps. (See `notes/android.md`
+for the SELinux setup.)
+
+Under **tawcroot**, the same `seccomp(SECCOMP_SET_MODE_FILTER)` /
+`prctl(PR_SET_SECCOMP)` calls Mozilla makes are intercepted and faked
+to return success without actually installing the guest's filter —
+otherwise `-EPERM` would trigger Mozilla's "fatal sandbox-init" path
+which tears down libhybris-loaded vendor libraries while the bionic-Q
+linker's TLS-module table is in a half-written state, hitting
+`linker_tls.cpp:94`'s `mod.soinfo_ptr == si` CHECK and aborting the
+content process. The fake-success approach is sound because the
+guest's filter is purely defense-in-depth on top of tawcroot's
+translation enforcement; see `notes/tawcroot.md` "Signal-handler
+virtualisation" and `tawcroot/src/syscalls_control.c::handle_seccomp`.
+
+For tawcroot also: `/dev/shm` is bound to an app-writable cache dir
+(same approach as proot) so Mozilla's parent-process `shm_open(3)`
+doesn't `MOZ_RELEASE_ASSERT` on ENOENT. Tracked separately as
+`issues/tawcroot-dev-shm-disk-backed.md` — the long-term plan is to
+emulate `/dev/shm` in-handler via `memfd_create`, but the bind is the
+working interim.
 
 ### Why GDK_GL=gles:always (not disabled)
 

@@ -184,22 +184,34 @@ internal object ArchPacmanCommon {
         val script = buildString {
             appendLine("set -eu")
             appendLine("ROOTFS='$rootfs'")
+            appendLine("TAWC_INSTALL_METHOD='${method.key}'")
             appendLine(
                 """
                 # DNS
                 rm -f "${'$'}ROOTFS/etc/resolv.conf"
                 echo nameserver 8.8.8.8 > "${'$'}ROOTFS/etc/resolv.conf"
 
-                # pacman.conf: leave the upstream SigLevel alone (defaults
-                # to Required-DatabaseOptional) so package signatures are
-                # verified — pacman-key --populate runs in
-                # initPackageManager and ships the keyring's master keys
-                # via the bootstrap. DisableSandbox (Magisk's sandbox
+                # pacman.conf: leave the upstream SigLevel alone for
+                # ChrootMethod / ProotMethod paths, but force
+                # SigLevel = Never under tawcroot. pacman-key --init
+                # currently hangs on its first gpg-agent fork inside
+                # tawcroot when invoked from the in-app installer
+                # process (issue:
+                # tawcroot-gpg-agent-hangs-from-app-context.md), so the
+                # keyring isn't usable on a tawcroot install. Bootstrap
+                # integrity is still cross-mirror MD5 + TLS; what we
+                # lose is in-chroot signature checks on subsequent
+                # pacman -S calls. Re-enable when the gpg-agent issue
+                # is fixed. DisableSandbox (Magisk's sandbox
                 # propagation breaks pacman's sandbox helper), comment
                 # out CheckSpace (statvfs returns 0 inside the chroot's
                 # bind mounts and pacman aborts), and IgnorePkg for the
                 # kernel/firmware packages that would try to install
                 # boot artefacts into the rootfs and fail.
+                if [ "${'$'}TAWC_INSTALL_METHOD" = "tawcroot" ]; then
+                    sed -i 's|^SigLevel.*|SigLevel = Never|' "${'$'}ROOTFS/etc/pacman.conf"
+                    sed -i 's|^LocalFileSigLevel.*|LocalFileSigLevel = Never|' "${'$'}ROOTFS/etc/pacman.conf"
+                fi
                 grep -q '^DisableSandbox' "${'$'}ROOTFS/etc/pacman.conf" || \
                     sed -i '/^SigLevel/a DisableSandbox' "${'$'}ROOTFS/etc/pacman.conf"
                 sed -i 's/^CheckSpace/#CheckSpace/' "${'$'}ROOTFS/etc/pacman.conf"
@@ -314,14 +326,22 @@ PACMAN_EOF
         archSpecificCruft: List<String>,
         log: (String) -> Unit,
     ) {
+        // Tawcroot path: skip pacman-key entirely. configure() pinned
+        // SigLevel = Never in pacman.conf for the same reason — see the
+        // gpg-agent-hangs issue note in `issues/`.
+        val skipPacmanKey = method.key == "tawcroot"
         val cruft = (archSpecificCruft + SHARED_CRUFT_PACKAGES).joinToString(" ")
+        val pacmanKeyBlock = if (skipPacmanKey) {
+            "# pacman-key skipped under tawcroot (see issue)"
+        } else {
+            "pacman-key --init\n            pacman-key --populate $keyring"
+        }
         val res = method.runInside(
             rootfs,
             """
             export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             set -e
-            pacman-key --init
-            pacman-key --populate $keyring
+            $pacmanKeyBlock
 
             # Filter the cruft list to packages actually installed,
             # then -Rdd them in one go. -Q is fast (local DB only) and

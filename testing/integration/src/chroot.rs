@@ -4,9 +4,20 @@ use std::process::Command;
 
 use crate::adb;
 
-/// Filesystem root of the in-app Arch chroot, as seen from outside.
-/// Inside the chroot the same dir is just `/`.
-const CHROOT_ROOTFS: &str = "/data/data/me.phie.tawc/distros/arch/rootfs";
+/// Optional override for which install runs `build.sh`. Falls back to
+/// `TAWC_INSTALL_ID` (the same install we run tests in) when unset.
+/// Useful when the test target can't compile — e.g. a tawcroot install
+/// where gcc currently fails (cc1 dispatch is unimplemented). Set to a
+/// chroot/proot install id on the same device that has gcc + the build
+/// deps installed; the build output is copied across into the test
+/// install's build dir before the run.
+fn build_install_id() -> String {
+    std::env::var("TAWC_BUILD_INSTALL_ID").unwrap_or_else(|_| crate::install_id())
+}
+
+fn rootfs_for(install_id: &str) -> String {
+    format!("/data/data/me.phie.tawc/distros/{}/rootfs", install_id)
+}
 
 /// Build the gtk4-debug-app in the chroot if the sources have changed
 /// since the last successful build. Returns the in-chroot binary path.
@@ -37,7 +48,10 @@ pub fn ensure_eglx11_test() -> io::Result<String> {
 /// path. Returns the in-chroot binary path.
 fn ensure_chroot_app(name: &str) -> io::Result<String> {
     let chroot_build = format!("/tmp/{}", name);
-    let fs_build_dir = format!("{}{}", CHROOT_ROOTFS, chroot_build);
+    let test_install = crate::install_id();
+    let build_install = build_install_id();
+    let test_fs_build_dir = format!("{}{}", rootfs_for(&test_install), chroot_build);
+    let build_fs_build_dir = format!("{}{}", rootfs_for(&build_install), chroot_build);
     let binary_chroot = format!("{}/{}", chroot_build, name);
     let staging = format!("/data/local/tmp/{}-src", name);
     let source_dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -57,34 +71,68 @@ fn ensure_chroot_app(name: &str) -> io::Result<String> {
         .args(["push", &source_dir.to_string_lossy(), &staging])
         .output()?;
 
-    // Copy into chroot filesystem. su lets us reach the staging dir
-    // (shell-uid-owned in /data/local/tmp) and the rootfs path
-    // regardless of install method, but the resulting files land
-    // owned by uid 0. For proot installs the in-chroot build runs as
-    // the app uid (see [adb::chroot_run] dispatch), so chmod the tree
-    // world-writable afterwards — otherwise `ld` can't replace the
-    // build output. Harmless for chroot installs since the build runs
-    // as root there.
+    // Copy into the build install's rootfs. su lets us reach the
+    // staging dir (shell-uid-owned in /data/local/tmp) and the rootfs
+    // path regardless of install method, but the resulting files land
+    // owned by uid 0. For proot/tawcroot installs the in-chroot build
+    // runs as the app uid (see [adb::chroot_run] dispatch), so chmod
+    // the tree world-writable afterwards — otherwise `ld` can't
+    // replace the build output. Harmless for chroot installs since
+    // the build runs as root there.
     adb::shell(&format!(
         "su -c 'mkdir -p {dir} && cp {src}/* {dir} && chmod -R a+rwX {dir}'",
-        dir = fs_build_dir,
+        dir = build_fs_build_dir,
         src = staging
     ))?;
 
-    let output = adb::chroot_run(&format!("/bin/bash {}/build.sh", chroot_build))?;
+    // Build inside the build install. When TAWC_BUILD_INSTALL_ID
+    // overrides the test install, drive enter.sh of the build install
+    // directly via `client/tawc-chroot-run` rather than reusing
+    // `adb::chroot_run` (which is bound to the test install's
+    // metadata.json / method).
+    let output = if build_install == test_install {
+        adb::chroot_run(&format!("/bin/bash {}/build.sh", chroot_build))?
+    } else {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("client")
+            .join("tawc-chroot-run");
+        Command::new("bash")
+            .arg(&script)
+            .arg(format!("/bin/bash {}/build.sh", chroot_build))
+            .env("TAWC_INSTALL_ID", &build_install)
+            .output()?
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!(
-                "{name} build failed (missing test deps? \
+                "{name} build failed in install '{build_install}' (missing test deps? \
                  try `bash testing/install-test-deps.sh`):\n\
                  stdout: {stdout}\nstderr: {stderr}",
             ),
         ));
     }
 
+    // If we built in a different install than we'll run in, copy the
+    // binary across. Both rootfs's are the same arch (all installs on
+    // a given device share `host_arch`), so the binary is portable.
+    if build_install != test_install {
+        adb::shell(&format!(
+            "su -c 'mkdir -p {test_dir} && cp {build_dir}/{name} {test_dir}/{name} && chmod a+rx {test_dir}/{name}'",
+            test_dir = test_fs_build_dir,
+            build_dir = build_fs_build_dir,
+            name = name,
+        ))?;
+    }
+
+    // Stamp lives in the test install (the binary alongside it is
+    // what we actually run).
     adb::chroot_run(&format!(
         "echo {} > {}/build-stamp",
         source_mtime, chroot_build

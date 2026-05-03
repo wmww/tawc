@@ -33,7 +33,21 @@ object Downloader {
         dest: File,
         onProgress: (Long, Long?) -> Unit = { _, _ -> },
     ) {
-        val (resolvedUrl, contentLength) = head(url)
+        val (resolvedUrl, contentLength) = try {
+            head(url)
+        } catch (e: java.io.IOException) {
+            // HEAD failed (likely DNS / network). If we already have a
+            // non-empty cache, trust it — the integrity layer
+            // (CrossMirrorMd5 / signature verify) catches a corrupt
+            // file. Without this fallback an offline retry of an
+            // already-downloaded bootstrap aborts here.
+            if (dest.exists() && dest.length() > 0) {
+                Log.d(TAG, "Cached (HEAD failed: ${e.message}): ${dest.name} (${dest.length()} bytes)")
+                onProgress(dest.length(), null)
+                return
+            }
+            throw e
+        }
 
         if (dest.exists() && contentLength != null && dest.length() == contentLength) {
             Log.d(TAG, "Cached: ${dest.name} (${dest.length()} bytes)")

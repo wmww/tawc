@@ -14,11 +14,15 @@ const PID_TIMEOUT: Duration = Duration::from_secs(10);
 /// Path for the pidfile helper script inside the chroot.
 const PIDFILE_HELPER_CHROOT: &str = "/tmp/tawc-pidfile-exec";
 
-/// Filesystem root of the in-app Arch chroot, as seen from outside.
-const CHROOT_ROOTFS: &str = "/data/data/me.phie.tawc/distros/arch/rootfs";
+/// Filesystem root of the in-app Arch install, as seen from outside.
+fn chroot_rootfs() -> String {
+    format!("/data/data/me.phie.tawc/distros/{}/rootfs", crate::install_id())
+}
 
 /// Path for the pidfile helper script on the device filesystem (outside chroot).
-const PIDFILE_HELPER_DEVICE: &str = "/data/data/me.phie.tawc/distros/arch/rootfs/tmp/tawc-pidfile-exec";
+fn pidfile_helper_device() -> String {
+    format!("{}/tmp/tawc-pidfile-exec", chroot_rootfs())
+}
 
 /// A process running inside the Android chroot with process-group-based lifecycle.
 ///
@@ -54,7 +58,7 @@ impl ChrootProcess {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pidfile_chroot = format!("/tmp/tawc-pid-{}-{}", std::process::id(), n);
-        let pidfile_device = format!("{}{}", CHROOT_ROOTFS, pidfile_chroot);
+        let pidfile_device = format!("{}{}", chroot_rootfs(), pidfile_chroot);
 
         // Wrap the command through the pidfile helper:
         // /tmp/tawc-pidfile-exec PIDFILE COMMAND...
@@ -205,9 +209,10 @@ fn ensure_pidfile_helper() -> io::Result<()> {
     std::process::Command::new("adb")
         .args(["push", &helper_src.to_string_lossy(), "/data/local/tmp/tawc-pidfile-exec"])
         .output()?;
+    let helper_dev = pidfile_helper_device();
     adb::shell(&format!(
         "su -c 'cp /data/local/tmp/tawc-pidfile-exec {} && chmod +x {}'",
-        PIDFILE_HELPER_DEVICE, PIDFILE_HELPER_DEVICE
+        helper_dev, helper_dev
     ))?;
     *pushed = true;
     Ok(())

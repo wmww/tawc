@@ -44,6 +44,10 @@ class MainActivity : AppCompatActivity() {
 
         // Compositor is foreground/sticky and outlives this Activity; the
         // launcher tap is the natural place to ensure it's running.
+        // (enter.sh refresh on APK reinstall is handled by
+        // TawcApplication.onCreate, which fires on every cold-process
+        // start and rewrites every READY install's enter.sh against the
+        // new nativeLibraryDir before MainActivity can use it.)
         startForegroundService(Intent(this, CompositorService::class.java))
 
         val scaffold = buildHomeScreen("tawc")

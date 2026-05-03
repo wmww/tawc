@@ -97,6 +97,19 @@ case "$METHOD" in
             exec adb shell -t "run-as $PKG sh -c 'mkdir -p $SCRATCH && cd $SCRATCH && export TMPDIR=$SCRATCH && exec $ENTER'"
         fi
         ;;
+    tawcroot)
+        # Same shape as proot — runs as app uid via run-as, scratch dir
+        # under cacheDir. tawcroot doesn't need its own per-process tmp
+        # dir (no extracted loader stub like proot), but mksh's
+        # here-doc still wants TMPDIR pointed somewhere writable.
+        SCRATCH="/data/data/$PKG/cache/tawcroot-tmp"
+        if [ $# -gt 0 ]; then
+            cmd_b64=$(printf '%s' "$*" | base64 | tr -d '\n')
+            exec adb shell "run-as $PKG sh -c 'mkdir -p $SCRATCH && cd $SCRATCH && export TMPDIR=$SCRATCH && exec $ENTER $cmd_b64'"
+        else
+            exec adb shell -t "run-as $PKG sh -c 'mkdir -p $SCRATCH && cd $SCRATCH && export TMPDIR=$SCRATCH && exec $ENTER'"
+        fi
+        ;;
     *)
         echo "ERROR: unknown install method '$METHOD' in $META" >&2
         exit 1
