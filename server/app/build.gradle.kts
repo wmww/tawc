@@ -144,6 +144,43 @@ tawcAbis.forEach { abi ->
     tasks.named("preBuild") {
         dependsOn(copyTask)
     }
+
+    // Cross-build proot (Termux fork) and stage libproot.so +
+    // libproot-loader.so under jniLibs. Same shape as buildLibhybris:
+    // invokes the host script, skipped when the output binaries
+    // already exist. The script is itself incremental, so iteration
+    // is `bash client/build-proot --abi=...` direct; Gradle just
+    // makes a fresh checkout's `assembleDebug` self-contained.
+    val abiToScriptArg = mapOf("arm64-v8a" to "aarch64", "x86_64" to "x86_64")
+    val scriptAbi = abiToScriptArg[abi] ?: error("Unsupported ABI: $abi")
+    val prootBin = "$tawcRoot/server/app/src/main/jniLibs/$abi/libproot.so"
+    val prootLoader = "$tawcRoot/server/app/src/main/jniLibs/$abi/libproot-loader.so"
+    val buildProotTask = tasks.register<Exec>("buildProot$capAbi") {
+        workingDir = tawcRoot
+        environment("ANDROID_NDK_HOME", "${android.ndkDirectory}")
+        commandLine("bash", "client/build-proot", "--abi=$scriptAbi")
+        inputs.file("$tawcRoot/client/build-proot")
+        outputs.files(prootBin, prootLoader)
+        outputs.upToDateWhen { File(prootBin).exists() && File(prootLoader).exists() }
+    }
+    tasks.named("preBuild") {
+        dependsOn(buildProotTask)
+    }
+
+    // Cross-build tawcroot (the systrap-based proot replacement) and
+    // stage libtawcroot.so under jniLibs. Same shape as buildProot.
+    val tawcrootBin = "$tawcRoot/server/app/src/main/jniLibs/$abi/libtawcroot.so"
+    val buildTawcrootTask = tasks.register<Exec>("buildTawcroot$capAbi") {
+        workingDir = tawcRoot
+        environment("ANDROID_NDK_HOME", "${android.ndkDirectory}")
+        commandLine("bash", "tawcroot/build", "--abi=$scriptAbi")
+        inputs.file("$tawcRoot/tawcroot/build")
+        outputs.file(tawcrootBin)
+        outputs.upToDateWhen { File(tawcrootBin).exists() }
+    }
+    tasks.named("preBuild") {
+        dependsOn(buildTawcrootTask)
+    }
 }
 
 // Cross-compile libhybris for aarch64 glibc on the host and pack it

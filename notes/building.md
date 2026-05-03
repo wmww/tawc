@@ -95,9 +95,10 @@ no surprise tarball changes between runs.
 
 ## Per-component build instructions
 
-Run the cross-builds in any order. Gradle does **not** invoke them
-yet (Phase 2 of `issues/ship-libhybris-in-apk.md`); for now treat them
-as one-time setup steps after each fresh clone.
+Gradle invokes every cross-build below automatically before assembling
+the APK — `./gradlew assembleDebug` from a fresh clone is enough.
+Run the standalone scripts only when iterating on the component itself
+(faster than a full Gradle round-trip).
 
 ### libxkbcommon (static .a → linked into compositor)
 
@@ -211,6 +212,37 @@ cd server/compositor && \
     cargo ndk --target arm64-v8a --platform 29 -- build --release
 ```
 
+### proot (Termux fork → ships in APK as jniLib)
+
+Cross-built once per ABI. NDK clang against bionic. Output:
+`server/app/src/main/jniLibs/<abi>/libproot.so` + `libproot-loader.so`.
+Auto-invoked by Gradle's `buildProot<Abi>` task; standalone:
+
+```bash
+bash client/build-proot                # current host's primary ABI
+bash client/build-proot --abi=both     # both Android ABIs
+bash client/build-proot --clean        # wipe and rebuild
+```
+
+See [proot.md](proot.md) for why we use Termux's fork.
+
+### tawcroot (systrap proot replacement → ships in APK as jniLib)
+
+Cross-built once per ABI. NDK clang against bionic, static non-PIE
+ET_EXEC, `-nostdlib` freestanding. Output:
+`server/app/src/main/jniLibs/<abi>/libtawcroot.so`. Auto-invoked by
+Gradle's `buildTawcroot<Abi>` task; standalone:
+
+```bash
+bash tawcroot/build --abi=aarch64      # explicit Android ABI
+bash tawcroot/build --abi=both         # both Android ABIs
+bash tawcroot/build --abi=host         # native glibc, runs on dev box
+bash tawcroot/build --testhost         # also build testhost twin
+bash tawcroot/build --tests            # also build cleat orchestrator
+```
+
+See [tawcroot.md](tawcroot.md) for the design.
+
 ### APK assembly
 
 ```bash
@@ -218,10 +250,13 @@ cd server && JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew assembleDebug
 ```
 
 Invokes the Rust compositor build, copies its output into
-`jniLibs/arm64-v8a/`; runs `client/build-libhybris-aarch64` and packs
-the result into `assets/libhybris/arm64-v8a.tar`; produces
-`app/build/outputs/apk/debug/app-debug.apk`. Everything libhybris
-needs ships inside this APK.
+`jniLibs/<abi>/`; cross-builds proot and tawcroot and stages the
+result alongside; runs `client/build-libhybris-aarch64` and packs the
+result into `assets/libhybris/arm64-v8a.tar`; runs
+`client/build-xwayland-aarch64` and packs the result into
+`assets/xwayland/arm64-v8a.tar`; produces
+`app/build/outputs/apk/debug/app-debug.apk`. Everything libhybris,
+proot, tawcroot, and Xwayland need ships inside this APK.
 
 ## Install and launch
 
