@@ -102,23 +102,6 @@ fun AppCompatActivity.destructiveButton(label: CharSequence, onClick: () -> Unit
         setOnClickListener { onClick() }
     }
 
-/**
- * Outlined accent-colored button for secondary actions (Cancel
- * during install / uninstall). Reads as "in the same family as the
- * primary action, but not the recommended path" — accent stroke +
- * text, transparent fill.
- */
-fun AppCompatActivity.accentOutlinedButton(label: CharSequence, onClick: () -> Unit): MaterialButton =
-    MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
-        text = label
-        val accent = getColor(R.color.tawc_accent)
-        setTextColor(accent)
-        iconTint = ColorStateList.valueOf(accent)
-        strokeColor = ColorStateList.valueOf(accent)
-        applyNearSquareCorners(this)
-        setOnClickListener { onClick() }
-    }
-
 /** Convenience: vertical [LinearLayout.LayoutParams] with a bottom margin. */
 fun verticalLp(width: Int, height: Int, bottomMargin: Int = 0): LinearLayout.LayoutParams =
     LinearLayout.LayoutParams(width, height).also { it.bottomMargin = bottomMargin }

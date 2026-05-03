@@ -302,14 +302,20 @@ class ProotMethod(context: Context) : InstallationMethod {
         // depth) from breaking out of the wrapper.
         log("delete: rootfs subtree at $rootfsPath")
         if (File(rootfsPath).exists()) {
+            // No per-line `onLine` — `find -delete` over a multi-GB
+            // rootfs floods the panel with one line per
+            // permission-denied / busy file (especially on cancel),
+            // and only the failure message is interesting. Full
+            // output is still in `rfRes.output` for the IOException.
             val rfRes = runShell(
                 listOf("/system/bin/sh"),
                 "find $rootfsPathQ -xdev -depth -delete 2>&1",
-            ) { log("rm: $it") }
+                onLine = null,
+            )
             if (!rfRes.ok || File(rootfsPath).exists()) {
                 if (Su.rootAvailable()) {
                     log("delete: app-uid rootfs find failed, retrying via su")
-                    val sr = Su.run("find $rootfsPathQ -xdev -depth -delete") { log("rm (su): $it") }
+                    val sr = Su.run("find $rootfsPathQ -xdev -depth -delete")
                     if (!sr.ok || File(rootfsPath).exists()) {
                         throw IOException(
                             "rootfs delete failed (su retry exit=${sr.exitCode}): ${sr.output}"
@@ -336,7 +342,7 @@ class ProotMethod(context: Context) : InstallationMethod {
             appendLine("rm -f $installPathQ/metadata.json")
             appendLine("rmdir $installPathQ")
         }
-        val r = runShell(listOf("/system/bin/sh"), pass2Script) { log("rm: $it") }
+        val r = runShell(listOf("/system/bin/sh"), pass2Script, onLine = null)
         if (r.ok && !installDir.exists()) return
 
         // App-uid delete failed — almost certainly a residual
@@ -344,7 +350,7 @@ class ProotMethod(context: Context) : InstallationMethod {
         // Retry once via `su`. The same explicit order applies.
         if (Su.rootAvailable()) {
             log("delete: app-uid pass-2 failed, retrying via su")
-            val sr = Su.run(pass2Script) { log("rm (su): $it") }
+            val sr = Su.run(pass2Script)
             if (sr.ok && !installDir.exists()) return
             throw IOException("Recursive delete failed (su retry exit=${sr.exitCode}): ${sr.output}")
         }

@@ -30,6 +30,16 @@ interface Distro {
     val displayName: String
 
     /**
+     * Short label used as the install-form Label default and as the
+     * basis of the on-disk id slug (e.g. `"Arch"`, `"Manjaro"`).
+     * Must be slugifiable via [Installation.slugifyLabel] so the
+     * derived id matches [Installation.isValidId]. Distinct from
+     * [displayName] because the full name typically has spaces and
+     * arch suffixes that produce a long, ugly directory name.
+     */
+    val defaultLabel: String
+
+    /**
      * Linux `uname -m` name (`"x86_64"`, `"aarch64"`). Used for
      * tarball URLs, the [BootstrapCache] filename, and the UI
      * "Architecture:" row. Distinct from [androidAbi] because pacman

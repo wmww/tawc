@@ -17,6 +17,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.InterruptedIOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -93,6 +94,7 @@ object SignatureVerifier {
         tarball.inputStream().use { input ->
             val buf = ByteArray(64 * 1024)
             while (true) {
+                if (Thread.interrupted()) throw InterruptedIOException("verify cancelled")
                 val n = input.read(buf)
                 if (n < 0) break
                 md.update(buf, 0, n)
@@ -129,6 +131,7 @@ object SignatureVerifier {
         tarball.inputStream().use { input ->
             val buf = ByteArray(64 * 1024)
             while (true) {
+                if (Thread.interrupted()) throw InterruptedIOException("verify cancelled")
                 val n = input.read(buf)
                 if (n < 0) break
                 signature.update(buf, 0, n)
@@ -229,6 +232,7 @@ object SignatureVerifier {
         tarball.inputStream().use { input ->
             val buf = ByteArray(64 * 1024)
             while (true) {
+                if (Thread.interrupted()) throw InterruptedIOException("verify cancelled")
                 val n = input.read(buf)
                 if (n < 0) break
                 md.update(buf, 0, n)
@@ -258,11 +262,30 @@ object SignatureVerifier {
         try { URL(url).host } catch (_: Exception) { url }
 
     private fun downloadBytes(url: String): ByteArray {
+        if (Thread.interrupted()) throw InterruptedIOException("download cancelled")
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 30_000
             readTimeout = 30_000
             instanceFollowRedirects = true
         }
+        // HttpURLConnection's blocking calls don't honour the thread
+        // interrupt flag, so during a long fetch a coroutine cancel
+        // can't tip the request over. Park a watchdog thread that
+        // disconnects on interrupt — disconnect throws the read with
+        // an IOException, and the outer InterruptedIOException check
+        // re-asserts the cancel below.
+        val owner = Thread.currentThread()
+        val watchdog = Thread {
+            try {
+                while (!Thread.currentThread().isInterrupted) {
+                    if (owner.isInterrupted) {
+                        conn.disconnect()
+                        return@Thread
+                    }
+                    Thread.sleep(50)
+                }
+            } catch (_: InterruptedException) { /* watchdog itself ended */ }
+        }.apply { isDaemon = true; start() }
         try {
             val code = conn.responseCode
             if (code !in 200..299) {
@@ -270,7 +293,9 @@ object SignatureVerifier {
             }
             return conn.inputStream.use { it.readBytes() }
         } finally {
+            watchdog.interrupt()
             conn.disconnect()
+            if (Thread.interrupted()) throw InterruptedIOException("download cancelled")
         }
     }
 

@@ -4,13 +4,16 @@ import android.content.DialogInterface
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
-import android.view.Gravity
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
@@ -24,49 +27,54 @@ import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.verticalLp
 
 /**
- * "Install new distro" screen. Shows a read-only summary of what's
- * about to be installed (distro, detected CPU arch, install path) until
- * the user taps Install, then swaps to a live progress + log view
- * bound to [InstallationService] via [OperationLogPanel].
+ * "Install new distro" screen. Form for picking distro, label, and
+ * install method, then swaps to a live progress + log view bound to
+ * [InstallationService] via [OperationLogPanel] once the user taps
+ * Install.
+ *
+ * Each visit creates a fresh activity instance and lands on the form —
+ * a slot already being installed at the same id is the
+ * [InstallationService] gate's job to refuse, not this activity's job
+ * to forward to. After a finished install the user backs out to the
+ * home screen, so reopening this activity always starts a brand-new
+ * form rather than re-showing the previous run's log.
  *
  * `am start … --es autoStart true --es id <id>` skips the form and
  * triggers the install immediately (used by the `am start` install hook
  * documented in `notes/installation.md`). The autoStart fires at most
  * once per launch (`savedInstanceState == null`); a fresh `am start`
  * delivers a new launch intent and re-fires, but a process-death
- * recreation does not. Even if the gate ever leaked, the request would
- * be refused at the [InstallationService] level — this is the UX
- * shortcut, not the safety net.
+ * recreation does not.
  */
 class InstallActivity : AppCompatActivity() {
 
     private val store by lazy { InstallationStore(this) }
-    private var targetId: String = Installation.DISTRO_ARCH
     private var selectedMethod: String? = null
     private var selectedDistro: String? = null
+    private var labelEdited: Boolean = false
 
+    private lateinit var formScroll: ScrollView
     private lateinit var formSection: LinearLayout
     private lateinit var methodGroup: RadioGroup
     private lateinit var distroGroup: RadioGroup
-    private lateinit var distroSummaryLabel: TextView
+    private lateinit var labelField: EditText
+    private lateinit var locationLabel: TextView
     private lateinit var installButton: MaterialButton
     private lateinit var panel: OperationLogPanel
+    private lateinit var scaffold: me.phie.tawc.ui.Scaffold
+
+    /**
+     * Resolved id for the Install button. Tracks (label → slug → unique)
+     * so the service-call site doesn't have to re-derive it; null when
+     * the label is empty / unslugifiable / collides with an existing
+     * install (Install button is also disabled in that state).
+     */
+    private var resolvedId: String? = null
 
     private var started = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        targetId = intent?.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH
-        // Reject hostile `--es id` extras early — the activity is
-        // exported, so any installed app can launch it. The
-        // [InstallationService] gate also enforces this, but failing
-        // here keeps `installationDir(id)` (which is rendered in the
-        // form) out of attacker reach.
-        if (!Installation.isValidId(targetId)) {
-            android.util.Log.w("tawc-install", "InstallActivity: rejected invalid id '$targetId'")
-            finish()
-            return
-        }
         // Saved state wins over the launch intent so a user's radio
         // flip survives rotation: Android re-delivers the original
         // intent on recreation, which would otherwise shadow the
@@ -75,25 +83,27 @@ class InstallActivity : AppCompatActivity() {
             ?: intent?.getStringExtra(EXTRA_METHOD)
         selectedDistro = savedInstanceState?.getString(KEY_DISTRO)
             ?: intent?.getStringExtra(EXTRA_DISTRO)
-        // The form is only useful against an empty slot. If the slot is
-        // already in any state (INSTALLING / READY / FAILED / …) the
-        // form's Install button would just be the disabled "in progress"
-        // / "delete first" hint — show the live OperationLogPanel
-        // instead so the user can watch the in-flight job (or see the
-        // last terminal status). `started` therefore tracks "this id has
-        // a job worth watching," not just "we kicked one off here."
-        val occupiedOnEntry = InstallationStore(this).load(targetId) != null
-        started = savedInstanceState?.getBoolean(KEY_STARTED) == true || occupiedOnEntry
+        labelEdited = savedInstanceState?.getBoolean(KEY_LABEL_EDITED) == true
+        started = savedInstanceState?.getBoolean(KEY_STARTED) == true
 
-        val scaffold = buildChildScreen("Install distro")
+        scaffold = buildChildScreen("Install")
 
         val pad = (16 * resources.displayMetrics.density).toInt()
-        formSection = buildFormSection(pad)
-        scaffold.content.addView(formSection, verticalLp(MATCH_PARENT, WRAP_CONTENT))
+        formSection = buildFormSection(pad, savedInstanceState?.getString(KEY_LABEL_TEXT))
+        // Wrap the form in a ScrollView so the soft keyboard can lift
+        // the EditText into view without ever covering the Install
+        // button on a small phone. The scaffold's content column is
+        // MATCH_PARENT, so the scroll view fills it; the inner
+        // formSection is WRAP_CONTENT and grows naturally.
+        formScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(formSection, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+        scaffold.content.addView(formScroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
         panel = OperationLogPanel(this)
         panel.view.visibility = if (started) View.VISIBLE else View.GONE
-        if (started) formSection.visibility = View.GONE
+        if (started) formScroll.visibility = View.GONE
         // Cancel during install requires a confirm: it triggers a
         // follow-up uninstall (INSTALLING → FAILED → UNINSTALLING),
         // which wipes the freshly-laid-down rootfs. There's no user
@@ -117,6 +127,10 @@ class InstallActivity : AppCompatActivity() {
         // produces a null savedInstanceState (Android creates a new
         // activity instance), so the CLI keeps working.
         if (savedInstanceState == null && intent.requestsAutoStart()) {
+            val explicitId = intent?.getStringExtra(EXTRA_ID)
+            if (explicitId != null && Installation.isValidId(explicitId)) {
+                resolvedId = explicitId
+            }
             beginInstall()
         }
     }
@@ -124,13 +138,11 @@ class InstallActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val newId = intent.getStringExtra(EXTRA_ID) ?: targetId
-        if (!Installation.isValidId(newId)) {
-            android.util.Log.w("tawc-install", "InstallActivity: rejected invalid id '$newId' on re-intent")
-            return
-        }
-        targetId = newId
         if (intent.requestsAutoStart()) {
+            val explicitId = intent.getStringExtra(EXTRA_ID)
+            if (explicitId != null && Installation.isValidId(explicitId)) {
+                resolvedId = explicitId
+            }
             beginInstall()
         }
     }
@@ -138,6 +150,13 @@ class InstallActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(KEY_STARTED, started)
+        outState.putBoolean(KEY_LABEL_EDITED, labelEdited)
+        // Guard the late-init lookup the same way [revalidate] does —
+        // saving state can in principle fire before the form is built
+        // if a future onCreate path bails early.
+        if (::labelField.isInitialized) {
+            outState.putString(KEY_LABEL_TEXT, labelField.text.toString())
+        }
         selectedMethod?.let { outState.putString(KEY_METHOD, it) }
         selectedDistro?.let { outState.putString(KEY_DISTRO, it) }
     }
@@ -152,7 +171,7 @@ class InstallActivity : AppCompatActivity() {
         panel.unbind()
     }
 
-    private fun buildFormSection(pad: Int): LinearLayout {
+    private fun buildFormSection(pad: Int, savedLabelText: String?): LinearLayout {
         val s = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         // List the distros that match the host's primary ABI. Empty
@@ -165,41 +184,35 @@ class InstallActivity : AppCompatActivity() {
         val initialDistro = (selectedDistro ?: available.firstOrNull()?.key)
         selectedDistro = initialDistro
 
-        s.addView(buildDistroPicker(available, pad), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        s.addView(buildDistroPicker(available, pad), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
 
-        // Read-only summary that updates when the distro radio
-        // flips. Architecture comes from the picked Distro's
-        // linuxArch (not the raw host ABI) so e.g. ALARM shows
-        // "aarch64" and not "arm64-v8a".
-        distroSummaryLabel = TextView(this).apply { textSize = 14f }
-        refreshDistroSummary(available)
-        s.addView(formRow("Architecture:", distroSummaryLabel), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        s.addView(buildInstallDirField(available, savedLabelText), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
 
+        // Method picker. Defaults to tawcroot (the recommended method);
+        // the `--es method ...` intent extra and saved instance state
+        // both override.
+        s.addView(buildMethodPicker(), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+
+        // "What's the difference?" link to the install method info
+        // page. Borderless text button so it reads as a help affordance,
+        // not a primary action.
         s.addView(
-            formRow("Install location:", store.installationDir(targetId).absolutePath),
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
+            MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+                text = "What's the difference?"
+                setTextColor(getColor(R.color.tawc_accent))
+                setOnClickListener {
+                    startActivity(Intent(this@InstallActivity, InstallMethodInfoActivity::class.java))
+                }
+            },
+            verticalLp(WRAP_CONTENT, WRAP_CONTENT, bottomMargin = pad),
         )
 
-        // Method picker. The radio default reflects the host: chroot if
-        // `su` is available, proot otherwise. The `--es method ...`
-        // intent extra (or saved instance state) overrides.
-        s.addView(buildMethodPicker(), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
-
         installButton = primaryButton("Install") { beginInstall() }
-        // Mirror the service-level gate so the form makes the refusal
-        // obvious before the user taps. The service is still the
-        // source of truth — the button is just a hint.
-        val current = store.load(targetId)
-        if (current != null) {
-            installButton.isEnabled = false
-            installButton.text = when (current.state) {
-                Installation.State.READY -> "Install (already installed — delete first)"
-                Installation.State.INSTALLING -> "Install (in progress — delete to abort)"
-                Installation.State.UNINSTALLING -> "Install (delete in progress)"
-                Installation.State.FAILED -> "Install (failed — delete first)"
-            }
-        }
         s.addView(installButton, verticalLp(MATCH_PARENT, WRAP_CONTENT))
+
+        // Initial validation pass — populates resolvedId, location row,
+        // and Install button enabled-state from the default label.
+        revalidate()
         return s
     }
 
@@ -212,7 +225,7 @@ class InstallActivity : AppCompatActivity() {
      */
     private fun buildDistroPicker(available: List<Distro>, pad: Int): LinearLayout {
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val title = TextView(this).apply { text = "Distro:"; textSize = 14f }
+        val title = TextView(this).apply { text = "Distro"; textSize = 14f }
         container.addView(title, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
 
         if (available.isEmpty()) {
@@ -246,71 +259,151 @@ class InstallActivity : AppCompatActivity() {
         distroGroup.setOnCheckedChangeListener { _, checkedId ->
             idsByKey[checkedId]?.let {
                 selectedDistro = it
-                refreshDistroSummary(available)
+                // Auto-update the label default when the user hasn't
+                // typed anything custom yet — flipping from "Arch Linux
+                // (x86)" to "Arch Linux ARM" should follow.
+                if (!labelEdited) {
+                    val d = available.firstOrNull { it.key == selectedDistro }
+                    if (d != null) setLabelTextSilently(d.defaultLabel)
+                }
+                revalidate()
             }
         }
         return container
     }
 
-    private fun refreshDistroSummary(available: List<Distro>) {
-        if (!::distroSummaryLabel.isInitialized) return
-        val d = available.firstOrNull { it.key == selectedDistro }
-        distroSummaryLabel.text = d?.linuxArch ?: "(unknown)"
+    /**
+     * Build the merged Label / Install-directory block. The user-typed
+     * string is the [Installation.label]; we slugify it into the on-disk
+     * id and render the resulting absolute path on the line directly
+     * below as a quieter monospace echo, which doubles as the hint
+     * shown when the label is empty / unslugifiable / collides.
+     */
+    private fun buildInstallDirField(available: List<Distro>, savedLabelText: String?): LinearLayout {
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val title = TextView(this).apply { text = "Label"; textSize = 14f }
+        container.addView(title, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+
+        val initialDefault = available.firstOrNull { it.key == selectedDistro }?.defaultLabel ?: ""
+        labelField = EditText(this).apply {
+            setText(savedLabelText ?: initialDefault)
+            isSingleLine = true
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    if (!suppressEditedFlag) labelEdited = true
+                    revalidate()
+                }
+            })
+        }
+        container.addView(labelField, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        // Single quieter monospace line below the input — when valid,
+        // it's the resolved absolute install path; when invalid (empty
+        // / unslugifiable / collides), it's the explanation in the
+        // same slot. One line of feedback instead of two.
+        locationLabel = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
+        }
+        container.addView(locationLabel, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        return container
     }
 
     /**
-     * Build the method picker (chroot / proot / tawcroot radio group).
-     * Default follows host capability — `su` available picks chroot,
-     * otherwise proot (the established rootless path). tawcroot is
-     * exposed as an opt-in for now: phase-2 host validation passes but
-     * real-Android coverage is still landing, so we don't auto-default
-     * onto it. The intent extra `method` and saved-instance state both
-     * override the default; the user can still flip the radio after.
+     * `setText(...)` from inside the activity (e.g. when the distro
+     * radio flips) must not flip [labelEdited] back to true. Wrap
+     * those updates with this guard.
+     */
+    private var suppressEditedFlag = false
+
+    private fun setLabelTextSilently(text: String) {
+        suppressEditedFlag = true
+        try {
+            labelField.setText(text)
+        } finally {
+            suppressEditedFlag = false
+        }
+    }
+
+    /**
+     * Recompute resolvedId, the location row, the hint, and the
+     * Install button's enabled state from the current label. Called on
+     * label edits and distro flips.
+     */
+    private fun revalidate() {
+        if (!::labelField.isInitialized) return
+        val rawLabel = labelField.text.toString().trim()
+        val slug = if (rawLabel.isEmpty()) null else Installation.slugifyLabel(rawLabel)
+        val collides = slug != null && store.installationDir(slug).exists()
+        resolvedId = slug?.takeUnless { collides }
+
+        if (::locationLabel.isInitialized) {
+            locationLabel.text = when {
+                rawLabel.isEmpty() -> "Label cannot be empty"
+                slug == null -> "Label must contain at least one letter or digit"
+                collides -> "Already installed at ${store.installationDir(slug).absolutePath}"
+                else -> store.installationDir(slug).absolutePath
+            }
+        }
+
+        if (::installButton.isInitialized) {
+            installButton.isEnabled = (resolvedId != null)
+            installButton.text = "Install"
+        }
+    }
+
+    /**
+     * Build the method picker (tawcroot / proot / chroot radio group),
+     * vertical and in recommendation order: tawcroot first as the
+     * default for new installs, proot as the established rootless
+     * fallback, chroot last for rooted-only setups.
      */
     private fun buildMethodPicker(): LinearLayout {
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val title = TextView(this).apply { text = "Install method:"; textSize = 14f }
+        val title = TextView(this).apply { text = "Install method"; textSize = 14f }
         container.addView(title, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
 
-        methodGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        methodGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
         val rootAvailable = Su.rootAvailable()
 
         // Use generateViewId() rather than hand-picked constants —
         // any literal we'd reach for in the AAPT range collides with
         // future R.id.* once we add a layout XML.
-        val chrootId = View.generateViewId()
-        val prootId = View.generateViewId()
         val tawcrootId = View.generateViewId()
+        val prootId = View.generateViewId()
+        val chrootId = View.generateViewId()
 
-        val chroot = RadioButton(this).apply {
-            id = chrootId
-            text = "chroot (root)"
-            // The chroot path needs su; greyed-out on devices without
-            // root makes the limitation visible without surprising
-            // the user mid-install.
-            isEnabled = rootAvailable
+        val tawcroot = RadioButton(this).apply {
+            id = tawcrootId
+            text = "tawcroot (recommended)"
         }
         val proot = RadioButton(this).apply {
             id = prootId
-            text = "proot (rootless)"
+            text = "proot"
         }
-        val tawcroot = RadioButton(this).apply {
-            id = tawcrootId
-            text = "tawcroot (systrap, rootless)"
+        val chroot = RadioButton(this).apply {
+            id = chrootId
+            text = "chroot (requires root)"
+            // Greyed-out on un-rooted devices so the limitation is
+            // visible at the form level — service-side gate will also
+            // refuse but the user shouldn't reach the tap to find out.
+            isEnabled = rootAvailable
         }
-        methodGroup.addView(chroot, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = 16 })
-        methodGroup.addView(proot, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = 16 })
-        methodGroup.addView(tawcroot, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        methodGroup.addView(tawcroot, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        methodGroup.addView(proot, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        methodGroup.addView(chroot, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         container.addView(methodGroup, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         // Initial selection: explicit override → use it; else default
-        // for host (chroot if su works, proot if not).
-        val initial = selectedMethod
-            ?: if (rootAvailable) ChrootMethod.KEY else ProotMethod.KEY
+        // to tawcroot (the recommended method).
+        val initial = selectedMethod ?: TawcrootMethod.KEY
         methodGroup.check(when (initial) {
             ChrootMethod.KEY    -> chrootId
-            TawcrootMethod.KEY  -> tawcrootId
-            else                -> prootId
+            ProotMethod.KEY     -> prootId
+            else                -> tawcrootId
         })
         selectedMethod = initial
 
@@ -325,37 +418,11 @@ class InstallActivity : AppCompatActivity() {
         return container
     }
 
-    private fun formRow(label: String, value: String): LinearLayout {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val l = TextView(this).apply { text = label; textSize = 14f }
-        val v = TextView(this).apply { text = value; textSize = 14f; typeface = Typeface.MONOSPACE }
-        row.addView(l, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = 16 })
-        row.addView(v, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        return row
-    }
-
-    /**
-     * formRow variant that takes a pre-built TextView as the value
-     * cell so callers can keep a reference and update its text later
-     * (e.g. when the distro radio flips). Same layout as the string
-     * overload.
-     */
-    private fun formRow(label: String, value: TextView): LinearLayout {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val l = TextView(this).apply { text = label; textSize = 14f }
-        value.typeface = Typeface.MONOSPACE
-        row.addView(l, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = 16 })
-        row.addView(value, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        return row
-    }
-
     private fun beginInstall() {
-        // Only the chroot path needs `su`. Proot is rootless by
-        // definition, so a missing-root device fails this check only
-        // if the user picked chroot anyway. We surface the "no su"
-        // message specifically; other "method not available" reasons
-        // are caught at service-gate level.
-        val methodKey = selectedMethod ?: ChrootMethod.KEY
+        // Only the chroot path needs `su`. Proot/tawcroot are rootless
+        // by definition, so a missing-root device fails this check only
+        // if the user picked chroot anyway.
+        val methodKey = selectedMethod ?: TawcrootMethod.KEY
         if (methodKey == ChrootMethod.KEY && !Su.rootAvailable()) {
             formSection.visibility = View.GONE
             panel.view.visibility = View.VISIBLE
@@ -364,25 +431,44 @@ class InstallActivity : AppCompatActivity() {
             // soon as onStart fires, so a status-only error vanishes
             // and the user sees a misleading "Idle" with no
             // explanation. The log line is sticky.
-            val msg = "ERROR: root (su) not available — pick proot, or grant Magisk root."
+            val msg = "ERROR: root (su) not available — pick proot or tawcroot, or grant Magisk root."
             panel.setStatus(msg)
             panel.appendLog(msg)
             return
         }
-        formSection.visibility = View.GONE
+        val targetId = resolvedId
+        if (targetId == null) {
+            // Defensive: the Install button is disabled when resolvedId
+            // is null, but autoStart can land here without going via
+            // the form. Surface the refusal clearly.
+            formSection.visibility = View.GONE
+            panel.view.visibility = View.VISIBLE
+            val msg = "ERROR: no valid label / id resolved — set a non-empty label that doesn't collide"
+            panel.setStatus(msg)
+            panel.appendLog(msg)
+            return
+        }
+        formScroll.visibility = View.GONE
         panel.view.visibility = View.VISIBLE
+        // Wipe any lines the panel may have collected from the
+        // SharedFlow's replay cache between onStart and now (e.g. the
+        // previous uninstall's tail when the user uninstalled then
+        // came back to install again).
+        panel.clearLog()
         // [InstallationService] is the authoritative gate; we just hand
         // off and let it decide whether to run or reject. `started` only
         // tracks UI state (form vs panel) so a process-death recreate
         // restores the panel view.
         val distroKey = selectedDistro
+        val labelText = labelField.text.toString().trim().takeIf { it.isNotEmpty() }
         panel.appendLog(
             (if (started) "[ui] re-requesting install of '$targetId' via $methodKey"
              else "[ui] starting install of '$targetId' via $methodKey")
                 + (distroKey?.let { " (distro=$it)" } ?: "")
+                + (labelText?.let { " label='$it'" } ?: "")
         )
         started = true
-        InstallationService.startInstall(this, targetId, methodKey, distroKey)
+        InstallationService.startInstall(this, targetId, methodKey, distroKey, labelText)
     }
 
     private fun dispatchCancel() {
@@ -391,8 +477,13 @@ class InstallActivity : AppCompatActivity() {
             panel.appendLog("[ui] cancel ignored: service not bound yet")
             return
         }
+        val targetId = resolvedId
+        if (targetId == null) {
+            panel.appendLog("[ui] cancel ignored: no resolved id")
+            return
+        }
         when (service.currentKind) {
-            InstallationService.JobKind.INSTALL -> confirmCancelInstall(service)
+            InstallationService.JobKind.INSTALL -> confirmCancelInstall(service, targetId)
             InstallationService.JobKind.UNINSTALL -> {
                 // Follow-up uninstall phase from a previous cancel-
                 // install (or the user opened the install activity
@@ -405,7 +496,7 @@ class InstallActivity : AppCompatActivity() {
         }
     }
 
-    private fun confirmCancelInstall(service: InstallationService) {
+    private fun confirmCancelInstall(service: InstallationService, targetId: String) {
         // Note: the "no data will be lost" wording is correct because
         // the install gate only runs against an empty slot (see
         // notes/installation.md). If a future refactor adds in-place
@@ -440,5 +531,7 @@ class InstallActivity : AppCompatActivity() {
         private const val KEY_STARTED = "tawc.install.started"
         private const val KEY_METHOD = "tawc.install.method"
         private const val KEY_DISTRO = "tawc.install.distro"
+        private const val KEY_LABEL_EDITED = "tawc.install.labelEdited"
+        private const val KEY_LABEL_TEXT = "tawc.install.labelText"
     }
 }

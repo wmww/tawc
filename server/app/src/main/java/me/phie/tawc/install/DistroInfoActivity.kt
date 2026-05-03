@@ -42,26 +42,56 @@ class DistroInfoActivity : AppCompatActivity() {
     private lateinit var sizeValue: TextView
     private var sizeScope: CoroutineScope? = null
 
+    private lateinit var scaffold: me.phie.tawc.ui.Scaffold
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         targetId = intent?.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH
+        scaffold = buildChildScreen(targetId)
+        setContentView(scaffold.root)
+        // Defer all view population to onResume so a returning trip
+        // from UninstallActivity (which may have flipped the slot
+        // INSTALLING/READY → FAILED on cancel) re-reads metadata and
+        // re-renders the right state row, button, and size probe.
+    }
 
+    override fun onResume() {
+        super.onResume()
         val installation = store.load(targetId)
-        val resolvedDistro: Distro? = installation?.let { DistroRegistry.forInstallation(it) }
-        val titleText = installation?.let { renderDistroLabel(it, resolvedDistro) } ?: targetId
-
-        val scaffold = buildChildScreen(titleText)
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        val content = scaffold.content
-
         if (installation == null) {
-            TextView(this).apply { text = "Installation '$targetId' not found." }
-                .also { content.addView(it, verticalLp(MATCH_PARENT, WRAP_CONTENT)) }
-            setContentView(scaffold.root)
+            // Uninstall happened in a child activity while we were paused;
+            // there's nothing to show so back out to the home screen.
+            finish()
             return
         }
+        renderContent(installation)
+        if (installation.state == Installation.State.READY ||
+            installation.state == Installation.State.FAILED) {
+            startSizeProbe()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        sizeScope?.cancel()
+        sizeScope = null
+    }
+
+    private fun renderContent(installation: Installation) {
+        val resolvedDistro: Distro? = DistroRegistry.forInstallation(installation)
+        val titleText = installation.label
+            ?: resolvedDistro?.displayName
+            ?: targetId
+        scaffold.toolbar.title = titleText
+
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val content = scaffold.content
+        content.removeAllViews()
 
         content.addView(infoRow("ID:", installation.id), rowLp(pad))
+        if (installation.label != null) {
+            content.addView(infoRow("Label:", installation.label), rowLp(pad))
+        }
         content.addView(
             infoRow("Distro:", resolvedDistro?.displayName ?: installation.distro),
             rowLp(pad),
@@ -93,11 +123,16 @@ class DistroInfoActivity : AppCompatActivity() {
             infoRow("Rootfs path:", store.rootfsDir(installation.id).absolutePath),
             rowLp(pad),
         )
-        // Only `READY` installs are walkable in any meaningful sense;
-        // `du -sk` against an in-flight install fights with the
-        // installer for IO and the number is meaningless anyway.
+        // READY and FAILED slots both have stable on-disk content
+        // worth measuring — FAILED in particular is exactly when the
+        // user wants to know how much space the half-installed
+        // rootfs is sitting on. INSTALLING / UNINSTALLING are skipped
+        // because `du -sk` would fight the installer for IO and the
+        // number changes faster than we can render it.
+        val canProbeSize = installation.state == Installation.State.READY ||
+            installation.state == Installation.State.FAILED
         sizeValue = TextView(this).apply {
-            text = if (installation.state == Installation.State.READY) "computing…" else "—"
+            text = if (canProbeSize) "computing…" else "—"
             textSize = 14f
             typeface = Typeface.MONOSPACE
         }
@@ -113,30 +148,10 @@ class DistroInfoActivity : AppCompatActivity() {
             destructiveButton("Delete") { confirmUninstall(installation) },
             verticalLp(MATCH_PARENT, WRAP_CONTENT),
         )
-
-        setContentView(scaffold.root)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        val cur = store.load(targetId)
-        if (cur == null) {
-            // Uninstall happened in a child activity while we were paused;
-            // there's nothing to show so back out to the home screen.
-            finish()
-            return
-        }
-        if (cur.state == Installation.State.READY) startSizeProbe()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        sizeScope?.cancel()
-        sizeScope = null
     }
 
     private fun confirmUninstall(installation: Installation) {
-        val name = renderDistroLabel(installation, DistroRegistry.forInstallation(installation))
+        val name = renderDistroLabel(installation)
         val message = "This permanently deletes the rootfs at\n" +
             "${store.rootfsDir(installation.id).absolutePath},\n" +
             "including all files in your Linux home directory."
@@ -186,16 +201,17 @@ class DistroInfoActivity : AppCompatActivity() {
     }
 
     /**
-     * Render a "<distro> (<arch>)" label using the resolved [Distro]
-     * when known (canonical display name + Linux arch), and falling
-     * back to the on-disk strings otherwise.
+     * Friendly name for the installation: the user's label if set,
+     * else the registry-resolved display name (which already carries
+     * the ARM/(x86) disambiguator), else a raw "<distro> (<arch>)"
+     * fall-back for unknown-distro records.
      */
-    private fun renderDistroLabel(installation: Installation, distro: Distro?): String =
-        if (distro != null) {
-            "${distro.displayName} (${distro.linuxArch})"
-        } else {
-            "${installation.distro.replaceFirstChar { it.titlecase() }} (${installation.arch})"
-        }
+    private fun renderDistroLabel(installation: Installation): String {
+        val resolved = DistroRegistry.forInstallation(installation)
+        return installation.label
+            ?: resolved?.displayName
+            ?: "${installation.distro.replaceFirstChar { it.titlecase() }} (${installation.arch})"
+    }
 
     private fun infoRow(label: String, value: String): LinearLayout =
         infoRowWithValue(label, TextView(this).apply {

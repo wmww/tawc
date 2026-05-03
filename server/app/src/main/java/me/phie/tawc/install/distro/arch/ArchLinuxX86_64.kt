@@ -15,7 +15,13 @@ import me.phie.tawc.install.distro.DistroBootstrap
  */
 internal object ArchLinuxX86_64 : Distro {
     override val key: String = Installation.DISTRO_ARCH
-    override val displayName: String = "Arch Linux"
+    // Arch Linux ARM and Arch Linux x86 share the upstream "Arch Linux"
+    // brand but have different bootstrap sources, kernel package names,
+    // and (in this app) different Android ABIs. The display name has to
+    // disambiguate at a glance — ALARM uses the official "ARM" suffix,
+    // and we mirror that with a "(x86)" suffix here.
+    override val displayName: String = "Arch Linux (x86)"
+    override val defaultLabel: String = "Arch"
     override val linuxArch: String = "x86_64"
     override val androidAbi: String = "x86_64"
 

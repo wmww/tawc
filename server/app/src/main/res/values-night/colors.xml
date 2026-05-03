@@ -5,4 +5,7 @@
      because white-on-deep-red works on both light and dark surfaces. -->
 <resources>
     <color name="tawc_accent">#E04410</color>
+    <!-- Brighter green for dark mode so the "Installed" / "Deleted"
+         status reads cleanly on the dark surface. -->
+    <color name="tawc_success">#66BB6A</color>
 </resources>

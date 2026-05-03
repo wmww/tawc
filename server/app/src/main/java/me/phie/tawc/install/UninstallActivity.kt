@@ -33,6 +33,7 @@ class UninstallActivity : AppCompatActivity() {
     private var targetId: String = Installation.DISTRO_ARCH
 
     private lateinit var panel: OperationLogPanel
+    private lateinit var scaffold: me.phie.tawc.ui.Scaffold
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,7 +46,7 @@ class UninstallActivity : AppCompatActivity() {
             return
         }
 
-        val scaffold = buildChildScreen("Delete")
+        scaffold = buildChildScreen("Delete")
         panel = OperationLogPanel(this)
         panel.view.visibility = View.VISIBLE
         // No confirm dialog here. The user might be tapping Cancel
@@ -114,6 +115,9 @@ class UninstallActivity : AppCompatActivity() {
             panel.setStatus("ERROR: root (su) not available — chroot uninstalls need it.")
             return
         }
+        // Drop any replay-cached lines from a previous operation that
+        // bound between onStart and now (same reason as InstallActivity).
+        panel.clearLog()
         // [InstallationService] is the authoritative gate; we just
         // hand off and let it decide whether to run or reject.
         panel.appendLog(if (reLaunch) "[ui] re-requesting uninstall of '$targetId'"

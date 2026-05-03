@@ -18,13 +18,13 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.color.MaterialColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import me.phie.tawc.R
-import me.phie.tawc.ui.accentOutlinedButton
 
 /**
  * Shared "operation in progress" UI. Builds a status line + accent-
@@ -80,10 +80,12 @@ class OperationLogPanel(private val activity: Activity) {
 
         statusText = TextView(activity).apply {
             text = ""
-            // Default the status line to accent so the in-progress
-            // state is the visually present one. FAILED stage swaps
-            // it to the danger color in [startCollecting].
-            setTextColor(accent)
+            // Status reads as a heading: bold + the surface's default
+            // text color (so it neither competes with the accent
+            // primary action nor disappears into placeholder grey).
+            // The DONE / FAILED stages swap to success-green / danger-
+            // red in [startCollecting] for terminal contrast.
+            setTypeface(typeface, Typeface.BOLD)
         }
         view.addView(statusText, lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
 
@@ -106,15 +108,19 @@ class OperationLogPanel(private val activity: Activity) {
 
         // Cancel sits below the log so it doesn't compete with the
         // primary status row at the top, and so the user reads the
-        // operation's current state before reaching the abort. Hidden
-        // until a stage event tells us a job is actually running.
-        cancelButton = if (activity is AppCompatActivity) {
-            activity.accentOutlinedButton("Cancel") { onCancelClicked?.invoke() }
-        } else {
-            MaterialButton(activity).apply {
-                text = "Cancel"
-                setOnClickListener { onCancelClicked?.invoke() }
-            }
+        // operation's current state before reaching the abort. Subdued
+        // styling (text button, neutral on-surface color) so it doesn't
+        // visually compete with the operation's status line — a
+        // background recovery action, not the primary path. Hidden until
+        // a stage event tells us a job is actually running.
+        cancelButton = MaterialButton(
+            activity, null, com.google.android.material.R.attr.borderlessButtonStyle,
+        ).apply {
+            text = "Cancel"
+            setTextColor(
+                MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant)
+            )
+            setOnClickListener { onCancelClicked?.invoke() }
         }
         cancelButton.visibility = View.GONE
         view.addView(cancelButton, lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = 0).apply {
@@ -152,6 +158,26 @@ class OperationLogPanel(private val activity: Activity) {
         statusText.text = text
     }
 
+    /**
+     * Drop every line currently rendered in the on-screen log AND the
+     * service-side replay buffer. Owners call this from their
+     * `beginInstall` / `beginUninstall` just before invoking the
+     * service so:
+     *   1. the previous operation's lines vanish from this panel's
+     *      already-collected TextView; and
+     *   2. any items still buffered in the SharedFlow's replay cache
+     *      can't race in *after* the wipe (`logText.text = ""` runs on
+     *      Main, but a queued `collect` callback on Main can dispatch
+     *      between the wipe and the user's next action).
+     * `resetReplayCache` only affects *future* subscribers, but
+     * combined with the local wipe it closes the bind→collect→wipe
+     * window cleanly.
+     */
+    fun clearLog() {
+        service?.resetLogReplay()
+        logText.text = ""
+    }
+
     fun appendLog(line: String) {
         // Cap on-screen log to keep memory bounded; full history is in logcat.
         val cur = logText.text
@@ -169,13 +195,20 @@ class OperationLogPanel(private val activity: Activity) {
         val cs = CoroutineScope(Dispatchers.Main)
         collectScope = cs
 
-        val accent = activity.getColor(R.color.tawc_accent)
         val danger = activity.getColor(R.color.tawc_danger)
+        val success = activity.getColor(R.color.tawc_success)
+        val defaultTextColor = MaterialColors.getColor(
+            statusText, com.google.android.material.R.attr.colorOnSurface,
+        )
 
         cs.launch {
             s.progress.collectLatest { p ->
                 statusText.text = p.message
-                statusText.setTextColor(if (p.stage == InstallStage.FAILED) danger else accent)
+                statusText.setTextColor(when (p.stage) {
+                    InstallStage.FAILED -> danger
+                    InstallStage.DONE -> success
+                    else -> defaultTextColor
+                })
                 if (p.percent != null) {
                     progressBar.isIndeterminate = false
                     progressBar.progress = p.percent

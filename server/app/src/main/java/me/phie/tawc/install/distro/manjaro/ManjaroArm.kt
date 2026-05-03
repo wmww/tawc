@@ -29,6 +29,7 @@ import me.phie.tawc.install.distro.arch.ArchPacmanCommon
 internal object ManjaroArm : Distro {
     override val key: String = Installation.DISTRO_MANJARO
     override val displayName: String = "Manjaro ARM"
+    override val defaultLabel: String = "Manjaro"
     override val linuxArch: String = "aarch64"
     override val androidAbi: String = "arm64-v8a"
 

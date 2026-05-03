@@ -10,6 +10,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.io.InterruptedIOException
 
 /**
  * In-process tar extractor for the proot install method.
@@ -87,6 +88,17 @@ internal object ProotArchiveExtractor {
 
         openTarStream(tarball).use { tin ->
             while (true) {
+                // Per-entry interrupt check: a multi-thousand-entry
+                // bootstrap takes seconds to extract on a phone, and
+                // the tar stream / FileOutputStream calls below don't
+                // observe the thread interrupt themselves. Without
+                // this gate a cancel during extract would only land
+                // when the next stage starts. Clear+throw so the
+                // caller's `catch (InterruptedIOException)` /
+                // `runInterruptible` path takes over cleanly.
+                if (Thread.interrupted()) {
+                    throw InterruptedIOException("extract cancelled")
+                }
                 val entry: TarArchiveEntry = tin.nextEntry as? TarArchiveEntry
                     ?: break
                 val rel = stripped(entry.name, stripPrefix) ?: continue

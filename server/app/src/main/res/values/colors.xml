@@ -11,4 +11,11 @@
 
     <color name="tawc_danger">#C62828</color>
     <color name="tawc_on_danger">#FFFFFF</color>
+
+    <!-- Success green for terminal "operation finished" status text. Sits
+         in the same family as Material's tertiary green; tuned to read
+         as a clear positive on both the light and dark surfaces without
+         shouting. The dark-theme override in values-night brightens it
+         for contrast against the dark background. -->
+    <color name="tawc_success">#2E7D32</color>
 </resources>

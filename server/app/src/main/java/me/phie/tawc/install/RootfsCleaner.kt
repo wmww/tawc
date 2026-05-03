@@ -74,9 +74,12 @@ object RootfsCleaner {
         // and a second uninstall can finish the job.
         if (File(rootfsPath).exists()) {
             log("rm: rootfs subtree at $rootfsPath")
-            val rfRes = Su.run("find '$rootfsPath' -xdev -depth -delete >/dev/null") {
-                log("rm: $it")
-            }
+            // No per-line `onLine` — `find -delete` on an Arch rootfs
+            // emits one error line per file held open / locked / on a
+            // filesystem `-xdev` won't cross, which can be thousands
+            // of lines on a cancel path. The full output is still
+            // captured in `rfRes.output` and shown on failure.
+            val rfRes = Su.run("find '$rootfsPath' -xdev -depth -delete >/dev/null")
             if (!rfRes.ok) {
                 throw IOException("rootfs delete failed:\n${rfRes.output}")
             }
@@ -99,7 +102,7 @@ object RootfsCleaner {
                 appendLine("rm -f '$installPath/metadata.json'")
                 appendLine("rmdir '$installPath'")
             }
-        ) { log("rm: $it") }
+        )
         if (!finalRes.ok || installDir.exists()) {
             throw IOException("metadata delete failed:\n${finalRes.output}")
         }

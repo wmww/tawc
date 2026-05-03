@@ -174,22 +174,27 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         runShell(
             listOf("/system/bin/sh"),
             "chmod -R u+rwX $installPathQ 2>/dev/null; exit 0",
-        ) { log("chmod: $it") }
+            onLine = null,
+        )
 
         log("delete: $installDir")
+        // No per-line callback — `find -delete` over a multi-GB
+        // rootfs streams one stderr line per permission-denied /
+        // busy file (very common on cancel paths) and floods the
+        // panel. Full output is captured in `r.output` for the
+        // IOException below.
         val r = runShell(
             listOf("/system/bin/sh"),
             "find $installPathQ -xdev -depth -delete 2>&1",
-        ) { log("rm: $it") }
+            onLine = null,
+        )
 
         if (r.ok && !installDir.exists()) return
         // Same fallback as ProotMethod: `su -c` retry catches any
         // root-owned leftovers from interleaved chroot+tawcroot use.
         if (Su.rootAvailable()) {
             log("delete: app-uid find -delete failed, retrying via su")
-            val sr = Su.run("find $installPathQ -xdev -depth -delete") {
-                log("rm (su): $it")
-            }
+            val sr = Su.run("find $installPathQ -xdev -depth -delete")
             if (sr.ok && !installDir.exists()) return
             throw IOException(
                 "Recursive delete failed (su retry exit=${sr.exitCode}): ${sr.output}"

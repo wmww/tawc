@@ -108,18 +108,21 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun displayName(inst: Installation): String {
-        // Prefer the registry's canonical display name + Linux arch
-        // ("Arch Linux ARM (aarch64)") and fall back to the raw
-        // on-disk strings for unknown distros.
+        // The user-set label is the friendly name; it defaults to the
+        // distro's displayName (which already carries the ARM/(x86)
+        // disambiguator), so legacy records without a label fall back
+        // to that same string. Unknown-distro records show the raw
+        // on-disk fields so the row is at least diagnostic.
         val resolved = DistroRegistry.forInstallation(inst)
-        val name = resolved?.displayName ?: inst.distro.replaceFirstChar { it.titlecase() }
-        val arch = resolved?.linuxArch ?: inst.arch
+        val name = inst.label
+            ?: resolved?.displayName
+            ?: "${inst.distro.replaceFirstChar { it.titlecase() }} (${inst.arch})"
         val suffix = when (inst.state) {
             Installation.State.READY -> ""
             Installation.State.INSTALLING -> " — installing…"
             Installation.State.UNINSTALLING -> " — uninstalling…"
             Installation.State.FAILED -> " — failed"
         }
-        return "$name ($arch)$suffix ›"
+        return "$name$suffix ›"
     }
 }

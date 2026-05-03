@@ -87,6 +87,11 @@
             android:exported="true"
             android:label="Distro info" />
 
+        <activity
+            android:name=".install.InstallMethodInfoActivity"
+            android:exported="false"
+            android:label="Install methods" />
+
         <service
             android:name=".install.InstallationService"
             android:exported="false"

@@ -5,6 +5,7 @@ import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.util.AppOwnership
 import me.phie.tawc.install.util.HumanSize
 import java.io.IOException
+import java.io.InterruptedIOException
 
 /**
  * Generic install/uninstall pipeline. The shape is the same regardless
@@ -55,12 +56,27 @@ class Installer(
     private val distro: Distro,
     private val method: InstallationMethod,
     private val id: String,
+    private val label: String? = null,
 ) {
     /** Throws on failure. Reports progress + log lines via the callbacks. */
     fun install(
         progress: (InstallProgress) -> Unit,
         log: (String) -> Unit,
     ) {
+        // Stage-boundary cancel gate. `runInterruptible` translates a
+        // coroutine cancel into a thread interrupt, but inner blocking
+        // calls (PGP digest, tar extract, pacman) are uninterruptible
+        // for chunks of seconds-to-minutes and only honour the flag
+        // when they reach a poll point. This guard ensures that even
+        // if a slow stage runs to completion ignoring the interrupt,
+        // we tip over at the next stage boundary instead of plowing
+        // through the whole pipeline.
+        fun checkCancel() {
+            if (Thread.interrupted()) {
+                throw InterruptedIOException("install cancelled by user")
+            }
+        }
+
         val rootfsDir = store.rootfsDir(id)
         val rootfsPath = rootfsDir.absolutePath
 
@@ -102,9 +118,11 @@ class Installer(
                 sourceUrl = bootstrap.url,
                 state = Installation.State.INSTALLING,
                 installedAtAppVersionCode = appVersionCode,
+                label = label,
             )
         )
 
+        checkCancel()
         // Stage 1: download. BootstrapCache owns the cache dir
         // entirely — filename scheme, freshness mtime, TTL janitor —
         // so the installer just hands it (cacheKey, url, format).
@@ -127,6 +145,7 @@ class Installer(
             ))
         }
 
+        checkCancel()
         // Stage 2: integrity check. PGP-verify the just-downloaded
         // tarball against the distro's [BootstrapVerification] before
         // any byte hits the rootfs. Throws on mismatch / missing
@@ -143,6 +162,7 @@ class Installer(
         log("verify: ${bootstrap.verification::class.simpleName}")
         SignatureVerifier.verify(context, cacheFile, bootstrap.verification)
 
+        checkCancel()
         // Stage 3: extract. The rootfs dir does not exist yet — the
         // gate only invokes install on a `(no dir)` slot — so the
         // method's extractor lays everything onto a fresh tree.
@@ -162,6 +182,7 @@ class Installer(
             log("tar: $line")
         }
 
+        checkCancel()
         // Stage 3: configure. /etc files via Distro.configure, then
         // the auto-generated enter.sh that both in-app callers (via
         // method.runInside) and host-side client/tawc-chroot-run
@@ -183,6 +204,7 @@ class Installer(
         // false on the emulator and the binds are harmless leftovers.
         LibhybrisLinker.link(context, method, rootfsPath, log)
 
+        checkCancel()
         // Stage 4: package-manager bootstrap. State stays INSTALLING
         // throughout — if either pacman invocation fails the service
         // wraps it as FAILED and the only recovery is uninstall +
@@ -190,17 +212,18 @@ class Installer(
         progress(InstallProgress(InstallStage.PKG_KEYRING, "Initializing package manager…"))
         distro.initPackageManager(method, rootfsPath, log)
 
+        checkCancel()
         // Stage 5: install base packages.
         progress(InstallProgress(
             InstallStage.PKG_INSTALL,
-            "Installing base packages (this takes a few minutes)…",
+            "Installing base packages…",
         ))
         distro.installBasePackages(method, rootfsPath, log)
 
         // All stages succeeded — flip to READY. From this point the
         // gate refuses install and only allows uninstall.
         store.setState(id, Installation.State.READY)
-        progress(InstallProgress(InstallStage.DONE, "Installation complete."))
+        progress(InstallProgress(InstallStage.DONE, "Installed"))
     }
 
     /**
@@ -220,7 +243,7 @@ class Installer(
     ) {
         val installDir = store.installationDir(id)
         if (!installDir.exists()) {
-            progress(InstallProgress(InstallStage.DONE, "Nothing to uninstall."))
+            progress(InstallProgress(InstallStage.DONE, "Nothing to delete"))
             return
         }
         store.setState(id, Installation.State.UNINSTALLING)
@@ -234,7 +257,7 @@ class Installer(
         progress(InstallProgress(InstallStage.DELETING, "Deleting rootfs…"))
         method.wipe(installDir, log)
 
-        progress(InstallProgress(InstallStage.DONE, "Uninstalled."))
+        progress(InstallProgress(InstallStage.DONE, "Deleted"))
     }
 
     /**

@@ -24,6 +24,14 @@ data class Installation(
     val failure: String? = null,
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION,
     val installedAtAppVersionCode: Long = 0L,
+    /**
+     * Free-form display name set by the user at install time. The id
+     * (folder name on disk) is derived from the label by slugifying;
+     * the label itself is what every UI surface renders. Null on legacy
+     * records that predate this field — callers fall back to the
+     * registry-resolved displayName so old installs still read sensibly.
+     */
+    val label: String? = null,
 ) {
     fun rootfsDir(store: InstallationStore): File = store.rootfsDir(id)
     fun metadataFile(store: InstallationStore): File = store.metadataFile(id)
@@ -39,6 +47,7 @@ data class Installation(
         put("sourceUrl", sourceUrl)
         put("state", state.name)
         if (failure != null) put("failure", failure)
+        if (label != null) put("label", label)
     }.toString(2)
 
     /**
@@ -69,6 +78,32 @@ data class Installation(
 
         fun isValidId(id: String): Boolean = ID_PATTERN.matches(id)
 
+        /**
+         * Reduce [label] to an [isValidId]-compatible slug. Lowercases,
+         * collapses every run of non-`[a-z0-9_-]` into a single `-`,
+         * trims leading/trailing `-` so the result starts with an
+         * alphanumeric, and clamps to 32 chars. Returns `null` if the
+         * cleaned slug is empty (label was whitespace-only or
+         * punctuation-only); callers should treat that as "label is
+         * not yet usable" in form validation.
+         */
+        fun slugifyLabel(label: String): String? {
+            val cleaned = buildString {
+                var lastDash = false
+                for (c in label.lowercase()) {
+                    val ok = (c in 'a'..'z') || (c in '0'..'9') || c == '_' || c == '-'
+                    if (ok) {
+                        append(c)
+                        lastDash = (c == '-')
+                    } else if (!lastDash && isNotEmpty()) {
+                        append('-')
+                        lastDash = true
+                    }
+                }
+            }.trimEnd('-').take(32)
+            return cleaned.takeIf { it.isNotEmpty() && isValidId(it) }
+        }
+
         // Bump when adding a field that downstream code can't safely
         // default. Pure additive fields with safe defaults don't need a
         // bump — fromJson tolerates them. See notes/installation.md
@@ -98,6 +133,7 @@ data class Installation(
                 failure = if (obj.has("failure") && !obj.isNull("failure")) obj.getString("failure") else null,
                 schemaVersion = obj.optInt("schemaVersion", 1),
                 installedAtAppVersionCode = obj.optLong("installedAtAppVersionCode", 0L),
+                label = if (obj.has("label") && !obj.isNull("label")) obj.getString("label") else null,
             )
         }
     }

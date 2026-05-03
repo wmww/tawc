@@ -119,6 +119,20 @@ class InstallationService : Service() {
      */
     @Volatile private var userCancelledId: String? = null
 
+    /**
+     * Non-null when the uninstall in flight is the follow-up triggered
+     * by [cancelInstallAndUninstall], holding that uninstall's id.
+     * Used in [publishProgress] to relabel the terminal `DONE` status
+     * from "Deleted" to "Install cancelled" — the user didn't ask to
+     * delete anything, they asked to abort an install.
+     *
+     * Keyed by id rather than a boolean so a refused [startUninstall]
+     * (invalid id, or a parallel job racing in) leaves a stale value
+     * naturally desynced from the next *real* uninstall's id, instead
+     * of silently relabeling some unrelated future delete as a cancel.
+     */
+    @Volatile private var installCancelTailUninstallId: String? = null
+
     private val binder = LocalBinder()
 
     private val _progress = MutableStateFlow(
@@ -128,6 +142,18 @@ class InstallationService : Service() {
 
     private val _log = MutableSharedFlow<String>(replay = 200, extraBufferCapacity = 1024)
     val log: SharedFlow<String> = _log.asSharedFlow()
+
+    /**
+     * Drop every replay-buffered log line so a freshly-binding panel
+     * can't see a previous operation's tail. Called by
+     * [OperationLogPanel.clearLog] alongside its local TextView wipe
+     * to close the bind→collect→wipe race; also called internally at
+     * the start of every job for the new-subscriber case.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun resetLogReplay() {
+        _log.resetReplayCache()
+    }
 
     private var lastLoggedStage: InstallStage? = null
 
@@ -145,6 +171,7 @@ class InstallationService : Service() {
                 intent.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH,
                 intent.getStringExtra(EXTRA_METHOD),
                 intent.getStringExtra(EXTRA_DISTRO),
+                intent.getStringExtra(EXTRA_LABEL),
             )
             ACTION_UNINSTALL -> startUninstall(intent.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH)
             else -> Log.w(TAG, "InstallationService started without a known action")
@@ -162,10 +189,17 @@ class InstallationService : Service() {
 
     /**
      * Begin an install for [id] using [methodKey] (or auto-pick if
-     * null) and [distroKey] (or the host default if null). Refuses if
-     * the gate forbids it.
+     * null) and [distroKey] (or the host default if null). [label] is
+     * the user-set display name persisted in metadata; null means "fall
+     * back to the registry displayName". Refuses if the gate forbids it.
      */
-    fun startInstall(id: String, methodKey: String? = null, distroKey: String? = null) {
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun startInstall(
+        id: String,
+        methodKey: String? = null,
+        distroKey: String? = null,
+        label: String? = null,
+    ) {
         if (!Installation.isValidId(id)) {
             reject("install '$id'", "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
             return
@@ -174,6 +208,12 @@ class InstallationService : Service() {
             reject("install '$id'", "another job is already running")
             return
         }
+        // Reset the log replay buffer at the start of each operation so
+        // a freshly-bound panel sees only this run's lines, not stale
+        // history from the previous install/uninstall (replay=200 would
+        // otherwise leak across operations).
+        _log.resetReplayCache()
+        lastLoggedStage = null
         val store = InstallationStore(applicationContext)
         when (val s = store.load(id)?.state) {
             null -> Unit  // (no dir) — proceed
@@ -224,7 +264,7 @@ class InstallationService : Service() {
         val job = scope.launch {
             val installer = Installer(
                 applicationContext, store, BootstrapCache(applicationContext),
-                distro, method, id,
+                distro, method, id, label,
             )
             try {
                 // runInterruptible maps coroutine cancellation onto a
@@ -252,6 +292,7 @@ class InstallationService : Service() {
     }
 
     /** Begin an uninstall for [id]. Refuses only if a job is already running. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun startUninstall(id: String) {
         if (!Installation.isValidId(id)) {
             reject("uninstall '$id'", "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
@@ -261,6 +302,11 @@ class InstallationService : Service() {
             reject("uninstall '$id'", "another job is already running")
             return
         }
+        // Same fresh-log policy as install: each operation starts the
+        // log from empty so the bound panel never inherits the previous
+        // run's lines.
+        _log.resetReplayCache()
+        lastLoggedStage = null
         val store = InstallationStore(applicationContext)
         // Uninstall doesn't need a Distro — `method.wipe(...)` is
         // distro-agnostic. Resolve one for symmetry / future logging,
@@ -373,6 +419,7 @@ class InstallationService : Service() {
             // this just updates the visible message.
             startForeground(NOTIFICATION_ID, buildNotification("Cancelling install: cleaning up…"))
             pendingFollowupUninstallId = null
+            installCancelTailUninstallId = id
             startUninstall(id)
         }
     }
@@ -474,6 +521,11 @@ class InstallationService : Service() {
             currentJob = null
         }
         if (userCancelledId == id) userCancelledId = null
+        // Drop the cancel-tail id once *this* operation finishes. A
+        // refused-uninstall path that left the id set will reach this
+        // via its eventual real uninstall, but the id-keyed match in
+        // [publishProgress] also protects unrelated jobs in the gap.
+        if (installCancelTailUninstallId == id) installCancelTailUninstallId = null
     }
 
     /**
@@ -573,15 +625,33 @@ class InstallationService : Service() {
         s?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: "(no detail)"
 
     private fun publishProgress(p: InstallProgress) {
-        _progress.value = p
+        // Relabel the terminal DONE / FAILED of the install-cancel
+        // follow-up uninstall: from the user's POV they cancelled an
+        // install, not deleted anything. Mid-stages keep their literal
+        // names ("Deleting rootfs…") because the work being done IS a
+        // delete; only the summary line changes. We also flip the
+        // terminal stage from DONE to FAILED so the panel renders the
+        // status in danger-red — a cancelled install isn't a "success"
+        // outcome the user should see in green. The id-keyed match
+        // (against currentJob's id) keeps a stale flag from an earlier
+        // refused-uninstall path from accidentally relabelling some
+        // unrelated future delete.
+        val cancelTailMatch = installCancelTailUninstallId != null &&
+            installCancelTailUninstallId == currentJob?.id
+        val effective = if (cancelTailMatch && p.stage == InstallStage.DONE) {
+            p.copy(stage = InstallStage.FAILED, message = "Install cancelled")
+        } else {
+            p
+        }
+        _progress.value = effective
         // Re-issue the foreground notification so its text stays current.
         val nm = getSystemService(NotificationManager::class.java)
-        nm?.notify(NOTIFICATION_ID, buildNotification(p.message))
+        nm?.notify(NOTIFICATION_ID, buildNotification(effective.message))
         // Only log on stage transitions; downloading streams progress
         // every 256 KiB and we don't want each chunk in logcat.
-        if (p.stage != lastLoggedStage) {
-            appendLog("[stage:${p.stage}] ${p.message}")
-            lastLoggedStage = p.stage
+        if (effective.stage != lastLoggedStage) {
+            appendLog("[stage:${effective.stage}] ${effective.message}")
+            lastLoggedStage = effective.stage
         }
     }
 
@@ -632,18 +702,21 @@ class InstallationService : Service() {
         const val EXTRA_ID = "id"
         const val EXTRA_METHOD = "method"
         const val EXTRA_DISTRO = "distro"
+        const val EXTRA_LABEL = "label"
 
         fun startInstall(
             context: Context,
             id: String,
             methodKey: String? = null,
             distroKey: String? = null,
+            label: String? = null,
         ) {
             val i = Intent(context, InstallationService::class.java)
                 .setAction(ACTION_INSTALL)
                 .putExtra(EXTRA_ID, id)
             if (methodKey != null) i.putExtra(EXTRA_METHOD, methodKey)
             if (distroKey != null) i.putExtra(EXTRA_DISTRO, distroKey)
+            if (label != null) i.putExtra(EXTRA_LABEL, label)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(i)
             } else {
