@@ -21,6 +21,7 @@ ABI="$1"
 TAWCROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$TAWCROOT_DIR/.." && pwd)"
 PROG_DIR="$TAWCROOT_DIR/tests/integration/programs"
+WRAP_SRC="$TAWCROOT_DIR/tests/handler/androidfilter/wrap.c"
 OUT_DIR="$REPO_DIR/build/tawcroot-$ABI/programs"
 mkdir -p "$OUT_DIR"
 
@@ -84,10 +85,28 @@ build_dynamic() {
     echo "  built $name (dynamic, bionic)"
 }
 
+# --- dynamic fixture compiled with -fstack-clash-protection ---
+build_dynamic_big_stack() {
+    local out="$OUT_DIR/dynamic_big_stack"
+    "$CC" -O2 -fstack-clash-protection -Wl,--build-id=none \
+        "$PROG_DIR/dynamic_big_stack.c" -o "$out"
+    echo "  built dynamic_big_stack (dynamic, bionic, -fstack-clash-protection)"
+}
+
+# --- androidfilter wrap (host-bionic helper used by handler/test_androidfilter.c) ---
+build_wrap() {
+    local out="$OUT_DIR/wrap"
+    "$CC" -O2 -Wall -Wextra -Werror -Wl,--build-id=none "$WRAP_SRC" -o "$out"
+    echo "  built androidfilter/wrap"
+}
+
 echo "==> building android-$ABI fixtures into $OUT_DIR"
 build_static  static_exit42
 build_static  static_argc_random
+build_static  static_execve_exit42
 build_dynamic dynamic_exit42
 build_dynamic dynamic_argv_check
+build_dynamic_big_stack
+build_wrap
 
 echo "==> done"

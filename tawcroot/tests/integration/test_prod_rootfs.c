@@ -47,8 +47,12 @@
 # error "TAWCROOT_STATIC_EXECVE_EXIT42_BIN must be defined"
 #endif
 
-#define FAKE_ROOTFS  "/tmp/tawcroot-test-rootfs-prod"
-#define FAKE_BINDSRC "/tmp/tawcroot-test-rootfs-prod-bindsrc"
+#ifndef TAWCROOT_TEST_TMPDIR
+# define TAWCROOT_TEST_TMPDIR "/tmp"
+#endif
+
+#define FAKE_ROOTFS  TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-prod"
+#define FAKE_BINDSRC TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-prod-bindsrc"
 
 static void rmrf(const char *path)
 {

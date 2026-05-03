@@ -61,9 +61,13 @@
 # error "TAWCROOT_ANDROID_FILTER_WRAP must be passed via -D from tawcroot/Makefile"
 #endif
 
-#define FAKE_ROOTFS         "/tmp/tawcroot-test-rootfs-androidfilter"
-#define FAKE_ROOTFS_SIBLING "/tmp/tawcroot-test-rootfs-androidfilter-evil"
-#define FAKE_BINDSRC        "/tmp/tawcroot-test-rootfs-androidfilter-bindsrc"
+#ifndef TAWCROOT_TEST_TMPDIR
+# define TAWCROOT_TEST_TMPDIR "/tmp"
+#endif
+
+#define FAKE_ROOTFS         TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-androidfilter"
+#define FAKE_ROOTFS_SIBLING TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-androidfilter-evil"
+#define FAKE_BINDSRC        TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-androidfilter-bindsrc"
 
 static bool write_file(const char *path, const char *contents)
 {

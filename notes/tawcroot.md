@@ -1649,8 +1649,12 @@ Build artifacts (per `tawcroot/build`):
   compiled with `-DTAWCROOT_TESTHOST`. Built by default for
   `--abi=host`; built for cross-ABIs only with `--testhost`. Not
   packaged into the APK.
-- **`tests`** — host-only cleat orchestrator. Built by default for
-  `--abi=host`. Hosted glibc binary; never cross-compiled.
+- **`tests`** — cleat orchestrator. Built by default for `--abi=host`
+  (hosted glibc); cross-compiled for `aarch64`/`x86_64` against bionic
+  on demand via `bash tawcroot/build --abi=<abi> --tests`. The Android
+  variant is what `tawcroot/test --device` pushes and runs under
+  `su -c`; same four-layer suite, same filter syntax, same exit code
+  as host mode — only the orchestrator binary changes.
 
 ## Build integration
 
@@ -1690,9 +1694,13 @@ A `tawcroot/build` script alongside `client/build-proot`:
   we do *not* clone STC separately. **cleat is built into the
   test orchestrator only**, not into either tawcroot binary.
 - Builds the cleat orchestrator (`build/tawcroot-host/tests`)
-  natively with the host toolchain (not NDK — hosted glibc
-  binary). Runs it as part of `--abi=host` by default — see
-  §"Testing strategy". Never cross-compiled.
+  natively with the host toolchain (hosted glibc binary). Also
+  cross-builds it for `aarch64`/`x86_64` against bionic when
+  `--tests` is passed, landing at `build/tawcroot-<abi>/tests`. The
+  Android variant is what `tawcroot/test --device` runs on the
+  device — same source set, same filter syntax, same exit code
+  semantics as the host build (cleat is plain POSIX C + vendored
+  STC; no glibc-only deps). See §"Testing strategy".
 - **Host build is incremental** via `tawcroot/Makefile`:
   `gcc -MMD -MP` for header dep tracking, `-j$(nproc)` for
   parallel compile. Warm rebuilds (no source changes) take ~30 ms;
@@ -1757,9 +1765,11 @@ hook. The test layer lives in two places:
    under test. Testhost is **never** packaged into the APK; it
    exists only so the cleat orchestrator can fork it.
 
-2. **`tests` (cleat orchestrator)** — a host-only glibc binary at
-   `build/tawcroot-host/tests`, built from `tawcroot/tests/{unit,handler,
-   integration}/*.c` linked against cleat + STC. This is the *only*
+2. **`tests` (cleat orchestrator)** — a glibc/bionic binary at
+   `build/tawcroot-{host,aarch64,x86_64}/tests`, built from
+   `tawcroot/tests/{unit,handler,integration}/*.c` linked against
+   cleat + STC. The host build runs locally; the cross-builds run
+   on the device under `tawcroot/test --device`. This is the *only*
    place cleat / STC code ever runs in the project. It owns:
    - filter syntax (full-match regexes against `module`, `name`,
      or `module::name`; multiple args OR'd; see cleat
@@ -1778,12 +1788,15 @@ hook. The test layer lives in two places:
 
 `tawcroot/test` is a thin wrapper around the cleat
 orchestrator; `bash tawcroot/test` runs everything,
-positional args become cleat filters. `--device` mode keeps the
-old adb-driven phase-0/phase-1 testhost flow alive for
-Android-shape coverage (untrusted_app filter validation, etc.) —
-that path doesn't run the cleat binary because cleat is host-only,
-but the handler tests it exercises are the same ones the cleat
-orchestrator runs against the host testhost.
+positional args become cleat filters. `--device` mode pushes the
+NDK-cross-built orchestrator (plus tawcroot, tawcroot-testhost,
+fixtures, and the androidfilter wrap) to
+`/data/local/claude-debug/`, then exec's it under `su -c`. Same
+binary shape as host mode — just a different ABI and a chrooted
+`TAWCROOT_TEST_TMPDIR` (`/data/local/claude-debug/tt` vs `/tmp`).
+PASSTHROUGH filters propagate through `su -c` verbatim, exit code
+is the orchestrator's own (captured via an `__exit=$?` sentinel
+because adb shell isn't always a clean exit-code passthrough).
 
 ### Cleat / STC are never linked into production
 

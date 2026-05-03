@@ -81,6 +81,7 @@ TESTS_CFLAGS := \
     -DTAWCROOT_STATIC_EXECVE_EXIT42_BIN=\"$(OUT)/programs/static_execve_exit42\" \
     -DTAWCROOT_DYNAMIC_BIG_STACK_BIN=\"$(OUT)/programs/dynamic_big_stack\" \
     -DTAWCROOT_ANDROID_FILTER_WRAP=\"$(OUT)/androidfilter/wrap\" \
+    -DTAWCROOT_TEST_TMPDIR=\"/tmp\" \
     -MMD -MP
 
 TESTS_LDFLAGS := -lm

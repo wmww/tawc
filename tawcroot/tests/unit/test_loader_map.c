@@ -275,11 +275,14 @@ test(map_read_interp)
 	long rc = tawc_loader_read_interp(fd, &img, interp, sizeof interp,
 	                                  &libc_io);
 	test_int_eq(rc, 0);
-	/* The interp path should start with '/' and look like an ld.so. */
+	/* The interp path should start with '/' and look like a dynamic
+	 * linker. glibc: ld-2.x.so / ld-linux-x86-64.so.2; musl: ld-musl-*;
+	 * Android bionic: /system/bin/linker[64]. */
 	test_int_eq(interp[0], '/');
-	test_true(strstr(interp, "ld-") != nullptr ||
-	          strstr(interp, "ld.so") != nullptr ||
-	          strstr(interp, "ld64") != nullptr);
+	test_true(strstr(interp, "ld-")    != nullptr ||
+	          strstr(interp, "ld.so")  != nullptr ||
+	          strstr(interp, "ld64")   != nullptr ||
+	          strstr(interp, "linker") != nullptr);
 
 	close(fd);
 }

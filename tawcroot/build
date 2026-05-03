@@ -66,6 +66,11 @@
 #   bash tawcroot/build --clean          # wipe build dirs first
 #   bash tawcroot/build --testhost       # also build tawcroot-testhost for non-host ABIs
 #                                          (used by tawcroot/test --device)
+#   bash tawcroot/build --tests          # also build the cleat-driven `tests`
+#                                          orchestrator binary for non-host ABIs
+#                                          (cross-compiles cleat + STC + tawcroot
+#                                           test sources against bionic; used by
+#                                           tawcroot/test --device)
 
 set -euo pipefail
 
@@ -135,6 +140,7 @@ ARCH_BASE_x86_64="0x40000000"
 ABI=""
 CLEAN=0
 TESTHOST_FOR_NONHOST=0
+TESTS_FOR_NONHOST=0
 for arg in "$@"; do
     case "$arg" in
         --abi=aarch64|--abi=arm64) ABI="aarch64" ;;
@@ -142,6 +148,7 @@ for arg in "$@"; do
         --abi=both)                ABI="both" ;;
         --abi=host)                ABI="host" ;;
         --testhost)                TESTHOST_FOR_NONHOST=1 ;;
+        --tests)                   TESTS_FOR_NONHOST=1 ;;
         --clean)                   CLEAN=1 ;;
         *) echo "ERROR: unknown arg: $arg" >&2; exit 1 ;;
     esac
@@ -158,6 +165,11 @@ case "$ABI" in
     host) ;;
     *)    find_ndk ;;
 esac
+
+# --tests requires cleat checked out (same pin as host).
+if [ "$TESTS_FOR_NONHOST" = "1" ]; then
+    setup_cleat
+fi
 
 # ---------------------------------------------------------------------------
 # Source files. Production is intentionally tiny — no test scaffolding,
@@ -342,17 +354,148 @@ build_binary() {
     fi
 }
 
+# Cross-compile the cleat-driven `tests` orchestrator binary for an Android
+# ABI. Mirrors tawcroot/Makefile's `tests` target but uses the NDK clang
+# against bionic instead of host gcc. Output lands at
+# `$BUILD_ROOT/tawcroot-<abi>/tests`. Fixture / testhost / prod paths are
+# baked in via -D as on-device absolute paths under
+# `/data/local/claude-debug/` — tawcroot/test --device pushes them there.
+#
+# Cleat is hosted (it uses fork/exec/stdio); links bionic dynamically.
+# tawcroot's PROD_C_FOR_TESTS sources are recompiled here as well so the
+# unit layer can poke pure path-resolve / loader-elf functions in-process
+# (same set the host Makefile pulls in).
+build_tests() {
+    local abi="$1"
+    local cc
+    case "$abi" in
+        aarch64) cc="$NDK_BIN/aarch64-linux-android29-clang" ;;
+        x86_64)  cc="$NDK_BIN/x86_64-linux-android29-clang" ;;
+        *) echo "internal error: build_tests unknown abi $abi" >&2; exit 1 ;;
+    esac
+    [ -x "$cc" ] || command -v "$cc" >/dev/null \
+        || { echo "ERROR: missing toolchain: $cc" >&2; exit 1; }
+
+    local out_dir="$BUILD_ROOT/tawcroot-$abi"
+    local obj_dir="$out_dir/.obj-tests"
+    mkdir -p "$obj_dir"
+
+    # On-device paths the orchestrator will exec at runtime. Must match
+    # what tawcroot/test --device pushes.
+    local on_device="/data/local/claude-debug"
+
+    # NDK clang doesn't recognize -fno-tree-loop-distribute-patterns (gcc-only);
+    # the rest of the warning set mirrors tawcroot/Makefile's TESTS_CFLAGS.
+    local cflags=(
+        -std=c23 -O2 -fno-strict-aliasing
+        -Wno-missing-braces -Wno-unused-function -Wno-format-zero-length
+        -Wno-error=unused-variable -Wno-error=unused-parameter
+        -Wno-error=unused-function -Wno-error=unused-but-set-variable
+        -Wno-error=format-zero-length
+        -Werror=implicit-function-declaration
+        -Werror=return-type -Werror=incompatible-pointer-types
+        -I"$CLEAT_DIR/include" -I"$CLEAT_DIR/include/cleat"
+        -I"$CLEAT_DIR/stc/include"
+        -I"$TAWCROOT_DIR/include"
+        -ffile-prefix-map="$REPO_DIR/="
+        -DTAWCROOT_TESTHOST_BIN="\"$on_device/tawcroot-testhost\""
+        -DTAWCROOT_PROD_BIN="\"$on_device/tawcroot\""
+        -DTAWCROOT_STATIC_EXIT42_BIN="\"$on_device/programs/static_exit42\""
+        -DTAWCROOT_STATIC_ARGC_RANDOM_BIN="\"$on_device/programs/static_argc_random\""
+        -DTAWCROOT_DYNAMIC_EXIT42_BIN="\"$on_device/programs/dynamic_exit42\""
+        -DTAWCROOT_DYNAMIC_ARGV_CHECK_BIN="\"$on_device/programs/dynamic_argv_check\""
+        -DTAWCROOT_STATIC_EXECVE_EXIT42_BIN="\"$on_device/programs/static_execve_exit42\""
+        -DTAWCROOT_DYNAMIC_BIG_STACK_BIN="\"$on_device/programs/dynamic_big_stack\""
+        -DTAWCROOT_ANDROID_FILTER_WRAP="\"$on_device/programs/wrap\""
+        -DTAWCROOT_TEST_TMPDIR="\"$on_device/tt\""
+    )
+
+    local cleat_srcs=(
+        "$CLEAT_DIR/stc/src/fmt.c"
+        "$CLEAT_DIR/stc/src/cstr_utf8.c"
+        "$CLEAT_DIR/stc/src/cstr_core.c"
+        "$CLEAT_DIR/stc/src/random.c"
+        "$CLEAT_DIR/stc/src/cstr_io.c"
+        "$CLEAT_DIR/stc/src/stc_core.c"
+        "$CLEAT_DIR/stc/src/cspan.c"
+        "$CLEAT_DIR/stc/src/cregex.c"
+        "$CLEAT_DIR/stc/src/csview.c"
+        "$CLEAT_DIR/src/string_helpers.c"
+        "$CLEAT_DIR/src/panic.c"
+        "$CLEAT_DIR/src/filesystem.c"
+        "$CLEAT_DIR/src/real_filesystem.c"
+        "$CLEAT_DIR/src/subproc.c"
+        "$CLEAT_DIR/src/display.c"
+        "$CLEAT_DIR/src/failable.c"
+        "$CLEAT_DIR/src/base64.c"
+        "$CLEAT_DIR/src/random.c"
+        "$CLEAT_DIR/src/seri.c"
+        "$CLEAT_DIR/src/seri_json.c"
+        "$CLEAT_DIR/src/seri_number_parsing.c"
+        "$CLEAT_DIR/src/test.c"
+        "$CLEAT_DIR/src/default_test_runner.c"
+        "$CLEAT_DIR/src/stdout_test_output.c"
+        "$CLEAT_DIR/src/test_docs_code.c"
+    )
+    # Same set as the host Makefile's PROD_C_FOR_TESTS — pure-function
+    # tawcroot sources safe to compile against hosted libc (no raw-syscall
+    # _start clashes).
+    local prod_for_tests=(
+        "$TAWCROOT_DIR/src/strings.c"
+        "$TAWCROOT_DIR/src/path_fold.c"
+        "$TAWCROOT_DIR/src/path_resolve.c"
+        "$TAWCROOT_DIR/src/loader_elf.c"
+        "$TAWCROOT_DIR/src/loader_map.c"
+        "$TAWCROOT_DIR/src/loader_stack.c"
+        "$TAWCROOT_DIR/src/exec_state.c"
+    )
+    # All test-layer .c files directly under tawcroot/tests/{unit,handler,integration}/.
+    local test_srcs=()
+    while IFS= read -r f; do test_srcs+=("$f"); done < <(
+        find "$TAWCROOT_DIR/tests/unit" \
+             "$TAWCROOT_DIR/tests/handler" \
+             "$TAWCROOT_DIR/tests/integration" \
+             -maxdepth 1 -name '*.c' -type f | sort
+    )
+    # Loader trampoline — pure-function helper, safe under bionic.
+    local arch_s
+    case "$abi" in
+        aarch64) arch_s="$TAWCROOT_DIR/src/arch/aarch64_loader_jump.S" ;;
+        x86_64)  arch_s="$TAWCROOT_DIR/src/arch/x86_64_loader_jump.S" ;;
+    esac
+
+    echo "==> compiling tests orchestrator (abi=$abi, cleat + bionic)"
+    local objs=()
+    for s in "${cleat_srcs[@]}" "${prod_for_tests[@]}" "${test_srcs[@]}"; do
+        # Encode source path as obj filename to disambiguate same-basename
+        # files (cleat has stc/src/random.c AND src/random.c).
+        local rel="${s#$REPO_DIR/}"
+        local o="$obj_dir/${rel//\//_}.o"
+        "$cc" "${cflags[@]}" -c "$s" -o "$o"
+        objs+=("$o")
+    done
+    local arch_o="$obj_dir/$(basename "$arch_s").o"
+    "$cc" -c "$arch_s" -o "$arch_o"
+    objs+=("$arch_o")
+
+    local out="$out_dir/tests"
+    "$cc" "${objs[@]}" -lm -o "$out"
+    echo "    -> $out"
+}
+
 # ---------------------------------------------------------------------------
 case "$ABI" in
     aarch64)
         if [ "$CLEAN" = "1" ]; then rm -rf "$BUILD_ROOT/tawcroot-aarch64"; fi
         build_binary aarch64 prod
         if [ "$TESTHOST_FOR_NONHOST" = "1" ]; then build_binary aarch64 testhost; fi
+        if [ "$TESTS_FOR_NONHOST"    = "1" ]; then build_tests  aarch64;        fi
         ;;
     x86_64)
         if [ "$CLEAN" = "1" ]; then rm -rf "$BUILD_ROOT/tawcroot-x86_64"; fi
         build_binary x86_64 prod
         if [ "$TESTHOST_FOR_NONHOST" = "1" ]; then build_binary x86_64 testhost; fi
+        if [ "$TESTS_FOR_NONHOST"    = "1" ]; then build_tests  x86_64;        fi
         ;;
     both)
         if [ "$CLEAN" = "1" ]; then rm -rf "$BUILD_ROOT/tawcroot-aarch64" "$BUILD_ROOT/tawcroot-x86_64"; fi
@@ -361,6 +504,10 @@ case "$ABI" in
         if [ "$TESTHOST_FOR_NONHOST" = "1" ]; then
             build_binary aarch64 testhost
             build_binary x86_64 testhost
+        fi
+        if [ "$TESTS_FOR_NONHOST" = "1" ]; then
+            build_tests aarch64
+            build_tests x86_64
         fi
         ;;
     host)

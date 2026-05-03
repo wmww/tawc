@@ -17,16 +17,17 @@
 #
 # Modes:
 #   - host (default) — runs the cleat binary directly on the dev box.
-#   - device         — pushes `tawcroot-testhost` to the selected Android
-#                target via adb and exec's the in-binary smokes via su.
-#                Required for Android-shape coverage. Selection within
-#                device mode follows the rest of the tawc tree: `.tawctarget`
-#                / `TAWC_TARGET=device|emulator` (sourced from
+#   - device         — cross-builds the cleat orchestrator + tawcroot +
+#                tawcroot-testhost + fixtures via the NDK, pushes the lot
+#                to /data/local/claude-debug/, and runs the orchestrator
+#                via `su -c`. Same four cleat layers as host mode (unit /
+#                handler / integration), same filter syntax, same exit
+#                code semantics — `--device` just changes where the
+#                orchestrator runs. Selection within device mode follows
+#                the rest of the tawc tree: `.tawctarget` /
+#                `TAWC_TARGET=device|emulator` (sourced from
 #                `client/select-device.sh` — the only tawc-app coupling
-#                in this script). Currently runs the phase-0/phase-1
-#                testhost flows as adb shell commands — NOT the cleat
-#                orchestrator (which is host-only). Future work could
-#                cross-link cleat for android.
+#                in this script).
 #
 # Usage:
 #   bash tawcroot/test                # everything, host
@@ -42,21 +43,25 @@ REPO_DIR="$(cd "$TAWCROOT_DIR/.." && pwd)"
 
 BUILD=1
 MODE=host
+MODE_EXPLICIT=0
 PASSTHROUGH=()
 for arg in "$@"; do
     case "$arg" in
         --no-build) BUILD=0 ;;
-        --host)     MODE=host ;;
-        --device)   MODE=device ;;
+        --host)     MODE=host;   MODE_EXPLICIT=1 ;;
+        --device)   MODE=device; MODE_EXPLICIT=1 ;;
         *)          PASSTHROUGH+=("$arg") ;;
     esac
 done
 
 # `TAWC_TARGET=device|emulator` flips device mode on without `--device`,
-# matching the convention other tawc scripts use.
-case "${TAWC_TARGET:-}" in
-    device|emulator)    MODE=device ;;
-esac
+# matching the convention other tawc scripts use. An explicit
+# `--host` / `--device` flag wins over the env var.
+if [ "$MODE_EXPLICIT" = "0" ]; then
+    case "${TAWC_TARGET:-}" in
+        device|emulator)    MODE=device ;;
+    esac
+fi
 
 # ---- host mode -----------------------------------------------------------
 if [ "$MODE" = "host" ]; then
@@ -69,11 +74,11 @@ if [ "$MODE" = "host" ]; then
 fi
 
 # ---- device mode ---------------------------------------------------------
-# Cleat is host-only (links glibc dynamically); we can't run the cleat
-# orchestrator on Android today. Instead exec the testhost binary
-# directly via adb and grep for PASS lines, the same way the script did
-# before the cleat refactor. Keeps Android-shape coverage alive without
-# duplicating the test list.
+# Cleat cross-compiles cleanly under the NDK (it's plain POSIX C + a
+# vendored stc). We push the cross-built `tests` orchestrator alongside
+# tawcroot / tawcroot-testhost / fixtures and run it via su, exactly the
+# same shape as host mode. PASSTHROUGH filters work everywhere; pass / fail
+# detection is the orchestrator's exit code, not adb-grep heuristics.
 # shellcheck disable=SC1091
 source "$REPO_DIR/client/select-device.sh"   # sets ANDROID_SERIAL (tawc-app glue)
 
@@ -85,131 +90,72 @@ case "$DEVICE_ABI" in
 esac
 
 if [ "$BUILD" = "1" ]; then
-    bash "$TAWCROOT_DIR/build" "--abi=$BUILD_ABI" --testhost
+    bash "$TAWCROOT_DIR/build" "--abi=$BUILD_ABI" --testhost --tests
     bash "$TAWCROOT_DIR/build-fixtures" "$BUILD_ABI"
 fi
 
 LOCAL_BIN="$REPO_DIR/build/tawcroot-$BUILD_ABI/libtawcroot-testhost.so"
 LOCAL_PROD="$REPO_DIR/build/tawcroot-$BUILD_ABI/libtawcroot.so"
+LOCAL_TESTS="$REPO_DIR/build/tawcroot-$BUILD_ABI/tests"
 LOCAL_FIXTURES_DIR="$REPO_DIR/build/tawcroot-$BUILD_ABI/programs"
-[ -f "$LOCAL_BIN" ] || { echo "ERROR: $LOCAL_BIN missing — drop --no-build?" >&2; exit 1; }
-[ -f "$LOCAL_PROD" ] || { echo "ERROR: $LOCAL_PROD missing — drop --no-build?" >&2; exit 1; }
+[ -f "$LOCAL_BIN" ]   || { echo "ERROR: $LOCAL_BIN missing — drop --no-build?" >&2; exit 1; }
+[ -f "$LOCAL_PROD" ]  || { echo "ERROR: $LOCAL_PROD missing — drop --no-build?" >&2; exit 1; }
+[ -f "$LOCAL_TESTS" ] || { echo "ERROR: $LOCAL_TESTS missing — drop --no-build?" >&2; exit 1; }
 
+# On-device layout — must match the -D paths baked into LOCAL_TESTS by
+# build_tests in tawcroot/build (TAWCROOT_TESTHOST_BIN, TAWCROOT_PROD_BIN,
+# TAWCROOT_*_BIN, TAWCROOT_ANDROID_FILTER_WRAP, TAWCROOT_TEST_TMPDIR).
 SCRATCH=/data/local/claude-debug
-ROOTFS=$SCRATCH/fake-rootfs
+TESTS=$SCRATCH/tests
 TR=$SCRATCH/tawcroot-testhost
 PROD=$SCRATCH/tawcroot
 FIXTURES=$SCRATCH/programs
+TMPDIR_ON_DEVICE=$SCRATCH/tt
 
-adb push "$LOCAL_BIN" /data/local/tmp/tawcroot-testhost > /dev/null
-adb shell "su -c 'cp /data/local/tmp/tawcroot-testhost $TR && chmod +x $TR'"
-adb push "$LOCAL_PROD" /data/local/tmp/tawcroot > /dev/null
-adb shell "su -c 'cp /data/local/tmp/tawcroot $PROD && chmod +x $PROD'"
-adb shell "su -c 'mkdir -p $FIXTURES'"
+# Two-step push (adb push lands in /data/local/tmp; su cp installs into
+# /data/local/claude-debug with execute bits) — same pattern as before.
+push_one() {
+    local local_path="$1" device_path="$2"
+    local name; name=$(basename "$device_path")
+    adb push "$local_path" "/data/local/tmp/$name" > /dev/null
+    adb shell "su -c 'mkdir -p $(dirname "$device_path") && cp /data/local/tmp/$name $device_path && chmod +x $device_path'"
+}
+
+push_one "$LOCAL_BIN"   "$TR"
+push_one "$LOCAL_PROD"  "$PROD"
+push_one "$LOCAL_TESTS" "$TESTS"
+
+adb shell "su -c 'mkdir -p $FIXTURES $TMPDIR_ON_DEVICE'"
 for f in "$LOCAL_FIXTURES_DIR"/*; do
     [ -f "$f" ] || continue
-    name=$(basename "$f")
-    adb push "$f" /data/local/tmp/"$name" > /dev/null
-    adb shell "su -c 'cp /data/local/tmp/$name $FIXTURES/$name && chmod +x $FIXTURES/$name'"
+    push_one "$f" "$FIXTURES/$(basename "$f")"
 done
 
-adb shell "su -c '
-set -e
-rm -rf $ROOTFS
-mkdir -p $ROOTFS/etc $ROOTFS/usr/lib $ROOTFS/run
-echo hello-from-rootfs > $ROOTFS/etc/probe
-ln -s usr/lib $ROOTFS/lib
-echo libprobe-data > $ROOTFS/usr/lib/probe.so
-ln -sf /etc/passwd $ROOTFS/etc/host-secret
-ln -sf /etc/probe  $ROOTFS/altpath
-ln -sf chain2      $ROOTFS/chain1
-ln -sf chain3      $ROOTFS/chain2
-ln -sf etc/probe   $ROOTFS/chain3
-ln -sf loop        $ROOTFS/loop
-'"
+# Cleat tests create rootfs trees under TAWCROOT_TEST_TMPDIR with paths
+# like "$TMPDIR/tawcroot-test-rootfs-phase1"; clearing keeps reruns
+# deterministic when a previous run died mid-test.
+adb shell "su -c 'rm -rf $TMPDIR_ON_DEVICE/tawcroot-test-rootfs-* && mkdir -p $TMPDIR_ON_DEVICE'"
 
-run_device() {
-    local label="$1"; shift
-    echo "=== $label ==="
-    local out rc=0
-    out=$(adb shell "su -c '$*' 2>&1") || rc=$?
-    echo "$out"
-    if [ "$rc" != "0" ]; then
-        echo "FAIL: '$label' exited $rc" >&2
-        return 1
-    fi
-    if echo "$out" | grep -q "FAIL"; then
-        echo "FAIL: '$label' contained a FAIL line" >&2
-        return 1
-    fi
-    if ! echo "$out" | tail -1 | grep -qE "(PHASE-1 SMOKE: PASS|CHILD SMOKE: PASS)"; then
-        echo "FAIL: '$label' did not end on a PASS line" >&2
-        return 1
-    fi
-}
+# Forward PASSTHROUGH filters verbatim — the cross-compiled cleat
+# orchestrator parses them with the same grammar as the host build.
+PT_QUOTED=""
+for a in "${PASSTHROUGH[@]}"; do
+    # Single-quote each arg for the outer su -c shell; literal `'` in args
+    # would need escaping but cleat filters never contain one.
+    PT_QUOTED+=" '$a'"
+done
 
-run_device "phase-0 (foundation + --exec-child)"               "$TR"
-run_device "phase-1 + phase-0.5 (path + runtime invariants)"   "$TR -r $ROOTFS"
-
-# ---- loader smoke (phase 2): production tawcroot --exec <fixture> ----
-#
-# Runs each fixture under the production tawcroot binary and asserts
-# the exit code. Skips fixtures that aren't present for this ABI
-# (tawcroot/build-fixtures emits them when sources exist). Loader-
-# driver self-failure is in [60..79]; collisions with fixture exit
-# codes are documented inline.
-loader_smoke() {
-    local label="$1" expected="$2"; shift 2
-    local cmd="$*"
-    local actual rc=0
-    actual=$(adb shell "su -c 'cd $SCRATCH && $cmd; echo __exit=\$?' 2>&1") || rc=$?
-    local got
-    got=$(echo "$actual" | grep -oE '__exit=[0-9-]+' | tail -1 | cut -d= -f2)
-    if [ "$rc" != "0" ] || [ -z "$got" ]; then
-        echo "FAIL: $label (adb shell rc=$rc, raw=$actual)" >&2
-        return 1
-    fi
-    if [ "$got" != "$expected" ]; then
-        echo "FAIL: $label (expected $expected, got $got)" >&2
-        echo "  output: $actual" >&2
-        return 1
-    fi
-    echo "  [ok ] $label (exit $got)"
-}
-
-echo "=== loader smoke (phase 2) ==="
-if adb shell "su -c '[ -x $FIXTURES/static_exit42 ]'" >/dev/null 2>&1; then
-    loader_smoke "static_exit42 → 42" 42 "$PROD --exec $FIXTURES/static_exit42"
+echo "=== running cleat tests on $ANDROID_SERIAL ($BUILD_ABI) ==="
+# adb shell doesn't always forward inner exit codes reliably across
+# vendor adb / su shims; capture the orchestrator's exit explicitly via
+# a sentinel line and grep for `__exit=0`. Output streams live so cleat's
+# coloured pass/fail stays visible.
+TMPLOG=$(mktemp)
+trap 'rm -f "$TMPLOG"' EXIT
+adb shell "su -c 'cd $SCRATCH && $TESTS$PT_QUOTED; echo __exit=\$?'" \
+    | tee "$TMPLOG"
+got=$(grep -oE '__exit=[0-9]+' "$TMPLOG" | tail -1 | cut -d= -f2)
+if [ "${got:-}" != "0" ]; then
+    echo "FAIL: cleat orchestrator exit code = ${got:-<missing>}" >&2
+    exit 1
 fi
-if adb shell "su -c '[ -x $FIXTURES/static_argc_random ]'" >/dev/null 2>&1; then
-    # det_random[0] = 0x55 → exit (0x55 & 0x7f) + 100 = 185, but the
-    # device test passes via real getrandom from the loader's perspective
-    # (driver fills random16 from the kernel) — we can't predict the
-    # byte. Instead pass argv that forces a *failure* path we CAN
-    # predict: argc=2 → exit 99 (bin runs successfully). For full
-    # success-path coverage we'd need the test driver to also pass a
-    # known random16, which is what the host unit test does.
-    loader_smoke "static_argc_random argc-fail → 99" 99 \
-        "$PROD --exec $FIXTURES/static_argc_random just-one-arg"
-    # On success path, exit code is in [100, 227]; just check it ran
-    # cleanly (no signal, no driver-failure) by passing the right shape
-    # and accepting any code in 100..227 OR the documented sub-failures.
-    actual=$(adb shell "su -c 'cd $SCRATCH && X=1 $PROD --exec $FIXTURES/static_argc_random alpha beta; echo __exit=\$?'" 2>&1)
-    got=$(echo "$actual" | grep -oE '__exit=[0-9-]+' | tail -1 | cut -d= -f2)
-    if [ -z "$got" ] || [ "$got" -lt 100 ] || [ "$got" -gt 227 ]; then
-        echo "FAIL: static_argc_random success path (expected 100..227, got $got)" >&2
-        echo "  output: $actual" >&2
-        exit 1
-    fi
-    echo "  [ok ] static_argc_random success → exit $got (random byte)"
-fi
-if adb shell "su -c '[ -x $FIXTURES/dynamic_exit42 ]'" >/dev/null 2>&1; then
-    loader_smoke "dynamic_exit42 → 42 (via /system/bin/linker64)" 42 \
-        "$PROD --exec $FIXTURES/dynamic_exit42"
-fi
-if adb shell "su -c '[ -x $FIXTURES/dynamic_argv_check ]'" >/dev/null 2>&1; then
-    loader_smoke "dynamic_argv_check → 42" 42 \
-        "TAWC_TEST=ok $PROD --exec $FIXTURES/dynamic_argv_check alpha beta"
-fi
-
-echo "=== ALL SMOKE PASSED ($BUILD_ABI on $ANDROID_SERIAL) ==="

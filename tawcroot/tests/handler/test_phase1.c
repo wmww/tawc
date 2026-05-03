@@ -40,14 +40,18 @@
 
 #include "steps.h"
 
-#define FAKE_ROOTFS         "/tmp/tawcroot-test-rootfs-phase1"
+#ifndef TAWCROOT_TEST_TMPDIR
+# define TAWCROOT_TEST_TMPDIR "/tmp"
+#endif
+
+#define FAKE_ROOTFS         TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-phase1"
 /* Sibling that shares the rootfs as a byte prefix. Exercises the
  * resolve_relative / handle_getcwd boundary check (review finding B4):
  * "<rootfs>-evil" must NOT be treated as inside the rootfs. */
-#define FAKE_ROOTFS_SIBLING "/tmp/tawcroot-test-rootfs-phase1-evil"
+#define FAKE_ROOTFS_SIBLING TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-phase1-evil"
 /* Bind source for the bind-vs-memo precedence test (review finding B5):
  * binds must win over rootfs-side symlink memos. */
-#define FAKE_BINDSRC        "/tmp/tawcroot-test-rootfs-phase1-bindsrc"
+#define FAKE_BINDSRC        TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-phase1-bindsrc"
 
 static bool write_file(const char *path, const char *contents)
 {

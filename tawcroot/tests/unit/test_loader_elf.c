@@ -515,9 +515,13 @@ test(real_exe_parses_and_has_loads)
 	struct tawc_loader_image img;
 	test_int_eq(tawc_loader_parse_ehdr(ebuf, sizeof ebuf, &img), 0);
 
-	/* glibc ET_DYN, x86_64 host. */
+	/* glibc/bionic ET_DYN, x86_64 or aarch64 host. */
 	test_int_eq(img.e_type, TAWC_ET_DYN);
+#if defined(__aarch64__)
+	test_int_eq(img.e_machine, TAWC_EM_AARCH64);
+#else
 	test_int_eq(img.e_machine, TAWC_EM_X86_64);
+#endif
 	test_true(img.e_phnum > 0 && img.e_phnum < TAWC_LOADER_MAX_LOADS + 8);
 
 	uint8_t pbuf[sizeof(tawc_elf64_phdr) * (TAWC_LOADER_MAX_LOADS + 8)];
