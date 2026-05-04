@@ -15,13 +15,181 @@ plugged in. GPU/AHB/libhybris work still has to run on a real device.
 - The Arch chroot (x86_64 build).
 
 ## Known limitations
-- libhybris won't run — the emulator has no Android GPU vendor blobs
-  to bind to. The APK ships libhybris only for `arm64-v8a`; on x86_64
-  emulator builds the asset is absent and `LibhybrisLinker` no-ops.
-  Anything that exercises the AHB import path (most integration tests)
-  will still fail; SHM-only paths (magenta-tinted) should work.
+- libhybris won't run on the emulator. The APK ships libhybris only for
+  `arm64-v8a`; on x86_64 emulator builds the asset is absent and
+  `LibhybrisLinker` no-ops. Anything that exercises the AHB import path
+  (most integration tests) will still fail; SHM-only paths
+  (magenta-tinted) should work. The blocker is **not** missing GPU
+  vendor blobs (the emulator does ship `libEGL_emulation.so`,
+  `vulkan.ranchu.so`, gralloc/mapper) — see "libhybris on x86_64" below.
 - Architecture is x86_64 (real device is aarch64). Most code doesn't
   care, but anything arch-specific won't transfer.
+
+## libhybris on x86_64
+
+The notes used to claim libhybris failed on the emulator due to "no
+Android GPU vendor blobs to bind to". That was wrong. Verified
+2026-05-04: `/vendor/lib64/egl/libEGL_emulation.so` (gfxstream),
+`/vendor/lib64/hw/vulkan.ranchu.so`, `/vendor/lib64/hw/gralloc.default.so`,
+`/vendor/lib64/hw/mapper.ranchu.so` all exist on a stock
+`google_apis;x86_64` AVD — the same surface a normal Android app sees.
+
+We cross-built libhybris for x86_64 (native gcc, `--enable-arch=x86-64`)
+and exercised it inside the Arch chroot. The build script isn't
+checked in — it was a one-shot to surface the real blocker. To
+re-create: copy `client/build-libhybris-aarch64`, drop the
+`HOST_TRIPLE` cross-prefix, swap the configure flag to
+`--enable-arch=x86-64`, and skip the `vulkan` subdir (see #1 below).
+
+Three issues, in order:
+
+1. **Vulkan plugin won't assemble.** Our fork's `vulkan.c` replaces
+   upstream's IFUNC-based `VULKAN_IDLOAD` with hand-written aarch64
+   trampolines (`adrp` / `ldr` / `br x16`). x86_64 needs an
+   `__x86_64__` branch with `mov rax, [rip+sym]; jmp rax`. Tractable
+   but unnecessary while #3 is fatal.
+
+2. **The rest builds clean** for `--enable-arch=x86-64`: common,
+   q-linker, EGL, GLES1/2, gralloc, hwc2, ui, hardware, platforms.
+   The q-linker's TLSDESC resolver (`tlsdesc_resolver.S`) is gated on
+   `WANT_ARCH_ARM64` already; not needed on x86_64 (different
+   relocation model).
+
+3. **Stock x86_64 bionic crashes on the first call into framework
+   EGL.** With the libs pushed into the chroot, the q-linker loaded
+   the entire dependency tree successfully (`/system/lib64/libEGL.so`,
+   `/apex/com.android.runtime/lib64/bionic/{libc,libm,libdl}.so`,
+   libcutils/libutils/libhidlbase/binder_ndk/graphics.mapper@4.0/…).
+   The first `eglGetDisplay()` call segfaulted at `mov rax, [rax+0x820]`
+   with `RAX=NULL` — a bionic TCB→bionic_tls slot dereference
+   returning NULL on a glibc thread.
+
+   **Why:** on a glibc thread `%fs:0` points at glibc's `tcbhead_t`,
+   not bionic's. Bionic's slot 9 (`TLS_SLOT_BIONIC_TLS`) and the
+   `bionic_tls` struct it should point to don't exist there. Same
+   *class* of bug as the aarch64 bionic-on-stock-Android `TPIDR_EL0`
+   issue our fork fixes; the aarch64 fix doesn't transfer.
+
+   On aarch64 the entire bionic codebase reads TLS through one
+   fixed-width instruction (`MRS Xn, TPIDR_EL0`). Our TLS thunk
+   patcher walks `.text` 4 bytes at a time, masks each word, swaps
+   matches in-place for a branch to a thunk that loads from a global
+   we control. ~200 lines of code, no disassembler needed, and
+   instruction width never changes so no surrounding code shifts.
+
+### What it'd take on x86_64
+
+Three design options, none cheap. Each has a real failure mode worth
+naming up front so future work doesn't repeat the same dead ends.
+
+**(A) Co-locate one shared TCB at one `%fs`.** Lay out a single block
+that satisfies both glibc's `tcbhead_t` (self/dtv/sysinfo/stack_guard
+at the offsets glibc reads) and bionic's slot table (slot 0
+self-pointer, slot 5 stack_guard, slot 9 → our calloc'd `bionic_tls`,
+slot 8 → minimal DTV). On thread creation, retrofit `%fs` once via
+`arch_prctl(ARCH_SET_FS, …)`. Inlined `%fs:offset` reads on both
+sides then "just work" — same `%fs`, both sides find what they
+expect.
+
+The catch: this only works if bionic's writes to its slots don't
+corrupt glibc invariants at the same byte offsets (and vice versa).
+Initial desk-check looked rosy because slot 0 (self) and slot 5
+(stack_guard at 0x28) line up trivially, but the audit isn't done.
+Real risks I noted on closer reading:
+- **Slot 5 / `stack_guard` at 0x28.** Both sides read it for
+  `-fstack-protector`. They generate independent canaries; whichever
+  side wrote last wins, the other's prologues `__stack_chk_fail` on
+  return. Have to pick one canary at retrofit time and trust nothing
+  rewrites it.
+- **Slot 6 / `pointer_guard` at 0x30.** glibc uses it to mangle
+  pointers in `setjmp`/`atexit`/etc.; bionic uses slot 6 for
+  sanitizer-thread-local. Bionic writing slot 6 corrupts every
+  subsequent glibc `longjmp`. Likely incompatible.
+- **glibc DTV at 0x08 vs bionic THREAD_ID at slot 1 (also 0x08).**
+  Genuine offset collision. Probably benign because bionic mostly
+  writes THREAD_ID and uses it as a tag, but not proven.
+- **Beyond the header.** Both sides spread state past the
+  well-known offsets; bionic's slot table reserves more in newer
+  Android versions.
+
+The right next step before betting work on (A) is an `objdump -d |
+grep '%fs:'` audit across all loaded `.so`s on both sides — bucket
+by offset, cross-reference against `bionic_asm_tls.h` and glibc's
+`tls.h`, look for offsets where both sides write. If the offsets
+cooperate, (A) is the smallest design (low hundreds of lines of new
+hooks.c, mostly bookkeeping). If they don't, (A) is unsound and you
+fall back to (C).
+
+**(B) Per-call `%fs` swap (trampoline at function boundary).**
+Wrap libhybris's exposed surface (libEGL entry points, vendor dlsym
+targets); on entry `arch_prctl(ARCH_SET_FS, bionic_tcb)`, on return
+swap back. **Doesn't actually work** — and this is the failure mode
+worth remembering, because it sounds reasonable until you stop and
+think about inlining. Bionic's TLS reads aren't at function
+boundaries you can intercept; they're inlined into callers via:
+- `errno` (expands to `&__get_thread()->errno_value` → `mov %fs:8`
+  inlined into every libc syscall failure path)
+- `__stack_chk_guard` (compiler emits `mov %fs:0x28` directly in
+  every stack-protected prologue/epilogue)
+- `pthread_self()` (inline `mov %fs:8`)
+- `thread_local` in bionic-built libc++
+- `__get_tls()` / `__get_thread()` private headers, used widely
+
+So inlined `%fs:offset` reads inside vendor `libEGL_emulation.so`
+have no symbol boundary to wrap. (B) misses essentially all of them.
+Don't pitch this approach — it's a trap.
+
+**(C) Patch every `%fs:offset` read in `.text`.** The aarch64
+strategy carried to x86. Math is fine — bionic always knows the slot
+at compile time, so the displacement is a constant immediate; adding
+a constant K to push bionic's slots into a non-glibc region is a
+straight rewrite. The hard parts are mechanical:
+- **Variable instruction length.** `mov %fs:0x48, %rax` is 9 bytes;
+  `%fs:0x48, %r11` is 10 (REX); `add %fs:0x48, %rax` is 9; `cmpq $0,
+  %fs:0x48` is 10; `incq %fs:0x48` is 8. Word-by-word scanning won't
+  find them — you need a real x86 disassembler (Capstone, Zydis,
+  XED-style hand-roll). The aarch64 patcher doesn't need one.
+- **Can't grow instructions in place.** Shifting an 8-bit
+  displacement to 32-bit grows the instruction by 3 bytes; every
+  subsequent instruction shifts; relative jumps/calls break;
+  `.eh_frame` and symbol offsets break. Workaround: detour-style
+  trampoline. Overwrite the matched instruction with a 5-byte
+  relative `jmp` (plus pad) into a generated stub that does the real
+  work with the shifted offset and `jmp`s back. Each occurrence
+  needs its own stub (different destination register, different
+  return site); the stub arena has to be within ±2GB of `.text` so
+  the relative jump can reach. This is small-JIT territory —
+  basically a Frida/Detours-shaped piece of new code.
+- **Telling instructions from data.** `.text` has jump tables,
+  alignment padding, switch tables, literal pools. Linear-sweep
+  disassembly desyncs the moment it hits any of these. Need to seed
+  from function entries via symbol table / `.eh_frame` and walk
+  CFGs.
+- **Sequencing.** Patching has to happen at module load before
+  constructors run (libhybris's aarch64 patcher already does this;
+  the hook point exists). On x86 you also have to handle the case
+  where `dlopen`-loaded modules pull in further bionic libraries
+  whose constructors then run — patcher hook needs to fire on every
+  load, recursively.
+- **Address-takes.** Rare bionic patterns like
+  `&__stack_chk_guard` pass the slot address as a value; once it's
+  in a register you can't tell it from any other pointer. Patcher
+  can't fix these.
+
+(C) handles inlines correctly because it operates at instruction
+level; that's its big advantage over (B). Cost is the
+disassembler+CFG-walker+detour-allocator infrastructure, plus the
+debugging time when a misclassified data byte gets "patched" and the
+program JITs garbage with no obvious cause.
+
+**Net.** (A) is the smallest if the offset audit comes back clean
+and there's no future Android version that breaks the layout. (C) is
+the only sound option if the audit fails, and it's strictly more
+code but has no soundness assumption to verify. (B) is a tempting
+trap; don't.
+
+Until somebody picks one up, libhybris stays aarch64-only and the
+emulator stays SHM-only for GPU.
 
 ## One-time setup
 
