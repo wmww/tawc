@@ -33,6 +33,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [xwayland.md](notes/xwayland.md) -- bionic-build Xwayland for X11 client support; current dep build state and pending stages
 - [tawcroot.md](notes/tawcroot.md) -- design + implementation plan for the from-scratch C systrap-based proot replacement (lives in `tawcroot/`)
 - [distro-options.md](notes/distro-options.md) -- survey of viable glibc distros (Debian, Void, Manjaro ARM, …) and why musl/bionic alternatives don't fit
+- [mirror-cache.md](notes/mirror-cache.md) -- dev-time host nginx caching proxy for distro mirrors (adb reverse + URL-passthrough format), spec only — not implemented yet
 
 Keep notes up to date with new choices, discoveries and project state. This is an agent-written project, existing code/notes may be wrong. Stay vigilant, and fix/record problems as you find them (even when working on something else).
 
