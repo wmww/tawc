@@ -71,6 +71,9 @@ static inline long tawc_readlinkat(int dirfd, const char *path,
 { return TAWC_RAW(TAWC_SYS_readlinkat, dirfd, (long)path, (long)buf,
 		  (long)n, 0, 0); }
 
+static inline long tawc_getdents64(int fd, void *buf, size_t n)
+{ return TAWC_RAW(TAWC_SYS_getdents64, fd, (long)buf, (long)n, 0, 0, 0); }
+
 /* openat2 (kernel ≥ 5.6). Same shape as openat but takes a struct
  * open_how instead of bare flags+mode, and supports `resolve` flags
  * including RESOLVE_IN_ROOT — the kernel's chroot-equivalent path

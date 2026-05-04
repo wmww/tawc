@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "dirent_filter.h"
 #include "dispatch.h"
 #include "fdtab.h"
 #include "raw_sys.h"
@@ -135,6 +136,74 @@ static long handle_fcntl(const tawcroot_syscall_args *args, ucontext_t *uc)
 	return TAWC_RAW(TAWC_SYS_fcntl, fd, op, a3, 0, 0, 0);
 }
 
+/* glibc's __closefrom_fallback opens /proc/self/fd, getdents64-iterates,
+ * and close()s every fd >= start_fd. Each pass that closed at least one
+ * fd triggers an lseek(0)+retry to handle "closes mid-iteration may
+ * invalidate the cursor". With handle_close fake-succeeding for our
+ * reserved fds (so they survive the guest's closefrom — a gpgme/curl
+ * pre-exec hygiene routine), every retry pass sees the same reserved
+ * fds, "closes" them again, retries forever. Pacman-key under the
+ * in-app installer hangs at 100% CPU for this reason.
+ *
+ * Fix: when getdents64 reads /proc/<our pid>/fd, drop dirent entries
+ * whose d_name parses to a number that the BPF close-trap predicate
+ * recognises as reserved. The guest sees a /proc/self/fd that doesn't
+ * mention our internal fds at all; closefrom finishes after one pass.
+ *
+ * Only filter when the dirfd resolves to /proc/self/fd or
+ * /proc/<digits>/fd to avoid hiding a file literally named "1000" in
+ * some unrelated user dir (vanishingly unlikely but cheap to guard).
+ * The check is one readlinkat per getdents64 call. Caching across calls
+ * adds complexity for negligible gain — non-procfs callers eat one
+ * tiny extra syscall and move on. */
+
+/* Cap the readlink probe; "/proc/<10-digit pid>/fd" fits in 22 bytes. */
+#define PROC_FD_LINK_MAX     32
+
+static long handle_getdents64(const tawcroot_syscall_args *args,
+			      ucontext_t *uc)
+{
+	(void)uc;
+	int fd = (int)args->a;
+	void *buf = (void *)(uintptr_t)args->b;
+	unsigned int count = (unsigned int)args->c;
+
+	long n = TAWC_RAW(TAWC_SYS_getdents64, fd, (long)buf,
+	                  (long)count, 0, 0, 0);
+	if (n <= 0 || tawcroot_n_reserved_fds == 0) return n;
+
+	/* Cheap check: only filter when the dirfd resolves to
+	 * /proc/<self|digits>/fd. Non-proc dirfds short-circuit. */
+	char proc_link[PROC_FD_LINK_MAX];
+	char self_path[32];
+	{
+		const char *prefix = "/proc/self/fd/";
+		size_t off = 0;
+		while (prefix[off] && off + 1 < sizeof self_path) {
+			self_path[off] = prefix[off];
+			off++;
+		}
+		/* Append fd as decimal. */
+		char tmp[12]; int tn = 0;
+		unsigned int u = fd >= 0 ? (unsigned int)fd : 0;
+		if (u == 0) tmp[tn++] = '0';
+		while (u) { tmp[tn++] = (char)('0' + (u % 10)); u /= 10; }
+		while (tn--) {
+			if (off + 1 >= sizeof self_path) return n;
+			self_path[off++] = tmp[tn];
+		}
+		self_path[off] = 0;
+	}
+	long ln = tawc_readlinkat(-100 /*AT_FDCWD*/, self_path,
+	                          proc_link, sizeof proc_link);
+	if (ln <= 0) return n;
+	if (!tawcroot_dirent_filter_is_proc_fd_link(proc_link, ln)) return n;
+
+	return tawcroot_dirent_filter_compact(buf, n,
+	                                      tawcroot_reserved_fds,
+	                                      tawcroot_n_reserved_fds);
+}
+
 void tawcroot_fd_register(void)
 {
 	tawcroot_dispatch_install(TAWC_SYS_close,       handle_close);
@@ -142,6 +211,7 @@ void tawcroot_fd_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_dup,         handle_dup);
 	tawcroot_dispatch_install(TAWC_SYS_dup3,        handle_dup3);
 	tawcroot_dispatch_install(TAWC_SYS_fcntl,       handle_fcntl);
+	tawcroot_dispatch_install(TAWC_SYS_getdents64,  handle_getdents64);
 #if defined(__x86_64__)
 	tawcroot_dispatch_install(TAWC_SYS_dup2,        handle_dup2);
 #endif

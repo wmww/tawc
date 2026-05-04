@@ -105,6 +105,7 @@ PROD_C := \
     $(SRC_T)/src/identity.c \
     $(SRC_T)/src/syscalls_fs.c \
     $(SRC_T)/src/syscalls_fd.c \
+    $(SRC_T)/src/dirent_filter.c \
     $(SRC_T)/src/syscalls_control.c \
     $(SRC_T)/src/shm.c \
     $(SRC_T)/src/signal_shadow.c \
@@ -135,7 +136,8 @@ PROD_C_FOR_TESTS := \
     $(SRC_T)/src/loader_map.c \
     $(SRC_T)/src/loader_stack.c \
     $(SRC_T)/src/exec_state.c \
-    $(SRC_T)/src/signal_shadow.c
+    $(SRC_T)/src/signal_shadow.c \
+    $(SRC_T)/src/dirent_filter.c
 
 TESTHOST_EXTRA_C := \
     $(SRC_TH)/src/testhost_main.c \

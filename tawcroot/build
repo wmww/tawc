@@ -180,6 +180,7 @@ SRC_C_PROD=(
     "$TAWCROOT_DIR/src/identity.c"
     "$TAWCROOT_DIR/src/syscalls_fs.c"
     "$TAWCROOT_DIR/src/syscalls_fd.c"
+    "$TAWCROOT_DIR/src/dirent_filter.c"
     "$TAWCROOT_DIR/src/syscalls_control.c"
     "$TAWCROOT_DIR/src/shm.c"
     "$TAWCROOT_DIR/src/signal_shadow.c"
@@ -402,6 +403,10 @@ build_tests() {
         -ffile-prefix-map="$REPO_DIR/="
         -DTAWCROOT_TESTHOST_BIN="\"$on_device/tawcroot-testhost\""
         -DTAWCROOT_PROD_BIN="\"$on_device/tawcroot\""
+        # Host-only: nm-imports check reads .o files. Path won't exist
+        # on-device, so test_async_signal_safety.c skips cleanly. The
+        # define still has to be present or the file refuses to compile.
+        -DTAWCROOT_PROD_OBJ_DIR="\"$out_dir/.obj-prod\""
         -DTAWCROOT_STATIC_EXIT42_BIN="\"$on_device/programs/static_exit42\""
         -DTAWCROOT_STATIC_ARGC_RANDOM_BIN="\"$on_device/programs/static_argc_random\""
         -DTAWCROOT_DYNAMIC_EXIT42_BIN="\"$on_device/programs/dynamic_exit42\""
@@ -454,6 +459,7 @@ build_tests() {
         "$TAWCROOT_DIR/src/loader_stack.c"
         "$TAWCROOT_DIR/src/exec_state.c"
         "$TAWCROOT_DIR/src/signal_shadow.c"
+        "$TAWCROOT_DIR/src/dirent_filter.c"
     )
     # All test-layer .c files directly under tawcroot/tests/{unit,handler,integration}/.
     local test_srcs=()

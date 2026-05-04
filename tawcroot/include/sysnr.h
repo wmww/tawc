@@ -72,6 +72,7 @@
 # define TAWC_SYS_dup            23
 # define TAWC_SYS_dup3           24    /* aarch64 has no dup2 */
 # define TAWC_SYS_close_range   436
+# define TAWC_SYS_getdents64     61
 # define TAWC_SYS_process_vm_readv  270
 # define TAWC_SYS_process_vm_writev 271
 # define TAWC_SYS_gettid           178
@@ -159,6 +160,7 @@
 # define TAWC_SYS_dup2           33
 # define TAWC_SYS_dup3          292
 # define TAWC_SYS_close_range   436
+# define TAWC_SYS_getdents64    217
 /* Legacy syscalls Android's untrusted_app filter RET_TRAPs on x86_64 —
  * we route them through *at variants in the handler. They don't exist
  * on aarch64 (separate numbers / not allocated). */
