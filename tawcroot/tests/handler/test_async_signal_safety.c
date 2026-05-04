@@ -85,6 +85,10 @@ static const char *const handler_objs[] = {
 	"syscalls_socket.c.o",
 	"syscalls_exec.c.o",
 	"exec_handler.c.o",
+	/* Reached from handle_openat → open_proc_maps_shadow. Pure (no
+	 * external symbols today), but keeping it on the list catches a
+	 * future regression that pulls in libc. */
+	"proc_rewrite.c.o",
 };
 
 /* Run `nm -u --format=just-symbols <obj>` and capture its stdout.

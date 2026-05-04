@@ -5,6 +5,12 @@ each open-code their own copies of the basic mem helpers. Production
 already has `tawc_memcpy` / `tawc_memset` / `tawc_memmove` in
 `tawcroot/src/strings.c`.
 
+Adjacent: a small `peq()` (byte-equal n bytes) and component-boundary
+prefix-match are open-coded in both `path_orchestrate.c::orch_memeq` /
+`route_through_binds` and `proc_rewrite.c::peq` / `match_host_prefix`.
+A unified `tawc_path_prefix_match()` helper would fold both. Same
+PROD_C_FOR_TESTS compile-twice constraint applies.
+
 The duplicates exist because some of these files are in
 `PROD_C_FOR_TESTS` — compiled twice, once freestanding for the
 production binary and once into the cleat orchestrator (hosted

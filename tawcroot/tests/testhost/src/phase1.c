@@ -1594,6 +1594,99 @@ int tawcroot_phase1_main(const char *rootfs)
 		}
 	}
 
+	/* /proc/self/maps reverse-translation. mmap a file from inside
+	 * the rootfs (so its host path appears in /proc/self/maps), then
+	 * open /proc/self/maps via the guest dispatch and check that the
+	 * returned bytes show the guest-visible path, not the rootfs host
+	 * path. The shadow fd is a memfd, so the guest reads NOT the
+	 * kernel's file but our rewritten copy. */
+	{
+		long probe_fd = inline_openat(AT_FDCWD, "/etc/probe",
+					      O_RDONLY, 0);
+		fails += tawc_io_step("maps test: open /etc/probe", probe_fd >= 0);
+		if (probe_fd >= 0) {
+			long region = TAWC_RAW(TAWC_SYS_mmap, 0, 4096,
+					       1 /*PROT_READ*/,
+					       2 /*MAP_PRIVATE*/,
+					       (long)probe_fd, 0);
+			int mmap_ok = !(region <= 0 && region > -4096);
+			fails += tawc_io_step("maps test: mmap probe file",
+					      mmap_ok);
+
+			long mfd = inline_openat(AT_FDCWD, "/proc/self/maps",
+						 O_RDONLY, 0);
+			fails += tawc_io_step(
+				"openat(\"/proc/self/maps\") -> shadow fd",
+				mfd >= 0);
+			if (mfd >= 0) {
+				/* Read the whole shadow file. Two pages is
+				 * comfortably more than a testhost mapping
+				 * count (~30 lines). */
+				char buf[8192];
+				size_t total = 0;
+				for (;;) {
+					long n = tawc_read((int)mfd,
+						buf + total,
+						sizeof buf - 1 - total);
+					if (n <= 0) break;
+					total += (size_t)n;
+					if (total + 1 >= sizeof buf) break;
+				}
+				buf[total] = 0;
+
+				/* Search for guest path. Substring match is
+				 * fine — proves the rewriter saw the line and
+				 * emitted the guest form. */
+				int saw_guest = 0;
+				for (size_t i = 0; i + 10 < total; i++) {
+					if (buf[i]   == '/' && buf[i+1] == 'e' &&
+					    buf[i+2] == 't' && buf[i+3] == 'c' &&
+					    buf[i+4] == '/' && buf[i+5] == 'p' &&
+					    buf[i+6] == 'r' && buf[i+7] == 'o' &&
+					    buf[i+8] == 'b' && buf[i+9] == 'e') {
+						saw_guest = 1; break;
+					}
+				}
+				fails += tawc_io_step(
+					"maps shadow contains '/etc/probe' (guest path)",
+					saw_guest);
+
+				/* Search for rootfs host prefix; must NOT
+				 * appear in the rewritten output for the probe
+				 * mmap. The host prefix could legitimately
+				 * appear in unrelated lines if the testhost
+				 * binary itself were inside the rootfs (it
+				 * isn't) — so this assertion is conservative
+				 * but valid here. */
+				int saw_host = 0;
+				size_t pl = tawcroot_rootfs_host_path_len;
+				const char *rh = tawcroot_rootfs_host_path;
+				if (pl > 0) {
+					for (size_t i = 0; i + pl < total; i++) {
+						int eq = 1;
+						for (size_t j = 0; j < pl; j++) {
+							if (buf[i + j] != rh[j]) {
+								eq = 0; break;
+							}
+						}
+						if (eq) { saw_host = 1; break; }
+					}
+				}
+				fails += tawc_io_step(
+					"maps shadow does NOT leak rootfs host path",
+					!saw_host);
+
+				tawc_close((int)mfd);
+			}
+
+			if (mmap_ok) {
+				(void)TAWC_RAW(TAWC_SYS_munmap, region, 4096,
+					       0, 0, 0, 0);
+			}
+			tawc_close((int)probe_fd);
+		}
+	}
+
 	if (fails == 0) {
 		tawc_io_str("PHASE-1 SMOKE: PASS\n");
 	} else {

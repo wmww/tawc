@@ -31,6 +31,7 @@
 #include "dispatch.h"
 #include "io.h"
 #include "path.h"
+#include "proc_rewrite.h"
 #include "raw_sys.h"
 #include "sysnr.h"
 #include "usercopy.h"
@@ -76,6 +77,11 @@ static tawcroot_path_mode openat_mode(int flags)
 	return TAWCROOT_PATH_FOLLOW;
 }
 
+/* Forward decls — bodies live below, near the other /proc/self
+ * helpers (is_proc_self_exe etc.). */
+static int  is_proc_self_maps(const char *path);
+static long open_proc_maps_shadow(void);
+
 static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
@@ -83,6 +89,28 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	const char *gpath = (const char *)(uintptr_t)args->b;
 	int flags = (int)args->c;
 	int mode  = (int)args->d;
+
+	/* /proc/self/maps and /proc/<our-pid>/maps: synthesize a shadow fd
+	 * backed by a memfd containing the kernel's maps output with each
+	 * path field reverse-translated through the rootfs/bind tables.
+	 * Without this, sandboxes that grep their own maps (Mozilla's, ld.so
+	 * $ORIGIN resolvers, crash handlers) see host paths the guest's
+	 * world view doesn't contain.
+	 *
+	 * Only intercept O_RDONLY (no O_DIRECTORY, no O_PATH). Other flag
+	 * combos fall through to normal translation so the kernel produces
+	 * the conventional -ENOTDIR / O_PATH-fd behavior. The 64-byte peek
+	 * is wide enough for "/proc/<10-digit-pid>/maps"; longer paths can't
+	 * match anyway. */
+	if (gpath &&
+	    (flags & 3) == 0 /*O_RDONLY*/ &&
+	    (flags & 0x10000 /*O_DIRECTORY*/) == 0 &&
+	    (flags & 0x200000 /*O_PATH*/) == 0) {
+		char tmp[64];
+		long pn = tawc_copy_string_from_guest(tmp, sizeof tmp, gpath);
+		if (pn >= 0 && is_proc_self_maps(tmp))
+			return open_proc_maps_shadow();
+	}
 
 	char path_buf[TAWC_PATH_MAX];
 	char suffix[TAWC_PATH_MAX];
@@ -298,28 +326,23 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 }
 
 
-/* Detect /proc/self/exe and /proc/<our-pid>/exe in a guest path.
- * Returns 1 on match, 0 otherwise. The match is deliberately strict
- * (no leading-slash variants beyond the expected forms) — paths like
- * /proc/foo/../self/exe are caught only after the guest's libc has
- * already canonicalized them, which is the typical flow. We also
- * accept /proc/<tid>/exe for any tid in our process via gettid in a
- * follow-up; for now /proc/self covers all single-threaded callers
- * and most multi-threaded ones (libc resolves $ORIGIN once, in the
- * main thread). */
-static int is_proc_self_exe(const char *path)
+/* If `path` is "/proc/self/<x>" or "/proc/<our-pid>/<x>", return a
+ * pointer to the byte after the trailing '/' (the "<x>" tail). Returns
+ * NULL otherwise. The match is deliberately strict — paths like
+ * "/proc/foo/../self/exe" are caught only after the guest's libc has
+ * already canonicalized them, which is the typical flow. /proc/<tid>/
+ * for any tid in our process is a TODO; today /proc/self covers all
+ * single-threaded callers and most multi-threaded ones (libc resolves
+ * $ORIGIN once, in the main thread). */
+static const char *strip_proc_self_prefix(const char *path)
 {
 	if (path[0] != '/' || path[1] != 'p' || path[2] != 'r' ||
 	    path[3] != 'o' || path[4] != 'c' || path[5] != '/')
 		return 0;
 	const char *t = path + 6;
 	if (t[0] == 's' && t[1] == 'e' && t[2] == 'l' && t[3] == 'f' &&
-	    t[4] == '/' && t[5] == 'e' && t[6] == 'x' && t[7] == 'e' &&
-	    t[8] == 0)
-		return 1;
-	/* /proc/<digits>/exe — match if the digits parse to our own pid.
-	 * We don't have a stashed pid (raw_sys's gettid is process-wide
-	 * for the main thread only); call it to compare. */
+	    t[4] == '/')
+		return t + 5;
 	if (!(t[0] >= '0' && t[0] <= '9')) return 0;
 	long n = 0;
 	const char *p = t;
@@ -327,11 +350,113 @@ static int is_proc_self_exe(const char *path)
 		n = n * 10 + (*p - '0'); p++;
 		if (n > 0x7fffffff) return 0;
 	}
-	if (p[0] != '/' || p[1] != 'e' || p[2] != 'x' || p[3] != 'e' ||
-	    p[4] != 0)
-		return 0;
+	if (p[0] != '/') return 0;
 	long mypid = TAWC_RAW(TAWC_SYS_getpid, 0, 0, 0, 0, 0, 0);
-	return mypid == n;
+	if (mypid != n) return 0;
+	return p + 1;
+}
+
+static int is_proc_self_exe(const char *path)
+{
+	const char *tail = strip_proc_self_prefix(path);
+	return tail && tawc_streq(tail, "exe");
+}
+
+static int is_proc_self_maps(const char *path)
+{
+	const char *tail = strip_proc_self_prefix(path);
+	return tail && tawc_streq(tail, "maps");
+}
+
+/* /proc/self/maps shadow fd. Read the kernel's maps file in full,
+ * reverse-translate each path field via the rootfs/bind tables, and
+ * write the result into a memfd that we hand back to the guest.
+ *
+ * Sized for typical desktop workloads: 1 MB read buffer covers Firefox's
+ * ~5–10K mappings comfortably; output may be slightly larger or smaller
+ * depending on whether reverse-translation lengthens or shortens paths,
+ * so the output buffer matches the read buffer's ceiling. Pathological
+ * maps (>1 MB) are truncated — same behavior as a guest with a small
+ * read buffer would see, just at our boundary instead of theirs.
+ *
+ * All allocations are anonymous mmaps (not on the SIGSYS handler's tiny
+ * stack) and freed before return. memfd_create needs no privileges and
+ * works on every kernel we target (≥ 3.17). */
+#define MAPS_BUF_SIZE  ((size_t)1 << 20)
+
+static long open_proc_maps_shadow(void)
+{
+	long region = tawc_mmap(0, 2 * MAPS_BUF_SIZE,
+				3 /*PROT_READ|PROT_WRITE*/,
+				0x22 /*MAP_PRIVATE|MAP_ANONYMOUS*/,
+				-1, 0);
+	if (region < 0 && region > -4096) return region;
+	if (region == 0) return -12; /* ENOMEM — defensive */
+	char *in_buf  = (char *)(uintptr_t)region;
+	char *out_buf = in_buf + MAPS_BUF_SIZE;
+
+	long src = tawc_openat(-100 /*AT_FDCWD*/, "/proc/self/maps",
+			       0 /*O_RDONLY*/ | 0x80000 /*O_CLOEXEC*/, 0);
+	if (src < 0) {
+		(void)tawc_munmap((void *)(uintptr_t)region, 2 * MAPS_BUF_SIZE);
+		return src;
+	}
+
+	size_t in_len = 0;
+	while (in_len < MAPS_BUF_SIZE) {
+		long n = tawc_read((int)src, in_buf + in_len,
+				   MAPS_BUF_SIZE - in_len);
+		if (n == 0) break;
+		if (n < 0) {
+			tawc_close((int)src);
+			(void)tawc_munmap((void *)(uintptr_t)region,
+					  2 * MAPS_BUF_SIZE);
+			return n;
+		}
+		in_len += (size_t)n;
+	}
+	tawc_close((int)src);
+
+	tawcroot_proc_rewrite_ctx ctx = {
+		.rootfs_host_path     = tawcroot_rootfs_host_path,
+		.rootfs_host_path_len = tawcroot_rootfs_host_path_len,
+		.binds                = tawcroot_binds,
+		.n_binds              = tawcroot_n_binds,
+	};
+	long out_len = tawcroot_proc_maps_rewrite(&ctx, in_buf, in_len,
+						  out_buf, MAPS_BUF_SIZE);
+	if (out_len < 0) {
+		(void)tawc_munmap((void *)(uintptr_t)region, 2 * MAPS_BUF_SIZE);
+		return out_len;
+	}
+
+	long memfd = tawc_memfd_create("tawcroot-maps", 1U /*MFD_CLOEXEC*/);
+	if (memfd < 0) {
+		(void)tawc_munmap((void *)(uintptr_t)region, 2 * MAPS_BUF_SIZE);
+		return memfd;
+	}
+
+	size_t written = 0;
+	while (written < (size_t)out_len) {
+		long w = tawc_write((int)memfd, out_buf + written,
+				    (size_t)out_len - written);
+		if (w < 0) {
+			tawc_close((int)memfd);
+			(void)tawc_munmap((void *)(uintptr_t)region,
+					  2 * MAPS_BUF_SIZE);
+			return w;
+		}
+		written += (size_t)w;
+	}
+
+	(void)tawc_munmap((void *)(uintptr_t)region, 2 * MAPS_BUF_SIZE);
+
+	long sk = tawc_lseek((int)memfd, 0, 0 /*SEEK_SET*/);
+	if (sk < 0) {
+		tawc_close((int)memfd);
+		return sk;
+	}
+	return memfd;
 }
 
 static long handle_readlinkat(const tawcroot_syscall_args *args,

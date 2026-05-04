@@ -2986,13 +2986,16 @@ here so we don't ship MVP and discover them at runtime.
    an init-allocated arena for longer paths. Document the escape
    route; don't pre-emptively design around it.
 
-3. **`/proc/<pid>/maps` reverse-translation.** After manual-load,
-   `/proc/self/maps` shows ld.so + libraries with their
-   *host*-side rootfs paths (`<rootfs>/lib64/ld-linux…`). Programs
-   that grep their own maps for library locations (some sandboxes,
-   some tracers) see paths that don't exist in their world view.
-   proot wraps the read to rewrite paths; we don't, in MVP. Add to
-   the "expand on demand" inventory.
+3. **More `/proc` reverse-translation paths.** `/proc/self/maps` and
+   `/proc/<our-pid>/maps` are done — `handle_openat` detects the path
+   and returns a memfd with each line reverse-translated via the
+   rootfs/bind tables (`proc_rewrite.c`, pure, in PROD_C_FOR_TESTS).
+   Same shape would extend to `/proc/<pid>/cmdline`, `/proc/<pid>/auxv`,
+   `/proc/<pid>/task/<tid>/maps`, and the fd-relative form
+   (`openat(proc_dir_fd, "self/maps", ...)`) when a workload needs
+   them. The fd-relative gap also affects `/proc/self/exe` synthesis
+   in `handle_readlinkat` — fix together once fd-provenance lands
+   (see `issues/tawcroot-fd-provenance-not-tracked.md`).
 
 4. **`PR_SET_SYSCALL_USER_DISPATCH` (kernel 5.11+).** This kernel
    mechanism defines a contiguous code address range from which
