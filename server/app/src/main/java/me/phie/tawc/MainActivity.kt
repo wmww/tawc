@@ -2,11 +2,13 @@ package me.phie.tawc
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.card.MaterialCardView
 import me.phie.tawc.compositor.CompositorService
 import me.phie.tawc.install.DistroInfoActivity
 import me.phie.tawc.install.InstallActivity
@@ -20,22 +22,17 @@ import me.phie.tawc.ui.verticalLp
 /**
  * Home screen for the tawc app. Starts the [CompositorService] (which
  * spawns the Rust compositor thread + Wayland socket), then renders a
- * tappable list of currently-installed Linux environments and a button
- * to install a new one. Each row opens [DistroInfoActivity] for the
- * full path / size / Uninstall UI — the home screen deliberately doesn't
- * compute size (`du -sk` over a multi-GB rootfs costs seconds via su)
- * so opening the launcher stays snappy.
+ * tappable card for each currently-installed Linux environment and a
+ * button to install a new one. Each card opens [DistroInfoActivity] for
+ * the full path / size / Uninstall UI — the home screen deliberately
+ * doesn't compute size (`du -sk` over a multi-GB rootfs costs seconds
+ * via su) so opening the launcher stays snappy.
  */
 class MainActivity : AppCompatActivity() {
 
     private val store by lazy { InstallationStore(this) }
-    private val rowMargin by lazy { (8 * resources.displayMetrics.density).toInt() }
-    private val rowPadV by lazy { (12 * resources.displayMetrics.density).toInt() }
-    private val rowSelectableBg by lazy {
-        val attrs = intArrayOf(android.R.attr.selectableItemBackground)
-        val ta = obtainStyledAttributes(attrs)
-        try { ta.getResourceId(0, 0) } finally { ta.recycle() }
-    }
+    private val cardMargin by lazy { (8 * resources.displayMetrics.density).toInt() }
+    private val cardPad by lazy { (16 * resources.displayMetrics.density).toInt() }
 
     private lateinit var listContainer: LinearLayout
 
@@ -52,11 +49,6 @@ class MainActivity : AppCompatActivity() {
 
         val scaffold = buildHomeScreen("tawc")
         val pad = (16 * resources.displayMetrics.density).toInt()
-
-        TextView(this).apply {
-            text = "Installations"
-            textSize = 18f
-        }.also { scaffold.content.addView(it, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2)) }
 
         listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scaffold.content.addView(listContainer, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
@@ -78,26 +70,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         listContainer.removeAllViews()
-        val installs = store.list()
-        if (installs.isEmpty()) {
-            TextView(this).apply { text = "(none)" }
-                .also { listContainer.addView(it, verticalLp(MATCH_PARENT, WRAP_CONTENT)) }
-            return
-        }
-        for (inst in installs) {
-            listContainer.addView(buildRow(inst), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = rowMargin))
+        for (inst in store.list()) {
+            listContainer.addView(buildCard(inst), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin))
         }
     }
 
-    private fun buildRow(inst: Installation): TextView =
-        // Whole row is tappable — opens DistroInfoActivity for full
-        // details (path, size, uninstall). selectableItemBackground gives
-        // the platform-standard tap ripple.
-        TextView(this).apply {
-            text = displayName(inst)
-            textSize = 16f
-            setPadding(0, rowPadV, 0, rowPadV)
-            if (rowSelectableBg != 0) setBackgroundResource(rowSelectableBg)
+    private fun buildCard(inst: Installation): View {
+        val card = MaterialCardView(this).apply {
             isClickable = true
             isFocusable = true
             setOnClickListener {
@@ -106,23 +85,49 @@ class MainActivity : AppCompatActivity() {
                 startActivity(i)
             }
         }
-
-    private fun displayName(inst: Installation): String {
-        // The user-set label is the friendly name; it defaults to the
-        // distro's displayName (which already carries the ARM/(x86)
-        // disambiguator), so legacy records without a label fall back
-        // to that same string. Unknown-distro records show the raw
-        // on-disk fields so the row is at least diagnostic.
-        val resolved = DistroRegistry.forInstallation(inst)
-        val name = inst.label
-            ?: resolved?.displayName
-            ?: "${inst.distro.replaceFirstChar { it.titlecase() }} (${inst.arch})"
-        val suffix = when (inst.state) {
-            Installation.State.READY -> ""
-            Installation.State.INSTALLING -> " — installing…"
-            Installation.State.UNINSTALLING -> " — uninstalling…"
-            Installation.State.FAILED -> " — failed"
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(cardPad, cardPad, cardPad, cardPad)
         }
-        return "$name$suffix ›"
+        val (title, subtitle) = displayParts(inst)
+        column.addView(TextView(this).apply {
+            text = title
+            textSize = 18f
+        })
+        if (subtitle.isNotEmpty()) {
+            column.addView(TextView(this).apply {
+                text = subtitle
+                textSize = 14f
+                alpha = 0.7f
+            })
+        }
+        card.addView(column)
+        return card
+    }
+
+    /**
+     * Split an installation into (card title, card subtitle).
+     *
+     * Title is the user-set label (which defaults to `distro.defaultLabel`
+     * at install time, e.g. "Arch"). Subtitle is the registry-resolved
+     * display name (e.g. "Arch Linux (x86)") plus any non-READY state
+     * marker. If the title already equals the display name (legacy
+     * records without a label), drop the redundant distro subtitle and
+     * keep only the state marker (if any).
+     */
+    private fun displayParts(inst: Installation): Pair<String, String> {
+        val resolved = DistroRegistry.forInstallation(inst)
+        val displayName = resolved?.displayName
+            ?: "${inst.distro.replaceFirstChar { it.titlecase() }} (${inst.arch})"
+        val title = inst.label ?: displayName
+        val distroLine = if (title == displayName) "" else displayName
+        val stateLine = when (inst.state) {
+            Installation.State.READY -> ""
+            Installation.State.INSTALLING -> "installing…"
+            Installation.State.UNINSTALLING -> "uninstalling…"
+            Installation.State.FAILED -> "failed"
+        }
+        val subtitle = listOf(distroLine, stateLine).filter { it.isNotEmpty() }.joinToString(" — ")
+        return title to subtitle
     }
 }
