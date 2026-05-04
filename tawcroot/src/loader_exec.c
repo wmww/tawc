@@ -514,32 +514,26 @@ void tawcroot_loader_exec_child(int state_fd, const char *platform)
 		long inst = tawcroot_install_handler();
 		if (inst != 0) LOADER_FAIL(87);
 
-		/* The inherited signal mask persists across execve (per
-		 * signal(7)). The SIGSYS handler that just re-exec'd us into
-		 * --exec-child was running with SIGSYS auto-masked (kernel
-		 * masks the trapping signal while its handler runs); the
-		 * execveat from inside the handler inherits that mask into
-		 * the new tawcroot incarnation. The filter still RET_TRAPs on
-		 * guest syscalls — but with SIGSYS blocked the kernel kills
-		 * the process with default action instead of invoking our
-		 * handler. Bash and other shells additionally block SIGSYS
-		 * before fork+execve as part of their normal signal-discipline
-		 * setup, which compounds the issue.
+		/* Reset the inherited signal mask to empty. Same rationale as
+		 * the SIG_SETMASK in main.c (start the guest with a fresh mask
+		 * regardless of caller state), with one extra wrinkle here:
+		 * the SIGSYS handler that just re-exec'd us was running with
+		 * SIGSYS auto-masked, and the execveat from the handler
+		 * inherits that bit into the new incarnation. Bash and other
+		 * shells additionally block SIGSYS before fork+execve. With
+		 * SIGSYS blocked, the kernel kills the process by default
+		 * instead of invoking our handler. Diagnosed empirically: bash
+		 * exec dance left mask=0xc0000000 (bit 30 = SIGSYS) in the new
+		 * --exec-child process.
 		 *
-		 * Force-unblock SIGSYS here, BEFORE probe_openat2, since that
-		 * probe trips Android's stacked filter and needs the handler
-		 * actually invocable.
-		 *
-		 * Diagnosed empirically: bash exec dance left mask=0xc0000000
-		 * (bit 30 = SIGSYS) in the new tawcroot --exec-child process.
-		 *
-		 * The runtime guest-mask shadow in syscalls_control.c handles
-		 * the GUEST'S subsequent attempts to block SIGSYS. This unblock
-		 * only matters for the inherited initial mask. */
+		 * Must run BEFORE probe_openat2 since that probe trips
+		 * Android's stacked filter and needs the SIGSYS handler
+		 * invocable. The runtime guest-mask shadow in
+		 * syscalls_control.c tracks subsequent guest manipulation. */
 		{
-			uint64_t bit_sigsys = 1ULL << (31 - 1);
-			(void)TAWC_RAW(TAWC_SYS_rt_sigprocmask, 1 /*SIG_UNBLOCK*/,
-			               (long)&bit_sigsys, 0, 8, 0, 0);
+			uint64_t empty = 0;
+			(void)TAWC_RAW(TAWC_SYS_rt_sigprocmask, 2 /*SIG_SETMASK*/,
+			               (long)&empty, 0, 8, 0, 0);
 		}
 
 		tawcroot_path_probe_openat2();

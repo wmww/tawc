@@ -311,27 +311,14 @@ internal object ArchPacmanCommon {
                 rm -f "${'$'}ROOTFS/etc/resolv.conf"
                 echo nameserver 8.8.8.8 > "${'$'}ROOTFS/etc/resolv.conf"
 
-                # pacman.conf: leave the upstream SigLevel alone for
-                # ChrootMethod / ProotMethod paths, but force
-                # SigLevel = Never under tawcroot. pacman-key --init
-                # currently hangs on its first gpg-agent fork inside
-                # tawcroot when invoked from the in-app installer
-                # process (issue:
-                # tawcroot-gpg-agent-hangs-from-app-context.md), so the
-                # keyring isn't usable on a tawcroot install. Bootstrap
-                # integrity is still cross-mirror MD5 + TLS; what we
-                # lose is in-chroot signature checks on subsequent
-                # pacman -S calls. Re-enable when the gpg-agent issue
-                # is fixed. DisableSandbox (Magisk's sandbox
-                # propagation breaks pacman's sandbox helper), comment
-                # out CheckSpace (statvfs returns 0 inside the chroot's
-                # bind mounts and pacman aborts), and IgnorePkg for the
-                # kernel/firmware packages that would try to install
-                # boot artefacts into the rootfs and fail.
-                if [ "${'$'}TAWC_INSTALL_METHOD" = "tawcroot" ]; then
-                    sed -i 's|^SigLevel.*|SigLevel = Never|' "${'$'}ROOTFS/etc/pacman.conf"
-                    sed -i 's|^LocalFileSigLevel.*|LocalFileSigLevel = Never|' "${'$'}ROOTFS/etc/pacman.conf"
-                fi
+                # pacman.conf: leave SigLevel at upstream defaults so
+                # the keyring is honoured on -Syyu. DisableSandbox
+                # (Magisk's sandbox propagation breaks pacman's sandbox
+                # helper), comment out CheckSpace (statvfs returns 0
+                # inside the chroot's bind mounts and pacman aborts),
+                # and IgnorePkg for the kernel/firmware packages that
+                # would try to install boot artefacts into the rootfs
+                # and fail.
                 grep -q '^DisableSandbox' "${'$'}ROOTFS/etc/pacman.conf" || \
                     sed -i '/^SigLevel/a DisableSandbox' "${'$'}ROOTFS/etc/pacman.conf"
                 sed -i 's/^CheckSpace/#CheckSpace/' "${'$'}ROOTFS/etc/pacman.conf"
@@ -450,16 +437,8 @@ PACMAN_EOF
         archSpecificCruft: List<String>,
         log: (String) -> Unit,
     ) {
-        // Tawcroot path: skip pacman-key entirely. configure() pinned
-        // SigLevel = Never in pacman.conf for the same reason — see the
-        // gpg-agent-hangs issue note in `issues/`.
-        val skipPacmanKey = method.key == "tawcroot"
         val cruft = (archSpecificCruft + SHARED_CRUFT_PACKAGES).joinToString(" ")
-        val pacmanKeyBlock = if (skipPacmanKey) {
-            "# pacman-key skipped under tawcroot (see issue)"
-        } else {
-            "pacman-key --init\n            pacman-key --populate $keyring"
-        }
+        val pacmanKeyBlock = "pacman-key --init\n            pacman-key --populate $keyring"
         val res = method.runInside(
             rootfs,
             """
@@ -533,7 +512,11 @@ PACMAN_EOF
             export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             set -e
             pacman -Syyu --needed --noconfirm ${packages.joinToString(" ")}
-            rm -rf /var/cache/pacman/pkg/*
+            # Clear the cache via find -delete (not `rm -rf .../pkg/*`)
+            # because the glob expands to hundreds of package files and
+            # blows past ARG_MAX on shells that pre-expand. -mindepth 1
+            # keeps the dir itself for future pacman calls.
+            find /var/cache/pacman/pkg -mindepth 1 -delete
             """.trimIndent(),
             onLine = { log("pacman: $it") },
         )

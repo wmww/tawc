@@ -254,6 +254,13 @@ build_binary() {
             readelf="$NDK_BIN/llvm-readelf"
             strip="$NDK_BIN/llvm-strip"
             base="$ARCH_BASE_aarch64"
+            # signal_shadow.c uses __atomic_compare_exchange_n on
+            # uint32_t. With NDK r27's default armv8-a target, clang
+            # lowers that to outline atomics (`__aarch64_cas4_*`),
+            # which live in compiler-rt and aren't available under
+            # `-nostdlib`. Disable outline atomics so the CAS lowers
+            # to inline LDAXR/STLXR — works on every armv8 chip.
+            extra_cflags+=(-mno-outline-atomics)
             ;;
         x86_64)
             cc="$NDK_BIN/x86_64-linux-android29-clang"

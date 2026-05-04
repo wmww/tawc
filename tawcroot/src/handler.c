@@ -199,7 +199,19 @@ long tawcroot_install_handler(void)
 	sa.k_sa_handler = sigsys_handler;
 	sa.sa_flags     = SA_SIGINFO | SA_RESTORER;
 	sa.sa_restorer  = tawcroot_sigreturn_trampoline;
-	sa.sa_mask      = 0;
+	/* Mask every catchable signal for the handler's duration. The
+	 * kernel auto-masks the trapping signal (SIGSYS) while we run,
+	 * but other queued signals stay deliverable — and a nested
+	 * signal handler that issues a seccomp-trapped syscall produces
+	 * a SIGSYS that's *blocked* (because our outer SIGSYS handler is
+	 * still in flight). RET_TRAP on a blocked-and-pending SIGSYS
+	 * has only one outcome: the kernel kills the process with
+	 * default-action SIGSYS, no handler dispatch. Repro: pacman-key
+	 * `gpg --import manjaro-arm.gpg` reaps a child via SIGCHLD that
+	 * fires inside our rt_sigprocmask handler; bash's SIGCHLD code
+	 * then calls rt_sigprocmask, RET_TRAP, kill. SIGKILL/SIGSTOP
+	 * can't be masked; the kernel silently drops those bits. */
+	sa.sa_mask      = ~(uint64_t)0;
 
 	/* sigsetsize = 8 (size of kernel sigset_t on lp64). */
 	return tawc_rt_sigaction(SIGSYS, &sa, NULL, 8);

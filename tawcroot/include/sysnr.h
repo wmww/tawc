@@ -83,6 +83,8 @@
 # define TAWC_SYS_clone           220
 # define TAWC_SYS_bind            200
 # define TAWC_SYS_connect         203
+# define TAWC_SYS_accept          202
+# define TAWC_SYS_accept4         242
 /* Defense-in-depth denials — never honoured, always trap to -EPERM. See
  * issues/tawcroot-phase3-syscall-gaps.md §1. */
 # define TAWC_SYS_chroot           51
@@ -183,6 +185,8 @@
 # define TAWC_SYS_clone3          435
 # define TAWC_SYS_bind             49
 # define TAWC_SYS_connect          42
+# define TAWC_SYS_accept           43
+# define TAWC_SYS_accept4         288
 /* Defense-in-depth denials — never honoured, always trap to -EPERM. See
  * issues/tawcroot-phase3-syscall-gaps.md §1. */
 # define TAWC_SYS_chroot          161

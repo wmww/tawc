@@ -280,22 +280,29 @@ static void prod_rootfs_init(const char *rootfs,
 	long inst = tawcroot_install_handler();
 	if (inst != 0) tawc_exit_group(87);
 
-	/* The signal mask we inherit may have SIGSYS blocked. The Java
-	 * VM that spawned `/system/bin/sh` (which then exec'd us via
-	 * ProcessBuilder) routinely sets up a signal mask that blocks
-	 * various signals; that mask persists through the fork+execve
-	 * chain into our process. With SIGSYS blocked, any trapped
-	 * syscall once the filter is up delivers SIGSYS that the kernel
-	 * cannot route to our handler, and the process dies with default
-	 * action (exit 159). Unblock SIGSYS up front (BEFORE probe_openat2,
-	 * since that trips Android's stacked filter and needs the handler
-	 * actually invocable). The runtime sigprocmask shadow in
-	 * syscalls_control.c keeps it unblocked thereafter regardless of
+	/* Reset the inherited signal mask to empty before we hand control
+	 * to the guest binary. The JVM that spawned `/system/bin/sh` (which
+	 * then exec'd us via ProcessBuilder) routinely blocks SIGCHLD /
+	 * SIGPIPE / SIGUSR1 / SIGSYS / etc., and that mask persists through
+	 * fork+execve into us. Two failure modes:
+	 *
+	 *   1. SIGSYS blocked → trapped syscalls can't reach our handler;
+	 *      the kernel kills the process with default action (exit 159).
+	 *   2. Other signals blocked → daemons spawned later (gpg-agent
+	 *      from pacman-key, anything that select()'s on SIGCHLD) hang
+	 *      because their main loop never receives the wake-ups it
+	 *      expects.
+	 *
+	 * Clearing the whole mask here is the cheap fix: a fresh login
+	 * starts with an empty mask, the guest binary deserves the same.
+	 * Must run BEFORE probe_openat2 since that trips Android's stacked
+	 * filter and needs the SIGSYS handler invocable. The runtime
+	 * sigprocmask shadow in syscalls_control.c tracks any subsequent
 	 * guest manipulation. */
 	{
-		uint64_t bit_sigsys = 1ULL << (31 - 1);
-		(void)TAWC_RAW(TAWC_SYS_rt_sigprocmask, 1 /*SIG_UNBLOCK*/,
-		               (long)&bit_sigsys, 0, 8, 0, 0);
+		uint64_t empty = 0;
+		(void)TAWC_RAW(TAWC_SYS_rt_sigprocmask, 2 /*SIG_SETMASK*/,
+		               (long)&empty, 0, 8, 0, 0);
 	}
 
 	/* openat2 probe must run AFTER install_handler AND after the

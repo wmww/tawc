@@ -57,9 +57,53 @@ struct tawc_sockaddr_un {
 	char     sun_path[108];
 };
 
-/* Render `/proc/self/fd/<fd>/<suffix>` into `dst`. Returns the byte
- * count (excluding NUL) or -ENAMETOOLONG if the rendering doesn't fit
- * in `cap` bytes (cap should be ≤ sizeof sun_path). */
+/* Look up the host path stored for `base_fd`. Matches against rootfs
+ * first, then the bind table. Returns NULL if nothing matches; in that
+ * case the caller falls back to /proc/self/fd/. */
+static const char *host_path_for_base_fd(int base_fd)
+{
+	if (base_fd == tawcroot_rootfs_fd && tawcroot_rootfs_host_path_len > 0)
+		return tawcroot_rootfs_host_path;
+	for (size_t i = 0; i < tawcroot_n_binds; i++) {
+		if (tawcroot_binds[i].src_fd == base_fd)
+			return tawcroot_binds[i].src;
+	}
+	return 0;
+}
+
+/* Render `<host_prefix>/<suffix>` into `dst`. Used when we know the
+ * host-absolute path of the base directory; the kernel's namei resolves
+ * a regular path uniformly, sidestepping the AF_UNIX-specific quirk
+ * where `/proc/self/fd/N/...` namei works for stat/open but returns
+ * ENOENT for bind/connect on some Android kernel + app-sandbox combos
+ * (see tawcroot-gpg-agent-hangs-from-app-context fix). Returns byte
+ * count excluding NUL, or -ENAMETOOLONG if it doesn't fit in `cap`. */
+static long render_host_path(char *dst, size_t cap,
+                             const char *host_prefix, const char *suffix)
+{
+	size_t i = 0;
+	while (host_prefix[i]) {
+		if (i + 1 >= cap) return ENAMETOOLONG_NEG;
+		dst[i] = host_prefix[i];
+		i++;
+	}
+	if (suffix && suffix[0]) {
+		if (i + 1 >= cap) return ENAMETOOLONG_NEG;
+		dst[i++] = '/';
+		size_t j = 0;
+		while (suffix[j]) {
+			if (i + 1 >= cap) return ENAMETOOLONG_NEG;
+			dst[i++] = suffix[j++];
+		}
+	}
+	dst[i] = '\0';
+	return (long)i;
+}
+
+/* Render `/proc/self/fd/<fd>/<suffix>` into `dst`. Fallback used when
+ * `host_path_for_base_fd` doesn't have a stored host prefix. Returns
+ * the byte count (excluding NUL) or -ENAMETOOLONG if the rendering
+ * doesn't fit in `cap` bytes (cap should be ≤ sizeof sun_path). */
 static long render_proc_fd_path(char *dst, size_t cap, int fd,
                                 const char *suffix)
 {
@@ -160,11 +204,23 @@ static long do_translate_unix_addr(int nr, const tawcroot_syscall_args *args)
 	                                                 TAWCROOT_PATH_PARENT_CREATE);
 	if (r.err) return r.err;
 
-	/* Re-pack a sockaddr_un with /proc/self/fd/<base>/<suffix>. */
+	/* Re-pack a sockaddr_un. Prefer the host-absolute path when we know
+	 * it (rootfs and binds we set up): some Android app-sandbox
+	 * kernels return ENOENT for AF_UNIX bind/connect via
+	 * `/proc/self/fd/N/...` even though the same path works for stat
+	 * and open. Fall back to /proc/self/fd/N/... only if we don't have
+	 * a stored host path for this base_fd. */
 	struct tawc_sockaddr_un un_out;
 	un_out.sun_family = AF_UNIX_FAMILY;
-	long n = render_proc_fd_path(un_out.sun_path, sizeof un_out.sun_path,
-	                             r.base_fd, suffix);
+	const char *host_prefix = host_path_for_base_fd(r.base_fd);
+	long n;
+	if (host_prefix) {
+		n = render_host_path(un_out.sun_path, sizeof un_out.sun_path,
+		                     host_prefix, suffix);
+	} else {
+		n = render_proc_fd_path(un_out.sun_path, sizeof un_out.sun_path,
+		                        r.base_fd, suffix);
+	}
 	if (n < 0) return n;
 
 	/* New addrlen: family bytes + path bytes + 1 (NUL). The kernel
@@ -186,8 +242,25 @@ static long handle_connect(const tawcroot_syscall_args *args, ucontext_t *uc)
 	return do_translate_unix_addr(TAWC_SYS_connect, args);
 }
 
+/* `accept` is RET_TRAP'd by Android's untrusted_app seccomp filter (the
+ * app sandbox allows `accept4` but not the legacy `accept`). Glibc inside
+ * a tawcroot-hosted chroot still calls the legacy `accept` for code that
+ * predates SOCK_CLOEXEC, so without this handler gpg-agent et al see
+ * accept return -ENOSYS and busy-loop on the accept-fail-then-retry path.
+ *
+ * Convert accept(fd, addr, addrlen) -> accept4(fd, addr, addrlen, 0):
+ * the fourth flags arg defaults to 0 which has identical semantics to
+ * accept. The accept4 syscall is allowed by Android's filter, so issuing
+ * it from our stub IP gets through. */
+static long handle_accept(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	return TAWC_RAW(TAWC_SYS_accept4, args->a, args->b, args->c, 0, 0, 0);
+}
+
 void tawcroot_socket_register(void)
 {
 	tawcroot_dispatch_install(TAWC_SYS_bind,    handle_bind);
 	tawcroot_dispatch_install(TAWC_SYS_connect, handle_connect);
+	tawcroot_dispatch_install(TAWC_SYS_accept,  handle_accept);
 }
