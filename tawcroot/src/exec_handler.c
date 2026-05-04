@@ -5,24 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "errno_neg.h"
 #include "exec_handler.h"
 #include "exec_state.h"
 #include "path.h"
 #include "raw_sys.h"
 #include "shm.h"
-
-#define TAWC_EACCES   13
-#define TAWC_EFAULT   14
-#define TAWC_ENOMEM   12
-#define TAWC_ENOEXEC   8
-#define TAWC_E2BIG     7
-#define TAWC_EINVAL   22
-
-#define O_RDONLY       0
-#define O_CLOEXEC      02000000
-#define AT_FDCWD       -100
-#define AT_EMPTY_PATH  0x1000
-#define MFD_CLOEXEC    0x0001
+#include "tawc_uapi.h"
 
 /* Cap on serialized exec_state size we'll write into a memfd. The
  * exec_state header is itself ~2 KB (offset arrays for 256 args + 256
@@ -53,7 +42,7 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
                                    const char *const *argv,
                                    const char *const *envp)
 {
-	if (!path || !argv || !envp || argc < 0) return -TAWC_EINVAL;
+	if (!path || !argv || !envp || argc < 0) return TAWC_EINVAL;
 
 	/* (1) Probe the guest binary so failures surface as a clean -errno
 	 * to the guest rather than a phantom-process exit later. In rootfs
@@ -66,7 +55,7 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 		tawcroot_path_result r = tawcroot_path_translate(
 		    path, suffix, sizeof suffix, TAWCROOT_PATH_FOLLOW);
 		if (r.err) return r.err;
-		if (suffix[0] == 0) return -21; /* EISDIR */
+		if (suffix[0] == 0) return TAWC_EISDIR;
 		long probe = tawc_openat(r.base_fd, suffix,
 		                         O_RDONLY | O_CLOEXEC, 0);
 		if (probe < 0) return probe;
@@ -81,7 +70,7 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 	/* (2) Create a non-CLOEXEC memfd. !CLOEXEC is required so the fd
 	 * survives the upcoming execveat into our own re-exec. */
 	long mfd = tawc_memfd_create("tawcroot-exec-state", 0);
-	if (mfd < 0) return -TAWC_EFAULT;
+	if (mfd < 0) return TAWC_EFAULT;
 
 	/* (3) Build the exec_state. When tawcroot has a rootfs view set
 	 * up (production -r mode), capture rootfs path + bind specs +
@@ -152,7 +141,7 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 		long r = tawc_write((int)mfd, state_buf + bytes,
 		                    (size_t)(w - bytes));
 		if (r < 0) { tawc_close((int)mfd); return r; }
-		if (r == 0) { tawc_close((int)mfd); return -TAWC_EFAULT; }
+		if (r == 0) { tawc_close((int)mfd); return TAWC_EFAULT; }
 		bytes += r;
 	}
 
@@ -160,7 +149,7 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 	 * right size and its mmap starts at offset 0. */
 	if (tawc_lseek((int)mfd, 0, 0 /*SEEK_SET*/) < 0) {
 		tawc_close((int)mfd);
-		return -TAWC_EFAULT;
+		return TAWC_EFAULT;
 	}
 
 	/* (4) Open /proc/self/exe so we can execveat ourselves with
@@ -174,7 +163,7 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 	                          O_RDONLY | O_CLOEXEC, 0);
 	if (exe_fd < 0) {
 		tawc_close((int)mfd);
-		return -TAWC_ENOEXEC;
+		return TAWC_ENOEXEC;
 	}
 
 	/* (5) Build the new argv: ["tawcroot", "--exec-child", "<fdstr>"]. */
@@ -182,7 +171,7 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 	if (u_to_str((unsigned long)mfd, fdstr, sizeof fdstr) == 0) {
 		tawc_close((int)exe_fd);
 		tawc_close((int)mfd);
-		return -TAWC_EFAULT;
+		return TAWC_EFAULT;
 	}
 
 	char arg0[] = "tawcroot";

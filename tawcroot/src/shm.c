@@ -19,43 +19,14 @@
 #include <stdint.h>
 
 #include <sys/stat.h>
-#include <linux/stat.h>
 
+#include "errno_neg.h"
 #include "fdtab.h"
 #include "io.h"
 #include "raw_sys.h"
 #include "shm.h"
 #include "sysnr.h"
-
-#define EEXIST_NEG       (-17)
-#define ENOENT_NEG       (-2)
-#define ENAMETOOLONG_NEG (-36)
-#define ENOSPC_NEG       (-28)
-#define EINVAL_NEG       (-22)
-
-#ifndef MFD_ALLOW_SEALING
-# define MFD_ALLOW_SEALING 0x0002
-#endif
-
-#ifndef O_CREAT
-# define O_CREAT  0x40
-#endif
-#ifndef O_EXCL
-# define O_EXCL   0x80
-#endif
-#ifndef O_TRUNC
-# define O_TRUNC  0x200
-#endif
-#ifndef O_CLOEXEC
-# define O_CLOEXEC 0x80000
-#endif
-
-#ifndef F_DUPFD
-# define F_DUPFD          0
-#endif
-#ifndef F_DUPFD_CLOEXEC
-# define F_DUPFD_CLOEXEC  1030
-#endif
+#include "tawc_uapi.h"
 
 _Static_assert(__atomic_always_lock_free(sizeof(int), 0),
 	       "int atomics must be lock-free for AS-safety");
@@ -157,10 +128,10 @@ static void add_to_reserved_list(int fd)
 long tawcroot_shm_open(const char *name, int flags, int mode)
 {
 	(void)mode;
-	if (!name || name[0] == 0) return EINVAL_NEG;
+	if (!name || name[0] == 0) return TAWC_EINVAL;
 	size_t nlen = 0;
 	while (name[nlen]) nlen++;
-	if (nlen > TAWCROOT_SHM_NAME_MAX) return ENAMETOOLONG_NEG;
+	if (nlen > TAWCROOT_SHM_NAME_MAX) return TAWC_ENAMETOOLONG;
 
 	int has_create = (flags & O_CREAT)   != 0;
 	int has_excl   = (flags & O_EXCL)    != 0;
@@ -174,7 +145,7 @@ long tawcroot_shm_open(const char *name, int flags, int mode)
 	if (e) {
 		if (has_create && has_excl) {
 			shm_unlock();
-			return EEXIST_NEG;
+			return TAWC_EEXIST;
 		}
 		/* Dup a guest-facing fd from the internal fd UNDER THE LOCK
 		 * so a concurrent unlink+create-different-name can't recycle
@@ -187,12 +158,12 @@ long tawcroot_shm_open(const char *name, int flags, int mode)
 	} else {
 		if (!has_create) {
 			shm_unlock();
-			return ENOENT_NEG;
+			return TAWC_ENOENT;
 		}
 		struct tawcroot_shm_entry *slot = find_free_locked();
 		if (!slot) {
 			shm_unlock();
-			return ENOSPC_NEG;
+			return TAWC_ENOSPC;
 		}
 
 		/* Hold the lock across create + the dup-for-guest so a racing
@@ -242,13 +213,13 @@ long tawcroot_shm_open(const char *name, int flags, int mode)
 
 long tawcroot_shm_unlink(const char *name)
 {
-	if (!name || name[0] == 0) return EINVAL_NEG;
+	if (!name || name[0] == 0) return TAWC_EINVAL;
 	int internal_fd = -1;
 	shm_lock();
 	struct tawcroot_shm_entry *e = find_entry_locked(name);
 	if (!e) {
 		shm_unlock();
-		return ENOENT_NEG;
+		return TAWC_ENOENT;
 	}
 	internal_fd = e->fd;
 	e->in_use = 0;
@@ -269,31 +240,6 @@ long tawcroot_shm_unlink(const char *name)
 
 /* ---------- stat / statx synthesis ---------- */
 
-#ifndef S_IFDIR
-# define S_IFDIR  0040000
-#endif
-#ifndef S_IFREG
-# define S_IFREG  0100000
-#endif
-
-#ifndef STATX_TYPE
-# define STATX_TYPE   0x00000001U
-#endif
-#ifndef STATX_MODE
-# define STATX_MODE   0x00000002U
-#endif
-#ifndef STATX_NLINK
-# define STATX_NLINK  0x00000004U
-#endif
-#ifndef STATX_UID
-# define STATX_UID    0x00000080U
-#endif
-#ifndef STATX_GID
-# define STATX_GID    0x00000100U
-#endif
-#ifndef STATX_SIZE
-# define STATX_SIZE   0x00000200U
-#endif
 
 static void zero_stat(struct stat *out)
 {
@@ -330,16 +276,16 @@ void tawcroot_shm_statx_dir(struct statx *out, unsigned int mask)
 
 long tawcroot_shm_stat_name(const char *name, struct stat *out)
 {
-	if (!name) return EINVAL_NEG;
+	if (!name) return TAWC_EINVAL;
 	shm_lock();
 	struct tawcroot_shm_entry *e = find_entry_locked(name);
 	int fd = e ? e->fd : -1;
 	shm_unlock();
-	if (fd < 0) return ENOENT_NEG;
+	if (fd < 0) return TAWC_ENOENT;
 
 	zero_stat(out);
 	long rv = TAWC_RAW(TAWC_SYS_fstatat, fd, (long)"", (long)out,
-			   0x1000 /*AT_EMPTY_PATH*/, 0, 0);
+			   AT_EMPTY_PATH, 0, 0);
 	if (rv < 0) return rv;
 	out->st_mode = S_IFREG | 0600;
 	out->st_uid = 0;
@@ -350,16 +296,16 @@ long tawcroot_shm_stat_name(const char *name, struct stat *out)
 long tawcroot_shm_statx_name(const char *name, struct statx *out,
 			     unsigned int mask)
 {
-	if (!name) return EINVAL_NEG;
+	if (!name) return TAWC_EINVAL;
 	shm_lock();
 	struct tawcroot_shm_entry *e = find_entry_locked(name);
 	int fd = e ? e->fd : -1;
 	shm_unlock();
-	if (fd < 0) return ENOENT_NEG;
+	if (fd < 0) return TAWC_ENOENT;
 
 	zero_statx(out);
 	long rv = TAWC_RAW(TAWC_SYS_statx, fd, (long)"",
-			   0x1000 /*AT_EMPTY_PATH*/, mask, (long)out, 0);
+			   AT_EMPTY_PATH, mask, (long)out, 0);
 	if (rv < 0) return rv;
 	out->stx_mode = (uint16_t)(S_IFREG | 0600);
 	out->stx_uid = 0;
@@ -375,12 +321,12 @@ long tawcroot_shm_access_dir(void)
 
 long tawcroot_shm_access_name(const char *name)
 {
-	if (!name) return EINVAL_NEG;
+	if (!name) return TAWC_EINVAL;
 	shm_lock();
 	struct tawcroot_shm_entry *e = find_entry_locked(name);
 	int present = (e != 0);
 	shm_unlock();
-	return present ? 0 : ENOENT_NEG;
+	return present ? 0 : TAWC_ENOENT;
 }
 
 /* ---------- exec_state ferry ---------- */
@@ -402,20 +348,20 @@ size_t tawcroot_shm_export_all(const char **names_out, int *fds_out,
 
 long tawcroot_shm_register(const char *name, int fd)
 {
-	if (!name || name[0] == 0 || fd < 0) return EINVAL_NEG;
+	if (!name || name[0] == 0 || fd < 0) return TAWC_EINVAL;
 	size_t nlen = 0;
 	while (name[nlen]) nlen++;
-	if (nlen > TAWCROOT_SHM_NAME_MAX) return ENAMETOOLONG_NEG;
+	if (nlen > TAWCROOT_SHM_NAME_MAX) return TAWC_ENAMETOOLONG;
 
 	shm_lock();
 	if (find_entry_locked(name)) {
 		shm_unlock();
-		return EEXIST_NEG;
+		return TAWC_EEXIST;
 	}
 	struct tawcroot_shm_entry *slot = find_free_locked();
 	if (!slot) {
 		shm_unlock();
-		return ENOSPC_NEG;
+		return TAWC_ENOSPC;
 	}
 	for (size_t i = 0; i < nlen; i++) slot->name[i] = name[i];
 	slot->name[nlen] = 0;

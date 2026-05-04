@@ -15,21 +15,10 @@
  */
 
 #include <stddef.h>
+#include "errno_neg.h"
 #include "io.h"
 #include "proc_rewrite.h"
-
-/* Errno constants we return as negated values. Centralized in a future
- * sweep (issues/tawcroot-errno-constants-not-centralized.md); inline
- * here for now to match the rest of the tree. */
-#define E_NOENT         2
-#define E_NAMETOOLONG  36
-#define E_NOSPC        28
-
-static int peq(const char *a, const char *b, size_t n)
-{
-	for (size_t i = 0; i < n; i++) if (a[i] != b[i]) return 0;
-	return 1;
-}
+#include "tawc_string.h"
 
 /* Test whether `host_path[0..host_len)` starts with `prefix[0..pl)` and
  * the byte after the prefix is either past-the-end or '/'. Returns the
@@ -38,7 +27,7 @@ static size_t match_host_prefix(const char *host_path, size_t host_len,
 				const char *prefix, size_t pl)
 {
 	if (pl == 0 || pl > host_len) return 0;
-	if (!peq(host_path, prefix, pl)) return 0;
+	if (memcmp(host_path, prefix, pl) != 0) return 0;
 	if (host_len > pl && host_path[pl] != '/') return 0;
 	return pl;
 }
@@ -54,7 +43,7 @@ static long emit(char *out, size_t out_cap,
 {
 	int    need_sep = (dst_len > 0 && rest_len > 0);
 	size_t need     = 1 + dst_len + (need_sep ? 1 : 0) + rest_len;
-	if (need + 1 > out_cap) return -E_NAMETOOLONG;
+	if (need + 1 > out_cap) return TAWC_ENAMETOOLONG;
 
 	size_t off = 0;
 	out[off++] = '/';
@@ -70,7 +59,7 @@ long tawcroot_proc_reverse_translate_path(
 	const char *host_path, size_t host_len,
 	char *out, size_t out_cap)
 {
-	if (!ctx || !host_path || !out || out_cap == 0) return -E_NOENT;
+	if (!ctx || !host_path || !out || out_cap == 0) return TAWC_ENOENT;
 
 	/* Bind first, longest-prefix-match. Bind src paths are authoritative
 	 * replacements for that subtree of the guest view; if a host mapping
@@ -105,7 +94,7 @@ long tawcroot_proc_reverse_translate_path(
 			    host_path + rest_off, host_len - rest_off);
 	}
 
-	return -E_NOENT;
+	return TAWC_ENOENT;
 }
 
 /* Find the start of the path field in a maps line.
@@ -146,7 +135,7 @@ static size_t find_path_offset(const char *line, size_t len)
 static long out_write(char *out, size_t out_cap, size_t *off,
 		      const char *src, size_t n)
 {
-	if (*off + n > out_cap) return -E_NOSPC;
+	if (*off + n > out_cap) return TAWC_ENOSPC;
 	for (size_t i = 0; i < n; i++) out[*off + i] = src[i];
 	*off += n;
 	return 0;
@@ -157,7 +146,7 @@ long tawcroot_proc_maps_rewrite(
 	const char *in, size_t in_len,
 	char *out, size_t out_cap)
 {
-	if (!ctx || !in || !out) return -E_NOSPC;
+	if (!ctx || !in || !out) return TAWC_ENOSPC;
 
 	size_t out_off = 0;
 	size_t i       = 0;

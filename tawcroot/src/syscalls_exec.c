@@ -29,13 +29,12 @@
 
 #include "arch.h"
 #include "dispatch.h"
+#include "errno_neg.h"
 #include "exec_handler.h"
 #include "raw_sys.h"
+#include "syscalls_exec.h"
+#include "tawc_uapi.h"
 #include "usercopy.h"
-
-#define TAWC_E2BIG    7
-#define TAWC_EFAULT  14
-#define TAWC_EINVAL  22
 
 #define MAX_ARGS     256
 #define MAX_ENV      256
@@ -68,12 +67,12 @@ static long collect_array(char *const *guest_arr,
                           char *strings, size_t strings_cap,
                           const char **ptrs, int cap)
 {
-	if (!guest_arr) return -TAWC_EFAULT;
+	if (!guest_arr) return TAWC_EFAULT;
 
 	size_t off = 0;
 	int i = 0;
 	for (;;) {
-		if (i >= cap) return -TAWC_E2BIG;
+		if (i >= cap) return TAWC_E2BIG;
 
 		/* Copy the pointer at guest_arr[i] into local p. */
 		uintptr_t p = 0;
@@ -87,7 +86,7 @@ static long collect_array(char *const *guest_arr,
 
 		/* Copy the string at p. */
 		size_t avail = strings_cap > off ? strings_cap - off : 0;
-		if (avail == 0) return -TAWC_E2BIG;
+		if (avail == 0) return TAWC_E2BIG;
 		size_t want = avail > MAX_STR ? MAX_STR : avail;
 		long n = tawc_copy_string_from_guest(strings + off, want,
 		                                     (const char *)p);
@@ -105,7 +104,7 @@ static long collect_array(char *const *guest_arr,
 static long do_exec(const void *guest_path,
                     char *const *guest_argv, char *const *guest_envp)
 {
-	if (!guest_path) return -TAWC_EFAULT;
+	if (!guest_path) return TAWC_EFAULT;
 
 	/* Path. */
 	static char path_buf[MAX_STR];
@@ -159,7 +158,7 @@ static long handle_execveat(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
 	int dirfd = (int)args->a;
-	if (dirfd != -100 /*AT_FDCWD*/) return -38 /* ENOSYS */;
+	if (dirfd != AT_FDCWD) return TAWC_ENOSYS;
 	return do_exec((const void *)args->b, (char *const *)args->c,
 	               (char *const *)args->d);
 }

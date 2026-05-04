@@ -26,14 +26,12 @@
 #include <ucontext.h>
 
 #include "dispatch.h"
+#include "errno_neg.h"
 #include "raw_sys.h"
 #include "signal_shadow.h"
+#include "syscalls_control.h"
 #include "sysnr.h"
 #include "usercopy.h"
-
-#define EPERM_NEG  (-1)
-#define EINVAL_NEG (-22)
-#define EFAULT_NEG (-14)
 
 #ifndef PR_GET_SECCOMP
 # define PR_GET_SECCOMP 21
@@ -122,7 +120,7 @@ static long fake_eperm(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)args;
 	(void)uc;
-	return EPERM_NEG;
+	return TAWC_EPERM;
 }
 
 /* io_uring_setup: deny with -ENOSYS so guest libraries fall back to
@@ -138,7 +136,7 @@ static long handle_io_uring_setup(const tawcroot_syscall_args *args,
 {
 	(void)args;
 	(void)uc;
-	return -38;  /* ENOSYS */
+	return TAWC_ENOSYS;
 }
 
 /* clone3: deny with -ENOSYS so glibc's __clone falls back to the
@@ -160,7 +158,7 @@ static long handle_clone3(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)args;
 	(void)uc;
-	return -38;  /* ENOSYS */
+	return TAWC_ENOSYS;
 }
 
 
@@ -191,7 +189,7 @@ static long handle_rt_sigaction(const tawcroot_syscall_args *args,
 				args->c, args->d, 0, 0);
 	}
 
-	if (sigsetsize != 8) return EINVAL_NEG;
+	if (sigsetsize != 8) return TAWC_EINVAL;
 
 	/* Read the guest's new action into a stack-local buffer FIRST so
 	 * we know whether the call would have succeeded before exposing
@@ -200,7 +198,7 @@ static long handle_rt_sigaction(const tawcroot_syscall_args *args,
 	int have_incoming = 0;
 	if (act) {
 		long e = tawc_copy_from_guest(incoming, sizeof incoming, act);
-		if (e < 0) return EFAULT_NEG;
+		if (e < 0) return TAWC_EFAULT;
 		have_incoming = 1;
 	}
 
@@ -208,7 +206,7 @@ static long handle_rt_sigaction(const tawcroot_syscall_args *args,
 		unsigned char snap[TAWC_KERN_SIGACTION_SIZE];
 		tawc_sigshadow_action_get(snap);
 		long e = tawc_copy_to_guest(oldact, snap, sizeof snap);
-		if (e < 0) return EFAULT_NEG;
+		if (e < 0) return TAWC_EFAULT;
 	}
 
 	if (have_incoming)
@@ -245,7 +243,7 @@ static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 	void  *guest_oldset      = (void *)(uintptr_t)args->c;
 	size_t sigsetsize  = (size_t)args->d;
 
-	if (sigsetsize != 8) return EINVAL_NEG;
+	if (sigsetsize != 8) return TAWC_EINVAL;
 	/* No-op call (the kernel returns 0 immediately for this shape).
 	 * Short-circuit before issuing gettid + a shadow table probe. */
 	if (!guest_set && !guest_oldset) return 0;
@@ -254,7 +252,7 @@ static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 	int have_set = 0;
 	if (guest_set) {
 		long e = tawc_copy_from_guest(&set_val, 8, guest_set);
-		if (e < 0) return EFAULT_NEG;
+		if (e < 0) return TAWC_EFAULT;
 		have_set = 1;
 	}
 
@@ -287,7 +285,7 @@ static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 			new_blocked = sigsys_in_set;
 			break;
 		default:
-			return EINVAL_NEG;
+			return TAWC_EINVAL;
 		}
 	}
 
@@ -300,7 +298,7 @@ static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 			 * Shadow doesn't need rollback — we haven't
 			 * published `new_blocked` yet. */
 			if (have_set) *kmask = cur_kmask;
-			return EFAULT_NEG;
+			return TAWC_EFAULT;
 		}
 	}
 	if (have_set && new_blocked != prev_blocked)

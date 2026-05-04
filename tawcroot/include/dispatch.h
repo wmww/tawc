@@ -47,12 +47,3 @@ void tawcroot_dispatch_init(void);
  * the dispatch table was built) and return the count. The list is the
  * union of "every syscall with a non-NULL dispatch slot". */
 size_t tawcroot_dispatch_trap_list(int *out, size_t out_cap);
-
-/* Per-syscall-group registrars — exposed so dispatch_init can list them
- * explicitly rather than through a constructor mechanism we don't have. */
-void tawcroot_identity_register(void);
-void tawcroot_fs_register(void);
-void tawcroot_fd_register(void);
-void tawcroot_control_register(void);
-void tawcroot_exec_register(void);
-void tawcroot_socket_register(void);

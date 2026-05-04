@@ -161,7 +161,7 @@ static struct tawc_loader_io mock_io = {
 test(placement_et_exec_covers_only_loaded_range)
 {
 	/* Two PT_LOADs with filesz/memsz aligned to page size — no BSS,
-	 * so the mapper never calls zero_range on the (un-backed) addresses
+	 * so the mapper never calls memset on the (un-backed) addresses
 	 * the recording mock io hands out. */
 	tawc_elf64_phdr ph[2];
 	memset(ph, 0, sizeof ph);

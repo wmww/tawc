@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "errno_neg.h"
 #include "fdtab.h"
 #include "io.h"
 #include "path.h"
@@ -35,9 +36,7 @@
 #include "path_orchestrate.h"
 #include "path_resolve.h"
 #include "raw_sys.h"
-/* Per-arch O_DIRECTORY / O_NOFOLLOW values — see syscalls_fs.c for
- * why hand-pinning the x86_64 numbers silently breaks aarch64. */
-#include <linux/fcntl.h>
+#include "tawc_uapi.h"
 
 #define TAWC_PATH_MAX 4096
 
@@ -75,7 +74,7 @@ void tawcroot_path_probe_openat2(void)
 	how.flags   = 0x200000 /*O_PATH*/ | 0x80000 /*O_CLOEXEC*/;
 	how.mode    = 0;
 	how.resolve = TAWC_RESOLVE_IN_ROOT;
-	long fd = tawc_openat2(-100 /*AT_FDCWD*/, "/", &how, sizeof how);
+	long fd = tawc_openat2(AT_FDCWD, "/", &how, sizeof how);
 	if (fd >= 0) {
 		tawcroot_openat2_works = 1;
 		(void)TAWC_RAW(TAWC_SYS_close, fd, 0, 0, 0, 0, 0);
@@ -148,7 +147,7 @@ void tawcroot_path_memoize_well_known(void)
 
 long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
 {
-	if (tawcroot_n_binds >= TAWCROOT_MAX_BINDS) return -28;  /* ENOSPC */
+	if (tawcroot_n_binds >= TAWCROOT_MAX_BINDS) return TAWC_ENOSPC;
 	struct tawcroot_bind *b = &tawcroot_binds[tawcroot_n_binds];
 
 	/* Strip leading '/' from dst. Empty after stripping means root,
@@ -157,10 +156,10 @@ long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
 	const char *d = dst_guest;
 	while (*d == '/') d++;
 	size_t n = 0; while (d[n]) n++;
-	if (n == 0) return -22;  /* EINVAL */
-	if (n + 1 > sizeof b->dst) return -36; /* ENAMETOOLONG */
+	if (n == 0) return TAWC_EINVAL;
+	if (n + 1 > sizeof b->dst) return TAWC_ENAMETOOLONG;
 
-	long fd = tawc_openat(-100 /*AT_FDCWD*/, src_host,
+	long fd = tawc_openat(AT_FDCWD, src_host,
 			      O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
 	if (fd < 0) return fd;
 
@@ -202,8 +201,8 @@ static long prod_readlink(void *ctx, const char *suffix,
 			  char *out, size_t out_cap)
 {
 	(void)ctx;
-	if (!suffix || suffix[0] == 0) return -22;  /* -EINVAL */
-	if (tawcroot_rootfs_fd < 0)    return -9;   /* -EBADF */
+	if (!suffix || suffix[0] == 0) return TAWC_EINVAL;
+	if (tawcroot_rootfs_fd < 0)    return TAWC_EBADF;
 	long n = TAWC_RAW(TAWC_SYS_readlinkat, tawcroot_rootfs_fd,
 			  (long)suffix, (long)out, (long)out_cap, 0, 0);
 	return n;
@@ -222,13 +221,13 @@ static const struct tawcroot_path_oracle prod_oracle = {
 static long prod_cwd_to_guest_abs(void *ctx, char *out, size_t out_cap)
 {
 	(void)ctx;
-	if (tawcroot_rootfs_host_path_len == 0) return -2;
+	if (tawcroot_rootfs_host_path_len == 0) return TAWC_ENOENT;
 
 	char cwd[TAWC_PATH_MAX];
 	long r = TAWC_RAW(TAWC_SYS_getcwd, (long)cwd, (long)sizeof cwd,
 			  0, 0, 0, 0);
 	if (r < 0) return r;
-	if ((size_t)r == 0) return -2;
+	if ((size_t)r == 0) return TAWC_ENOENT;
 
 	/* getcwd returns the length INCLUDING the NUL on aarch64+x86_64
 	 * Linux. Older kernels may return without NUL — the manpage is
@@ -240,21 +239,21 @@ static long prod_cwd_to_guest_abs(void *ctx, char *out, size_t out_cap)
 	 * boundary requirement on the next byte so a sibling whose name
 	 * happens to share the rootfs prefix (e.g. rootfs="/tmp/rfs"
 	 * vs. cwd="/tmp/rfs-evil/x") doesn't count as inside. */
-	if (cwd_len < tawcroot_rootfs_host_path_len) return -2;
+	if (cwd_len < tawcroot_rootfs_host_path_len) return TAWC_ENOENT;
 	for (size_t i = 0; i < tawcroot_rootfs_host_path_len; i++) {
-		if (cwd[i] != tawcroot_rootfs_host_path[i]) return -2;
+		if (cwd[i] != tawcroot_rootfs_host_path[i]) return TAWC_ENOENT;
 	}
 	if (cwd_len > tawcroot_rootfs_host_path_len &&
-	    cwd[tawcroot_rootfs_host_path_len] != '/') return -2;
+	    cwd[tawcroot_rootfs_host_path_len] != '/') return TAWC_ENOENT;
 
 	/* Write the guest-absolute view: drop the host prefix, keep the
 	 * leading '/' (or synthesize one if cwd IS the rootfs root). */
 	size_t off = 0;
-	if (off + 1 >= out_cap) return -36;
+	if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
 	out[off++] = '/';
 	for (size_t i = tawcroot_rootfs_host_path_len; i < cwd_len; i++) {
 		if (cwd[i] == '/' && i == tawcroot_rootfs_host_path_len) continue;
-		if (off + 1 >= out_cap) return -36;
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
 		out[off++] = cwd[i];
 	}
 	out[off] = 0;
@@ -273,11 +272,11 @@ tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 	r.base_fd = -1;
 
 	if (!guest_path || out_cap == 0) {
-		r.err = -14;  /* EFAULT */
+		r.err = TAWC_EFAULT;
 		return r;
 	}
 	if (tawcroot_rootfs_fd < 0) {
-		r.err = -2;
+		r.err = TAWC_ENOENT;
 		return r;
 	}
 

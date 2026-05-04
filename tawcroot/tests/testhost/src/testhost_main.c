@@ -24,23 +24,10 @@
 #include "child.h"
 #include "smoke.h"
 #include "phase1.h"
+#include "tawc_uapi.h"
 
-#include <linux/memfd.h>
-
-#ifndef MFD_CLOEXEC
-# define MFD_CLOEXEC 0x0001
-#endif
-#ifndef F_GETFD
-# define F_GETFD 1
-#endif
-#ifndef F_SETFD
-# define F_SETFD 2
-#endif
 #ifndef FD_CLOEXEC
 # define FD_CLOEXEC 1
-#endif
-#ifndef AT_EMPTY_PATH
-# define AT_EMPTY_PATH 0x1000
 #endif
 
 extern char tawcroot_raw_syscall_insn[];
@@ -48,8 +35,7 @@ extern char tawcroot_raw_syscall_ret[];
 
 static long open_self_exe(void)
 {
-	return tawc_openat(-100 /*AT_FDCWD*/, "/proc/self/exe",
-			   0 /*O_RDONLY*/, 0);
+	return tawc_openat(AT_FDCWD, "/proc/self/exe", O_RDONLY, 0);
 }
 
 static int parent_main(int argc, char **argv)

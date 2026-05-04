@@ -30,6 +30,7 @@
 #include "io.h"
 #include "raw_sys.h"
 #include "dispatch.h"
+#include "errno_neg.h"
 #include "usercopy.h"
 
 /* Match kernel `struct sigaction` layout — bionic's struct is the same
@@ -114,7 +115,7 @@ static void sigsys_handler(int sig, siginfo_t *info, void *ucontext)
 	if (fn) {
 		rv = fn(&args, uc);
 	} else {
-		rv = -38;  /* ENOSYS */
+		rv = TAWC_ENOSYS;
 	}
 #ifdef TAWCROOT_TRACE
 	{

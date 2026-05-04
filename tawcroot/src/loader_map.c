@@ -14,20 +14,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "errno_neg.h"
 #include "loader_map.h"
-
-/* errno values matching Linux uapi. */
-#define TAWC_EINVAL    22
-#define TAWC_ENOENT    2
-#define TAWC_ERANGE    34
-
-/* tawc_strings.h not pulled in — we don't need any string ops here.
- * memset for BSS partial-page is open-coded below. */
-static void zero_range(void *p, size_t n)
-{
-	uint8_t *b = (uint8_t *)p;
-	for (size_t i = 0; i < n; i++) b[i] = 0;
-}
+#include "tawc_string.h"
 
 static int loader_prot_to_mmap(unsigned p)
 {
@@ -76,11 +65,11 @@ long tawc_loader_map(const struct tawc_loader_image *img,
                      struct tawc_loader_placement *out)
 {
 	if (!img || !io || !out || !io->mmap || !io->mprotect || !io->munmap)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 	if (img->n_loads == 0)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 	if (page_size < 4096 || (page_size & (page_size - 1)))
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 
 	const int is_dyn = (img->e_type == TAWC_ET_DYN);
 	uintptr_t base = 0;
@@ -141,8 +130,8 @@ long tawc_loader_map(const struct tawc_loader_image *img,
 		/* (b) BSS partial-page zero-fill. Only if there's something
 		 * to clear AND the file mapping covered it. */
 		if (has_partial && s->file_size > 0) {
-			zero_range((void *)(base + s->bss_partial_lo),
-			           s->bss_partial_hi - s->bss_partial_lo);
+			memset((void *)(base + s->bss_partial_lo), 0,
+			       s->bss_partial_hi - s->bss_partial_lo);
 		}
 
 		/* (c) Drop the temporary write bit if we added one. */
@@ -201,7 +190,7 @@ long tawc_loader_map(const struct tawc_loader_image *img,
 long tawc_loader_unmap(const struct tawc_loader_placement *placement,
                        const struct tawc_loader_io *io)
 {
-	if (!placement || !io || !io->munmap) return -TAWC_EINVAL;
+	if (!placement || !io || !io->munmap) return TAWC_EINVAL;
 	if (placement->span == 0) return 0;
 	return io->munmap(io->ctx, (void *)placement->base, placement->span);
 }
@@ -210,15 +199,15 @@ long tawc_loader_read_interp(int fd, const struct tawc_loader_image *img,
                              char *out_path, size_t out_cap,
                              const struct tawc_loader_io *io)
 {
-	if (!img || !out_path || !io || !io->pread) return -TAWC_EINVAL;
-	if (!img->interp_present) return -TAWC_ENOENT;
-	if (img->interp_size == 0) return -TAWC_EINVAL;
-	if (img->interp_size > out_cap) return -TAWC_ERANGE;
+	if (!img || !out_path || !io || !io->pread) return TAWC_EINVAL;
+	if (!img->interp_present) return TAWC_ENOENT;
+	if (img->interp_size == 0) return TAWC_EINVAL;
+	if (img->interp_size > out_cap) return TAWC_ERANGE;
 
 	long n = io->pread(io->ctx, fd, out_path, img->interp_size,
 	                   img->interp_offset);
 	if (n < 0) return n;
-	if ((uint64_t)n != img->interp_size) return -TAWC_EINVAL;
+	if ((uint64_t)n != img->interp_size) return TAWC_EINVAL;
 	/* PT_INTERP includes a trailing NUL; sanity-check that it does and
 	 * also defensively NUL-terminate at out_cap-1 in case the binary
 	 * lies. */

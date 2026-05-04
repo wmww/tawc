@@ -25,6 +25,7 @@
 
 #include <stddef.h>
 
+#include "errno_neg.h"
 #include "path.h"
 #include "path_oracle.h"
 #include "path_resolve.h"
@@ -34,11 +35,6 @@
 /* Linux's SYMLOOP_MAX is 40. Match it so an in-rootfs chain of
  * symlinks fails identically to a no-tawcroot equivalent. */
 #define TAWC_SYMLOOP_MAX 40
-
-#define TAWC_ENOENT         2
-#define TAWC_EINVAL        22
-#define TAWC_ENAMETOOLONG  36
-#define TAWC_ELOOP         40
 
 static size_t rstrlen(const char *s)
 {
@@ -66,7 +62,7 @@ static long splice_target(const char *suf, size_t suf_len,
 			  const char *target, size_t target_len,
 			  char *tmp, size_t tmp_cap)
 {
-	if (tmp_cap < 2) return -TAWC_ENAMETOOLONG;
+	if (tmp_cap < 2) return TAWC_ENAMETOOLONG;
 
 	size_t ti = 0;
 	int    absolute = (target_len > 0 && target[0] == '/');
@@ -80,11 +76,11 @@ static long splice_target(const char *suf, size_t suf_len,
 		size_t copy_len = comp_start;
 		while (copy_len > 0 && suf[copy_len - 1] == '/') copy_len--;
 		for (size_t k = 0; k < copy_len; k++) {
-			if (ti >= tmp_cap - 1) return -TAWC_ENAMETOOLONG;
+			if (ti >= tmp_cap - 1) return TAWC_ENAMETOOLONG;
 			tmp[ti++] = suf[k];
 		}
 		if (ti > 1) {
-			if (ti >= tmp_cap - 1) return -TAWC_ENAMETOOLONG;
+			if (ti >= tmp_cap - 1) return TAWC_ENAMETOOLONG;
 			tmp[ti++] = '/';
 		}
 	}
@@ -94,7 +90,7 @@ static long splice_target(const char *suf, size_t suf_len,
 	size_t target_off = absolute ? 1 : 0;
 	while (target_off < target_len && target[target_off] == '/') target_off++;
 	for (size_t k = target_off; k < target_len; k++) {
-		if (ti >= tmp_cap - 1) return -TAWC_ENAMETOOLONG;
+		if (ti >= tmp_cap - 1) return TAWC_ENAMETOOLONG;
 		tmp[ti++] = target[k];
 	}
 
@@ -102,11 +98,11 @@ static long splice_target(const char *suf, size_t suf_len,
 	 * if the remainder doesn't already start with one. */
 	if (comp_end < suf_len) {
 		if (suf[comp_end] != '/') {
-			if (ti >= tmp_cap - 1) return -TAWC_ENAMETOOLONG;
+			if (ti >= tmp_cap - 1) return TAWC_ENAMETOOLONG;
 			tmp[ti++] = '/';
 		}
 		for (size_t k = comp_end; k < suf_len; k++) {
-			if (ti >= tmp_cap - 1) return -TAWC_ENAMETOOLONG;
+			if (ti >= tmp_cap - 1) return TAWC_ENAMETOOLONG;
 			tmp[ti++] = suf[k];
 		}
 	}
@@ -119,7 +115,7 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 				    tawcroot_path_mode mode,
 				    const struct tawcroot_path_oracle *oracle)
 {
-	if (!oracle || !oracle->readlink) return -TAWC_EINVAL;
+	if (!oracle || !oracle->readlink) return TAWC_EINVAL;
 
 	for (int hops = 0; hops < TAWC_SYMLOOP_MAX; hops++) {
 		size_t suf_len = rstrlen(suf);
@@ -159,11 +155,11 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 
 			suf[comp_end] = saved;
 
-			if (n == -TAWC_EINVAL) {
+			if (n == TAWC_EINVAL) {
 				/* Not a symlink. Walk into next component. */
 				continue;
 			}
-			if (n == -TAWC_ENOENT) {
+			if (n == TAWC_ENOENT) {
 				/* Component missing: stop with the resolved
 				 * prefix; the downstream syscall produces the
 				 * kernel-native error. */
@@ -184,7 +180,7 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 				 * be sure the bytes we have are the whole target.
 				 * Refuse rather than silently use a truncated
 				 * target the kernel won't agree with. */
-				return -TAWC_ENAMETOOLONG;
+				return TAWC_ENAMETOOLONG;
 			}
 			if (n == 0) {
 				/* Zero-length symlink target. Linux refuses to
@@ -194,7 +190,7 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 				 * the path would silently delete the component,
 				 * causing the syscall to land on the parent
 				 * directory or the next sibling. (Review B9.) */
-				return -TAWC_ENOENT;
+				return TAWC_ENOENT;
 			}
 			target[n] = 0;
 
@@ -215,5 +211,5 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 		if (!walked_symlink) return 0;
 	}
 
-	return -TAWC_ELOOP;
+	return TAWC_ELOOP;
 }

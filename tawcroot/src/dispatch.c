@@ -9,8 +9,14 @@
 #include <stddef.h>
 
 #include "dispatch.h"
+#include "fdtab.h"
+#include "identity.h"
 #include "io.h"
 #include "raw_sys.h"
+#include "syscalls_control.h"
+#include "syscalls_exec.h"
+#include "syscalls_fs.h"
+#include "syscalls_socket.h"
 
 static tawcroot_handler_fn g_dispatch[TAWCROOT_DISPATCH_MAX];
 

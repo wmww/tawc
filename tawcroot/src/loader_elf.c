@@ -5,13 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "errno_neg.h"
 #include "loader_elf.h"
-
-/* errno values we return as -errno. We don't include <errno.h> to keep
- * this file freestanding-clean; values match Linux uapi. */
-#define TAWC_EINVAL    22
-#define TAWC_ENOEXEC   8
-#define TAWC_E2BIG     7
 
 /* ELF identification bytes */
 #define EI_MAG0        0
@@ -52,7 +47,7 @@ long tawc_loader_parse_ehdr(const void *buf, size_t buf_len,
                             struct tawc_loader_image *out)
 {
 	if (!buf || !out || buf_len < sizeof(tawc_elf64_ehdr))
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 
 	const tawc_elf64_ehdr *eh = (const tawc_elf64_ehdr *)buf;
 
@@ -60,30 +55,30 @@ long tawc_loader_parse_ehdr(const void *buf, size_t buf_len,
 	    eh->e_ident[EI_MAG1] != 'E'  ||
 	    eh->e_ident[EI_MAG2] != 'L'  ||
 	    eh->e_ident[EI_MAG3] != 'F')
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 
 	if (eh->e_ident[EI_CLASS] != ELFCLASS64)
-		return -TAWC_ENOEXEC;
+		return TAWC_ENOEXEC;
 	if (eh->e_ident[EI_DATA] != ELFDATA2LSB)
-		return -TAWC_ENOEXEC;
+		return TAWC_ENOEXEC;
 	if (eh->e_ident[EI_VERSION] != EV_CURRENT || eh->e_version != EV_CURRENT)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 
 	if (eh->e_type != TAWC_ET_EXEC && eh->e_type != TAWC_ET_DYN)
-		return -TAWC_ENOEXEC;
+		return TAWC_ENOEXEC;
 
 	if (eh->e_machine != TAWC_EM_X86_64 && eh->e_machine != TAWC_EM_AARCH64)
-		return -TAWC_ENOEXEC;
+		return TAWC_ENOEXEC;
 
 	if (eh->e_phentsize != sizeof(tawc_elf64_phdr))
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 	if (eh->e_phnum == 0)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 	/* PHDRs must fit somewhere reasonable; the caller is responsible
 	 * for reading them out of the file, but we sanity-check that
 	 * phoff is plausible. */
 	if (eh->e_phoff < sizeof(tawc_elf64_ehdr))
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 
 	out->e_type      = eh->e_type;
 	out->e_machine   = eh->e_machine;
@@ -154,11 +149,11 @@ long tawc_loader_parse_phdrs(const void *phdr_buf, size_t phdr_buf_len,
                              struct tawc_loader_image *img)
 {
 	if (!phdr_buf || !img)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 	if (!is_pow2(page_size) || page_size < 4096)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 	if (phdr_buf_len < (size_t)img->e_phnum * img->e_phentsize)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 
 	zero_image_tail(img);
 
@@ -172,16 +167,16 @@ long tawc_loader_parse_phdrs(const void *phdr_buf, size_t phdr_buf_len,
 		switch (ph->p_type) {
 		case TAWC_PT_LOAD: {
 			if (ph->p_filesz > ph->p_memsz)
-				return -TAWC_EINVAL;
+				return TAWC_EINVAL;
 			if (ph->p_memsz == 0)
 				continue; /* empty PT_LOAD: ignore (linkers occasionally emit) */
 			if (!is_pow2(ph->p_align) || ph->p_align < page_size)
-				return -TAWC_EINVAL;
+				return TAWC_EINVAL;
 			if ((ph->p_offset & (page_size - 1)) !=
 			    (ph->p_vaddr  & (page_size - 1)))
-				return -TAWC_EINVAL;
+				return TAWC_EINVAL;
 			if (n_loads >= TAWC_LOADER_MAX_LOADS)
-				return -TAWC_E2BIG;
+				return TAWC_E2BIG;
 
 			tawc_loader_seg_layout(ph->p_vaddr, ph->p_filesz,
 			                       ph->p_memsz, ph->p_offset,
@@ -193,7 +188,7 @@ long tawc_loader_parse_phdrs(const void *phdr_buf, size_t phdr_buf_len,
 		}
 		case TAWC_PT_INTERP:
 			if (ph->p_filesz == 0 || ph->p_filesz > 4096)
-				return -TAWC_EINVAL;
+				return TAWC_EINVAL;
 			img->interp_present = 1;
 			img->interp_offset  = ph->p_offset;
 			img->interp_size    = ph->p_filesz;
@@ -213,7 +208,7 @@ long tawc_loader_parse_phdrs(const void *phdr_buf, size_t phdr_buf_len,
 	}
 
 	if (n_loads == 0)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 
 	/* Insertion-sort PT_LOADs by p_vaddr. n_loads ≤ 16, so O(n²) is
 	 * trivial; this lets the mapper walk in address order without
@@ -233,7 +228,7 @@ long tawc_loader_parse_phdrs(const void *phdr_buf, size_t phdr_buf_len,
 	 * alignment must not overlap. */
 	for (unsigned i = 1; i < n_loads; i++) {
 		if (img->loads[i].vaddr_lo < img->loads[i - 1].vaddr_memhi)
-			return -TAWC_EINVAL;
+			return TAWC_EINVAL;
 	}
 
 	img->n_loads = n_loads;

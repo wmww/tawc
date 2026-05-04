@@ -18,26 +18,18 @@
 
 #include "dirent_filter.h"
 #include "dispatch.h"
+#include "errno_neg.h"
 #include "fdtab.h"
 #include "raw_sys.h"
 #include "sysnr.h"
-
-#define EBADF_NEG  (-9)
-#define EINVAL_NEG (-22)
-
-#ifndef F_DUPFD
-# define F_DUPFD          0
-#endif
-#ifndef F_DUPFD_CLOEXEC
-# define F_DUPFD_CLOEXEC  1030
-#endif
+#include "tawc_uapi.h"
 
 int    tawcroot_reserved_fds[TAWCROOT_MAX_RESERVED_FDS];
 size_t tawcroot_n_reserved_fds;
 
 long tawcroot_fd_reserve(int fd)
 {
-	if (fd < 0) return EBADF_NEG;
+	if (fd < 0) return TAWC_EBADF;
 	long r = tawc_fcntl(fd, F_DUPFD_CLOEXEC, TAWCROOT_RESERVED_FD_BASE);
 	if (r < 0) return r;
 	tawc_close(fd);
@@ -89,7 +81,7 @@ static long handle_dup(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
 	int oldfd = (int)args->a;
-	if (tawcroot_fd_is_reserved(oldfd)) return EBADF_NEG;
+	if (tawcroot_fd_is_reserved(oldfd)) return TAWC_EBADF;
 	return TAWC_RAW(TAWC_SYS_dup, oldfd, 0, 0, 0, 0, 0);
 }
 
@@ -100,7 +92,7 @@ static long handle_dup2(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int oldfd = (int)args->a;
 	int newfd = (int)args->b;
 	if (tawcroot_fd_is_reserved(oldfd) ||
-	    tawcroot_fd_is_reserved(newfd)) return EBADF_NEG;
+	    tawcroot_fd_is_reserved(newfd)) return TAWC_EBADF;
 	return TAWC_RAW(TAWC_SYS_dup2, oldfd, newfd, 0, 0, 0, 0);
 }
 #endif
@@ -112,7 +104,7 @@ static long handle_dup3(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int newfd = (int)args->b;
 	int flags = (int)args->c;
 	if (tawcroot_fd_is_reserved(oldfd) ||
-	    tawcroot_fd_is_reserved(newfd)) return EBADF_NEG;
+	    tawcroot_fd_is_reserved(newfd)) return TAWC_EBADF;
 	return TAWC_RAW(TAWC_SYS_dup3, oldfd, newfd, flags, 0, 0, 0);
 }
 
@@ -122,7 +114,7 @@ static long handle_fcntl(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int fd  = (int)args->a;
 	int op  = (int)args->b;
 	long a3 = args->c;
-	if (tawcroot_fd_is_reserved(fd)) return EBADF_NEG;
+	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
 
 	/* F_DUPFD/F_DUPFD_CLOEXEC: cap the requested minimum at base-1 so
 	 * the kernel never lands the dup in our reserved range. The guest
@@ -194,7 +186,7 @@ static long handle_getdents64(const tawcroot_syscall_args *args,
 		}
 		self_path[off] = 0;
 	}
-	long ln = tawc_readlinkat(-100 /*AT_FDCWD*/, self_path,
+	long ln = tawc_readlinkat(AT_FDCWD, self_path,
 	                          proc_link, sizeof proc_link);
 	if (ln <= 0) return n;
 	if (!tawcroot_dirent_filter_is_proc_fd_link(proc_link, ln)) return n;

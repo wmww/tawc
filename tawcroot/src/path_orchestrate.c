@@ -27,21 +27,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "errno_neg.h"
 #include "io.h"
 #include "path.h"
 #include "path_oracle.h"
 #include "path_orchestrate.h"
 #include "path_resolve.h"
+#include "tawc_string.h"
 
 #define TAWC_PATH_MAX 4096
-
-/* Byte-equal n bytes. Inline-static instead of relying on `memcmp` so
- * we don't pull libc in production. */
-static int orch_memeq(const char *a, const char *b, size_t n)
-{
-	for (size_t i = 0; i < n; i++) if (a[i] != b[i]) return 0;
-	return 1;
-}
 
 /* Apply memoization to a folded suffix in place. Returns 1 if the
  * suffix changed (caller may want to re-fold), 0 otherwise.
@@ -62,7 +56,7 @@ static int apply_memo(char *suf, size_t cap, tawcroot_path_mode mode,
 	for (size_t i = 0; i < n_memos; i++) {
 		const struct tawcroot_symlink_memo *m = &memos[i];
 		if (m->src_len > suf_len) continue;
-		if (!orch_memeq(suf, m->src, m->src_len)) continue;
+		if (memcmp(suf, m->src, m->src_len) != 0) continue;
 		if (suf_len > m->src_len && suf[m->src_len] != '/') continue;
 		if (suf_len == m->src_len && mode != TAWCROOT_PATH_FOLLOW) {
 			continue;
@@ -113,7 +107,7 @@ static void route_through_binds(tawcroot_path_result *r, char *suf,
 	for (size_t i = 0; i < n_binds; i++) {
 		const struct tawcroot_bind *b = &binds[i];
 		if (b->dst_len > suf_len) continue;
-		if (!orch_memeq(suf, b->dst, b->dst_len)) continue;
+		if (memcmp(suf, b->dst, b->dst_len) != 0) continue;
 		if (suf_len > b->dst_len && suf[b->dst_len] != '/') continue;
 		if (!best || b->dst_len > best->dst_len) best = b;
 	}
@@ -138,15 +132,15 @@ static long join_cwd_rel(const char *cwd_abs, const char *rel,
 {
 	size_t off = 0;
 	for (size_t i = 0; cwd_abs[i]; i++) {
-		if (off + 1 >= out_cap) return -36;  /* ENAMETOOLONG */
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
 		out[off++] = cwd_abs[i];
 	}
 	if (off == 0 || out[off - 1] != '/') {
-		if (off + 1 >= out_cap) return -36;
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
 		out[off++] = '/';
 	}
 	for (size_t i = 0; rel[i]; i++) {
-		if (off + 1 >= out_cap) return -36;
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
 		out[off++] = rel[i];
 	}
 	out[off] = 0;
@@ -163,17 +157,17 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	r.base_fd = -1;
 
 	if (!ctx || !guest_path || !out_suffix || out_cap == 0) {
-		r.err = -14;  /* EFAULT */
+		r.err = TAWC_EFAULT;
 		return r;
 	}
 	r.base_fd = ctx->rootfs_base_fd;
 
 	if (guest_path[0] != '/') {
-		if (!ctx->cwd_to_guest_abs) { r.err = -2; return r; }
+		if (!ctx->cwd_to_guest_abs) { r.err = TAWC_ENOENT; return r; }
 		char cwd_abs[TAWC_PATH_MAX];
 		long cr = ctx->cwd_to_guest_abs(ctx->cwd_ctx, cwd_abs, sizeof cwd_abs);
 		if (cr < 0) { r.err = cr; return r; }
-		if (cwd_abs[0] != '/') { r.err = -2; return r; }
+		if (cwd_abs[0] != '/') { r.err = TAWC_ENOENT; return r; }
 
 		char joined[TAWC_PATH_MAX];
 		long jr = join_cwd_rel(cwd_abs, guest_path, joined, sizeof joined);

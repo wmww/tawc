@@ -26,33 +26,20 @@
 #include <stdint.h>
 
 #include <sys/stat.h>
-#include <linux/stat.h>
-/* Pull O_* flag values from the kernel's per-arch header. These differ
- * between aarch64 and x86_64 (O_NOFOLLOW = 0x8000 vs 0x20000, O_DIRECTORY
- * = 0x4000 vs 0x10000) — getting them wrong silently breaks O_NOFOLLOW
- * detection on aarch64, which makes the kernel follow symlink leaves and
- * the openat handler return ENOENT for any symlink whose absolute target
- * doesn't exist in the host's view (libarchive's lchmod fallback path
- * during pacman extraction). Don't define these constants by hand. */
-#include <linux/fcntl.h>
 
 #include "dispatch.h"
+#include "errno_neg.h"
 #include "io.h"
 #include "path.h"
 #include "proc_rewrite.h"
 #include "raw_sys.h"
 #include "shm.h"
+#include "syscalls_fs.h"
 #include "sysnr.h"
+#include "tawc_uapi.h"
 #include "usercopy.h"
 
 #define TAWC_PATH_MAX 4096
-
-#ifndef AT_EMPTY_PATH
-# define AT_EMPTY_PATH 0x1000
-#endif
-#ifndef AT_SYMLINK_NOFOLLOW
-# define AT_SYMLINK_NOFOLLOW 0x100
-#endif
 
 /* Peek the guest path to classify a possible `/dev/shm` intercept.
  *   0 = not shm (fall through to normal translation)
@@ -212,7 +199,7 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 	struct stat *out = (struct stat *)(uintptr_t)args->c;
 	int    flags = (int)args->d;
 
-	if (!out) return -14;  /* EFAULT */
+	if (!out) return TAWC_EFAULT;
 
 	struct stat local;
 
@@ -250,7 +237,7 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 		}
 	}
 
-	if (!gpath) return -14;
+	if (!gpath) return TAWC_EFAULT;
 
 	{
 		char shm_buf[320];
@@ -348,7 +335,7 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 				   int  *base_fd_out, int *use_empty_path,
 				   tawcroot_path_mode mode)
 {
-	if (dirfd != -100 /*AT_FDCWD*/) {
+	if (dirfd != AT_FDCWD) {
 		long n = tawc_copy_string_from_guest(path_buf, path_cap,
 		                                     guest_path);
 		if (n < 0) return n;
@@ -361,7 +348,7 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 				suffix[i] = path_buf[i];
 				i++;
 			}
-			if (i + 1 >= suffix_cap) return -36; /* ENAMETOOLONG */
+			if (i + 1 >= suffix_cap) return TAWC_ENAMETOOLONG;
 			suffix[i] = '\0';
 			*base_fd_out    = dirfd;
 			*use_empty_path = (suffix[0] == '\0');
@@ -441,11 +428,11 @@ static long open_proc_maps_shadow(void)
 				0x22 /*MAP_PRIVATE|MAP_ANONYMOUS*/,
 				-1, 0);
 	if (region < 0 && region > -4096) return region;
-	if (region == 0) return -12; /* ENOMEM — defensive */
+	if (region == 0) return TAWC_ENOMEM; /* defensive */
 	char *in_buf  = (char *)(uintptr_t)region;
 	char *out_buf = in_buf + MAPS_BUF_SIZE;
 
-	long src = tawc_openat(-100 /*AT_FDCWD*/, "/proc/self/maps",
+	long src = tawc_openat(AT_FDCWD, "/proc/self/maps",
 			       0 /*O_RDONLY*/ | 0x80000 /*O_CLOEXEC*/, 0);
 	if (src < 0) {
 		(void)tawc_munmap((void *)(uintptr_t)region, 2 * MAPS_BUF_SIZE);
@@ -517,7 +504,7 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	const char *gpath = (const char *)(uintptr_t)args->b;
 	char       *buf   = (char *)(uintptr_t)args->c;
 	int         size  = (int)args->d;
-	if (!gpath || !buf || size <= 0) return -14;
+	if (!gpath || !buf || size <= 0) return TAWC_EFAULT;
 
 	/* Phase 2e: synthesize /proc/self/exe from the stashed guest exe
 	 * path. The kernel's view points at libtawcroot.so; the guest
@@ -556,7 +543,7 @@ static long handle_faccessat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	const char *gpath = (const char *)(uintptr_t)args->b;
 	int mode  = (int)args->c;
 	int flags = (int)args->d;
-	if (!gpath) return -14;
+	if (!gpath) return TAWC_EFAULT;
 
 	{
 		char shm_buf[320];
@@ -597,7 +584,7 @@ static long handle_chdir(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
 	const char *gpath = (const char *)(uintptr_t)args->a;
-	if (!gpath) return -14;
+	if (!gpath) return TAWC_EFAULT;
 
 	char path_buf[TAWC_PATH_MAX];
 	char suffix[TAWC_PATH_MAX];
@@ -638,7 +625,7 @@ static long handle_getcwd(const tawcroot_syscall_args *args, ucontext_t *uc)
 	(void)uc;
 	char  *out = (char *)(uintptr_t)args->a;
 	size_t cap = (size_t)args->b;
-	if (!out || cap == 0) return -14;
+	if (!out || cap == 0) return TAWC_EFAULT;
 
 	char host[TAWC_PATH_MAX];
 	long r = TAWC_RAW(TAWC_SYS_getcwd, (long)host, (long)sizeof host,
@@ -650,14 +637,14 @@ static long handle_getcwd(const tawcroot_syscall_args *args, ucontext_t *uc)
 
 	extern char tawcroot_rootfs_host_path[4096];
 	extern size_t tawcroot_rootfs_host_path_len;
-	if (host_len < tawcroot_rootfs_host_path_len) return -2;
+	if (host_len < tawcroot_rootfs_host_path_len) return TAWC_ENOENT;
 	for (size_t i = 0; i < tawcroot_rootfs_host_path_len; i++)
-		if (host[i] != tawcroot_rootfs_host_path[i]) return -2;
+		if (host[i] != tawcroot_rootfs_host_path[i]) return TAWC_ENOENT;
 	/* Component-boundary check (review finding B4): a kernel cwd at
 	 * "<rootfs>-evil/x" byte-matches the rootfs prefix but is not
 	 * inside the view. Require end-of-string or `/` after the prefix. */
 	if (host_len > tawcroot_rootfs_host_path_len &&
-	    host[tawcroot_rootfs_host_path_len] != '/') return -2;
+	    host[tawcroot_rootfs_host_path_len] != '/') return TAWC_ENOENT;
 
 	/* Build "/<host[prefix:]>" into a stack-local buffer first, then
 	 * copy through the guarded helper. Writing directly into `out` was
@@ -666,11 +653,11 @@ static long handle_getcwd(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * contract: returns length INCLUDING the trailing NUL. */
 	char tmp[TAWC_PATH_MAX];
 	size_t off = 0;
-	if (off + 1 >= cap || off + 1 >= sizeof tmp) return -34; /* ERANGE */
+	if (off + 1 >= cap || off + 1 >= sizeof tmp) return TAWC_ERANGE;
 	tmp[off++] = '/';
 	for (size_t i = tawcroot_rootfs_host_path_len; i < host_len; i++) {
 		if (tmp[off - 1] == '/' && host[i] == '/') continue;
-		if (off + 1 >= cap || off + 1 >= sizeof tmp) return -34;
+		if (off + 1 >= cap || off + 1 >= sizeof tmp) return TAWC_ERANGE;
 		tmp[off++] = host[i];
 	}
 	tmp[off] = 0;
@@ -691,7 +678,7 @@ static long handle_##name(const tawcroot_syscall_args *args,             \
 	(void)uc;                                                         \
 	int dirfd = (int)args->a;                                         \
 	const char *gpath = (const char *)(uintptr_t)args->b;             \
-	if (!gpath) return -14;                                           \
+	if (!gpath) return TAWC_EFAULT;                                           \
 	char path_buf[TAWC_PATH_MAX];                                     \
 	char suffix[TAWC_PATH_MAX];                                       \
 	int  base_fd, use_empty;                                          \
@@ -720,17 +707,17 @@ static long handle_unlinkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int dirfd = (int)args->a;
 	const char *gpath = (const char *)(uintptr_t)args->b;
 	int flag = (int)args->c;
-	if (!gpath) return -14;
+	if (!gpath) return TAWC_EFAULT;
 
 	{
 		char shm_buf[320];
 		const char *shm_name;
 		int kind = peek_shm(gpath, shm_buf, sizeof shm_buf, &shm_name);
 		if (kind == SHM_PEEK_NAME) {
-			if (flag & 0x200 /*AT_REMOVEDIR*/) return -20;
+			if (flag & AT_REMOVEDIR) return TAWC_ENOTDIR;
 			return tawcroot_shm_unlink(shm_name);
 		}
-		if (kind == SHM_PEEK_DIR) return (flag & 0x200) ? -16 : -21;
+		if (kind == SHM_PEEK_DIR) return (flag & 0x200) ? TAWC_EBUSY : TAWC_EISDIR;
 	}
 
 	char path_buf[TAWC_PATH_MAX];
@@ -822,7 +809,7 @@ static long handle_symlinkat(const tawcroot_syscall_args *args,
 					&base_fd, &use_empty,
 					TAWCROOT_PATH_PARENT_CREATE);
 	if (e) return e;
-	if (use_empty) return -22; /* EINVAL — can't create / */
+	if (use_empty) return TAWC_EINVAL; /* can't create / */
 	return TAWC_RAW(TAWC_SYS_symlinkat, (long)target, base_fd,
 			(long)suffix, 0, 0, 0);
 }
@@ -848,7 +835,7 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int    flags = (int)args->c;
 	unsigned int mask = (unsigned int)args->d;
 	struct statx *out = (struct statx *)(uintptr_t)args->e;
-	if (!out) return -14;
+	if (!out) return TAWC_EFAULT;
 
 	struct statx local;
 
@@ -980,7 +967,7 @@ static long handle_linkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 					 &new_fd, &new_empty,
 					 TAWCROOT_PATH_PARENT_CREATE);
 	if (e2) return e2;
-	if (old_empty || new_empty) return -22;
+	if (old_empty || new_empty) return TAWC_EINVAL;
 
 	return link_with_symlink_fallback(old_fd, old_suf, new_fd, new_suf,
 					  flags);
@@ -1012,7 +999,7 @@ static long do_renameat(int olddirfd, const char *oldpath,
 					 &new_fd, &new_empty,
 					 TAWCROOT_PATH_PARENT_CREATE);
 	if (e2) return e2;
-	if (old_empty || new_empty) return -22;
+	if (old_empty || new_empty) return TAWC_EINVAL;
 	return TAWC_RAW(TAWC_SYS_renameat2, old_fd, (long)old_suf,
 			new_fd, (long)new_suf, rflags, 0);
 }
@@ -1065,7 +1052,7 @@ static long handle_truncate(const tawcroot_syscall_args *args,
 	/* base_fd is a directory in every translation path (rootfs or a
 	 * bind src, both opened O_DIRECTORY at init), so empty suffix means
 	 * the kernel would EISDIR truncate(2) on the dir. */
-	if (use_empty) return -21; /* EISDIR */
+	if (use_empty) return TAWC_EISDIR;
 
 	long fd = tawc_openat(base_fd, suffix,
 			      1 /*O_WRONLY*/ | 0x80000 /*O_CLOEXEC*/, 0);
@@ -1084,7 +1071,7 @@ static long handle_truncate(const tawcroot_syscall_args *args,
 
 static long stat_via_at(const char *path, struct stat *out, int flags)
 {
-	if (!out) return -14;
+	if (!out) return TAWC_EFAULT;
 	struct stat local;
 
 	{
@@ -1168,7 +1155,7 @@ static long handle_readlink(const tawcroot_syscall_args *args, ucontext_t *uc)
 	const char *path = (const char *)(uintptr_t)args->a;
 	char *buf = (char *)(uintptr_t)args->b;
 	int  size = (int)args->c;
-	if (!path || !buf || size <= 0) return -14;
+	if (!path || !buf || size <= 0) return TAWC_EFAULT;
 
 	/* Mirror handle_readlinkat: synthesize /proc/self/exe from the
 	 * stashed guest exe path. Without this, x86_64 callers that go
@@ -1231,7 +1218,7 @@ static long handle_mkdir(const tawcroot_syscall_args *args, ucontext_t *uc)
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_CREATE);
 	if (e) return e;
-	if (use_empty) return -17; /* EEXIST — root already exists */
+	if (use_empty) return TAWC_EEXIST; /* root already exists */
 	return TAWC_RAW(TAWC_SYS_mkdirat, base_fd, (long)suffix, mode, 0, 0, 0);
 }
 
@@ -1245,10 +1232,10 @@ static long handle_unlink_or_rmdir(const tawcroot_syscall_args *args,
 		const char *shm_name;
 		int kind = peek_shm(path, shm_buf, sizeof shm_buf, &shm_name);
 		if (kind == SHM_PEEK_NAME) {
-			if (rmdir_flag) return -20; /* ENOTDIR */
+			if (rmdir_flag) return TAWC_ENOTDIR;
 			return tawcroot_shm_unlink(shm_name);
 		}
-		if (kind == SHM_PEEK_DIR) return rmdir_flag ? -16 : -21;
+		if (kind == SHM_PEEK_DIR) return rmdir_flag ? TAWC_EBUSY : TAWC_EISDIR;
 	}
 	char path_buf[TAWC_PATH_MAX];
 	char suffix[TAWC_PATH_MAX];
@@ -1258,7 +1245,7 @@ static long handle_unlink_or_rmdir(const tawcroot_syscall_args *args,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_REMOVE);
 	if (e) return e;
-	if (use_empty) return -22;
+	if (use_empty) return TAWC_EINVAL;
 	return TAWC_RAW(TAWC_SYS_unlinkat, base_fd, (long)suffix,
 			rmdir_flag, 0, 0, 0);
 }
@@ -1267,7 +1254,7 @@ static long handle_unlink(const tawcroot_syscall_args *args, ucontext_t *uc)
 { return handle_unlink_or_rmdir(args, uc, 0); }
 
 static long handle_rmdir(const tawcroot_syscall_args *args, ucontext_t *uc)
-{ return handle_unlink_or_rmdir(args, uc, 0x200 /*AT_REMOVEDIR*/); }
+{ return handle_unlink_or_rmdir(args, uc, AT_REMOVEDIR); }
 
 static long handle_chown_legacy(const tawcroot_syscall_args *args,
 				ucontext_t *uc)
@@ -1305,7 +1292,7 @@ static long handle_link_legacy(const tawcroot_syscall_args *args,
 				      &new_fd, &new_empty,
 				      TAWCROOT_PATH_PARENT_CREATE);
 	if (e2) return e2;
-	if (old_empty || new_empty) return -22;
+	if (old_empty || new_empty) return TAWC_EINVAL;
 
 	return link_with_symlink_fallback(old_fd, old_suf, new_fd, new_suf, 0);
 }
@@ -1325,7 +1312,7 @@ static long handle_symlink_legacy(const tawcroot_syscall_args *args,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_CREATE);
 	if (e) return e;
-	if (use_empty) return -22;
+	if (use_empty) return TAWC_EINVAL;
 	return TAWC_RAW(TAWC_SYS_symlinkat, (long)target, base_fd,
 			(long)suffix, 0, 0, 0);
 }
@@ -1335,9 +1322,9 @@ static long handle_rename_legacy(const tawcroot_syscall_args *args,
 				 ucontext_t *uc)
 {
 	(void)uc;
-	return do_renameat(-100 /*AT_FDCWD*/,
+	return do_renameat(AT_FDCWD,
 			   (const char *)(uintptr_t)args->a,
-			   -100 /*AT_FDCWD*/,
+			   AT_FDCWD,
 			   (const char *)(uintptr_t)args->b, 0);
 }
 
@@ -1348,7 +1335,7 @@ static long handle_mknod(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
 	const char *gpath = (const char *)(uintptr_t)args->a;
-	if (!gpath) return -14;
+	if (!gpath) return TAWC_EFAULT;
 	char path_buf[TAWC_PATH_MAX];
 	char suffix[TAWC_PATH_MAX];
 	int  base_fd, use_empty;
@@ -1357,7 +1344,7 @@ static long handle_mknod(const tawcroot_syscall_args *args, ucontext_t *uc)
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_CREATE);
 	if (e) return e;
-	if (use_empty) return -22;  /* EINVAL — can't mknod the dir itself */
+	if (use_empty) return TAWC_EINVAL; /* can't mknod the dir itself */
 	return TAWC_RAW(TAWC_SYS_mknodat, base_fd, (long)suffix,
 			args->b, args->c, 0, 0);
 }
@@ -1379,23 +1366,23 @@ static long build_proc_fd_path(char *out, size_t cap,
 	const char *prefix = "/proc/self/fd/";
 	size_t i = 0;
 	while (prefix[i]) {
-		if (i + 1 >= cap) return -36;
+		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
 		out[i] = prefix[i];
 		i++;
 	}
 	int wrote = tawc_int_to_str(out + i, cap - i, base_fd);
-	if (wrote <= 0) return -36;
+	if (wrote <= 0) return TAWC_ENAMETOOLONG;
 	i += (size_t)wrote;
 	if (!use_empty) {
-		if (i + 1 >= cap) return -36;
+		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
 		out[i++] = '/';
 		size_t j = 0;
 		while (suffix[j]) {
-			if (i + 1 >= cap) return -36;
+			if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
 			out[i++] = suffix[j++];
 		}
 	}
-	if (i >= cap) return -36;
+	if (i >= cap) return TAWC_ENAMETOOLONG;
 	out[i] = 0;
 	return 0;
 }
@@ -1409,7 +1396,7 @@ static long handle_statfs(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
 	const char *gpath = (const char *)(uintptr_t)args->a;
-	if (!gpath) return -14;
+	if (!gpath) return TAWC_EFAULT;
 	char path_buf[TAWC_PATH_MAX];
 	char suffix[TAWC_PATH_MAX];
 	int  base_fd, use_empty;
@@ -1454,7 +1441,7 @@ static long handle_##name(const tawcroot_syscall_args *args, ucontext_t *uc) \
 {                                                                          \
 	(void)uc;                                                          \
 	const char *gpath = (const char *)(uintptr_t)args->a;              \
-	if (!gpath) return -14;                                            \
+	if (!gpath) return TAWC_EFAULT;                                            \
 	char path_buf[TAWC_PATH_MAX];                                      \
 	char suffix[TAWC_PATH_MAX];                                        \
 	int  base_fd, use_empty;                                           \
@@ -1463,7 +1450,7 @@ static long handle_##name(const tawcroot_syscall_args *args, ucontext_t *uc) \
 				     &base_fd, &use_empty, pmode);         \
 	if (e) return e;                                                   \
 	if (use_empty && (pmode) == TAWCROOT_PATH_NOFOLLOW)                \
-		return -95; /* EOPNOTSUPP — see big comment above */       \
+		return TAWC_EOPNOTSUPP; /* see big comment above */         \
 	char host_path[TAWC_PATH_MAX];                                     \
 	long bp = build_proc_fd_path(host_path, sizeof host_path,          \
 				     base_fd, suffix, use_empty);          \

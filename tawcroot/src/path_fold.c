@@ -17,6 +17,7 @@
 
 #include <stddef.h>
 
+#include "errno_neg.h"
 #include "path.h"
 
 #define TAWC_PATH_MAX  4096
@@ -24,14 +25,14 @@
 
 long tawcroot_path_fold_absolute(const char *path, char *out, size_t out_cap)
 {
-	if (out_cap == 0) return -36; /* ENAMETOOLONG */
+	if (out_cap == 0) return TAWC_ENAMETOOLONG;
 
 	size_t starts[MAX_COMPONENTS];
 	size_t lens[MAX_COMPONENTS];
 	size_t depth = 0;
 
 	const char *p = path;
-	if (*p != '/') return -2;     /* ENOENT — caller misuse */
+	if (*p != '/') return TAWC_ENOENT;
 	p++;                           /* skip leading '/' */
 
 	/* Build component bytes into a scratch buffer, then compact into
@@ -56,9 +57,9 @@ long tawcroot_path_fold_absolute(const char *path, char *out, size_t out_cap)
 			}
 			/* else: clamp at root */
 		} else {
-			if (depth >= MAX_COMPONENTS)  return -36;
+			if (depth >= MAX_COMPONENTS)  return TAWC_ENAMETOOLONG;
 			if (scratch_len + comp_len + 1 > sizeof scratch)
-				return -36;
+				return TAWC_ENAMETOOLONG;
 			starts[depth] = scratch_len;
 			lens[depth]   = comp_len;
 			depth++;
@@ -74,14 +75,14 @@ long tawcroot_path_fold_absolute(const char *path, char *out, size_t out_cap)
 	size_t total = 0;
 	for (size_t i = 0; i < depth; i++) {
 		if (i > 0) {
-			if (total + 1 >= out_cap) return -36;
+			if (total + 1 >= out_cap) return TAWC_ENAMETOOLONG;
 			out[total++] = '/';
 		}
-		if (total + lens[i] >= out_cap) return -36;
+		if (total + lens[i] >= out_cap) return TAWC_ENAMETOOLONG;
 		for (size_t j = 0; j < lens[i]; j++)
 			out[total++] = scratch[starts[i] + j];
 	}
-	if (total >= out_cap) return -36;
+	if (total >= out_cap) return TAWC_ENAMETOOLONG;
 	out[total] = 0;
 	return 0;
 }

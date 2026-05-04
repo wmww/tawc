@@ -10,6 +10,8 @@
 #include <stdint.h>
 
 #include "dispatch.h"
+#include "errno_neg.h"
+#include "identity.h"
 #include "sysnr.h"
 #include "usercopy.h"
 
@@ -35,7 +37,7 @@ static long fake_zero_resuid(const tawcroot_syscall_args *args,
 		(void *)(uintptr_t)args->c,
 	};
 	for (int i = 0; i < 3; i++) {
-		if (!p[i]) return -14;  /* EFAULT — the kernel rejects NULL too */
+		if (!p[i]) return TAWC_EFAULT;  /* kernel rejects NULL too */
 		long r = tawc_copy_to_guest(p[i], &zero, sizeof zero);
 		if (r < 0) return r;
 	}

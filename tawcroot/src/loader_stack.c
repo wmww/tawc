@@ -7,29 +7,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "errno_neg.h"
 #include "loader_stack.h"
-
-/* errno values matching Linux uapi. */
-#define TAWC_EINVAL  22
-#define TAWC_ENOMEM  12
+#include "tawc_string.h"
 
 #define MAX_AUXV     32       /* generous upper bound on entries we emit */
-
-/* Local strlen (our shadow `tawc_strlen` lives in strings.c but we
- * don't want to depend on it from the loader). */
-static size_t local_strlen(const char *s)
-{
-	const char *p = s;
-	while (*p) p++;
-	return (size_t)(p - s);
-}
-
-static void local_memcpy(void *dst, const void *src, size_t n)
-{
-	uint8_t *d = (uint8_t *)dst;
-	const uint8_t *s = (const uint8_t *)src;
-	for (size_t i = 0; i < n; i++) d[i] = s[i];
-}
 
 /* Round a uintptr_t down to a power-of-two boundary. */
 static inline uintptr_t align_down(uintptr_t v, uintptr_t a)
@@ -39,12 +21,12 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
                              const struct tawc_loader_stack_input *in,
                              struct tawc_loader_stack_out *out)
 {
-	if (!region_low || !in || !out) return -TAWC_EINVAL;
-	if (in->argc < 0 || !in->argv || !in->envp) return -TAWC_EINVAL;
+	if (!region_low || !in || !out) return TAWC_EINVAL;
+	if (in->argc < 0 || !in->argv || !in->envp) return TAWC_EINVAL;
 	if (!in->at_random16 || !in->at_execfn || !in->at_platform)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 	for (int i = 0; i < in->argc; i++)
-		if (!in->argv[i]) return -TAWC_EINVAL;
+		if (!in->argv[i]) return TAWC_EINVAL;
 
 	int envc = 0;
 	while (in->envp[envc]) envc++;
@@ -66,27 +48,27 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
 	uintptr_t addr_random;
 	{
 		size_t n = 16;
-		if (cur - lo < n) return -TAWC_ENOMEM;
+		if (cur - lo < n) return TAWC_ENOMEM;
 		cur -= n;
-		local_memcpy((void *)cur, in->at_random16, n);
+		memcpy((void *)cur, in->at_random16, n);
 		addr_random = cur;
 	}
 
 	uintptr_t addr_platform;
 	{
-		size_t n = local_strlen(in->at_platform) + 1;
-		if (cur - lo < n) return -TAWC_ENOMEM;
+		size_t n = strlen(in->at_platform) + 1;
+		if (cur - lo < n) return TAWC_ENOMEM;
 		cur -= n;
-		local_memcpy((void *)cur, in->at_platform, n);
+		memcpy((void *)cur, in->at_platform, n);
 		addr_platform = cur;
 	}
 
 	uintptr_t addr_execfn;
 	{
-		size_t n = local_strlen(in->at_execfn) + 1;
-		if (cur - lo < n) return -TAWC_ENOMEM;
+		size_t n = strlen(in->at_execfn) + 1;
+		if (cur - lo < n) return TAWC_ENOMEM;
 		cur -= n;
-		local_memcpy((void *)cur, in->at_execfn, n);
+		memcpy((void *)cur, in->at_execfn, n);
 		addr_execfn = cur;
 	}
 
@@ -96,22 +78,22 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
 	 * (bounded by MAX_ARGS so the stack frame is bounded; real
 	 * callers pass at most a few hundred). */
 #define MAX_ARGS 1024
-	if (in->argc > MAX_ARGS || envc > MAX_ARGS) return -TAWC_EINVAL;
+	if (in->argc > MAX_ARGS || envc > MAX_ARGS) return TAWC_EINVAL;
 	uintptr_t argv_buf[MAX_ARGS];
 	uintptr_t envp_buf[MAX_ARGS];
 
 	for (int i = envc - 1; i >= 0; i--) {
-		size_t n = local_strlen(in->envp[i]) + 1;
-		if (cur - lo < n) return -TAWC_ENOMEM;
+		size_t n = strlen(in->envp[i]) + 1;
+		if (cur - lo < n) return TAWC_ENOMEM;
 		cur -= n;
-		local_memcpy((void *)cur, in->envp[i], n);
+		memcpy((void *)cur, in->envp[i], n);
 		envp_buf[i] = cur;
 	}
 	for (int i = in->argc - 1; i >= 0; i--) {
-		size_t n = local_strlen(in->argv[i]) + 1;
-		if (cur - lo < n) return -TAWC_ENOMEM;
+		size_t n = strlen(in->argv[i]) + 1;
+		if (cur - lo < n) return TAWC_ENOMEM;
 		cur -= n;
-		local_memcpy((void *)cur, in->argv[i], n);
+		memcpy((void *)cur, in->argv[i], n);
 		argv_buf[i] = cur;
 	}
 
@@ -126,7 +108,7 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
 	unsigned na = 0;
 
 	#define AUX(t, v) do { \
-		if (na >= MAX_AUXV - 1) return -TAWC_ENOMEM; \
+		if (na >= MAX_AUXV - 1) return TAWC_ENOMEM; \
 		aux[na].a_type = (t); aux[na].a_val = (v); na++; \
 	} while (0)
 
@@ -170,7 +152,7 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
 	                 + argv_bytes + envp_bytes + aux_bytes;
 
 	uintptr_t sp = align_down(strings_lo - vec_bytes, 16);
-	if (sp < lo) return -TAWC_ENOMEM;
+	if (sp < lo) return TAWC_ENOMEM;
 
 	/* ---- Step 4: write the vectors at SP. ---- */
 	uintptr_t w = sp;

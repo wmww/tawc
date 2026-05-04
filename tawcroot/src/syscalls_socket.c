@@ -35,14 +35,14 @@
 #include <ucontext.h>
 
 #include "dispatch.h"
+#include "errno_neg.h"
 #include "path.h"
 #include "raw_sys.h"
+#include "syscalls_socket.h"
 #include "sysnr.h"
 #include "usercopy.h"
 
 #define AF_UNIX_FAMILY  1
-#define EFAULT_NEG    (-14)
-#define ENAMETOOLONG_NEG (-36)
 
 /* sockaddr_un layout, mirrored locally to avoid pulling <sys/un.h>:
  *   uint16_t sun_family;
@@ -83,16 +83,16 @@ static long render_host_path(char *dst, size_t cap,
 {
 	size_t i = 0;
 	while (host_prefix[i]) {
-		if (i + 1 >= cap) return ENAMETOOLONG_NEG;
+		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
 		dst[i] = host_prefix[i];
 		i++;
 	}
 	if (suffix && suffix[0]) {
-		if (i + 1 >= cap) return ENAMETOOLONG_NEG;
+		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
 		dst[i++] = '/';
 		size_t j = 0;
 		while (suffix[j]) {
-			if (i + 1 >= cap) return ENAMETOOLONG_NEG;
+			if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
 			dst[i++] = suffix[j++];
 		}
 	}
@@ -110,7 +110,7 @@ static long render_proc_fd_path(char *dst, size_t cap, int fd,
 	static const char prefix[] = "/proc/self/fd/";
 	const size_t prefix_len = sizeof prefix - 1;
 
-	if (cap <= prefix_len) return ENAMETOOLONG_NEG;
+	if (cap <= prefix_len) return TAWC_ENAMETOOLONG;
 
 	size_t i = 0;
 	for (; i < prefix_len; i++) dst[i] = prefix[i];
@@ -119,19 +119,19 @@ static long render_proc_fd_path(char *dst, size_t cap, int fd,
 	char fdbuf[12];
 	int  fdn = 0;
 	int  v = fd;
-	if (v < 0) return EFAULT_NEG;
+	if (v < 0) return TAWC_EFAULT;
 	if (v == 0) fdbuf[fdn++] = '0';
 	while (v) { fdbuf[fdn++] = '0' + (v % 10); v /= 10; }
-	if (i + (size_t)fdn >= cap) return ENAMETOOLONG_NEG;
+	if (i + (size_t)fdn >= cap) return TAWC_ENAMETOOLONG;
 	while (fdn--) dst[i++] = fdbuf[fdn];
 
 	/* Suffix may be empty (the fd itself names the bind target). */
 	if (suffix && suffix[0]) {
-		if (i + 1 >= cap) return ENAMETOOLONG_NEG;
+		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
 		dst[i++] = '/';
 		size_t j = 0;
 		while (suffix[j]) {
-			if (i + 1 >= cap) return ENAMETOOLONG_NEG;
+			if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
 			dst[i++] = suffix[j++];
 		}
 	}
@@ -160,7 +160,7 @@ static long do_translate_unix_addr(int nr, const tawcroot_syscall_args *args)
 
 	struct tawc_sockaddr_un un_in;
 	long e = tawc_copy_from_guest(&un_in, (size_t)addrlen, guest_addr);
-	if (e < 0) return EFAULT_NEG;
+	if (e < 0) return TAWC_EFAULT;
 
 	/* Non-AF_UNIX: untouched. */
 	if (un_in.sun_family != AF_UNIX_FAMILY) {

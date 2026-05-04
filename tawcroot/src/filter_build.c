@@ -17,6 +17,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 
+#include "errno_neg.h"
 #include "filter_build.h"
 #include "sysnr.h"
 
@@ -37,8 +38,8 @@ long tawcroot_build_filter(struct sock_filter *prog, size_t prog_cap,
 			   const int *reserved_fds, size_t n_reserved,
 			   uint32_t audit_arch)
 {
-	if (!prog || prog_cap == 0) return -22;  /* EINVAL */
-	if (n_traps > 1900) return -7;           /* E2BIG (kernel cap is 4096) */
+	if (!prog || prog_cap == 0) return TAWC_EINVAL;
+	if (n_traps > 1900) return TAWC_E2BIG;  /* kernel cap is 4096 */
 
 	const uint32_t stub_lo = (uint32_t)(stub_ret_addr & 0xffffffffu);
 	const uint32_t stub_hi = (uint32_t)(stub_ret_addr >> 32);
@@ -48,7 +49,7 @@ long tawcroot_build_filter(struct sock_filter *prog, size_t prog_cap,
 	 * enough that we just check up front per emit; clearer than
 	 * threading a "did we overflow" flag. */
 #define EMIT_OR_FAIL(_ins) do {                                            \
-		if (i >= prog_cap) return -7;                              \
+		if (i >= prog_cap) return TAWC_E2BIG;                      \
 		prog[i++] = (struct sock_filter)_ins;                      \
 	} while (0)
 

@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "dispatch.h"
+#include "errno_neg.h"
 #include "exec_state.h"
 #include "fdtab.h"
 #include "filter.h"
@@ -22,18 +23,13 @@
 #include "path.h"
 #include "raw_sys.h"
 #include "shm.h"
+#include "tawc_uapi.h"
 #include "usercopy.h"
 
 /* Linux uapi mmap flags / prot. Matches loader_map.h's TAWC_MM_* but
  * we re-use those values directly. */
 #define PROT_RW   (TAWC_MM_PROT_READ | TAWC_MM_PROT_WRITE)
 #define MAP_PA    (TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_ANON)
-
-/* O_DIRECTORY / O_NOFOLLOW differ between aarch64 and x86_64 — pull from
- * the kernel's per-arch header rather than hand-pinning (also defines
- * O_RDONLY / AT_FDCWD). */
-#include <linux/fcntl.h>
-
 
 #define TAWC_LDR_PATH_MAX 4096
 
@@ -81,7 +77,7 @@ static long open_in_view(const char *guest_path, char *suffix_buf,
 	tawcroot_path_result r = tawcroot_path_translate(
 	    guest_path, suffix_buf, suffix_cap, TAWCROOT_PATH_FOLLOW);
 	if (r.err) return r.err;
-	if (suffix_buf[0] == 0) return -21; /* -EISDIR — exec'ing the rootfs root */
+	if (suffix_buf[0] == 0) return TAWC_EISDIR; /* exec'ing the rootfs root */
 	return tawc_openat(r.base_fd, suffix_buf,
 	                   O_RDONLY | O_CLOEXEC, 0);
 }
@@ -101,17 +97,17 @@ static long parse_image(int fd, struct tawc_loader_image *img,
                         enum parse_image_stage *stage_out)
 {
 	*stage_out = PARSE_IMAGE_EHDR;
-	if (ebuf_cap < sizeof(tawc_elf64_ehdr)) return -22;
+	if (ebuf_cap < sizeof(tawc_elf64_ehdr)) return TAWC_EINVAL;
 	long n = tawc_pread64(fd, ebuf, sizeof(tawc_elf64_ehdr), 0);
-	if (n != (long)sizeof(tawc_elf64_ehdr)) return -22;
+	if (n != (long)sizeof(tawc_elf64_ehdr)) return TAWC_EINVAL;
 	long rc = tawc_loader_parse_ehdr(ebuf, sizeof(tawc_elf64_ehdr), img);
 	if (rc) return rc;
 
 	*stage_out = PARSE_IMAGE_PHDR;
 	size_t pbytes = (size_t)img->e_phnum * img->e_phentsize;
-	if (pbytes > pbuf_cap) return -22;
+	if (pbytes > pbuf_cap) return TAWC_EINVAL;
 	n = tawc_pread64(fd, pbuf, pbytes, (long)img->e_phoff);
-	if (n != (long)pbytes) return -22;
+	if (n != (long)pbytes) return TAWC_EINVAL;
 	return tawc_loader_parse_phdrs(pbuf, pbuf_cap, page_size, img);
 }
 
@@ -151,11 +147,11 @@ static long resolve_shebangs(int initial_fd,
 		if (n < 2 || !(hdr[0] == '#' && hdr[1] == '!')) {
 			return bin_fd;  /* ELF or unknown — let parse_image classify */
 		}
-		if (depth >= TAWC_SHEBANG_MAX_DEPTH) return -8 /*ENOEXEC*/;
+		if (depth >= TAWC_SHEBANG_MAX_DEPTH) return TAWC_ENOEXEC;
 
 		static char line[TAWC_SHEBANG_BUF];
 		long ln = tawc_pread64(bin_fd, line, sizeof line - 1, 0);
-		if (ln < 2) return -8;
+		if (ln < 2) return TAWC_ENOEXEC;
 		line[ln] = 0;
 		/* Find newline; trim. */
 		long eol = 2;
@@ -175,7 +171,7 @@ static long resolve_shebangs(int initial_fd,
 		       (line[arg_hi - 1] == ' ' || line[arg_hi - 1] == '\t'))
 			arg_hi--;
 
-		if (interp_hi == interp_lo) return -8;  /* "#!\n" — bad */
+		if (interp_hi == interp_lo) return TAWC_ENOEXEC;  /* "#!\n" — bad */
 		line[interp_hi] = 0;
 		const char *interp = &line[interp_lo];
 
@@ -211,7 +207,7 @@ static long resolve_shebangs(int initial_fd,
 		}
 
 		int extra = shebang_arg ? 2 : 1;
-		if ((size_t)(*argc_out + extra) > argv_cap) return -7 /*E2BIG*/;
+		if ((size_t)(*argc_out + extra) > argv_cap) return TAWC_E2BIG;
 
 		/* Shift argv[1..] right by `extra`, place [interp,(arg,)script]
 		 * at the front. New argv[0] is interp, then optional shebang
@@ -472,7 +468,7 @@ void tawcroot_loader_exec_child(int state_fd, const char *platform)
 	 *   9. stash guest_exe_path
 	 */
 	if (st.rootfs_host) {
-		long rfd = tawc_openat(-100 /*AT_FDCWD*/, st.rootfs_host,
+		long rfd = tawc_openat(AT_FDCWD, st.rootfs_host,
 		                       O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
 		if (rfd < 0) LOADER_FAIL(83);
 		long resv = tawcroot_fd_reserve((int)rfd);

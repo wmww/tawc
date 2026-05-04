@@ -4,13 +4,12 @@
 #include <stdint.h>
 #include <sys/uio.h>
 
+#include "errno_neg.h"
 #include "usercopy.h"
 #include "raw_sys.h"
 #include "sysnr.h"
 
 int tawc_usercopy_works = 0;
-
-#define EFAULT_NEG (-14)
 
 /* The process_vm_{read,write}v helpers need the *current* thread's
  * tid to address our own VM. We can't cache it: after `fork(2)` the
@@ -42,7 +41,7 @@ long tawc_usercopy_init(void)
 		tawc_usercopy_works = 1;
 		return 0;
 	}
-	return rv < 0 ? rv : -38; /* ENOSYS */
+	return rv < 0 ? rv : TAWC_ENOSYS;
 }
 
 /* Read up to `len` bytes from a guest address. Returns bytes read or
@@ -55,7 +54,7 @@ long tawc_usercopy_init(void)
  * not a runtime fallback condition. (Review finding B7.) */
 static long readv_guest(void *dst, size_t len, const void *src)
 {
-	if (!tawc_usercopy_works) return EFAULT_NEG;
+	if (!tawc_usercopy_works) return TAWC_EFAULT;
 	struct iovec liov = { .iov_base = dst,        .iov_len = len };
 	struct iovec riov = { .iov_base = (void *)src, .iov_len = len };
 	long rv = TAWC_RAW(TAWC_SYS_process_vm_readv, current_tid(),
@@ -66,8 +65,8 @@ static long readv_guest(void *dst, size_t len, const void *src)
 long tawc_copy_string_from_guest(char *dst, size_t cap,
 				 const char *guest_src)
 {
-	if (!dst || cap == 0) return EFAULT_NEG;
-	if (!guest_src) return EFAULT_NEG;
+	if (!dst || cap == 0) return TAWC_EFAULT;
+	if (!guest_src) return TAWC_EFAULT;
 
 	/* Read in chunks, scanning for NUL. Chunk size is a compromise
 	 * between syscall overhead and over-reading near a page boundary
@@ -79,8 +78,8 @@ long tawc_copy_string_from_guest(char *dst, size_t cap,
 		size_t want = cap - off;
 		if (want > 256) want = 256;
 		long got = readv_guest(dst + off, want, guest_src + off);
-		if (got < 0) return EFAULT_NEG;
-		if (got == 0) return EFAULT_NEG;
+		if (got < 0) return TAWC_EFAULT;
+		if (got == 0) return TAWC_EFAULT;
 		for (long i = 0; i < got; i++) {
 			if (dst[off + i] == 0) {
 				return (long)(off + i);  /* len excl NUL */
@@ -92,15 +91,15 @@ long tawc_copy_string_from_guest(char *dst, size_t cap,
 			 * try again from the new offset. */
 		}
 	}
-	return -36; /* ENAMETOOLONG */
+	return TAWC_ENAMETOOLONG;
 }
 
 long tawc_copy_from_guest(void *dst, size_t n, const void *guest_src)
 {
-	if (!dst || !guest_src) return EFAULT_NEG;
+	if (!dst || !guest_src) return TAWC_EFAULT;
 	long got = readv_guest(dst, n, guest_src);
-	if (got < 0) return EFAULT_NEG;
-	if ((size_t)got != n) return EFAULT_NEG;
+	if (got < 0) return TAWC_EFAULT;
+	if ((size_t)got != n) return TAWC_EFAULT;
 	return 0;
 }
 
@@ -113,14 +112,14 @@ long tawc_copy_to_guest(void *guest_dst, const void *src, size_t n)
 	 * Route through process_vm_writev against our own pid — the kernel
 	 * validates the destination and reports -EFAULT cleanly. (Reviewed
 	 * findings B1+B6.) */
-	if (!guest_dst || !src) return EFAULT_NEG;
+	if (!guest_dst || !src) return TAWC_EFAULT;
 	if (n == 0) return 0;
-	if (!tawc_usercopy_works) return EFAULT_NEG;
+	if (!tawc_usercopy_works) return TAWC_EFAULT;
 	struct iovec liov = { .iov_base = (void *)src,    .iov_len = n };
 	struct iovec riov = { .iov_base = guest_dst,      .iov_len = n };
 	long rv = TAWC_RAW(TAWC_SYS_process_vm_writev, current_tid(),
 			   (long)&liov, 1, (long)&riov, 1, 0);
-	if (rv < 0)        return EFAULT_NEG;
-	if ((size_t)rv != n) return EFAULT_NEG;
+	if (rv < 0)        return TAWC_EFAULT;
+	if ((size_t)rv != n) return TAWC_EFAULT;
 	return 0;
 }

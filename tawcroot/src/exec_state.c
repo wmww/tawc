@@ -7,32 +7,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "errno_neg.h"
 #include "exec_state.h"
-
-#define TAWC_EINVAL  22
-#define TAWC_ENOSPC  28
-#define TAWC_E2BIG    7
-
-static size_t local_strlen(const char *s)
-{
-	const char *p = s;
-	while (*p) p++;
-	return (size_t)(p - s);
-}
-
-static void local_memcpy(void *dst, const void *src, size_t n)
-{
-	uint8_t *d = (uint8_t *)dst;
-	const uint8_t *s = (const uint8_t *)src;
-	for (size_t i = 0; i < n; i++) d[i] = s[i];
-}
-
-static void local_memset(void *dst, int c, size_t n)
-{
-	uint8_t *d = (uint8_t *)dst;
-	uint8_t v = (uint8_t)c;
-	for (size_t i = 0; i < n; i++) d[i] = v;
-}
+#include "tawc_string.h"
 
 static int count_envp(const char *const *envp)
 {
@@ -58,27 +35,27 @@ size_t tawcroot_exec_state_estimate_bytes(const char *path,
                                           const char *const *envp,
                                           const tawcroot_exec_state_extras *ex)
 {
-	size_t s = local_strlen(path) + 1;
+	size_t s = strlen(path) + 1;
 	for (int i = 0; i < argc; i++) {
 		if (!argv[i]) break;
-		s += local_strlen(argv[i]) + 1;
+		s += strlen(argv[i]) + 1;
 	}
 	int envc = count_envp(envp);
 	for (int i = 0; i < envc; i++) {
-		s += local_strlen(envp[i]) + 1;
+		s += strlen(envp[i]) + 1;
 	}
 	if (ex) {
-		if (ex->rootfs_host) s += local_strlen(ex->rootfs_host) + 1;
-		if (ex->guest_exe)   s += local_strlen(ex->guest_exe) + 1;
+		if (ex->rootfs_host) s += strlen(ex->rootfs_host) + 1;
+		if (ex->guest_exe)   s += strlen(ex->guest_exe) + 1;
 		for (uint32_t i = 0; i < ex->n_binds; i++) {
 			if (ex->bind_src && ex->bind_src[i])
-				s += local_strlen(ex->bind_src[i]) + 1;
+				s += strlen(ex->bind_src[i]) + 1;
 			if (ex->bind_dst && ex->bind_dst[i])
-				s += local_strlen(ex->bind_dst[i]) + 1;
+				s += strlen(ex->bind_dst[i]) + 1;
 		}
 		for (uint32_t i = 0; i < ex->n_shm; i++) {
 			if (ex->shm_name && ex->shm_name[i])
-				s += local_strlen(ex->shm_name[i]) + 1;
+				s += strlen(ex->shm_name[i]) + 1;
 		}
 	}
 	return tawcroot_exec_state_total_bytes((uint32_t)s);
@@ -90,29 +67,29 @@ long tawcroot_exec_state_write(void *buf, size_t buf_cap,
                                const char *const *envp,
                                const tawcroot_exec_state_extras *ex)
 {
-	if (!buf || !path || !argv || !envp) return -TAWC_EINVAL;
-	if (argc < 0 || argc > TAWCROOT_EXEC_STATE_MAX_ARGS) return -TAWC_E2BIG;
+	if (!buf || !path || !argv || !envp) return TAWC_EINVAL;
+	if (argc < 0 || argc > TAWCROOT_EXEC_STATE_MAX_ARGS) return TAWC_E2BIG;
 
 	int envc = count_envp(envp);
-	if (envc > TAWCROOT_EXEC_STATE_MAX_ENV) return -TAWC_E2BIG;
+	if (envc > TAWCROOT_EXEC_STATE_MAX_ENV) return TAWC_E2BIG;
 
-	if (ex && ex->n_binds > TAWCROOT_EXEC_STATE_MAX_BINDS) return -TAWC_E2BIG;
-	if (ex && ex->n_shm   > TAWCROOT_EXEC_STATE_MAX_SHM)   return -TAWC_E2BIG;
+	if (ex && ex->n_binds > TAWCROOT_EXEC_STATE_MAX_BINDS) return TAWC_E2BIG;
+	if (ex && ex->n_shm   > TAWCROOT_EXEC_STATE_MAX_SHM)   return TAWC_E2BIG;
 	/* shm names are required (no absent sentinel — reader uses
 	 * CHECK_REQUIRED). Reject NULL up front to surface bad callers
 	 * rather than silently aliasing to the path string at offset 0. */
 	if (ex) {
 		for (uint32_t i = 0; i < ex->n_shm; i++) {
-			if (!ex->shm_name || !ex->shm_name[i]) return -TAWC_EINVAL;
+			if (!ex->shm_name || !ex->shm_name[i]) return TAWC_EINVAL;
 		}
 	}
 
 	size_t need = tawcroot_exec_state_estimate_bytes(path, argc, argv, envp, ex);
-	if (need > buf_cap) return -TAWC_ENOSPC;
+	if (need > buf_cap) return TAWC_ENOSPC;
 
 	uint8_t *base = (uint8_t *)buf;
 	tawcroot_exec_state_header *h = (tawcroot_exec_state_header *)base;
-	local_memset(h, 0, sizeof *h);
+	memset(h, 0, sizeof *h);
 	h->magic   = TAWCROOT_EXEC_STATE_MAGIC;
 	h->version = TAWCROOT_EXEC_STATE_VERSION;
 	h->argc    = (uint32_t)argc;
@@ -123,22 +100,22 @@ long tawcroot_exec_state_write(void *buf, size_t buf_cap,
 
 	/* path first — convention, so a debug dump finds it easily. */
 	{
-		size_t n = local_strlen(path) + 1;
+		size_t n = strlen(path) + 1;
 		h->path_off = off;
-		local_memcpy(strings + off, path, n);
+		memcpy(strings + off, path, n);
 		off += (uint32_t)n;
 	}
 
 	for (int i = 0; i < argc; i++) {
-		size_t n = local_strlen(argv[i]) + 1;
+		size_t n = strlen(argv[i]) + 1;
 		h->argv_off[i] = off;
-		local_memcpy(strings + off, argv[i], n);
+		memcpy(strings + off, argv[i], n);
 		off += (uint32_t)n;
 	}
 	for (int i = 0; i < envc; i++) {
-		size_t n = local_strlen(envp[i]) + 1;
+		size_t n = strlen(envp[i]) + 1;
 		h->envp_off[i] = off;
-		local_memcpy(strings + off, envp[i], n);
+		memcpy(strings + off, envp[i], n);
 		off += (uint32_t)n;
 	}
 
@@ -146,37 +123,37 @@ long tawcroot_exec_state_write(void *buf, size_t buf_cap,
 	 * so any subsequent string has off > 0 — unambiguous). */
 	if (ex) {
 		if (ex->rootfs_host) {
-			size_t n = local_strlen(ex->rootfs_host) + 1;
+			size_t n = strlen(ex->rootfs_host) + 1;
 			h->rootfs_host_off = off;
-			local_memcpy(strings + off, ex->rootfs_host, n);
+			memcpy(strings + off, ex->rootfs_host, n);
 			off += (uint32_t)n;
 		}
 		if (ex->guest_exe) {
-			size_t n = local_strlen(ex->guest_exe) + 1;
+			size_t n = strlen(ex->guest_exe) + 1;
 			h->guest_exe_off = off;
-			local_memcpy(strings + off, ex->guest_exe, n);
+			memcpy(strings + off, ex->guest_exe, n);
 			off += (uint32_t)n;
 		}
 		h->n_binds = ex->n_binds;
 		for (uint32_t i = 0; i < ex->n_binds; i++) {
 			if (ex->bind_src && ex->bind_src[i]) {
-				size_t n = local_strlen(ex->bind_src[i]) + 1;
+				size_t n = strlen(ex->bind_src[i]) + 1;
 				h->bind_src_off[i] = off;
-				local_memcpy(strings + off, ex->bind_src[i], n);
+				memcpy(strings + off, ex->bind_src[i], n);
 				off += (uint32_t)n;
 			}
 			if (ex->bind_dst && ex->bind_dst[i]) {
-				size_t n = local_strlen(ex->bind_dst[i]) + 1;
+				size_t n = strlen(ex->bind_dst[i]) + 1;
 				h->bind_dst_off[i] = off;
-				local_memcpy(strings + off, ex->bind_dst[i], n);
+				memcpy(strings + off, ex->bind_dst[i], n);
 				off += (uint32_t)n;
 			}
 		}
 		h->n_shm = ex->n_shm;
 		for (uint32_t i = 0; i < ex->n_shm; i++) {
-			size_t n = local_strlen(ex->shm_name[i]) + 1;
+			size_t n = strlen(ex->shm_name[i]) + 1;
 			h->shm_name_off[i] = off;
-			local_memcpy(strings + off, ex->shm_name[i], n);
+			memcpy(strings + off, ex->shm_name[i], n);
 			off += (uint32_t)n;
 			h->shm_fd[i] = (uint32_t)ex->shm_fd[i];
 		}
@@ -192,22 +169,22 @@ long tawcroot_exec_state_read(const void *buf, size_t buf_size,
                               tawcroot_exec_state *out)
 {
 	if (!buf || !argv_buf || !envp_buf || !out)
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 	if (buf_size < sizeof(tawcroot_exec_state_header))
-		return -TAWC_EINVAL;
+		return TAWC_EINVAL;
 
 	const tawcroot_exec_state_header *h =
 	    (const tawcroot_exec_state_header *)buf;
-	if (h->magic != TAWCROOT_EXEC_STATE_MAGIC) return -TAWC_EINVAL;
-	if (h->version != TAWCROOT_EXEC_STATE_VERSION) return -TAWC_EINVAL;
-	if (h->argc > TAWCROOT_EXEC_STATE_MAX_ARGS) return -TAWC_EINVAL;
-	if (h->envc > TAWCROOT_EXEC_STATE_MAX_ENV) return -TAWC_EINVAL;
-	if (h->n_binds > TAWCROOT_EXEC_STATE_MAX_BINDS) return -TAWC_EINVAL;
-	if (h->n_shm   > TAWCROOT_EXEC_STATE_MAX_SHM)   return -TAWC_EINVAL;
+	if (h->magic != TAWCROOT_EXEC_STATE_MAGIC) return TAWC_EINVAL;
+	if (h->version != TAWCROOT_EXEC_STATE_VERSION) return TAWC_EINVAL;
+	if (h->argc > TAWCROOT_EXEC_STATE_MAX_ARGS) return TAWC_EINVAL;
+	if (h->envc > TAWCROOT_EXEC_STATE_MAX_ENV) return TAWC_EINVAL;
+	if (h->n_binds > TAWCROOT_EXEC_STATE_MAX_BINDS) return TAWC_EINVAL;
+	if (h->n_shm   > TAWCROOT_EXEC_STATE_MAX_SHM)   return TAWC_EINVAL;
 
 	size_t need = sizeof(*h) + h->string_bytes;
-	if (buf_size < need) return -TAWC_EINVAL;
-	if (h->path_off >= h->string_bytes) return -TAWC_EINVAL;
+	if (buf_size < need) return TAWC_EINVAL;
+	if (h->path_off >= h->string_bytes) return TAWC_EINVAL;
 
 	const char *strings = (const char *)buf + sizeof(*h);
 
@@ -218,11 +195,11 @@ long tawcroot_exec_state_read(const void *buf, size_t buf_size,
 	 * string can be at offset 0. */
 	#define CHECK_REQUIRED(off) do { \
 		uint32_t _o = (off); \
-		if (_o >= h->string_bytes) return -TAWC_EINVAL; \
+		if (_o >= h->string_bytes) return TAWC_EINVAL; \
 		const char *_p = strings + _o; \
 		const char *_end = strings + h->string_bytes; \
 		while (_p < _end && *_p) _p++; \
-		if (_p == _end) return -TAWC_EINVAL; \
+		if (_p == _end) return TAWC_EINVAL; \
 	} while (0)
 	#define CHECK_OPTIONAL(off) do { \
 		uint32_t _opt = (off); \
