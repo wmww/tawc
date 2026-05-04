@@ -12,10 +12,10 @@
 #     ./.tawctarget or TAWC_TARGET=device|emulator (see
 #     client/select-device.sh)
 #   - In-app chroot installed at
-#     /data/data/me.phie.tawc/distros/$TAWC_INSTALL_ID/ (default
-#     `arch`; install from the app's home screen, or `am start -n
-#     me.phie.tawc/.install.InstallActivity --ez autoStart true --es id
-#     <id>`). Set TAWC_INSTALL_ID=<id> to target a different slot.
+#     /data/data/me.phie.tawc/distros/<id>/ (install from the app's home
+#     screen, or `am start -n me.phie.tawc/.install.InstallActivity
+#     --ez autoStart true --es id <id>`). Auto-targeted when exactly one
+#     install is present; set TAWC_INSTALL_ID=<id> to pin a specific slot.
 #
 # Usage:
 #   bash testing/install-test-deps.sh
@@ -29,8 +29,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$ROOT_DIR/client/select-device.sh"
 # shellcheck source=../client/tawc-scratch.sh
 source "$ROOT_DIR/client/tawc-scratch.sh"
+# shellcheck source=../client/tawc-install-id.sh
+source "$ROOT_DIR/client/tawc-install-id.sh"
 
-export TAWC_INSTALL_ID="${TAWC_INSTALL_ID:-arch}"
 TAWC_DISTROS_DIR="/data/data/me.phie.tawc/distros/$TAWC_INSTALL_ID"
 
 # Keep grouped/commented so it's obvious what each package is for.

@@ -12,10 +12,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=../client/select-device.sh
+source "$ROOT_DIR/client/select-device.sh"
 # shellcheck source=../client/tawc-scratch.sh
 source "$ROOT_DIR/client/tawc-scratch.sh"
-
-export TAWC_INSTALL_ID="${TAWC_INSTALL_ID:-arch}"
+# shellcheck source=../client/tawc-install-id.sh
+source "$ROOT_DIR/client/tawc-install-id.sh"
 
 app_name="gtk4-debug-app"
 src_dir="$SCRIPT_DIR/$app_name"

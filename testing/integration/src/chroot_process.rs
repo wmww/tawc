@@ -15,7 +15,7 @@ const PID_TIMEOUT: Duration = Duration::from_secs(10);
 const PIDFILE_HELPER_CHROOT: &str = "/tmp/tawc-pidfile-exec";
 
 /// Filesystem root of the in-app install, as seen from outside.
-/// Driven by `TAWC_INSTALL_ID` env var (default `arch`); see [`adb`].
+/// Driven by [`crate::install_id`]; see [`adb`].
 fn chroot_rootfs() -> String {
     format!("/data/data/me.phie.tawc/distros/{}/rootfs", crate::install_id())
 }

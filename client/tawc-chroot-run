@@ -29,7 +29,9 @@
 # Usage:
 #   client/tawc-chroot-run                       # interactive shell
 #   client/tawc-chroot-run "<command>"           # run a command and exit
-#   TAWC_INSTALL_ID=<id> client/tawc-chroot-run  # non-default installation
+#   TAWC_INSTALL_ID=<id> client/tawc-chroot-run  # pin a specific install
+#                                                  (otherwise auto-detected
+#                                                  if exactly one is present)
 set -euo pipefail
 
 # Honour TAWC_TARGET / .tawctarget so a multi-device dev loop picks the
@@ -37,8 +39,10 @@ set -euo pipefail
 _script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck disable=SC1091
 . "$_script_dir/select-device.sh"
+# shellcheck disable=SC1091
+. "$_script_dir/tawc-install-id.sh"
 
-INSTALL_ID="${TAWC_INSTALL_ID:-arch}"
+INSTALL_ID="$TAWC_INSTALL_ID"
 PKG="me.phie.tawc"
 INSTALL_DIR="/data/data/$PKG/distros/$INSTALL_ID"
 ENTER="$INSTALL_DIR/enter.sh"

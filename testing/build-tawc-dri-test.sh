@@ -17,13 +17,12 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$ROOT_DIR/client/select-device.sh"
 # shellcheck source=../client/tawc-scratch.sh
 source "$ROOT_DIR/client/tawc-scratch.sh"
-
-INSTALL_ID="${TAWC_INSTALL_ID:-arch}"
-export TAWC_INSTALL_ID="$INSTALL_ID"
+# shellcheck source=../client/tawc-install-id.sh
+source "$ROOT_DIR/client/tawc-install-id.sh"
 
 app_name="tawc-dri-test"
 src_dir="$SCRIPT_DIR/$app_name"
-chroot_root="/data/data/me.phie.tawc/distros/$INSTALL_ID/rootfs"
+chroot_root="/data/data/me.phie.tawc/distros/$TAWC_INSTALL_ID/rootfs"
 build_dir="$chroot_root/tmp/$app_name"
 
 echo "=== $app_name: pushing source ==="

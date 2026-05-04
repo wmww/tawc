@@ -14,13 +14,12 @@
 #   - tawc app installed (this script reinstalls it during build).
 #     libhybris ships inside the APK as an asset and is symlinked into
 #     each rootfs at install time — no on-device libhybris build step.
-#   - In-app chroot installed at
-#     /data/data/me.phie.tawc/distros/$TAWC_INSTALL_ID/ (default
-#     `arch`). Install via:
+#   - At least one in-app install present at
+#     /data/data/me.phie.tawc/distros/<id>/. The suite auto-targets it
+#     when there's exactly one; with multiple, set TAWC_INSTALL_ID=<id>
+#     explicitly. Install via:
 #       adb shell am start -n me.phie.tawc/.install.InstallActivity \
 #           --ez autoStart true --es id <id> [--es distro <distro>]
-#     Set `TAWC_INSTALL_ID=<id>` (or pass via shell env) to test
-#     against a different slot — e.g. a Manjaro install at id=manjaro.
 #   - Test-suite chroot packages installed (run
 #     `bash testing/install-test-deps.sh` once per chroot install)
 #   - JAVA_HOME set or java-21-openjdk installed at default path
@@ -63,14 +62,13 @@ done
 source "$ROOT_DIR/client/select-device.sh"
 # shellcheck source=../client/tawc-scratch.sh
 source "$ROOT_DIR/client/tawc-scratch.sh"
+# shellcheck source=../client/tawc-install-id.sh
+source "$ROOT_DIR/client/tawc-install-id.sh"
 
-# Install id under /data/data/me.phie.tawc/distros/<id>/. Defaults to
-# `arch` (the chroot/proot suite); set TAWC_INSTALL_ID=arch-tawcroot to
-# target a parallel tawcroot install on the same device. Mirrors
-# `client/tawc-chroot-run` and is exported so the cargo test harness
-# (which reads it via tawc_integration::install_id) sees the same value.
-INSTALL_ID="${TAWC_INSTALL_ID:-arch}"
-export TAWC_INSTALL_ID="$INSTALL_ID"
+# tawc-install-id.sh exported TAWC_INSTALL_ID (auto-detected when unset
+# and exactly one install is present; errors if 0 or >1). The cargo
+# test harness reads the same env var via tawc_integration::install_id.
+INSTALL_ID="$TAWC_INSTALL_ID"
 INSTALL_DIR="/data/data/me.phie.tawc/distros/$INSTALL_ID"
 
 echo "=== Checking adb connection ($ANDROID_SERIAL, install=$INSTALL_ID) ==="

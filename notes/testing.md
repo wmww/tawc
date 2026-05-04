@@ -96,13 +96,15 @@ so a stale `cargo test` from a `.tawctarget=none` checkout fails fast
 instead of attaching to the wrong target.
 
 Prerequisites: a phone (or emulator) connected via adb, the tawc app
-installed, the in-app Arch chroot installed (via `am start … --es
-autoStart true --es id arch`; see [installation.md](installation.md)),
-and the test suite's chroot packages installed (run
+installed, an in-app distro installed (via `am start … --es autoStart
+true --es id <id>`; see [installation.md](installation.md)), and the
+test suite's chroot packages installed (run
 `bash testing/install-test-deps.sh` once per chroot install — covers
-gtk3/gtk4/weston/mesa-utils/vulkan-tools). Some modules have additional
-prerequisites (e.g. libhybris on a real device for the GPU-rendering
-tests); see each module's docstring.
+gtk3/gtk4/weston/mesa-utils/vulkan-tools). The suite auto-targets the
+unique install if there's only one, otherwise pin via
+`TAWC_INSTALL_ID=<id>`. Some modules have additional prerequisites (e.g.
+libhybris on a real device for the GPU-rendering tests); see each
+module's docstring.
 
 ### Test Input Mechanism
 

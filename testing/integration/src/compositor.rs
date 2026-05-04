@@ -153,17 +153,16 @@ pub fn assert_running() {
 /// process is listening, so the file alone would falsely indicate
 /// readiness on the very next test run.
 pub fn is_running() -> io::Result<bool> {
-    // /tmp inside the chroot is the rootfs's /tmp dir; from outside, that's
-    // /data/data/me.phie.tawc/distros/<id>/rootfs/tmp where <id> is read
-    // from TAWC_INSTALL_ID (default `arch`). The compositor puts its socket
-    // at /data/data/me.phie.tawc/wayland-0 and 01-tawc.sh symlinks it to
-    // /tmp/wayland-0 inside the chroot — the symlink is what we check here.
-    let id = std::env::var("TAWC_INSTALL_ID").unwrap_or_else(|_| "arch".into());
+    // /tmp inside the chroot is the rootfs's /tmp dir; from outside,
+    // that's /data/data/me.phie.tawc/distros/<id>/rootfs/tmp. The
+    // compositor puts its socket at /data/data/me.phie.tawc/wayland-0
+    // and 01-tawc.sh symlinks it to /tmp/wayland-0 inside the chroot —
+    // the symlink is what we check here.
     let cmd = format!(
         "pidof me.phie.tawc >/dev/null && \
          su -c 'test -e /data/data/me.phie.tawc/distros/{}/rootfs/tmp/wayland-0' \
          && echo ready",
-        id,
+        crate::install_id(),
     );
     let output = adb::shell(&cmd)?;
     Ok(String::from_utf8_lossy(&output.stdout).contains("ready"))

@@ -26,14 +26,15 @@ Everything lives under the app's private data dir:
       cache/install/bootstrap-<cacheKey>.tar.fifo                 # transient zstd→tar streaming pipe (Archive owns lifecycle; sweep evicts unconditionally)
       cache/install/bootstrap-<cacheKey>.tar.{zst,gz}.part        # transient Downloader in-flight file (sweep evicts unconditionally)
       distros/
-        arch/
+        <id>/
           metadata.json              # JSON: schemaVersion, id, label?, distro, arch, method, installedAtMillis, installedAtAppVersionCode, sourceUrl, state, failure?
           rootfs/                    # the chroot itself (what `arch-chroot` would chroot into)
           enter.sh                   # mount + chroot wrapper, regenerated on every chroot entry
 
-`arch` is the default installation id. Multi-installation support is a
-matter of varying the id; the on-disk layout, the [Installation] data
-class, and [InstallationStore] already handle it.
+The on-disk layout, the [Installation] data class, and
+[InstallationStore] already handle multiple installs side-by-side; the
+id is whatever the InstallActivity intent's `--es id <id>` extra (or
+the home-screen install form's slugified label) supplied.
 
 ## State machine
 
