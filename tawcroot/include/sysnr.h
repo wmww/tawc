@@ -189,8 +189,14 @@
 # define TAWC_SYS_clone3          435
 # define TAWC_SYS_bind             49
 # define TAWC_SYS_connect          42
+/* accept→accept4, poll→ppoll: Android's untrusted_app filter RET_TRAPs
+ * the legacy variant on x86_64 in favour of the modern one. We route
+ * the legacy through the modern from the stub. aarch64 has no legacy
+ * syscall in either pair (numbers unallocated). */
 # define TAWC_SYS_accept           43
 # define TAWC_SYS_accept4         288
+# define TAWC_SYS_poll              7
+# define TAWC_SYS_ppoll           271
 /* Defense-in-depth denials — never honoured, always trap to -EPERM. See
  * issues/tawcroot-phase3-syscall-gaps.md §1. */
 # define TAWC_SYS_chroot          161

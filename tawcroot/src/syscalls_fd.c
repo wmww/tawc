@@ -86,6 +86,15 @@ static long handle_dup(const tawcroot_syscall_args *args, ucontext_t *uc)
 }
 
 #if defined(__x86_64__)
+/* Route through dup3 from the stub — Android's app-sandbox seccomp
+ * filter rejects dup2 (NR 33) in favour of dup3 (NR 292), so a raw
+ * dup2 re-issue inside the handler nests another SIGSYS while our
+ * outer SIGSYS is auto-masked, and the kernel kills with default
+ * action. Same shape as the accept→accept4 redirect below.
+ *
+ * Semantic difference: dup2(fd, fd) is a no-op returning fd, while
+ * dup3(fd, fd, 0) is EINVAL. fcntl F_GETFD distinguishes "valid fd"
+ * (return newfd) from "closed" (return EBADF). */
 static long handle_dup2(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
@@ -93,7 +102,11 @@ static long handle_dup2(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int newfd = (int)args->b;
 	if (tawcroot_fd_is_reserved(oldfd) ||
 	    tawcroot_fd_is_reserved(newfd)) return TAWC_EBADF;
-	return TAWC_RAW(TAWC_SYS_dup2, oldfd, newfd, 0, 0, 0, 0);
+	if (oldfd == newfd) {
+		long r = tawc_fcntl(oldfd, F_GETFD, 0);
+		return r < 0 ? r : (long)newfd;
+	}
+	return TAWC_RAW(TAWC_SYS_dup3, oldfd, newfd, 0, 0, 0, 0);
 }
 #endif
 
@@ -196,6 +209,37 @@ static long handle_getdents64(const tawcroot_syscall_args *args,
 	                                      tawcroot_n_reserved_fds);
 }
 
+#if defined(__x86_64__)
+/* poll(fds, nfds, timeout_ms) → ppoll(fds, nfds, &ts, NULL, 8). Same
+ * shape as the dup2→dup3 / accept→accept4 redirects: Android's app-
+ * sandbox seccomp filter RET_TRAPs the legacy poll(2) on x86_64,
+ * preferring ppoll. A raw poll re-issued from the handler nests SIGSYS
+ * while ours is auto-masked, killing the process.
+ *
+ * Convert: timeout_ms < 0 → NULL timespec (infinite); else timespec
+ * derived from the millisecond value. The fifth arg (sigsetsize) is
+ * required by the kernel ABI but its value is irrelevant when sigmask
+ * is NULL; pass 8 to match a kernel-sized sigset_t. */
+static long handle_poll(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	long fds_p   = args->a;
+	long nfds    = args->b;
+	int  tmo_ms  = (int)args->c;
+	if (tmo_ms < 0) {
+		return TAWC_RAW(TAWC_SYS_ppoll, fds_p, nfds, 0, 0, 8, 0);
+	}
+	/* The kernel writes the remaining time back into *tmo_p on return;
+	 * `ts` is stack-local and discarded after the call, so the
+	 * write-back is intentionally dropped. */
+	struct { long tv_sec; long tv_nsec; } ts = {
+		(long)tmo_ms / 1000,
+		(long)(tmo_ms % 1000) * 1000000L,
+	};
+	return TAWC_RAW(TAWC_SYS_ppoll, fds_p, nfds, (long)&ts, 0, 8, 0);
+}
+#endif
+
 void tawcroot_fd_register(void)
 {
 	tawcroot_dispatch_install(TAWC_SYS_close,       handle_close);
@@ -206,5 +250,6 @@ void tawcroot_fd_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_getdents64,  handle_getdents64);
 #if defined(__x86_64__)
 	tawcroot_dispatch_install(TAWC_SYS_dup2,        handle_dup2);
+	tawcroot_dispatch_install(TAWC_SYS_poll,        handle_poll);
 #endif
 }
