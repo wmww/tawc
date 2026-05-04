@@ -505,9 +505,9 @@ PACMAN_EOF
      * safety — `--noconfirm` forces the "remove also currently-
      * installed versions?" prompt to default-no, leaving everything
      * cached. Plain `rm` is the only path that actually clears it.
-     * `find -mindepth 1 -delete` rather than `rm -rf .../pkg/*` because
-     * the glob expansion of hundreds of files blows past ARG_MAX on
-     * shells that pre-expand.)
+     * `find -mindepth 1 -delete` rather than an `rm -rf` shell glob
+     * over `pkg/`, because the wildcard expansion of hundreds of files
+     * blows past ARG_MAX on shells that pre-expand.)
      */
     fun installBasePackages(
         method: InstallationMethod,

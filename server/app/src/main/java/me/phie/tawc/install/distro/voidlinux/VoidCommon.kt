@@ -237,7 +237,7 @@ internal object VoidCommon {
      * runs as one transaction, closing the version-skew window that
      * `ArchPacmanCommon.installBasePackages` documents.
      *
-     * `rm -rf /var/cache/xbps/*` (rather than `xbps-remove -Oy`, which
+     * `find /var/cache/xbps -mindepth 1 -delete` (rather than `xbps-remove -Oy`, which
      * only drops orphans-of-current-versions): the install-time cache
      * holds the exact `.xbps` files we just unpacked, ~200 MB. None of
      * the typical follow-up operations actually consult them:
