@@ -11,9 +11,12 @@
  * N_SLOTS, linear probing. A slot has (tid, blocked); empty slots
  * have tid=0. Get scans probes; if it hits a matching tid it returns
  * the bit, if it hits an empty slot it returns 0 (default unblocked),
- * if it walks the whole table without a match it returns 0. Set does
- * the same scan and either updates the matching slot or atomically
- * CAS-claims the first empty slot.
+ * if it walks the whole table without a match it returns 0. Set
+ * scans the same way: matching tid → update bit; empty slot → only
+ * CAS-claim if `blocked=1` (an absent slot already reads as 0, so
+ * set(_,0) on an unknown tid is a no-op). This caps slot pressure
+ * at the number of threads with SIGSYS *currently* blocked, not
+ * the cumulative number that ever called sigprocmask.
  *
  * Single-writer-per-tid invariant: tawc_sigshadow_blocked_set is only
  * called from handle_rt_sigprocmask, which runs on the trapping
@@ -22,13 +25,22 @@
  * needs no CAS — a plain atomic store is enough. Different-tid
  * concurrency is real and handled via the CAS-claim spin.
  *
- * TID reuse is a small known race: if thread A blocks SIGSYS, exits
- * without unblocking, and the kernel later reuses A's tid for thread
- * B, B will read the stale "blocked=1" until it issues its own
+ * Overflow handling: if N_SLOTS distinct tids hold blocked=1
+ * simultaneously and a new tid wants to block, set() __builtin_trap()s
+ * (SIGILL). Silently dropping the update would leave the guest with
+ * a wrong shadow mask and no diagnostic; a hard crash points at the
+ * exact line and tells us to bump N_SLOTS.
+ *
+ * TID reuse is a small remaining race: if thread A blocks SIGSYS,
+ * exits without unblocking, and the kernel reuses A's tid for thread
+ * B, B reads the stale "blocked=1" until it issues its own
  * rt_sigprocmask. Mitigation: realistic guests set-then-read; the
  * kernel doesn't reuse tids while any thread holds them; pid_max is
  * typically ≥32K. Documented in
- * tawcroot-handler-signal-state-not-thread-safe.md.
+ * tawcroot-handler-signal-state-not-thread-safe.md. Also note that
+ * leaked slots (a thread blocks SIGSYS, never unblocks, then exits)
+ * count toward N_SLOTS until tid reuse overwrites them — same issue
+ * file tracks the planned exit-side hook fix.
  *
  * Process-global sigaction — classic seqlock. Even sequence = stable,
  * odd = writer in progress. Writers CAS(seq, even, even+1) to claim,
@@ -117,6 +129,13 @@ void tawc_sigshadow_blocked_set(int tid, int blocked)
 			return;
 		}
 		if (slot_tid == 0) {
+			/* Don't claim a slot just to record blocked=0:
+			 * absent slot already reads as unblocked (the
+			 * kernel default), so set(_, 0) on a tid we've
+			 * never seen is a no-op. This caps slot pressure
+			 * at "threads currently with SIGSYS blocked",
+			 * not "threads that ever called sigprocmask". */
+			if (!blocked) return;
 			int expected = 0;
 			if (__atomic_compare_exchange_n(
 					&g_slots[k].tid, &expected, tid,
@@ -136,9 +155,17 @@ void tawc_sigshadow_blocked_set(int tid, int blocked)
 			/* fall through to next probe */
 		}
 	}
-	/* Table is full of distinct tids — fail closed (drop the
-	 * update). 256 slots is enough for any realistic guest; if
-	 * we ever hit this, growing N_SLOTS is the fix. */
+	/* Table is full of distinct concurrently-blocked tids. With
+	 * blocked=0 sets no longer claiming slots, hitting this means
+	 * N_SLOTS guest threads have SIGSYS *actively* blocked at the
+	 * same time — well outside any realistic workload. We don't
+	 * silently drop the update because that produces a wrong-mask
+	 * read for the affected thread with no signal to the user.
+	 * __builtin_trap() lands as SIGILL on the trapping thread, so
+	 * the failure is visible in logcat / a coredump pointing at
+	 * this line; the fix is bumping N_SLOTS or moving to a
+	 * growable backing store. */
+	__builtin_trap();
 }
 
 /* ---------- process-global sigaction shadow ---------- */
@@ -218,4 +245,9 @@ void tawc_sigshadow_reset(void)
 	action_writer_acquire(&s);
 	zero_bytes_atomic(g_action, TAWC_KERN_SIGACTION_SIZE);
 	__atomic_store_n(&g_action_seq, s + 2, __ATOMIC_RELEASE);
+}
+
+unsigned tawc_sigshadow_capacity(void)
+{
+	return N_SLOTS;
 }

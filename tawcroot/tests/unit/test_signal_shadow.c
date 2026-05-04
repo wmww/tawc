@@ -11,9 +11,14 @@
  */
 
 #include <cleat/test.h>
+#include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "signal_shadow.h"
 
@@ -55,6 +60,69 @@ test(blocked_negative_or_zero_tid_is_noop)
 	tawc_sigshadow_blocked_set(-5, 1);
 	test_int_eq(tawc_sigshadow_blocked_get(0), 0);
 	test_int_eq(tawc_sigshadow_blocked_get(-5), 0);
+}
+
+/* set(_, 0) on a tid we've never seen must not consume a slot — an
+ * absent slot already reads as 0, so claiming one would just leak
+ * capacity. Regression for the slot-leak failure mode where every
+ * sigprocmask-calling thread used to chew up a slot regardless of
+ * whether it was actually blocking SIGSYS. */
+test(blocked_set_zero_on_unknown_tid_does_not_claim_slot)
+{
+	tawc_sigshadow_reset();
+	/* Fill the table with set(_, 0) calls covering many tids — none
+	 * should claim. (Capacity is an internal constant; we go well
+	 * past any realistic value to make sure.) */
+	for (int tid = 1000; tid < 10000; tid++) {
+		tawc_sigshadow_blocked_set(tid, 0);
+	}
+	/* If those had claimed slots, the table would be full and this
+	 * set(_, 1) would __builtin_trap (or, before this change,
+	 * silently no-op). Either way the get below would not see 1. */
+	tawc_sigshadow_blocked_set(42, 1);
+	test_int_eq(tawc_sigshadow_blocked_get(42), 1);
+}
+
+/* Genuine overflow — N_SLOTS distinct tids with blocked=1 plus one
+ * more — must crash loudly via __builtin_trap rather than silently
+ * dropping the update. We fork so the crash doesn't take the test
+ * runner with us, and assert the child died on SIGILL/SIGTRAP (which
+ * is what __builtin_trap produces; the exact signal varies by arch
+ * — x86_64 emits ud2 → SIGILL, aarch64 emits brk → SIGTRAP). */
+test(blocked_set_overflow_crashes_loudly)
+{
+	unsigned cap = tawc_sigshadow_capacity();
+
+	pid_t pid = fork();
+	test_true(pid != -1);
+	if (pid == 0) {
+		/* Mute libc's abort/trap chatter so cleat's stdout
+		 * stays clean even when this test runs. */
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, 2);
+			close(devnull);
+		}
+		tawc_sigshadow_reset();
+		/* Fill every slot with a distinct blocked-tid. Use
+		 * tids spaced by a prime to spread across the hash. */
+		for (unsigned i = 0; i < cap; i++) {
+			tawc_sigshadow_blocked_set((int)(1 + i * 1009), 1);
+		}
+		/* One more distinct tid → table is full of distinct
+		 * blocked entries → must trap. If we return from this
+		 * call the assumption is broken; exit with a sentinel
+		 * the parent can recognize as "trap didn't fire". */
+		tawc_sigshadow_blocked_set(0x7fffffff, 1);
+		_exit(123);
+	}
+
+	int status = 0;
+	pid_t got = waitpid(pid, &status, 0);
+	test_int_eq(got, pid);
+	test_true(WIFSIGNALED(status));
+	int sig = WTERMSIG(status);
+	test_true(sig == SIGILL || sig == SIGTRAP || sig == SIGABRT);
 }
 
 test(action_default_is_zero)

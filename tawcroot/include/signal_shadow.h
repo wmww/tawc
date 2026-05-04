@@ -56,4 +56,8 @@ void tawc_sigshadow_action_set(const unsigned char *in);
  * For tests; not called from production. */
 void tawc_sigshadow_reset(void);
 
+/* Capacity of the TID-keyed blocked table. Exposed so overflow tests
+ * don't hard-code the constant. For tests; not called from production. */
+unsigned tawc_sigshadow_capacity(void);
+
 #endif

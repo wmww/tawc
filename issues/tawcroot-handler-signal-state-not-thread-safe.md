@@ -1,7 +1,9 @@
 # tawcroot: residual TID-reuse race on guest "SIGSYS blocked" shadow
 
-The thread-safety fixes have landed; this issue is reduced to a small
-residual race inherent to the per-thread state model.
+Slot pressure has been narrowed (see "Slot leak — narrowed" below)
+and overflow now panics loudly instead of failing silent. What
+remains is the small TID-reuse race inherent to a per-thread state
+model without a thread-exit hook.
 
 ## What was fixed
 
@@ -29,7 +31,38 @@ hosted glibc by `tests/unit/test_signal_shadow.c` — single-thread
 basics plus a 16-thread blocked-isolation stress and a
 4×4-writer/reader seqlock stress (50K iterations each).
 
-## Residual race: TID reuse
+## Slot leak — narrowed
+
+The blocked-shadow table is `static struct slot g_slots[256]`. The
+original design had every thread that ever called `rt_sigprocmask`
+consuming a slot, regardless of whether it was actually blocking
+SIGSYS, with overflow silently dropped — a long-lived guest with
+thread-pool churn would fill the table and start reading wrong-mask
+state for new threads.
+
+Two fixes landed:
+
+1. **`set(_, 0)` no longer claims a slot.** An absent slot already
+   reads as 0 (the kernel default), so recording an explicit
+   blocked=0 for a never-seen tid is wasteful. With this change,
+   slot pressure is bounded by the count of threads with SIGSYS
+   *currently* blocked — for realistic workloads (pacman, glibc,
+   Firefox), well under 10. Slots still leak when a thread blocks
+   SIGSYS and exits without unblocking, but that's a much smaller
+   set than "every signal-aware thread that ever ran".
+
+2. **Overflow `__builtin_trap()`s.** If N_SLOTS distinct tids
+   genuinely have SIGSYS blocked at once, set() lands as SIGILL on
+   the trapping thread, pointing at the source line. Silent
+   wrong-state-forever is replaced by a visible crash that says
+   "bump N_SLOTS or move to growable storage". Regression test:
+   `blocked_set_zero_on_unknown_tid_does_not_claim_slot`.
+
+Remaining: no thread-exit hook, so a thread that blocks SIGSYS and
+exits without unblocking still leaks its slot. Same fix as the
+TID-reuse race below.
+
+## Residual: TID reuse
 
 If thread A blocks SIGSYS (slot for tid=A_tid set to blocked=1), A
 exits without unblocking, and the kernel later reuses A's tid for
@@ -40,8 +73,9 @@ the bit — blocking an unrelated signal leaves the SIGSYS shadow
 untouched). POSIX-wise B should inherit its creator's mask, not
 A's stale state.
 
-We have no way to tell "first appearance of a tid" from "tid
-reuse" without one of:
+The TID-reuse race and the residual leak (block-then-exit-without-
+unblock) share a root cause: no signal that a thread exited.
+Mitigations:
 
 - A clone hook to clear the new tid's slot when a thread is
   created. We don't trap clone(2) in handler dispatch (only
@@ -50,10 +84,11 @@ reuse" without one of:
 - A `tgkill(0, tid, 0)` probe on every read to detect a dead-tid
   slot. Async-signal-safe, but a syscall per probe per
   rt_sigprocmask is too expensive.
-- An exit-side hook clearing the dying thread's slot. Would need
-  the seccomp filter to RET_TRAP `exit`/`exit_group`, which we
-  currently allow. Cost: one extra trap per thread teardown,
-  probably acceptable but adds dispatch surface.
+- **An exit-side hook clearing the dying thread's slot.** Trap
+  `exit`/`exit_group` (and ideally `tkill`/`tgkill` of self) and
+  call a `tawc_sigshadow_blocked_clear(tid)`. Fixes both the
+  reuse race and the residual leak. Cost: one extra trap per
+  thread teardown, acceptable. This is the cleanest fix.
 
 In practice:
 - Realistic guests set-then-read; the bug only fires when a thread
@@ -79,6 +114,8 @@ unit tests cover the lock-free primitives directly.
 ## Severity
 
 Low. Reduced from "first thing to break under any multi-threaded
-guest" to "edge case observable only on tid reuse after blocked-thread
-exit". Keep the issue open as a marker until either the residual race
-is fixed or the multi-thread phase-1 testhost lands.
+guest" to "wrong mask read once after tid reuse, or noisy crash if
+256 distinct threads concurrently block SIGSYS". The latter has not
+been observed in any workload we ship to. Keep the issue open until
+the exit-side hook lands or the multi-thread phase-1 testhost lets
+us verify.
