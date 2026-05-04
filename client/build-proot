@@ -322,9 +322,15 @@ build_proot() {
     local talloc_build="$TALLOC_DIR/build-$abi"
     [ -f "$talloc_build/libtalloc.a" ] || { echo "ERROR: talloc-$abi not built" >&2; exit 1; }
 
-    if [ "$CLEAN" = "1" ]; then
+    # The Termux Makefile uses one in-tree build dir per checkout, so
+    # consecutive cross-ABI invocations (e.g. Gradle's per-ABI tasks)
+    # would link aarch64 against leftover x86_64 .o's. Stamp the dir
+    # with the current ABI and `make clean` on mismatch.
+    local abi_stamp="$PROOT_DIR/src/.tawc-built-abi"
+    if [ "$CLEAN" = "1" ] || { [ -f "$abi_stamp" ] && [ "$(cat "$abi_stamp")" != "$abi" ]; }; then
         ( cd "$PROOT_DIR/src" && make clean >/dev/null 2>&1 || true )
     fi
+    echo "$abi" > "$abi_stamp"
 
     # proot's Makefile builds .check_*.o programs and inspects whether
     # linking succeeded to decide whether process_vm_readv / seccomp
