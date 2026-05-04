@@ -5,6 +5,7 @@ import com.github.luben.zstd.ZstdInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
+import org.tukaani.xz.XZInputStream
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -222,6 +223,8 @@ internal object ProotArchiveExtractor {
                 GzipCompressorInputStream(raw, /* decompressConcatenated = */ true)
             name.endsWith(".tar.zst") || name.endsWith(".tzst") ->
                 ZstdInputStream(raw)
+            name.endsWith(".tar.xz") || name.endsWith(".txz") ->
+                XZInputStream(raw)
             name.endsWith(".tar") -> raw
             else -> throw IOException("Unsupported tarball extension: ${tarball.name}")
         }

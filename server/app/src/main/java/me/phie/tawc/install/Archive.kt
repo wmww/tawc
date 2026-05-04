@@ -4,10 +4,12 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import com.github.luben.zstd.ZstdInputStream
+import org.tukaani.xz.XZInputStream
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -17,15 +19,15 @@ import java.util.concurrent.atomic.AtomicReference
  * via [Su] so every file lands with root ownership and tar's special-file
  * handling (symlinks, hardlinks, devices) Just Works inside the chroot.
  *
- * Toybox tar reads gzip natively but not zstd, and we can't pipe the
- * decompressed bytes into the shell's stdin (the shell pre-buffers past
- * the script body, tar then sees garbage — "tar: Not tar"). So for
- * `.tar.zst` inputs we stream the decompressed bytes through a named
- * pipe: a writer thread on the app side feeds zstd → FIFO, while tar
- * reads `tar -xf <fifo>` as a positional argument (not stdin, so the
- * shell never touches the bytes). Peak install-time disk usage stays
- * at `compressed tarball + rootfs` — we never materialise the ~700 MB
- * uncompressed tar on disk.
+ * Toybox tar reads gzip natively but not zstd or xz, and we can't pipe
+ * the decompressed bytes into the shell's stdin (the shell pre-buffers
+ * past the script body, tar then sees garbage — "tar: Not tar"). So for
+ * `.tar.zst` and `.tar.xz` inputs we stream the decompressed bytes
+ * through a named pipe: a writer thread on the app side feeds the
+ * decompressor → FIFO, while tar reads `tar -xf <fifo>` as a positional
+ * argument (not stdin, so the shell never touches the bytes). Peak
+ * install-time disk usage stays at `compressed tarball + rootfs` — we
+ * never materialise the ~700 MB uncompressed tar on disk.
  *
  * Toybox tar can't `--strip-components`, so when the bootstrap is wrapped
  * in a single top-level dir (`root.x86_64/`) we extract verbatim and
@@ -77,19 +79,30 @@ object Archive {
                 runTarScript(tarball.absolutePath, destDir, stripPrefix, onLine)
             }
             name.endsWith(".tar.zst") || name.endsWith(".tzst") -> {
-                extractZstdViaFifo(tarball, destDir, tempFifo, stripPrefix, onLine)
+                extractStreamViaFifo(tarball, destDir, tempFifo, stripPrefix, onLine) {
+                    ZstdInputStream(it)
+                }
+            }
+            name.endsWith(".tar.xz") || name.endsWith(".txz") -> {
+                extractStreamViaFifo(tarball, destDir, tempFifo, stripPrefix, onLine) {
+                    XZInputStream(it)
+                }
             }
             else -> throw IOException("Unsupported tarball extension: ${tarball.name}")
         }
     }
 
     /**
-     * Stream zstd-decompressed bytes through a FIFO so tar consumes them
+     * Stream decompressed bytes through a FIFO so tar consumes them
      * straight out of the kernel pipe buffer without ever touching disk.
      * The shell-stdin trick (where the shell pre-buffers past our script
      * and tar then sees garbage) is bypassed because the shell never
      * sees the tar bytes — tar opens the FIFO directly via the path we
      * pass on its command line.
+     *
+     * [decompressor] wraps the raw file input in a format-specific
+     * decompressing stream (zstd-jni or xz-java). Toybox tar reads gzip
+     * natively, so the gzip path doesn't go through here.
      *
      * Failure modes the cleanup must cope with:
      *   - tar fails fast / never opens the FIFO → writer is blocked on
@@ -97,19 +110,20 @@ object Archive {
      *     the FIFO `O_RDONLY|O_NONBLOCK` and closes it, which both
      *     unblocks the writer's open() and signals "no readers" so its
      *     subsequent write() returns EPIPE.
-     *   - writer throws (e.g. corrupt zstd) → tar sees EOF mid-stream
+     *   - writer throws (e.g. corrupt input) → tar sees EOF mid-stream
      *     and fails; the script's non-OK exit (with full tar/su output)
      *     surfaces as the primary error and the writer's exception is
      *     attached as a suppressed cause. If the script somehow ran OK
      *     but the writer still failed, the writer error is thrown
      *     directly.
      */
-    private fun extractZstdViaFifo(
+    private fun extractStreamViaFifo(
         tarball: File,
         destDir: String,
         fifo: File,
         stripPrefix: String?,
         onLine: (String) -> Unit,
+        decompressor: (InputStream) -> InputStream,
     ) {
         // mkfifo refuses if the target already exists — clear any
         // crash leftover (and a regular file too, just in case).
@@ -120,7 +134,7 @@ object Archive {
         val writer = Thread({
             try {
                 BufferedInputStream(tarball.inputStream(), 256 * 1024).use { raw ->
-                    ZstdInputStream(raw).use { zin ->
+                    decompressor(raw).use { zin ->
                         FileOutputStream(fifo).use { out ->
                             zin.copyTo(out)
                         }
@@ -129,7 +143,7 @@ object Archive {
             } catch (t: Throwable) {
                 writerError.set(t)
             }
-        }, "tawc-bootstrap-zstd")
+        }, "tawc-bootstrap-decompress")
         writer.isDaemon = true
         writer.start()
 
@@ -167,7 +181,7 @@ object Archive {
             }
             fifo.delete()
             // The tar/su error is the rich diagnostic; a writer error
-            // is almost always its downstream effect (corrupt zstd →
+            // is almost always its downstream effect (corrupt input →
             // tar EOF → both throw). Throwing from `finally` would
             // *replace* the in-flight `primary`, so when both fail we
             // attach the writer error as suppressed and let the tar
@@ -176,7 +190,7 @@ object Archive {
             val werr = writerError.get()
             if (werr != null) {
                 if (primary != null) primary.addSuppressed(werr)
-                else throw IOException("zstd decompression into FIFO failed", werr)
+                else throw IOException("decompression into FIFO failed", werr)
             }
         }
     }

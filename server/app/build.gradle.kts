@@ -59,11 +59,13 @@ android {
 }
 
 dependencies {
-    // The install package extracts bootstrap tarballs (.tar.gz, .tar.zst)
-    // entirely in-process: commons-compress reads tar/gzip; zstd-jni decodes
-    // zstd. Together this keeps the install path tool-free.
+    // The install package extracts bootstrap tarballs (.tar.gz, .tar.zst,
+    // .tar.xz) entirely in-process: commons-compress reads tar/gzip;
+    // zstd-jni decodes zstd; xz-java decodes xz/LZMA. Together this keeps
+    // the install path tool-free.
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("com.github.luben:zstd-jni:1.5.6-9@aar")
+    implementation("org.tukaani:xz:1.10")
 
     // BouncyCastle: detached-PGP-signature verification of the Arch
     // x86_64 bootstrap tarball before we extract it as root. See

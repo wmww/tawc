@@ -5,9 +5,10 @@ Companion to [distro-abstraction.md](distro-abstraction.md), which
 documents the code-level abstraction that lets us add new families.
 
 We currently ship **Arch Linux ARM** (aarch64), **Arch Linux**
-(x86_64, for the emulator), and **Manjaro ARM** (aarch64). This note
-exists because ALARM is under-maintained and somewhat bloated for our
-needs, and we keep getting asked "what about $distro?".
+(x86_64, for the emulator), **Manjaro ARM** (aarch64), and **Void
+Linux** glibc (x86_64 and aarch64). This note exists because ALARM is
+under-maintained and somewhat bloated for our needs, and we keep
+getting asked "what about $distro?".
 
 **Manjaro ARM** is the most recent addition — also pacman-based, so
 it reuses ~all of `ArchPacmanCommon` (mirrorlist + keyring set are
@@ -80,12 +81,19 @@ suitable for a chroot, fresh-enough packages for a desktop browser.
 
 - Rolling release, runit init (irrelevant in a chroot), `xbps` package
   manager — fast and pleasant.
-- Official aarch64 prebuilt rootfs tarballs
-  (`void-aarch64-ROOTFS-*.tar.xz`), ~80 MB uncompressed — **smaller
+- Official aarch64 + x86_64 prebuilt rootfs tarballs
+  (`void-<arch>-ROOTFS-*.tar.xz`), ~80 MB uncompressed — **smaller
   than Debian minbase**.
 - Independent (not a Debian/Arch derivative), well-maintained but
   smaller community.
 - Best pick if "minimal + rolling" is the goal.
+- **Currently shipped** (see top of this note +
+  `install/distro/voidlinux/`).
+- Bootstrap integrity: SHA-256 from upstream `sha256sum.txt` over
+  HTTPS — same trust profile as Manjaro ARM (single trusted HTTPS
+  endpoint). Void *does* publish a minisign signature but minisign
+  is Ed25519-based and we'd need a separate verifier; the
+  HTTPS-fetched SHA-256 is a defensible floor in the meantime.
 - Downside: smaller package repo than Debian/Arch. Things like Firefox,
   GTK, weston are fine; long-tail desktop apps less so.
 

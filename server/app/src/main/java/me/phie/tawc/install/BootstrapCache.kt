@@ -145,17 +145,17 @@ class BootstrapCache(private val dir: File) {
          */
         private const val MAX_AGE_MILLIS = 7 * DAY_MILLIS
 
-        /** `bootstrap-<arch>.tar.zst` / `bootstrap-<arch>.tar.gz`. */
-        private val CANONICAL_NAME_RE = Regex("""^bootstrap-[A-Za-z0-9_-]+\.tar\.(zst|gz)$""")
+        /** `bootstrap-<arch>.tar.{zst,gz,xz}`. */
+        private val CANONICAL_NAME_RE = Regex("""^bootstrap-[A-Za-z0-9_-]+\.tar\.(zst|gz|xz)$""")
 
         /**
          * `bootstrap-<arch>.tar.fifo` (Archive's FIFO; `.tmp` is the
          * historical zstd-decompression target from older builds) or
-         * `bootstrap-<arch>.tar.{zst,gz}.part` (Downloader's in-flight
+         * `bootstrap-<arch>.tar.{zst,gz,xz}.part` (Downloader's in-flight
          * suffix). Always evicted on app start.
          */
         private val TRANSIENT_NAME_RE =
-            Regex("""^bootstrap-[A-Za-z0-9_-]+\.tar\.(fifo|tmp|(zst|gz)\.part)$""")
+            Regex("""^bootstrap-[A-Za-z0-9_-]+\.tar\.(fifo|tmp|(zst|gz|xz)\.part)$""")
     }
 }
 
@@ -168,4 +168,5 @@ class BootstrapCache(private val dir: File) {
 enum class BootstrapFormat(val ext: String) {
     ZSTD("tar.zst"),
     GZIP("tar.gz"),
+    XZ("tar.xz"),
 }
