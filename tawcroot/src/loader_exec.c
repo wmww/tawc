@@ -29,10 +29,11 @@
 #define PROT_RW   (TAWC_MM_PROT_READ | TAWC_MM_PROT_WRITE)
 #define MAP_PA    (TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_ANON)
 
-#define O_RDONLY   0
-#define O_CLOEXEC  02000000   /* x86_64 + aarch64 share this constant */
+/* O_DIRECTORY / O_NOFOLLOW differ between aarch64 and x86_64 — pull from
+ * the kernel's per-arch header rather than hand-pinning (also defines
+ * O_RDONLY / AT_FDCWD). */
+#include <linux/fcntl.h>
 
-#define AT_FDCWD   -100
 
 #define TAWC_LDR_PATH_MAX 4096
 
@@ -472,9 +473,7 @@ void tawcroot_loader_exec_child(int state_fd, const char *platform)
 	 */
 	if (st.rootfs_host) {
 		long rfd = tawc_openat(-100 /*AT_FDCWD*/, st.rootfs_host,
-		                       0x200000 /*O_PATH*/ |
-		                       0x10000  /*O_DIRECTORY*/ |
-		                       0x80000  /*O_CLOEXEC*/, 0);
+		                       O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
 		if (rfd < 0) LOADER_FAIL(83);
 		long resv = tawcroot_fd_reserve((int)rfd);
 		if (resv < 0) LOADER_FAIL(84);

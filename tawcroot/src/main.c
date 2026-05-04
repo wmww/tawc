@@ -140,13 +140,10 @@ static __attribute__((noreturn)) void usage(int code)
 }
 
 #ifndef TAWCROOT_TESTHOST
-/* Linux openat flags. The full open(2) bitfield isn't worth pulling in
- * <fcntl.h> for; pin the values we need. */
-#define O_RDONLY    0
-#define O_DIRECTORY 0x10000
-#define O_CLOEXEC   0x80000
-#define O_PATH      0x200000
-#define AT_FDCWD    -100
+/* Linux openat flags. Pull from the kernel's per-arch header — O_DIRECTORY
+ * is 0x4000 on aarch64 vs 0x10000 on x86_64 (O_DIRECT on aarch64), so
+ * hand-pinned values silently break the rootfs open on the wrong arch. */
+#include <linux/fcntl.h>
 
 /* Parse "src:dst" into a NUL-terminated `src_buf` and a pointer to
  * the dst tail. Returns 0 / -EINVAL. */

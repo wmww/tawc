@@ -27,6 +27,14 @@
 
 #include <sys/stat.h>
 #include <linux/stat.h>
+/* Pull O_* flag values from the kernel's per-arch header. These differ
+ * between aarch64 and x86_64 (O_NOFOLLOW = 0x8000 vs 0x20000, O_DIRECTORY
+ * = 0x4000 vs 0x10000) — getting them wrong silently breaks O_NOFOLLOW
+ * detection on aarch64, which makes the kernel follow symlink leaves and
+ * the openat handler return ENOENT for any symlink whose absolute target
+ * doesn't exist in the host's view (libarchive's lchmod fallback path
+ * during pacman extraction). Don't define these constants by hand. */
+#include <linux/fcntl.h>
 
 #include "dispatch.h"
 #include "io.h"
@@ -84,13 +92,8 @@ static void decorate_stat(struct stat *st);
  * symlink"; O_CREAT means the leaf may not exist. Both fall under
  * NOFOLLOW / PARENT_CREATE for memoizer purposes — we don't want a
  * `lstat`-style operation against the SYMLINK to be silently rewritten
- * to its target. */
-#ifndef O_NOFOLLOW
-# define O_NOFOLLOW 0x20000
-#endif
-#ifndef O_CREAT
-# define O_CREAT    0x40
-#endif
+ * to its target. (O_NOFOLLOW / O_CREAT are arch-specific bits — pulled
+ * from <linux/fcntl.h> at the top of this file.) */
 static tawcroot_path_mode openat_mode(int flags)
 {
 	if (flags & O_NOFOLLOW) return TAWCROOT_PATH_NOFOLLOW;
@@ -125,8 +128,8 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * match anyway. */
 	if (gpath &&
 	    (flags & 3) == 0 /*O_RDONLY*/ &&
-	    (flags & 0x10000 /*O_DIRECTORY*/) == 0 &&
-	    (flags & 0x200000 /*O_PATH*/) == 0) {
+	    (flags & O_DIRECTORY) == 0 &&
+	    (flags & O_PATH) == 0) {
 		char tmp[64];
 		long pn = tawc_copy_string_from_guest(tmp, sizeof tmp, gpath);
 		if (pn >= 0 && is_proc_self_maps(tmp))
@@ -175,12 +178,12 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		/* The kernel rejects open_how with non-zero `mode` when no
 		 * creation flag is set. Mirror libc's discipline.
 		 *
-		 * O_TMPFILE is `__O_TMPFILE | O_DIRECTORY` (0x400000 | 0x10000
-		 * = 0x410000); checking via plain bitwise AND would match on
-		 * O_DIRECTORY alone, so test for the full bit pattern. (Review
-		 * finding B8.) */
-		int has_create   = (flags & 0x40 /*O_CREAT*/) != 0;
-		int has_tmpfile  = (flags & 0x410000 /*O_TMPFILE*/) == 0x410000;
+		 * O_TMPFILE is `__O_TMPFILE | O_DIRECTORY`; checking via plain
+		 * bitwise AND on O_TMPFILE would also match plain O_DIRECTORY,
+		 * so test for both bits. (Review finding B8.) */
+		int has_create   = (flags & O_CREAT) != 0;
+		int has_tmpfile  = (flags & __O_TMPFILE) == __O_TMPFILE &&
+				   (flags & O_DIRECTORY) == O_DIRECTORY;
 		how.mode = (has_create || has_tmpfile)
 			? (uint64_t)(uint32_t)mode : 0;
 		how.resolve = TAWC_RESOLVE_IN_ROOT;
@@ -612,8 +615,7 @@ static long handle_chdir(const tawcroot_syscall_args *args, ucontext_t *uc)
 		return TAWC_RAW(TAWC_SYS_fchdir, base_fd, 0, 0, 0, 0, 0);
 	}
 
-	int flags = 0x10000 /*O_DIRECTORY*/ | 0x200000 /*O_PATH*/
-		  | 0x80000 /*O_CLOEXEC*/;
+	int flags = O_DIRECTORY | O_PATH | O_CLOEXEC;
 	long fd = tawc_openat(base_fd, suffix, flags, 0);
 	if (fd < 0) return fd;
 

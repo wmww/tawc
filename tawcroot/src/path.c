@@ -35,6 +35,9 @@
 #include "path_orchestrate.h"
 #include "path_resolve.h"
 #include "raw_sys.h"
+/* Per-arch O_DIRECTORY / O_NOFOLLOW values — see syscalls_fs.c for
+ * why hand-pinning the x86_64 numbers silently breaks aarch64. */
+#include <linux/fcntl.h>
 
 #define TAWC_PATH_MAX 4096
 
@@ -157,10 +160,8 @@ long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
 	if (n == 0) return -22;  /* EINVAL */
 	if (n + 1 > sizeof b->dst) return -36; /* ENAMETOOLONG */
 
-	/* O_PATH | O_DIRECTORY | O_CLOEXEC. The flag values agree across
-	 * Linux arches we care about. */
 	long fd = tawc_openat(-100 /*AT_FDCWD*/, src_host,
-			      0x200000 | 0x10000 | 0x80000, 0);
+			      O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
 	if (fd < 0) return fd;
 
 	long resv = tawcroot_fd_reserve((int)fd);

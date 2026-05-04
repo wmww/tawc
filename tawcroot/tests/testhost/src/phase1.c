@@ -34,24 +34,13 @@
 #include "sysnr.h"
 #include "usercopy.h"
 
-#ifndef AT_FDCWD
-# define AT_FDCWD -100
-#endif
-#ifndef O_RDONLY
-# define O_RDONLY 0
-#endif
-#ifndef O_DIRECTORY
-# define O_DIRECTORY 0x10000
-#endif
-#ifndef O_PATH
-# define O_PATH 0x200000
-#endif
-#ifndef O_CLOEXEC
-# define O_CLOEXEC 0x80000
-#endif
-#ifndef O_RDWR
-# define O_RDWR 2
-#endif
+/* Pull O_NOFOLLOW / O_PATH / O_DIRECTORY / O_RDWR / AT_FDCWD from the
+ * kernel's per-arch header. Hand-pinned 0x20000 / 0x10000 fallbacks
+ * silently break on aarch64 (real values: O_NOFOLLOW=0x8000,
+ * O_DIRECTORY=0x4000) — the testhost ends up issuing O_NOFOLLOW-less
+ * openats that the production handler then follows through to absolute
+ * targets outside the rootfs view. */
+#include <linux/fcntl.h>
 #ifndef AT_SYMLINK_NOFOLLOW
 # define AT_SYMLINK_NOFOLLOW 0x100
 #endif
@@ -730,6 +719,21 @@ int tawcroot_phase1_main(const char *rootfs)
 		fails += tawc_io_step("unlinkat(symlink)", rv == 0);
 	}
 
+	/* openat(O_PATH | O_NOFOLLOW) on a symlink must succeed and hand
+	 * back an fd referring to the symlink itself. Without this glibc's
+	 * fchmodat(..., AT_SYMLINK_NOFOLLOW) emulation (open O_PATH|O_NOFOLLOW
+	 * + chmod /proc/self/fd/N) trips on the very first step, making
+	 * libarchive's symlink-extraction warn "Can't set permissions". */
+	{
+		long fd = inline_openat(AT_FDCWD, "/utime-link",
+					O_PATH | O_NOFOLLOW, 0);
+		fails += tawc_io_step(
+			"openat(\"/utime-link\", O_PATH|O_NOFOLLOW) -> fd",
+			fd >= 0);
+		tawc_io_kv_dec("    rv", fd);
+		if (fd >= 0) tawc_close((int)fd);
+	}
+
 	/* utimensat AT_SYMLINK_NOFOLLOW must update the SYMLINK's mtime,
 	 * not the target's. Pre-fix the handler ignored the flag and used
 	 * PATH_FOLLOW for translation, so the resolver walked through to
@@ -1151,6 +1155,40 @@ int tawcroot_phase1_main(const char *rootfs)
 			"openat(\"/altpath\") abs-target-in-rootfs -> probe content",
 			fd >= 0);
 		if (fd >= 0) tawc_close((int)fd);
+		tawc_io_kv_dec("    rv", fd);
+	}
+
+	/* O_PATH | O_NOFOLLOW on the same absolute-target symlink must give
+	 * back an fd referring to the SYMLINK ITSELF (S_IFLNK), not the
+	 * target. This is exactly what glibc's lchmod / fchmodat
+	 * AT_SYMLINK_NOFOLLOW emulation issues; if O_NOFOLLOW gets dropped
+	 * on the floor (e.g. handler hard-codes the wrong arch's bit value)
+	 * the resolver follows /altpath through to /etc/probe and the fd
+	 * comes back as a regular file, which propagates as libarchive's
+	 * "Can't set permissions" warning during pacman extraction.
+	 *
+	 * The arch-correct O_NOFOLLOW comes from <linux/fcntl.h> at file
+	 * top — pre-fix the in-file fallback hard-coded the x86_64 value
+	 * (0x20000), wrong on aarch64 (0x8000). */
+	{
+		long fd = inline_openat(AT_FDCWD, "/altpath",
+					O_PATH | O_NOFOLLOW, 0);
+		fails += tawc_io_step(
+			"openat(\"/altpath\", O_PATH|O_NOFOLLOW) -> fd",
+			fd >= 0);
+		if (fd >= 0) {
+			struct stat st;
+			long sr;
+			INLINE_SYS6(TAWC_SYS_fstatat, (int)fd, "", &st,
+				    0x1000 /*AT_EMPTY_PATH*/, 0, 0, sr);
+			int is_symlink = sr == 0 && (st.st_mode & 0170000) == 0120000;
+			fails += tawc_io_step(
+				"fstat on the O_PATH|O_NOFOLLOW fd -> S_IFLNK "
+				"(symlink, not target)",
+				is_symlink);
+			tawc_io_kv_dec("    st_mode", (long)st.st_mode);
+			tawc_close((int)fd);
+		}
 		tawc_io_kv_dec("    rv", fd);
 	}
 
