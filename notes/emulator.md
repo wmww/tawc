@@ -216,16 +216,16 @@ from PATH or rely on the system one — both versions work the same
 against the AVD.)
 
 ### 2. AVD
-    echo no | avdmanager create avd -n tawc \
+    echo no | avdmanager create avd -n tawc-rooted \
         -k 'system-images;android-36;google_apis;x86_64' -d 'pixel_5'
 
 ### 3. First boot (no Magisk yet)
-    emulator -avd tawc -no-window -no-audio -no-boot-anim -no-snapshot &
+    emulator -avd tawc-rooted -no-window -no-audio -no-boot-anim -no-snapshot &
     # wait for boot
     until adb -s emulator-5554 shell getprop sys.boot_completed | grep -q 1; do sleep 5; done
 
 (Headless `-no-window` is fine for the rootAVD step. Day-to-day, use the
-`scripts/start-emulator.sh` helper — see "Day-to-day" below.)
+`scripts/emulator.sh` helper — see "Day-to-day" below.)
 
 ### 4. Root with Magisk via rootAVD
 The rootAVD checkout lives at `./deps/rootAVD/` (gitignored, like `./deps/libhybris`).
@@ -241,7 +241,7 @@ Then patch the AVD's ramdisk:
 This patches the AVD's `ramdisk.img` with Magisk init, installs the
 Magisk APK, and shuts the emulator down. Cold-boot it again:
 
-    emulator -avd tawc -no-window -no-audio -no-boot-anim -no-snapshot &
+    emulator -avd tawc-rooted -no-window -no-audio -no-boot-anim -no-snapshot &
 
 ### 5. Pre-grant `su` to adb shell
 On a real phone you'd tap "Grant" in the Magisk app. Headless equivalent
@@ -271,15 +271,67 @@ few minutes the first time. Idempotent — re-running skips done steps
 
 ## Day-to-day
 
-Launch the AVD:
+Two AVDs are supported:
 
-    bash scripts/start-emulator.sh           # windowed (default)
-    bash scripts/start-emulator.sh --headless
-    bash scripts/start-emulator.sh --cold    # skip snapshot, full cold boot
+- `tawc-rooted` (default) — Magisk-rooted via the rootAVD flow above.
+  Required for the chroot install method (it needs `su` for bind-mounts
+  and /dev/null setup), so this is the AVD all integration tests use.
+- `tawc-rootless` (opt-in via `start rootless`) — stock AVD, no Magisk.
+  Useful for testing the tawcroot/proot install methods on a non-rooted
+  image. Won't render SHM client surfaces (no `setenforce 0`), and the
+  chroot install method won't work.
+
+To create the rootless AVD (one-time):
+
+    echo no | avdmanager create avd -n tawc-rootless \
+        -k 'system-images;android-36;google_apis;x86_64' -d 'pixel_5'
+
+Skip steps 3–5 above for it — the rootless AVD just boots stock.
+
+Launch / shut down:
+
+    bash scripts/emulator.sh start                 # current default (rooted)
+    bash scripts/emulator.sh start rooted          # explicit rooted
+    bash scripts/emulator.sh start rootless        # stock AVD
+    bash scripts/emulator.sh start rooted --cold   # skip snapshot, full cold boot
+    bash scripts/emulator.sh stop                  # stops every running tawc AVD
+    bash scripts/emulator.sh stop rootless         # only stop the rootless one
+    bash scripts/emulator.sh stop rooted           # only stop the rooted one
+
+The variant is positional so callers (test scripts, CI, etc.) can name
+exactly which AVD they want; if the default rotates later, scripts that
+specify `rooted` keep getting rooted.
+
+You can run both AVDs at once — the script resolves the right adb
+serial via `adb emu avd name`, so `start rootless` always targets the
+rootless one even if the rooted one is already on `emulator-5554`.
+Bare `stop` with no variant stops whichever tawc AVDs are currently
+running (both, if both are up).
+
+`start` always runs the emulator windowed against an X display. There's
+no headless mode — the window is the easiest way to see what's actually
+happening. If `DISPLAY` is unset or points at an unreachable `:0`,
+`start` auto-picks a usable X socket from `/tmp/.X11-unix/X*` owned by
+the current uid (typically `:1` under an Xwayland-on-Wayland session)
+and prints `==> using DISPLAY=:N`. The emulator's bundled Qt only ships
+the xcb plugin, so a real X (or Xwayland) socket is required; if none
+is reachable the script errors out instead of launching.
+
+`stop` does `adb emu kill` against the AVD's actual serial so quickboot
+saves cleanly, falls back to SIGTERM, and finally SIGKILLs after a 30s
+grace period.
 
 The script waits for `sys.boot_completed` then exits, leaving the
 emulator running in the background. Logs go to `/tmp/emulator.log`
 (override with `TAWC_EMULATOR_LOG`).
+
+`-feature -QuickbootFileBacked` is passed unconditionally: with the
+default file-backed Quickboot, qemu mmaps the 2 GB guest RAM onto
+`snapshots/default_boot/ram.img`, so every guest memory store dirties a
+page of that file and the host kernel flushes 50–150 MB/s to disk under
+any meaningful guest activity (kswapd / zRAM churn especially). The
+trade-off is a slower snapshot save on exit (it copies 2 GB instead of
+relying on the file mapping); ongoing disk writes drop to ~zero.
 
 Post-boot it also brings the AVD into a known-good state for tawc dev:
 
@@ -350,11 +402,11 @@ full Magisk userspace, so `magiskpolicy` doesn't exist on the AVD. The
 result: SHM client surfaces fail to render with an `avc: denied { write }`
 on a `tmpfs:s0` memfd in logcat.
 
-`scripts/start-emulator.sh` works around this by running `setenforce 0` once
-the AVD finishes booting. It's emulator-only, resets on reboot, and we
-already gave up isolation by Magisk-rooting the AVD anyway. If you boot
-the AVD by hand without `start-emulator`, run `adb shell 'su -c
-"setenforce 0"'` yourself.
+`scripts/emulator.sh start` works around this by running `setenforce 0`
+once the AVD finishes booting. It's emulator-only, resets on reboot,
+and we already gave up isolation by Magisk-rooting the AVD anyway. If
+you boot the AVD by hand without `emulator.sh start`, run `adb shell
+'su -c "setenforce 0"'` yourself.
 
 ## Implementation notes
 - `scripts/lib/select-device.sh` — sourceable wrapper; resolves
@@ -373,4 +425,4 @@ the AVD by hand without `start-emulator`, run `adb shell 'su -c
 ## Magisk policy persistence
 Once the policies row is in `/data/adb/magisk.db`, it survives
 emulator reboots and snapshot save/load. If you wipe the AVD
-(`emulator -avd tawc -wipe-data`), repeat steps 4–6.
+(`emulator -avd tawc-rooted -wipe-data`), repeat steps 4–6.

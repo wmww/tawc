@@ -479,7 +479,7 @@ adb shell "su -c 'ls /data/data/me.phie.tawc/distros/'"
   declared in the manifest, no runtime grant.
 
 On the emulator the first two grants are applied automatically by
-`bash scripts/start-emulator.sh` after boot — see [emulator.md](emulator.md)
+`bash scripts/emulator.sh start` after boot — see [emulator.md](emulator.md)
 for details. Re-run the script after `adb install -r ...` to refresh
 them. To do it by hand:
 
