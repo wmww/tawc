@@ -75,19 +75,10 @@ echo "=== Checking adb connection ($ANDROID_SERIAL, install=$INSTALL_ID) ==="
 adb get-state >/dev/null 2>&1 || { echo "ERROR: No adb device connected"; exit 1; }
 
 if [ "$DO_BUILD" -eq 1 ]; then
-    # Pick the right native ABI for the target. The Rust compositor links
-    # against a locally-built static libxkbcommon per arch; building both
-    # only works if both libxkbcommon trees exist.
-    case "$ANDROID_SERIAL" in
-        emulator-*) TAWC_ABIS="x86_64" ;;
-        *)          TAWC_ABIS="arm64-v8a" ;;
-    esac
-
-    echo "=== Building compositor APK ($TAWC_ABIS) ==="
-    ( cd "$ROOT_DIR" && ./gradlew "-PtawcAbis=$TAWC_ABIS" assembleDebug --quiet )
-
-    echo "=== Installing APK ==="
-    adb install -r app/build/outputs/apk/debug/app-debug.apk
+    # Build + install the APK. We skip the launch — this script does its
+    # own force-stop + am start + readiness wait below, so the
+    # compositor lifetime brackets the cargo run cleanly.
+    bash "$ROOT_DIR/scripts/app-build-install.sh" --no-launch
 
     echo "=== Verifying in-app install is present at $INSTALL_DIR ==="
     if ! adb shell "su -c 'test -x $INSTALL_DIR/enter.sh'" >/dev/null 2>&1; then

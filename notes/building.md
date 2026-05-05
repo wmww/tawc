@@ -290,11 +290,17 @@ proot, tawcroot, and Xwayland need ships inside this APK.
 ## Install and launch
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk && \
-adb shell am force-stop me.phie.tawc && \
-adb shell am start -n me.phie.tawc/.compositor.CompositorActivity \
-    -d "tawc://activity/manual"
+bash scripts/app-build-install.sh
 ```
+
+Builds, installs, force-stops, and launches `MainActivity` (which
+starts `CompositorService`). Picks the device from `.tawctarget` /
+`TAWC_TARGET` via `scripts/lib/select-device.sh`. Flags: `--no-build`
+to reuse the existing APK; `--no-launch` to install without starting
+(used by `run-integration-tests.sh`).
+
+Note: `am start` directly into `.compositor.CompositorActivity` does
+not work — go through `MainActivity` (the script does this).
 
 After reinstalling, the compositor restarts with a new Wayland socket.
 Any running chroot clients (Firefox, etc.) will be connected to the

@@ -27,8 +27,8 @@
 #   - either, if the tawc APK is installed: grants POST_NOTIFICATIONS
 #     (so the install foreground-service notification displays).
 # Per-app grants are no-ops when the APK isn't there yet — first install
-# the APK with `gradlew assembleDebug && adb install -r ...`, then re-run
-# `start` (or grant by hand; see notes/installation.md).
+# the APK with `bash scripts/app-build-install.sh`, then re-run `start` (or
+# grant by hand; see notes/installation.md).
 #
 # `stop` with no variant stops every tawc AVD that is running. `rooted` /
 # `rootless` filter to only that one. (TAWC_AVD overrides to a single
