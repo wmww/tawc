@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only override of the main config (overlay-replaced wholesale,
+     not merged). Strict HTTPS everywhere except 127.0.0.1, which the
+     dev-time cache proxy listens on (reached via `adb reverse`). The
+     production config (app/src/main/res/xml/network_security_config.xml)
+     still applies to release builds and forbids cleartext entirely. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

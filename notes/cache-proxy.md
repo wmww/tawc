@@ -95,6 +95,11 @@ proxy_redirect ~^(https?)://([^/]+)/(.*)$ /proxy/$1/$2/$3;
 - 30x responses themselves are **not** cached. The redirect carries
   signed time-limited tokens that change per request; caching them
   would point old requests at expired tokens.
+- `proxy_ssl_server_name on; proxy_ssl_name $2;` — variable-based
+  `proxy_pass` defaults to no SNI, so Fastly-fronted mirrors (e.g.
+  `repo-fastly.voidlinux.org`) reply 421 Misdirected Request because
+  the served default cert doesn't cover the requested Host. Forcing
+  SNI to match the proxied hostname fixes it.
 - Range requests aren't cached by stock nginx. apt/pacman/xbps fall
   back to full GET fine; revisit with the `slice` module if it ever
   bites.

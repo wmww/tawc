@@ -34,16 +34,20 @@ if [ -n "${ANDROID_SERIAL:-}" ]; then
     return 0 2>/dev/null || exit 0
 fi
 
-_target="${TAWC_TARGET:-}"
-if [ -z "$_target" ]; then
+# Use namespaced var names: this file is sourced and shares scope with
+# the caller, so plain `_script_dir` would clobber a same-named var
+# already set above the source line (and several callers set one).
+__sd_target="${TAWC_TARGET:-}"
+if [ -z "$__sd_target" ]; then
     # This script lives at scripts/lib/select-device.sh; project root
     # (which contains .tawctarget) is two dirs up.
-    _script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-    _tawctarget_file="$(dirname "$(dirname "$_script_dir")")/.tawctarget"
-    if [ -f "$_tawctarget_file" ]; then
-        _target=$(head -n1 "$_tawctarget_file" | tr -d '[:space:]')
+    __sd_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    __sd_tawctarget_file="$(dirname "$(dirname "$__sd_dir")")/.tawctarget"
+    if [ -f "$__sd_tawctarget_file" ]; then
+        __sd_target=$(head -n1 "$__sd_tawctarget_file" | tr -d '[:space:]')
     fi
 fi
+_target="$__sd_target"
 [ -z "$_target" ] && _target=none
 
 case "$_target" in
