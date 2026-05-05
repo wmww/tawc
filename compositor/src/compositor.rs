@@ -30,7 +30,7 @@ use smithay::reexports::wayland_server::Display;
 use smithay::utils::Serial;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
-    CompositorClientState, CompositorHandler, CompositorState,
+    self, CompositorClientState, CompositorHandler, CompositorState,
 };
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
@@ -216,7 +216,10 @@ impl TawcState {
     pub fn new(display: &mut Display<Self>, output_scale: i32, output_logical_size: (i32, i32)) -> Self {
         let dh = display.handle();
 
-        let compositor_state = CompositorState::new::<Self>(&dh);
+        // v6 so we can send wl_surface.preferred_buffer_scale per surface
+        // (done from `new_surface`). GTK4 ≥ 4.18 needs that signal to
+        // allocate HiDPI buffers — see notes/rendering.md.
+        let compositor_state = CompositorState::new_v6::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, []);
@@ -371,6 +374,15 @@ impl CompositorHandler for TawcState {
             return &state.compositor_state;
         }
         &client.get_data::<ClientState>().unwrap().compositor_state
+    }
+
+    fn new_surface(&mut self, surface: &WlSurface) {
+        // Send preferred_buffer_scale up front so HiDPI clients commit at
+        // native size from the first frame. No-op on pre-v6 surfaces.
+        let scale = self.output_scale;
+        compositor::with_states(surface, |data| {
+            compositor::send_surface_state(surface, data, scale, smithay::utils::Transform::Normal);
+        });
     }
 
     fn commit(&mut self, surface: &WlSurface) {

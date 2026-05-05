@@ -98,20 +98,49 @@ per surface. Surfaces using the AHB channel protocol are never checked for SHM b
 - `gtk4-demo` / `gtk4-widget-factory` 4.22.2 on Void (AHB, no magenta tint;
   manually tested 2026-04-20 and re-verified 2026-05-04)
 
+### Output scale advertisement
+
+We advertise `wl_compositor` v6 and call `compositor::send_surface_state`
+from `CompositorHandler::new_surface` to emit
+`wl_surface.preferred_buffer_scale` (and the matching transform) for every
+surface. Modern GDK (GTK4 ≥ 4.18) deliberately drops the older
+`wl_surface.enter`-driven scale guess and **requires** either this v6 event
+or `wp_fractional_scale_v1.preferred_scale` to learn the output scale. With
+neither, GDK falls back to a constructed-time monitor guess that races
+against output-event delivery and frequently lands on scale=1 — surfaces
+end up committed at half resolution into a half-size `wl_egl_window` that
+the compositor then upscales to fill the screen.
+
+Symptom of forgetting this: HiDPI buffers come in at 540×1200 instead of
+1080×2400, viewport `set_destination(540, 1200)` matches both, so the
+display is full-screen but blurry; on GTK 4.18 specifically the renderer
+also produces blank chrome-only windows in this state. After the v6 fix,
+buffers arrive at the correct 1080×2400 with stride 1088 — same as
+hand-fixed clients (Firefox/WebRender) that rely on `wp_viewporter`
+explicitly.
+
+We don't yet implement `wp_fractional_scale_v1`. Adding it would let
+clients pick a non-integer scale, but for our integer-scale=2 output the
+v6 event is sufficient and conformant.
+
 ### GTK4 minimum version
 
-**GTK4 must be ≥ 4.22 on libhybris/Adreno.** GTK4 4.18.x's GpuRenderer has a
-regression that produces blank windows (background fills, no widget content
-or text) when committing AHB buffers via `android_wlegl`. The same path
-works on GTK4 ≥ 4.20-ish (4.22.2 verified). Symptom on 4.18: every GTK4 app
-renders an off-white window with at most a faint headerbar strip; cairo
-fallback (`GSK_RENDERER=cairo`) renders correctly via SHM. GTK3 and
-non-GTK GLES/Vulkan clients are unaffected.
+**GTK4 must be ≥ 4.22 on libhybris/Adreno.** Even with the proper scale
+signal, GTK4 4.18.x's GpuRenderer has an unrelated regression that
+produces blank windows (background fills, no widget content or text) when
+committing AHB buffers via `android_wlegl`. The same path works on GTK4 ≥
+4.22.2. Symptom on 4.18: every GTK4 app renders an off-white window with
+at most a faint headerbar strip; cairo fallback (`GSK_RENDERER=cairo`)
+renders correctly via SHM. GTK3 and non-GTK GLES/Vulkan clients are
+unaffected.
 
 The bug exists across all `GSK_RENDERER` flavours (`gl|ngl|vulkan`) and
-isn't fixable via `GSK_GPU_DISABLE` flags or any compositor-side change
-we've tried — it's in GTK4 4.18's GpuRenderer interaction with libhybris-
-wrapped Adreno EGL, fixed upstream by GTK4 4.22.
+isn't fixable via `GSK_GPU_DISABLE` flags or any compositor-side change —
+it's in GTK4 4.18's GpuRenderer interaction with libhybris-wrapped Adreno
+EGL, fixed upstream by GTK4 4.22. (Confirmed via `WAYLAND_DEBUG=client`:
+post-fix, GTK 4.18 sends the same `create_buffer 1080×2400 stride 1088`
+as 4.22 and wraps it identically, so the visible breakage lives entirely
+inside the client's own GpuRenderer pixel writes.)
 
 In practice: **Manjaro ARM ships gtk4 1:4.18.6-1 in arm-testing as of
 2026-05-04 — too old.** Void aarch64 ships gtk4-4.22.2_1 — works. The
