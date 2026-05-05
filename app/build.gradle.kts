@@ -22,6 +22,12 @@ android {
         }
     }
 
+    // BuildConfig.DEBUG gates dev-only paths (e.g. mirror cache plumbing
+    // in InstallationService); off by default in AGP 8.
+    buildFeatures {
+        buildConfig = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11

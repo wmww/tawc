@@ -3,6 +3,7 @@ package me.phie.tawc.install.distro
 import me.phie.tawc.install.BootstrapFormat
 import me.phie.tawc.install.BootstrapVerification
 import me.phie.tawc.install.InstallationMethod
+import me.phie.tawc.install.MirrorProxy
 
 /**
  * Per-distro policy: bootstrap tarball, `/etc` configuration,
@@ -99,8 +100,20 @@ interface Distro {
      * because the rootfs is app-uid-owned in proot mode). The
      * `enter.sh` wrapper is *not* written here — `Installer` does
      * that after `configure` because it's generic to every distro.
+     *
+     * @param mirrorProxy when non-null, every package-mirror URL the
+     *   implementation writes into the rootfs (pacman mirrorlist,
+     *   xbps repository conf, apt sources.list) must be rewritten
+     *   through it via [MirrorProxy.wrap]. Verification endpoints
+     *   (`.sig`, `.md5` sidecars) are **not** proxied — see
+     *   `notes/cache-proxy.md`.
      */
-    fun configure(method: InstallationMethod, rootfs: String, log: (String) -> Unit)
+    fun configure(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorProxy: MirrorProxy?,
+        log: (String) -> Unit,
+    )
 
     /**
      * Bootstrap the package manager inside the chroot at [rootfs]

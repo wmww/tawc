@@ -57,6 +57,15 @@ class Installer(
     private val method: InstallationMethod,
     private val id: String,
     private val label: String? = null,
+    /**
+     * Dev-time caching reverse proxy. When non-null, bootstrap fetches
+     * and the rootfs's package-mirror config get rewritten through it.
+     * Always null for production installs — set only via the
+     * `--es mirrorProxy` install intent extra (debug builds) or the
+     * "Use local proxy mirror" form checkbox. See
+     * `notes/cache-proxy.md`.
+     */
+    private val mirrorProxy: MirrorProxy? = null,
 ) {
     /** Throws on failure. Reports progress + log lines via the callbacks. */
     fun install(
@@ -130,10 +139,16 @@ class Installer(
             InstallStage.DOWNLOADING,
             "Downloading ${distro.linuxArch} bootstrap…",
         ))
-        log("download: ${bootstrap.url}")
+        // Funnel the bootstrap fetch through the dev-time mirror cache
+        // when set. The proxy URL is only what the wire request goes to;
+        // metadata.json's [Installation.sourceUrl] still records the
+        // canonical upstream URL above so the install record reads
+        // sensibly across runs with/without the proxy.
+        val effectiveBootstrapUrl = mirrorProxy?.wrap(bootstrap.url) ?: bootstrap.url
+        log("download: $effectiveBootstrapUrl")
         val cacheFile = cache.download(
             distro.cacheKey,
-            bootstrap.url,
+            effectiveBootstrapUrl,
             bootstrap.format,
         ) { read, total ->
             val pct = total?.let { ((read * 100) / it).toInt().coerceIn(0, 100) }
@@ -190,7 +205,7 @@ class Installer(
         // writes it (not Distro). Without enter.sh later pacman steps
         // can't run.
         progress(InstallProgress(InstallStage.CONFIGURING, "Configuring chroot…"))
-        distro.configure(method, rootfsPath, log)
+        distro.configure(method, rootfsPath, mirrorProxy, log)
         writeEnterScript(rootfsPath, log)
         // Symlink the APK-bundled libhybris tree into /usr/local/lib.
         // Must follow distro.configure (which may create /usr/local

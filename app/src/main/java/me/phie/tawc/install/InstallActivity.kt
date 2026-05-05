@@ -11,6 +11,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.CheckBox
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
@@ -52,6 +53,14 @@ class InstallActivity : AppCompatActivity() {
     private var selectedMethod: String? = null
     private var selectedDistro: String? = null
     private var labelEdited: Boolean = false
+    /**
+     * Tri-state for the "Use cache proxy" checkbox:
+     *   - null: not yet initialised (we'll seed from intent extra or
+     *     the dev-build default of `true`).
+     *   - true / false: user-overridden value, persisted across rotations.
+     */
+    private var useCacheProxy: Boolean? = null
+    private lateinit var cacheProxyCheckbox: CheckBox
 
     private lateinit var formScroll: ScrollView
     private lateinit var formSection: LinearLayout
@@ -85,6 +94,18 @@ class InstallActivity : AppCompatActivity() {
             ?: intent?.getStringExtra(EXTRA_DISTRO)
         labelEdited = savedInstanceState?.getBoolean(KEY_LABEL_EDITED) == true
         started = savedInstanceState?.getBoolean(KEY_STARTED) == true
+        // Cache-proxy seed order:
+        //   1. saved instance state (rotation survives)
+        //   2. `--es mirrorProxy <url>` from the launch intent (auto-on)
+        //   3. dev build default: on. Production: off (and the row is
+        //      hidden anyway, see buildCacheProxyRow).
+        useCacheProxy = when {
+            savedInstanceState?.containsKey(KEY_USE_PROXY) == true ->
+                savedInstanceState.getBoolean(KEY_USE_PROXY)
+            intent?.hasExtra(EXTRA_MIRROR_PROXY) == true -> true
+            me.phie.tawc.BuildConfig.DEBUG -> true
+            else -> false
+        }
 
         scaffold = buildChildScreen("Install")
 
@@ -159,6 +180,7 @@ class InstallActivity : AppCompatActivity() {
         }
         selectedMethod?.let { outState.putString(KEY_METHOD, it) }
         selectedDistro?.let { outState.putString(KEY_DISTRO, it) }
+        useCacheProxy?.let { outState.putBoolean(KEY_USE_PROXY, it) }
     }
 
     override fun onStart() {
@@ -192,6 +214,13 @@ class InstallActivity : AppCompatActivity() {
         // the `--es method ...` intent extra and saved instance state
         // both override.
         s.addView(buildMethodPicker(), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+
+        // Dev-only "Use cache proxy" checkbox. Hidden in release builds
+        // — production must never even ask the user about a localhost
+        // proxy URL, since it'd never be reachable from a packaged APK.
+        if (me.phie.tawc.BuildConfig.DEBUG) {
+            s.addView(buildCacheProxyRow(), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+        }
 
         // "What's the difference?" link to the install method info
         // page. Borderless text button so it reads as a help affordance,
@@ -356,6 +385,20 @@ class InstallActivity : AppCompatActivity() {
     }
 
     /**
+     * Dev-only "Use cache proxy" checkbox. Drives `useCacheProxy`,
+     * which gates whether [beginInstall] passes a `mirrorProxy` URL to
+     * the service. See `notes/cache-proxy.md`.
+     */
+    private fun buildCacheProxyRow(): CheckBox {
+        cacheProxyCheckbox = CheckBox(this).apply {
+            text = "Use local cache proxy"
+            isChecked = useCacheProxy ?: true
+            setOnCheckedChangeListener { _, checked -> useCacheProxy = checked }
+        }
+        return cacheProxyCheckbox
+    }
+
+    /**
      * Build the method picker (tawcroot / proot / chroot radio group),
      * vertical and in recommendation order: tawcroot first as the
      * default for new installs, proot as the established rootless
@@ -461,14 +504,26 @@ class InstallActivity : AppCompatActivity() {
         // restores the panel view.
         val distroKey = selectedDistro
         val labelText = labelField.text.toString().trim().takeIf { it.isNotEmpty() }
+        // Dev-time cache proxy URL. Resolution order:
+        //   - `--es mirrorProxy <url>` from the launch intent wins
+        //     (so adb workflows can pin a non-default proxy URL);
+        //   - else if the checkbox is on (debug-only) use the standard
+        //     local proxy URL;
+        //   - else null (no proxy — install hits upstream directly,
+        //     which is the only safe behaviour outside dev).
+        // Service-side gates this on BuildConfig.DEBUG so a release
+        // APK ignores a stray extra anyway.
+        val mirrorProxyUrl = intent?.getStringExtra(EXTRA_MIRROR_PROXY)
+            ?: if (useCacheProxy == true) DEFAULT_PROXY_URL else null
         panel.appendLog(
             (if (started) "[ui] re-requesting install of '$targetId' via $methodKey"
              else "[ui] starting install of '$targetId' via $methodKey")
                 + (distroKey?.let { " (distro=$it)" } ?: "")
                 + (labelText?.let { " label='$it'" } ?: "")
+                + (mirrorProxyUrl?.let { " mirrorProxy='$it'" } ?: "")
         )
         started = true
-        InstallationService.startInstall(this, targetId, methodKey, distroKey, labelText)
+        InstallationService.startInstall(this, targetId, methodKey, distroKey, labelText, mirrorProxyUrl)
     }
 
     private fun dispatchCancel() {
@@ -528,10 +583,15 @@ class InstallActivity : AppCompatActivity() {
         const val EXTRA_ID = "id"
         const val EXTRA_METHOD = "method"
         const val EXTRA_DISTRO = "distro"
+        /** Dev-time cache proxy URL (see notes/cache-proxy.md). Debug-only. */
+        const val EXTRA_MIRROR_PROXY = "mirrorProxy"
+        /** URL the "Use cache proxy" checkbox sets when no `--es mirrorProxy` is given. */
+        private const val DEFAULT_PROXY_URL = "http://127.0.0.1:8080/proxy/"
         private const val KEY_STARTED = "tawc.install.started"
         private const val KEY_METHOD = "tawc.install.method"
         private const val KEY_DISTRO = "tawc.install.distro"
         private const val KEY_LABEL_EDITED = "tawc.install.labelEdited"
         private const val KEY_LABEL_TEXT = "tawc.install.labelText"
+        private const val KEY_USE_PROXY = "tawc.install.useCacheProxy"
     }
 }

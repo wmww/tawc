@@ -33,7 +33,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [xwayland.md](notes/xwayland.md) -- bionic-build Xwayland for X11 client support; current dep build state and pending stages
 - [tawcroot.md](notes/tawcroot.md) -- design + implementation plan for the from-scratch C systrap-based proot replacement (lives in `tawcroot/`)
 - [distro-options.md](notes/distro-options.md) -- survey of viable glibc distros (Debian, Void, Manjaro ARM, …) and why musl/bionic alternatives don't fit
-- [mirror-cache.md](notes/mirror-cache.md) -- dev-time host nginx caching proxy for distro mirrors (adb reverse + URL-passthrough format), spec only — not implemented yet
+- [cache-proxy.md](notes/cache-proxy.md) -- dev-time host nginx caching reverse proxy for distro mirrors (adb reverse + URL-passthrough format)
 
 Keep notes up to date with new choices, discoveries and project state. This is an agent-written project, existing code/notes may be wrong. Stay vigilant, and fix/record problems as you find them (even when working on something else).
 
@@ -45,6 +45,12 @@ Keep notes up to date with new choices, discoveries and project state. This is a
 - Delete issues when they are confirmed fully solved
 - If an issue has important info that remains relevant after its solved, integrate that info into your notes when deleting it
 - Issues should be markdown documents starting with a title and one-line explanation, followed by a complete description with all relevant details
+
+## Cache proxy
+The dev-time host nginx caching reverse proxy lives at `build/cache-proxy/` (started by `bash scripts/cache-proxy.sh`; see [notes/cache-proxy.md](notes/cache-proxy.md))
+- **Always use the cache proxy for installs during development and testing.** Pass `--es mirrorProxy 'http://127.0.0.1:8080/proxy/'` on every `am start … .install.InstallActivity` invocation, and on every test path that exercises an install.
+- **Never start the cache proxy yourself.** If a test fails because `127.0.0.1:8080` is refused, the right response is "ask the user to run the proxy with `bash scripts/cache-proxy.sh`", not "start it for them".
+- **Never wipe `build/cache-proxy/cache/`.** If you suspect something is broken, ask the user to delete stuff manually.
 
 ## Workflow
 - Debugging against both a real Android phone via adb or an emulator (x86_64 AVD with Magisk) are supported

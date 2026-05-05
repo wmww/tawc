@@ -1,6 +1,7 @@
 package me.phie.tawc.install.distro.voidlinux
 
 import me.phie.tawc.install.InstallationMethod
+import me.phie.tawc.install.MirrorProxy
 import java.io.IOException
 
 /**
@@ -148,9 +149,10 @@ internal object VoidCommon {
         method: InstallationMethod,
         rootfs: String,
         linuxArch: String,
+        mirrorProxy: MirrorProxy?,
         log: (String) -> Unit,
     ) {
-        val mirror = mirrorFor(linuxArch)
+        val mirror = mirrorFor(linuxArch).let { mirrorProxy?.wrap(it) ?: it }
         // Heredoc terminators MUST be at column 0 (per shell `<<EOF`
         // semantics); we build the script line-by-line rather than
         // using `"""...""".trimIndent()`, because the interpolated

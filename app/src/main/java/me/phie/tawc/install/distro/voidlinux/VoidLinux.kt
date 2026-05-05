@@ -4,6 +4,7 @@ import me.phie.tawc.install.BootstrapFormat
 import me.phie.tawc.install.BootstrapVerification
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
+import me.phie.tawc.install.MirrorProxy
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroBootstrap
 
@@ -48,8 +49,12 @@ internal sealed class VoidLinux(
 
     final override val basePackages: List<String> = VoidCommon.DEFAULT_BASE_PACKAGES
 
-    final override fun configure(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
-        VoidCommon.configure(method, rootfs, linuxArch, log)
+    final override fun configure(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorProxy: MirrorProxy?,
+        log: (String) -> Unit,
+    ) = VoidCommon.configure(method, rootfs, linuxArch, mirrorProxy, log)
 
     final override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
         VoidCommon.initPackageManager(method, rootfs, log)

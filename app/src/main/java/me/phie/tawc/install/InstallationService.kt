@@ -172,6 +172,7 @@ class InstallationService : Service() {
                 intent.getStringExtra(EXTRA_METHOD),
                 intent.getStringExtra(EXTRA_DISTRO),
                 intent.getStringExtra(EXTRA_LABEL),
+                intent.getStringExtra(EXTRA_MIRROR_PROXY),
             )
             ACTION_UNINSTALL -> startUninstall(intent.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH)
             else -> Log.w(TAG, "InstallationService started without a known action")
@@ -199,6 +200,7 @@ class InstallationService : Service() {
         methodKey: String? = null,
         distroKey: String? = null,
         label: String? = null,
+        mirrorProxyUrl: String? = null,
     ) {
         if (!Installation.isValidId(id)) {
             reject("install '$id'", "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
@@ -261,10 +263,22 @@ class InstallationService : Service() {
             reject("install '$id'", "method '${method.key}' is not available on this device")
             return
         }
+        // mirrorProxyUrl is gated to debug builds: a release APK with a
+        // malformed install intent that nevertheless includes the extra
+        // is treated as if the extra were absent. Belt-and-braces with
+        // the InstallActivity-side gate that omits the form checkbox
+        // outside debug builds.
+        val mirrorProxy = mirrorProxyUrl?.takeIf { me.phie.tawc.BuildConfig.DEBUG }
+            ?.let { MirrorProxy(it) }
+        if (mirrorProxyUrl != null && mirrorProxy == null) {
+            appendLog("[install] ignoring mirrorProxy '$mirrorProxyUrl' (release build)")
+        } else if (mirrorProxy != null) {
+            appendLog("[install] using mirror proxy ${mirrorProxy.base}")
+        }
         val job = scope.launch {
             val installer = Installer(
                 applicationContext, store, BootstrapCache(applicationContext),
-                distro, method, id, label,
+                distro, method, id, label, mirrorProxy,
             )
             try {
                 // runInterruptible maps coroutine cancellation onto a
@@ -703,6 +717,7 @@ class InstallationService : Service() {
         const val EXTRA_METHOD = "method"
         const val EXTRA_DISTRO = "distro"
         const val EXTRA_LABEL = "label"
+        const val EXTRA_MIRROR_PROXY = "mirrorProxy"
 
         fun startInstall(
             context: Context,
@@ -710,6 +725,7 @@ class InstallationService : Service() {
             methodKey: String? = null,
             distroKey: String? = null,
             label: String? = null,
+            mirrorProxyUrl: String? = null,
         ) {
             val i = Intent(context, InstallationService::class.java)
                 .setAction(ACTION_INSTALL)
@@ -717,6 +733,7 @@ class InstallationService : Service() {
             if (methodKey != null) i.putExtra(EXTRA_METHOD, methodKey)
             if (distroKey != null) i.putExtra(EXTRA_DISTRO, distroKey)
             if (label != null) i.putExtra(EXTRA_LABEL, label)
+            if (mirrorProxyUrl != null) i.putExtra(EXTRA_MIRROR_PROXY, mirrorProxyUrl)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(i)
             } else {

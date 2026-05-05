@@ -44,9 +44,14 @@ and launch as documented in CLAUDE.md's Quick Reference.
 | Wayland host tools (libhybris cross-build) | `wayland wayland-protocols` | `libwayland-dev wayland-protocols`                   |
 | Autotools (libhybris cross-build) | `autoconf automake libtool` | `autoconf automake libtool`                          |
 | Vulkan headers (libhybris cross-build) | `vulkan-headers`        | `libvulkan-dev`                                      |
+| nginx (dev-time mirror cache, optional) | `nginx`                       | `nginx`                                              |
 
 JDK 26 is **not** supported — it crashes the Kotlin Gradle plugin (2.1.20).
 Stick with 21.
+
+`nginx` is only needed for the dev-time install caching proxy
+(`scripts/cache-proxy.sh`, see notes/cache-proxy.md). Skip if you
+don't iterate on installs.
 
 ### aarch64 glibc cross-toolchain (libhybris)
 

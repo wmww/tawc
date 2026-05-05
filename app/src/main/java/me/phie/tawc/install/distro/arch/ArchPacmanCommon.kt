@@ -1,6 +1,7 @@
 package me.phie.tawc.install.distro.arch
 
 import me.phie.tawc.install.InstallationMethod
+import me.phie.tawc.install.MirrorProxy
 import java.io.IOException
 
 /**
@@ -20,6 +21,14 @@ import java.io.IOException
  * so the policy lives here.
  */
 internal object ArchPacmanCommon {
+
+    /**
+     * Pacman `Server = <url>` mirrorlist line. Whitespace tolerated
+     * around `=`. URL captures everything after the equals up to
+     * end-of-line (no comment-stripping — pacman doesn't accept inline
+     * comments either).
+     */
+    private val SERVER_LINE_RE = Regex("""\s*Server\s*=\s*(\S+)\s*""")
 
     /**
      * Paths under the rootfs to delete after the bootstrap tarball is
@@ -290,9 +299,19 @@ internal object ArchPacmanCommon {
         rootfs: String,
         mirrorListBody: String,
         ignoredPackages: List<String>,
+        mirrorProxy: MirrorProxy?,
         log: (String) -> Unit,
     ) {
         val ignoreLine = "IgnorePkg = " + ignoredPackages.joinToString(" ")
+        // Funnel every `Server = <url>` line through the proxy when set.
+        // Pacman's $repo/$arch substitution happens after URL composition,
+        // so the dollar signs survive verbatim through MirrorProxy.wrap.
+        val effectiveMirrorList = if (mirrorProxy != null) {
+            mirrorListBody.lineSequence().joinToString("\n") { line ->
+                val m = SERVER_LINE_RE.matchEntire(line) ?: return@joinToString line
+                "Server = " + mirrorProxy.wrap(m.groupValues[1])
+            }
+        } else mirrorListBody
         val noExtractLines = NO_EXTRACT_PATTERNS.joinToString("\n") { "NoExtract = $it" }
         val purgeList = POST_EXTRACT_PURGE_PATHS.joinToString(" ") { "\"\$ROOTFS$it\"" }
         // Globs are intentionally NOT quoted — the shell expands the
@@ -359,7 +378,7 @@ PACMAN_EOF
 
             appendLine("# mirrorlist")
             appendLine("cat > \"\$ROOTFS/etc/pacman.d/mirrorlist\" <<'MIRROR_EOF'")
-            appendLine(mirrorListBody)
+            appendLine(effectiveMirrorList)
             appendLine("MIRROR_EOF")
 
             appendLine(
