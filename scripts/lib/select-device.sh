@@ -36,8 +36,10 @@ fi
 
 _target="${TAWC_TARGET:-}"
 if [ -z "$_target" ]; then
+    # This script lives at scripts/lib/select-device.sh; project root
+    # (which contains .tawctarget) is two dirs up.
     _script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-    _tawctarget_file="$(dirname "$_script_dir")/.tawctarget"
+    _tawctarget_file="$(dirname "$(dirname "$_script_dir")")/.tawctarget"
     if [ -f "$_tawctarget_file" ]; then
         _target=$(head -n1 "$_tawctarget_file" | tr -d '[:space:]')
     fi
