@@ -113,6 +113,12 @@
             </intent-filter>
         </receiver>
 
+        <activity
+            android:name=".launcher.LauncherActivity"
+            android:exported="false"
+            android:label="Launcher"
+            android:windowSoftInputMode="stateVisible|adjustResize" />
+
         <service
             android:name=".install.InstallationService"
             android:exported="false"

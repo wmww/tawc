@@ -126,6 +126,16 @@ object NativeBridge {
     /** Query compositor state (logs COMPOSITOR_STATE line to logcat). */
     external fun nativeQueryState()
 
+    /**
+     * Scan a rootfs for installed `.desktop` apps. Returns a JSON array
+     * string: `[{id, name, comment, exec, terminal}, …]` (sorted by name,
+     * de-duplicated by id, NoDisplay/Hidden filtered out). Empty `[]` if
+     * the rootfs has no apps or doesn't exist. The work is pure file I/O
+     * with no compositor-state interaction, so this is safe to call from
+     * any thread (LauncherActivity dispatches it on Dispatchers.IO).
+     */
+    external fun nativeLauncherScan(rootfs: String): String
+
     // --- Reverse JNI: Compositor → Android (called from compositor thread) ---
 
     /** Called from native when a Wayland client enables text input. */

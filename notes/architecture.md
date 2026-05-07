@@ -18,6 +18,15 @@ The compositor (`compositor/src/`) is split into:
 - **input.rs** -- Touch input delivery from Android JNI to the compositor via calloop
   channel. Events carry the `ActivityId` of the SurfaceView that produced them.
   Global `OnceLock<Sender>` allows JNI callbacks to send events cross-thread.
+- **launcher.rs** -- Walks XDG `applications/` dirs inside a chroot rootfs and
+  parses `.desktop` files via the `freedesktop-desktop-entry` crate
+  (`default-features = false` to drop gettext-rs's libintl C build, which has no
+  pre-built NDK toolchain). Resolves `Icon=` to an absolute on-device PNG path
+  (Adwaita / Papirus / breeze / hicolor at 128 → 96 → 256 → 64 → 48 → pixmaps);
+  SVG/XPM are skipped because Android's `BitmapFactory` can't decode them.
+  Returns a JSON array string to Kotlin (`LauncherActivity`) via the
+  `nativeLauncherScan` JNI entry. No compositor-state interaction — just pure
+  file I/O, safe to call from any thread.
 - **text_input.rs** -- `zwp_text_input_v3` server impl bridging Android InputConnection.
 - **compositor.rs** -- `TawcState` (Wayland protocol state, including `hosts`,
   `toplevel_to_host`, `single_activity_mode`, `foreground_host`) and all Smithay handler
@@ -40,10 +49,22 @@ The compositor (`compositor/src/`) is split into:
 
 Kotlin side (`app/src/main/java/me/phie/tawc/`):
 
-- **MainActivity.kt** -- Launcher (only Activity in `category.LAUNCHER`). Starts
-  `CompositorService` so the Wayland socket is up, then renders the installed-distros
-  list + "Install new distro" button. `CompositorActivity` is spawned indirectly: a
-  Wayland app mapping a window triggers the native `spawnActivity` reverse-JNI.
+- **MainActivity.kt** -- Home screen (only Activity in `category.LAUNCHER`). Starts
+  `CompositorService` so the Wayland socket is up, then renders one card per installed
+  distro (each with Info + Run buttons) plus "Task manager" / "Install new distro"
+  buttons. `CompositorActivity` is spawned indirectly: a Wayland app mapping a window
+  triggers the native `spawnActivity` reverse-JNI.
+- **launcher/LauncherActivity.kt** -- Per-distro app picker. Reads the rootfs's
+  `.desktop` files via [`NativeBridge.nativeLauncherScan`][launcher.rs] (Rust does the
+  scan + parsing), shows a type-to-filter list with each entry's icon, fires
+  `InstallationMethod.runInside` on a process-wide `LAUNCH_SCOPE` so the
+  launcher Activity can finish without killing the launched program. `Enter`
+  launches the top filtered match.
+- **launcher/IconLoader.kt** -- Async PNG icon decoder for launcher rows.
+  Caches `path → Bitmap` so re-renders on filter keystrokes don't re-decode;
+  `BitmapFactory.inSampleSize` keeps memory bounded for big source PNGs.
+  ImageView.tag carries the requested path so a stale completion (rapid filter
+  typing) doesn't slam the wrong bitmap into a recycled view.
 - **ui/Scaffold.kt** -- Helpers shared by the non-compositor activities — builds the
   `MaterialToolbar` (with back/up arrow on child screens) plus the content column, and
   exposes `primaryButton` (yellow-orange accent) / `destructiveButton` (red) factories.

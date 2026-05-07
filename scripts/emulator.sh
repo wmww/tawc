@@ -66,6 +66,22 @@ running_pid() {
     '
 }
 
+# Force `hw.keyboard = yes` in the AVD's config.ini. avdmanager-created
+# AVDs default to no, which silently swallows host keystrokes in the
+# emulator window (the soft keyboard works, but typing on a physical
+# keyboard does not). Preserves the surrounding whitespace style; runs
+# every `start` so a wiped/recreated AVD picks the change back up.
+# A change applies on the next emulator launch — already-running AVDs
+# need a restart.
+ensure_keyboard_enabled() {
+    local config="$HOME/.android/avd/$1.avd/config.ini"
+    [ -f "$config" ] || return 0
+    if grep -qE '^hw\.keyboard[[:space:]]*=[[:space:]]*no[[:space:]]*$' "$config"; then
+        sed -i -E 's/^(hw\.keyboard[[:space:]]*=[[:space:]]*)no[[:space:]]*$/\1yes/' "$config"
+        echo "==> enabled hw.keyboard in $1 config (takes effect on next launch)"
+    fi
+}
+
 # Walk `adb devices` and ask each emulator its AVD name; print the first
 # emulator-NNNN serial whose AVD matches $1, or nothing if none does.
 serial_for_avd() {
@@ -93,6 +109,8 @@ cmd_start() {
         echo "       See notes/emulator.md for one-time AVD creation." >&2
         exit 1
     }
+
+    ensure_keyboard_enabled "$AVD_NAME"
 
     # -feature -QuickbootFileBacked: stops the emulator from mmap'ing guest
     # RAM onto snapshots/default_boot/ram.img. With it on (the default), every
@@ -189,12 +207,18 @@ cmd_start() {
         echo "WARNING: failed to suppress immersive-mode confirmation popup" >&2
 
     # Disable Gboard. It pops a "Try out your stylus" first-time-education
-    # dialog on stylus-tool-type taps (StylusEducationPopupDialog) that
-    # covers the compositor and eats events. tawc tests don't use Android's
-    # IME — Wayland clients have zwp_text_input, and TEXT_INPUT broadcasts
-    # inject text directly into the compositor — so no IME is fine.
-    "$ADB" -s "$serial" shell 'ime disable com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME' >/dev/null 2>&1 || \
-        echo "WARNING: failed to disable Gboard; stylus education popup may interfere with tests" >&2
+    # dialog (StylusEducationPopupDialog) that covers the compositor and
+    # eats events. `ime disable` alone is not enough — Gboard's package
+    # services keep running and pop the dialog on stylus-tool-type taps
+    # even when it isn't the active IME. `pm disable-user` stops the
+    # whole package for user 0, so no activities/services run. Persists
+    # across reboots; resets on AVD wipe (so we re-apply every start).
+    # tawc tests don't need Android's IME — Wayland clients have
+    # zwp_text_input, and TEXT_INPUT broadcasts inject text directly
+    # into the compositor.
+    "$ADB" -s "$serial" shell 'pm disable-user --user 0 com.google.android.inputmethod.latin' >/dev/null 2>&1 || \
+        echo "WARNING: failed to disable Gboard package; stylus education popup may interfere with tests" >&2
+    "$ADB" -s "$serial" shell 'am force-stop com.google.android.inputmethod.latin' >/dev/null 2>&1 || true
 
     # tawc-app-specific runtime setup (no-op if APK isn't installed yet).
     # Grants reset on emulator wipe; setenforce 0 (rooted) resets every boot

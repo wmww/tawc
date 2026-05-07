@@ -22,10 +22,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import me.phie.tawc.R
+import me.phie.tawc.ui.tonalButton
 
 /**
  * Reusable "operation in progress" UI: bold status line + accent-tinted
- * progress bar + scrolling log + subdued borderless Cancel button.
+ * progress bar + scrolling log + subdued tonal Cancel button.
  *
  * Owners attach [view] into their layout, then call [bind] with an
  * [Operation] when one is available and [unbind] when leaving the
@@ -91,15 +92,10 @@ class OperationLogPanel(private val activity: Activity) {
         logScroll.addView(logText)
         view.addView(logScroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
-        cancelButton = MaterialButton(
-            activity, null, com.google.android.material.R.attr.borderlessButtonStyle,
-        ).apply {
-            text = "Cancel"
-            setTextColor(
-                MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant)
-            )
-            setOnClickListener { onCancelClicked?.invoke() }
-        }
+        // Tonal (shaded fill, no border) so it stays a quieter sibling
+        // to the primary path while still reading as a button. Hidden
+        // until a stage event tells us a job is actually running.
+        cancelButton = activity.tonalButton("Cancel") { onCancelClicked?.invoke() }
         cancelButton.visibility = View.GONE
         view.addView(cancelButton, lp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = 0).apply {
             topMargin = pad / 2

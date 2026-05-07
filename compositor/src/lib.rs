@@ -23,6 +23,7 @@ mod compositor;
 mod render;
 mod event_loop;
 mod input;
+mod launcher;
 mod text_input;
 mod xwayland;
 
@@ -394,6 +395,41 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeQueryStat
 ) {
     if let Some(sender) = STATE_QUERY_SENDER.lock().unwrap().as_ref() {
         let _ = sender.send(());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JNI: Launcher (LauncherActivity)
+// ---------------------------------------------------------------------------
+
+/// Scan a rootfs for installed `.desktop` apps and return the result as a
+/// JSON-encoded string. The launcher activity parses this on the Kotlin
+/// side; keeping the wire format string-shaped means we don't have to
+/// declare or look up Java classes from Rust.
+///
+/// JSON shape: array of `{id, name, comment, exec, terminal}`. Empty
+/// array on any error / missing rootfs (the caller treats that as "no
+/// apps").
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeLauncherScan(
+    mut env: JNIEnv,
+    _class: JClass,
+    rootfs: JString,
+) -> jobject {
+    let rootfs: String = match env.get_string(&rootfs) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            log::error!("nativeLauncherScan: bad rootfs string: {}", e);
+            return std::ptr::null_mut();
+        }
+    };
+    let json = launcher::scan_json(std::path::Path::new(&rootfs));
+    match env.new_string(json) {
+        Ok(s) => s.into_raw(),
+        Err(e) => {
+            log::error!("nativeLauncherScan: new_string failed: {}", e);
+            std::ptr::null_mut()
+        }
     }
 }
 

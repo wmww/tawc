@@ -227,21 +227,54 @@ against the AVD.)
 (Headless `-no-window` is fine for the rootAVD step. Day-to-day, use the
 `scripts/emulator.sh` helper — see "Day-to-day" below.)
 
-### 4. Root with Magisk via rootAVD
+### 4. Root with Magisk via rootAVD (per-AVD-scoped)
 The rootAVD checkout lives at `./deps/rootAVD/` (gitignored, like `./deps/libhybris`).
 Clone if missing:
 
-    git clone --depth 1 https://gitlab.com/newbit/rootAVD.git ./rootAVD
+    git clone --depth 1 https://gitlab.com/newbit/rootAVD.git ./deps/rootAVD
 
-Then patch the AVD's ramdisk:
+> **Do not patch the shared system-image ramdisk.**
+> rootAVD's documented form,
+> `rootAVD.sh system-images/<api>/<vendor>/<arch>/ramdisk.img`,
+> overwrites the SDK's per-system-image ramdisk in place. Every
+> AVD created from that image — including `tawc-rootless` — then
+> boots a Magisk-init'd ramdisk and silently auto-installs the
+> Magisk APK on first boot, leaking root semantics into every
+> "stock" AVD. The agentic setup hit exactly this once; symptom
+> is a "Magisk: Upgrade to full Magisk" dialog popping on the
+> rootless AVD's home screen.
 
-    ANDROID_SERIAL=emulator-5554 \
-    bash ./deps/rootAVD/rootAVD.sh \
-        system-images/android-36/google_apis/x86_64/ramdisk.img
-This patches the AVD's `ramdisk.img` with Magisk init, installs the
-Magisk APK, and shuts the emulator down. Cold-boot it again:
+Patch a per-AVD copy instead. rootAVD treats its argv as
+`$ANDROID_HOME`-relative, so we point its `ANDROID_HOME` at
+`$HOME` for the patch step and pass an AVD-local path:
+
+    # Stage a copy of the pristine ramdisk into the AVD dir.
+    cp "$ANDROID_HOME/system-images/android-36/google_apis/x86_64/ramdisk.img" \
+       "$HOME/.android/avd/tawc-rooted.avd/ramdisk.img"
+
+    # Tell the emulator to use the AVD-local ramdisk on launch.
+    printf '\nramdisk.path=%s/.android/avd/tawc-rooted.avd/ramdisk.img\n' \
+        "$HOME" >> "$HOME/.android/avd/tawc-rooted.avd/config.ini"
+
+    # Patch only the AVD-local copy. rootAVD writes its
+    # `ramdisk.img.backup` next to the patched file (in the AVD
+    # dir, *not* the system image dir).
+    ANDROID_HOME="$HOME" ANDROID_SERIAL=emulator-5554 \
+        bash ./deps/rootAVD/rootAVD.sh \
+            .android/avd/tawc-rooted.avd/ramdisk.img
+
+This patches the AVD-local `ramdisk.img` with Magisk init,
+installs the Magisk APK on the running emulator, and shuts the
+emulator down. Cold-boot it again:
 
     emulator -avd tawc-rooted -no-window -no-audio -no-boot-anim -no-snapshot &
+
+If you ever discover the system-image ramdisk got patched anyway
+(check `ls $ANDROID_HOME/system-images/android-36/google_apis/x86_64/ramdisk.img.backup`
+— rootAVD only creates that when it patched in place), restore
+the pristine copy with
+`cp ramdisk.img.backup ramdisk.img` in that directory and wipe
+any contaminated rootless AVD's userdata before next boot.
 
 ### 5. Pre-grant `su` to adb shell
 On a real phone you'd tap "Grant" in the Magisk app. Headless equivalent
@@ -284,6 +317,13 @@ To create the rootless AVD (one-time):
         -k 'system-images;android-36;google_apis;x86_64' -d 'pixel_5'
 
 Skip steps 3–5 above for it — the rootless AVD just boots stock.
+This AVD has no `ramdisk.path` line in its `config.ini`; it uses
+the SDK's shared system-image ramdisk verbatim. As long as step 4
+above has been done in the per-AVD-scoped form, the system-image
+ramdisk stays pristine and the rootless AVD really is stock. If a
+"Magisk: Upgrade to full Magisk" dialog ever appears here, the
+shared ramdisk has been patched in place — see step 4's recovery
+note.
 
 Launch / shut down:
 
@@ -346,13 +386,22 @@ Post-boot it also brings the AVD into a known-good state for tawc dev:
 - `settings put secure immersive_mode_confirmations confirmed` to
   suppress the fresh-AVD "swipe down to exit fullscreen" education
   popup, which otherwise eats the first taps tests send.
-- `ime disable com.google.android.inputmethod.latin/...LatinIME` to
-  disable Gboard. Its `StylusEducationPopupDialog` pops a "Try out
-  your stylus" dialog on stylus-tool-type taps that covers the
-  compositor and eats touch events. tawc tests don't use Android's
-  IME (Wayland clients have zwp_text_input; TEXT_INPUT broadcasts
-  inject text directly into the compositor) so disabling Gboard is
-  fine.
+- `pm disable-user --user 0 com.google.android.inputmethod.latin` +
+  `am force-stop` to disable Gboard. Its `StylusEducationPopupDialog`
+  pops a "Try out your stylus" dialog on stylus-tool-type taps that
+  covers the compositor and eats events. `ime disable` alone isn't
+  enough — Gboard's package services keep running and pop the dialog
+  even when it isn't the active IME; `pm disable-user` stops the
+  whole package for user 0. Persists across reboots; resets on AVD
+  wipe (so the script re-applies every `start`). tawc tests don't
+  use Android's IME — Wayland clients have zwp_text_input;
+  TEXT_INPUT broadcasts inject text directly into the compositor.
+- Forces `hw.keyboard = yes` in the AVD's `config.ini`. `avdmanager`
+  defaults this to `no`, which silently drops host-keyboard
+  keystrokes in the emulator window (the soft keyboard works, but a
+  physical keyboard doesn't). The patch is idempotent and applies on
+  the next emulator launch — if the AVD is already running when the
+  script flips the bit, restart it.
 
 Windowed mode notes:
 - The emulator's bundled Qt only ships an xcb (X11) plugin, no wayland

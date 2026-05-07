@@ -1,5 +1,6 @@
 package me.phie.tawc.ui
 
+import android.content.Context
 import android.content.res.ColorStateList
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -7,6 +8,7 @@ import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.color.MaterialColors
 import me.phie.tawc.R
 
 /**
@@ -99,6 +101,32 @@ fun AppCompatActivity.destructiveButton(label: CharSequence, onClick: () -> Unit
         setTextColor(getColor(R.color.tawc_on_danger))
         iconTint = ColorStateList.valueOf(getColor(R.color.tawc_on_danger))
         applyNearSquareCorners(this)
+        setOnClickListener { onClick() }
+    }
+
+/**
+ * Tonal Material button for secondary / subdued actions (Manage,
+ * Cancel). Shaded `colorSecondaryContainer` fill, no border, same
+ * near-square corners as [primaryButton] — visually quieter than
+ * primary, but still reads as a button rather than a chip or text
+ * link. Tinted programmatically rather than via
+ * `?attr/materialButtonTonalStyle`: Material 1.12 ships the
+ * `Widget.Material3.Button.TonalButton` style but no theme attr that
+ * points at it, so we pull `colorSecondaryContainer` /
+ * `colorOnSecondaryContainer` directly (same pattern as
+ * [destructiveButton]). Context-bound so non-Activity UI surfaces
+ * (e.g. `OperationLogPanel`) can use it too.
+ */
+fun Context.tonalButton(label: CharSequence, onClick: () -> Unit): MaterialButton =
+    MaterialButton(this).apply {
+        text = label
+        backgroundTintList = ColorStateList.valueOf(
+            MaterialColors.getColor(this, com.google.android.material.R.attr.colorSecondaryContainer)
+        )
+        setTextColor(
+            MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSecondaryContainer)
+        )
+        cornerRadius = (BUTTON_CORNER_DP * resources.displayMetrics.density).toInt()
         setOnClickListener { onClick() }
     }
 

@@ -29,6 +29,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [android.md](notes/android.md) -- socket sharing, SELinux, chroot setup
 - [emulator.md](notes/emulator.md) -- AVD setup, Magisk root, x86_64 chroot, what works/doesn't
 - [installation.md](notes/installation.md) -- in-app Kotlin chroot installer; broker `--action install/uninstall` CLI for adb-driven workflows
+- [launcher.md](notes/launcher.md) -- per-distro app picker + Rust .desktop scanner with icon resolution
 - [log-screen.md](notes/log-screen.md) -- generic Operation/registry/LogScreen abstraction shared between install, uninstall, and future broker actions
 - [proot.md](notes/proot.md) -- rootless install method: vendored Termux/proot fork, why upstream proot doesn't work on Android, Android quirks worked around
 - [xwayland.md](notes/xwayland.md) -- bionic-build Xwayland for X11 client support; current dep build state and pending stages

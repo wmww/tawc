@@ -15,19 +15,21 @@ import me.phie.tawc.install.InstallActivity
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.distro.DistroRegistry
+import me.phie.tawc.launcher.LauncherActivity
 import me.phie.tawc.tasks.TaskManagerActivity
 import me.phie.tawc.ui.buildHomeScreen
 import me.phie.tawc.ui.primaryButton
+import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
 
 /**
  * Home screen for the tawc app. Starts the [CompositorService] (which
  * spawns the Rust compositor thread + Wayland socket), then renders a
- * tappable card for each currently-installed Linux environment and a
- * button to install a new one. Each card opens [DistroInfoActivity] for
- * the full path / size / Uninstall UI — the home screen deliberately
- * doesn't compute size (`du -sk` over a multi-GB rootfs costs seconds
- * via su) so opening the launcher stays snappy.
+ * card for each currently-installed Linux environment with two actions:
+ * Info (opens [DistroInfoActivity]) and Run (opens [LauncherActivity]
+ * to pick an app). The home screen deliberately doesn't compute rootfs
+ * size — `du -sk` over a multi-GB tree costs seconds via su, and DistroInfo
+ * is the place that needs it.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -84,15 +86,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildCard(inst: Installation): View {
-        val card = MaterialCardView(this).apply {
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                val i = Intent(this@MainActivity, DistroInfoActivity::class.java)
-                    .putExtra(DistroInfoActivity.EXTRA_ID, inst.id)
-                startActivity(i)
-            }
-        }
+        val card = MaterialCardView(this)
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(cardPad, cardPad, cardPad, cardPad)
@@ -109,6 +103,35 @@ class MainActivity : AppCompatActivity() {
                 alpha = 0.7f
             })
         }
+
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val gap = (8 * resources.displayMetrics.density).toInt()
+        val topMargin = (12 * resources.displayMetrics.density).toInt()
+        actions.addView(
+            tonalButton("Manage") {
+                val i = Intent(this@MainActivity, DistroInfoActivity::class.java)
+                    .putExtra(DistroInfoActivity.EXTRA_ID, inst.id)
+                startActivity(i)
+            },
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).also { it.marginEnd = gap },
+        )
+        val runBtn = primaryButton("Run") {
+            val i = Intent(this@MainActivity, LauncherActivity::class.java)
+                .putExtra(LauncherActivity.EXTRA_ID, inst.id)
+            startActivity(i)
+        }
+        // Hide Run on FAILED — partial rootfs has no usable launcher
+        // entry point; Manage stays reachable for inspect / retry.
+        // INSTALLING / UNINSTALLING leave Run visible-but-disabled so
+        // it's clear it'll come back once the operation finishes.
+        runBtn.visibility = if (inst.state == Installation.State.FAILED) View.GONE else View.VISIBLE
+        runBtn.isEnabled = inst.state == Installation.State.READY
+        actions.addView(runBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        column.addView(
+            actions,
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).also { it.topMargin = topMargin },
+        )
+
         card.addView(column)
         return card
     }
