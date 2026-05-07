@@ -80,6 +80,7 @@ TESTS_CFLAGS := \
     -DTAWCROOT_DYNAMIC_EXIT42_BIN=\"$(OUT)/programs/dynamic_exit42\" \
     -DTAWCROOT_DYNAMIC_ARGV_CHECK_BIN=\"$(OUT)/programs/dynamic_argv_check\" \
     -DTAWCROOT_STATIC_EXECVE_EXIT42_BIN=\"$(OUT)/programs/static_execve_exit42\" \
+    -DTAWCROOT_STATIC_OPEN_CREAT_ARGV1_BIN=\"$(OUT)/programs/static_open_creat_argv1\" \
     -DTAWCROOT_DYNAMIC_BIG_STACK_BIN=\"$(OUT)/programs/dynamic_big_stack\" \
     -DTAWCROOT_ANDROID_FILTER_WRAP=\"$(OUT)/androidfilter/wrap\" \
     -DTAWCROOT_TEST_TMPDIR=\"/tmp\" \
@@ -237,6 +238,7 @@ fixtures:           $(OUT)/programs/static_exit42 \
                     $(OUT)/programs/dynamic_exit42 \
                     $(OUT)/programs/dynamic_argv_check \
                     $(OUT)/programs/static_execve_exit42 \
+                    $(OUT)/programs/static_open_creat_argv1 \
                     $(OUT)/programs/dynamic_big_stack \
                     $(OUT)/androidfilter/wrap
 
@@ -284,6 +286,15 @@ $(OUT)/programs/dynamic_argv_check: $(SRC_TS)/integration/programs/dynamic_argv_
 # new process re-establishes rootfs view before manual-loading the
 # target binary.
 $(OUT)/programs/static_execve_exit42: $(SRC_TS)/integration/programs/static_execve_exit42_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
+
+# static_open_creat_argv1: minimal x86_64 fixture that opens argv[1]
+# with O_WRONLY|O_CREAT|O_TRUNC and exits 0. The orphan-bypass test
+# in test_exec_child.c uses this as the side-effect-bearing guest
+# binary: an orphaned grandchild can't be waitpid'd, so we observe
+# success by polling for the file the fixture creates.
+$(OUT)/programs/static_open_creat_argv1: $(SRC_TS)/integration/programs/static_open_creat_argv1_x86_64.S | $(OUT)
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
 

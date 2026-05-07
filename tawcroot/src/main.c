@@ -68,15 +68,34 @@ static int streq(const char *a, const char *b)
  * notes/exec-broker.md): the broker process and the tawcroot it spawns
  * are both `untrusted_app:s0`, so PDEATHSIG fires reliably and the
  * broker also walks /proc to SIGKILL any descendants that escape past
- * destroyForcibly. No cross-SELinux-domain quirks to work around.
- *
- * Race: if the parent already died between our fork and this prctl,
- * PDEATHSIG won't fire (the trigger event is past). Re-check getppid
- * == 1 and bail. Run as the very first thing in tawcroot_main, before
- * any setup that could itself outlive a dead parent. */
-static void bind_to_parent(void)
+ * destroyForcibly. No cross-SELinux-domain quirks to work around. */
+static void arm_pdeathsig(void)
 {
 	(void)tawc_prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
+}
+
+/* Companion to [arm_pdeathsig]: catch the fork→prctl race where the
+ * parent died BEFORE we could install PDEATHSIG (so no signal queued).
+ * If we observe `getppid() == 1` we must have been reparented to init
+ * — in a freshly-forked top-level invocation that means our launcher
+ * died, and we should exit cleanly rather than leak.
+ *
+ * **Only safe to call on the top-level entry path** — NOT in
+ * `--exec-child` re-execs. The re-exec is a same-process `execveat`
+ * (no fork happened) so the race window the check guards against
+ * doesn't exist; meanwhile gpgme / libgpg-error's `posix_spawn`
+ * legitimately reparents its workers to init via a fork-then-
+ * immediate-exit-of-intermediate dance, so by the time the worker's
+ * exec hits our SIGSYS handler and re-execs into `--exec-child`,
+ * `getppid()` is genuinely 1 — but as a deliberate state, not an
+ * orphan-leak. Killing those would surface as "GPGME error: Invalid
+ * crypto engine" → "missing required signature" on every Arch
+ * package the install pipeline touches.
+ *
+ * Caller in `tawcroot_main` skips this for `--exec-child argv[1]`
+ * and runs it for every other path. */
+static void exit_if_orphan(void)
+{
 	if (tawc_getppid() == 1) tawc_exit_group(0);
 }
 
@@ -367,7 +386,15 @@ static void prod_rootfs_init(const char *rootfs,
 
 void tawcroot_main(int argc, char **argv)
 {
-	bind_to_parent();
+	arm_pdeathsig();
+	/* Skip the orphan-exit on --exec-child re-execs: see
+	 * exit_if_orphan's docstring for why this matters (gpgme spawn
+	 * pattern legitimately reparents to init). All other entry shapes
+	 * are top-level invocations where the fork→prctl race the orphan
+	 * check guards against is real. */
+	if (argc < 2 || !streq(argv[1], "--exec-child")) {
+		exit_if_orphan();
+	}
 
 #ifdef TAWCROOT_TESTHOST
 	/* Testhost dispatch. argc==1 (smoke parent) skips capture_host_auxv
