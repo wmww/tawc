@@ -34,12 +34,12 @@ me.phie.tawc.install/
   Installation.kt                 # data model; fromJson tolerates missing distro/method
   InstallationStore.kt
   InstallationService.kt          # gate; rejects on no-Distro-for-host or
-                                  #   bad EXTRA_DISTRO before disk write
+                                  #   bad distro key before disk write
   InstallProgress.kt              # stages: ..., PKG_KEYRING, PKG_INSTALL, ...
   InstallActivity.kt              # form has distro radio when >1 distro matches host
-  UninstallActivity.kt
   DistroInfoActivity.kt           # title + rows resolved via DistroRegistry
-  OperationLogPanel.kt
+  InstallOperation.kt             # Operation adapter for the ops/ layer
+  InstallActions.kt               # broker `install`/`uninstall` action handlers (debug)
   Installer.kt                    # generic pipeline (replaces ArchInstaller);
                                   #   calls Distro.resolveBootstrap() before download
   SignatureVerifier.kt            # PGP / CrossMirrorMd5 / Sha256 (Manjaro)
@@ -213,13 +213,12 @@ returns null, before any disk state is written.
 Full install/uninstall flow exercised on the emulator (x86_64
 ALARM... no, x86_64 Arch via the `pkgbuild.com` zstd bootstrap):
 
-- `am start ... InstallActivity --es autoStart true --es id arch` →
-  stages `DOWNLOADING → EXTRACTING → CONFIGURING → PKG_KEYRING →
-  PKG_INSTALL → DONE`.
+- `bash scripts/install-distro.sh arch tawcroot` → stages
+  `DOWNLOADING → EXTRACTING → CONFIGURING → PKG_KEYRING → PKG_INSTALL
+  → DONE`.
 - Resulting `metadata.json` contains `distro="arch"`, `arch="x86_64"`,
   `state="READY"`.
-- `am start ... UninstallActivity --es autoStart true --es id arch` →
-  `UNMOUNTING → DELETING → DONE`. `gpg-agent` killed by the rootfs
-  dev:inode sweep, mount-master unmount, `find -xdev -depth -delete`
-  cleared the dir.
+- `bash scripts/uninstall-distro.sh arch` → `UNMOUNTING → DELETING →
+  DONE`. `gpg-agent` killed by the rootfs dev:inode sweep, mount-master
+  unmount, `find -xdev -depth -delete` cleared the dir.
 - `<distros>/arch/` is gone (`ls` returns no such file or directory).

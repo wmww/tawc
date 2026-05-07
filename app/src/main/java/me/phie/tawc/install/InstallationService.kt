@@ -1,14 +1,9 @@
 package me.phie.tawc.install
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Binder
-import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -18,16 +13,17 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
-import me.phie.tawc.MainActivity
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroRegistry
+import me.phie.tawc.ops.CancelConfirmation
+import me.phie.tawc.ops.OperationProgress
+import me.phie.tawc.ops.OperationStage
+import me.phie.tawc.ops.OperationsNotificationCenter
+import me.phie.tawc.ops.OperationsRegistry
 import me.phie.tawc.tasks.ProcessScanner
 
 /**
@@ -41,8 +37,10 @@ import me.phie.tawc.tasks.ProcessScanner
  *   install:    only allowed from `(no dir)`
  *   uninstall:  allowed from every state but `(no dir)` (which is a no-op)
  *
- * Both UI ([InstallActivity] / [UninstallActivity]) and `am start`
- * autoStart are inputs; this service decides whether to actually run.
+ * Both the in-app trigger surfaces (the Install button on
+ * [InstallActivity] and the Delete confirm on [DistroInfoActivity])
+ * and the dev exec broker's `install` / `uninstall` actions are
+ * inputs; this service decides whether to actually run.
  * On a refused request we emit a [InstallStage.FAILED] progress event
  * so the bound UI can surface the rejection — disk state is unchanged.
  *
@@ -79,17 +77,23 @@ import me.phie.tawc.tasks.ProcessScanner
  * the install path (catches the host-side `tar` / `find` helpers).
  *
  * The cancel-install-then-uninstall flow stays in the foreground
- * across the install→uninstall transition: install's `finally` skips
- * `stopForeground` while [pendingFollowupUninstallId] is set, and the
- * cancel-launch refreshes the notification before kicking off the
- * follow-up uninstall. This keeps the service safe from
- * out-of-memory kill during the gap.
+ * across the install→uninstall transition: the install's `finally`
+ * skips `stopForeground` while [pendingFollowupUninstallId] is set,
+ * and just before launching the follow-up uninstall the cancel coroutine
+ * re-anchors `startForeground` to a placeholder notification keyed on
+ * the *uninstall* op id. The follow-up [startUninstall] then registers
+ * its [InstallOperation] under the same id, and the registry-watcher's
+ * [OperationsNotificationCenter] notify upgrades the placeholder in
+ * place. The service is therefore continuously FGS-anchored across the
+ * transition (no out-of-memory-kill window), and the visible
+ * notification swaps content from "Cancelling install: cleaning up…"
+ * to the live uninstall progress with no flicker.
  */
 class InstallationService : Service() {
 
     enum class JobKind { INSTALL, UNINSTALL }
 
-    private data class JobState(val job: Job, val id: String, val kind: JobKind)
+    private data class JobState(val job: Job, val id: String, val kind: JobKind, val op: InstallOperation)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -136,23 +140,16 @@ class InstallationService : Service() {
 
     private val binder = LocalBinder()
 
-    private val _progress = MutableStateFlow(
-        InstallProgress(InstallStage.IDLE, "Idle")
-    )
-    val progress: StateFlow<InstallProgress> = _progress.asStateFlow()
-
     private val _log = MutableSharedFlow<String>(replay = 200, extraBufferCapacity = 1024)
     val log: SharedFlow<String> = _log.asSharedFlow()
 
     /**
-     * Drop every replay-buffered log line so a freshly-binding panel
-     * can't see a previous operation's tail. Called by
-     * [OperationLogPanel.clearLog] alongside its local TextView wipe
-     * to close the bind→collect→wipe race; also called internally at
-     * the start of every job for the new-subscriber case.
+     * Drop every replay-buffered log line so a freshly-bound panel
+     * for the next operation doesn't inherit the previous run's tail.
+     * Called at the start of every job; viewers don't need this.
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    fun resetLogReplay() {
+    private fun resetLogReplay() {
         _log.resetReplayCache()
     }
 
@@ -165,18 +162,46 @@ class InstallationService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("tawc"))
+        // Anchor the FGS to a placeholder notification keyed on the op
+        // id we're about to register. Android requires a startForeground
+        // call within 5 seconds of startForegroundService, before our
+        // validation logic in start* below has a chance to reject.
+        // [OperationsNotificationCenter.placeholderForegroundFor] uses
+        // the same id derivation as the per-op notification, so once
+        // the op is registered the registry-watcher's notify(...) call
+        // seamlessly upgrades the placeholder to the real per-op
+        // notification (with tap PendingIntent + Cancel action) without
+        // a flash or a duplicate.
+        val rawId = intent?.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH
+        val anchorOpId = when (intent?.action) {
+            ACTION_INSTALL -> "install:$rawId"
+            ACTION_UNINSTALL -> "uninstall:$rawId"
+            else -> "tawc:installation"
+        }
+        val anchorTitle = when (intent?.action) {
+            ACTION_INSTALL -> "Install $rawId"
+            ACTION_UNINSTALL -> "Uninstall $rawId"
+            else -> "tawc"
+        }
+        val (notifId, notif) = OperationsNotificationCenter.placeholderForegroundFor(
+            applicationContext, anchorOpId, anchorTitle,
+        )
+        startForeground(notifId, notif)
+
         when (intent?.action) {
             ACTION_INSTALL -> startInstall(
-                intent.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH,
+                rawId,
                 intent.getStringExtra(EXTRA_METHOD),
                 intent.getStringExtra(EXTRA_DISTRO),
                 intent.getStringExtra(EXTRA_LABEL),
                 intent.getStringExtra(EXTRA_MIRROR_PROXY),
             )
-            ACTION_UNINSTALL -> startUninstall(intent.getStringExtra(EXTRA_ID) ?: Installation.DISTRO_ARCH)
-            else -> Log.w(TAG, "InstallationService started without a known action")
+            ACTION_UNINSTALL -> startUninstall(rawId)
+            else -> {
+                Log.w(TAG, "InstallationService started without a known action")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
@@ -204,11 +229,11 @@ class InstallationService : Service() {
         mirrorProxyUrl: String? = null,
     ) {
         if (!Installation.isValidId(id)) {
-            reject("install '$id'", "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
+            rejectInstall(id, "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
             return
         }
         if (currentJob?.job?.isActive == true) {
-            reject("install '$id'", "another job is already running")
+            rejectInstall(id, "another job is already running")
             return
         }
         // Reset the log replay buffer at the start of each operation so
@@ -224,7 +249,7 @@ class InstallationService : Service() {
             Installation.State.INSTALLING,
             Installation.State.UNINSTALLING,
             Installation.State.FAILED -> {
-                reject("install '$id'", "id is in state $s; uninstall first")
+                rejectInstall(id, "id is in state $s; uninstall first")
                 return
             }
         }
@@ -234,8 +259,8 @@ class InstallationService : Service() {
         // half-installed FAILED slot.
         val distro = if (distroKey != null) {
             DistroRegistry.forKey(distroKey) ?: run {
-                reject(
-                    "install '$id'",
+                rejectInstall(
+                    id,
                     "unknown or host-incompatible distro '$distroKey' " +
                         "(available: ${DistroRegistry.availableForHost().joinToString { it.key }})",
                 )
@@ -245,7 +270,7 @@ class InstallationService : Service() {
             DistroRegistry.defaultForHost()
         }
         if (distro == null) {
-            reject("install '$id'", "no Distro supports ABI ${android.os.Build.SUPPORTED_ABIS.joinToString(",")}")
+            rejectInstall(id, "no Distro supports ABI ${android.os.Build.SUPPORTED_ABIS.joinToString(",")}")
             return
         }
         // Resolve the install method (chroot vs proot). An explicit
@@ -254,14 +279,14 @@ class InstallationService : Service() {
         // [InstallationMethod.defaultForHost]).
         val method = if (methodKey != null) {
             InstallationMethod.forKey(applicationContext, methodKey) ?: run {
-                reject("install '$id'", "unknown method '$methodKey' (try chroot or proot)")
+                rejectInstall(id, "unknown method '$methodKey' (try chroot or proot)")
                 return
             }
         } else {
             InstallationMethod.defaultForHost(applicationContext)
         }
         if (!method.isAvailable(applicationContext)) {
-            reject("install '$id'", "method '${method.key}' is not available on this device")
+            rejectInstall(id, "method '${method.key}' is not available on this device")
             return
         }
         // mirrorProxyUrl is gated to debug builds: a release APK with a
@@ -276,6 +301,31 @@ class InstallationService : Service() {
         } else if (mirrorProxy != null) {
             appendLog("[install] using mirror proxy ${mirrorProxy.base}")
         }
+        val rootfsPath = store.rootfsDir(id).absolutePath
+        val op = InstallOperation(
+            id = "install:$id",
+            title = "Install $id",
+            serviceLog = _log,
+            cancelConfirmation = CancelConfirmation(
+                title = "Cancel install of '$id'?",
+                message = "Cancelling will stop the install and remove the partially " +
+                    "extracted rootfs at\n$rootfsPath.\n" +
+                    "Nothing of yours has been written there yet, so no data will be lost.",
+                confirmLabel = "Cancel install",
+                keepLabel = "Keep installing",
+            ),
+            cancelHandler = { cancelInstallAndUninstall(id) },
+        )
+        OperationsRegistry.register(op)
+        // The placeholder FGS anchor posted in onStartCommand uses the
+        // same notification id as the per-op notification, so this
+        // [fgsAnchorFor] update is for the case where startInstall was
+        // called directly (companion-object helper from in-app code,
+        // e.g. the Install button), not via onStartCommand. Either way
+        // the registry-watcher's first progress emit immediately
+        // updates the visible notification with proper PendingIntents.
+        val (notifId, notif) = OperationsNotificationCenter.fgsAnchorFor(op.id)
+        startForeground(notifId, notif)
         val job = scope.launch {
             val installer = Installer(
                 applicationContext, store, BootstrapCache(applicationContext),
@@ -303,18 +353,18 @@ class InstallationService : Service() {
                 clearCurrentJob(id)
             }
         }
-        currentJob = JobState(job, id, JobKind.INSTALL)
+        currentJob = JobState(job, id, JobKind.INSTALL, op)
     }
 
     /** Begin an uninstall for [id]. Refuses only if a job is already running. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun startUninstall(id: String) {
         if (!Installation.isValidId(id)) {
-            reject("uninstall '$id'", "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
+            rejectUninstall(id, "invalid id (allowed: ^[a-z0-9][a-z0-9_-]{0,31}$)")
             return
         }
         if (currentJob?.job?.isActive == true) {
-            reject("uninstall '$id'", "another job is already running")
+            rejectUninstall(id, "another job is already running")
             return
         }
         // Same fresh-log policy as install: each operation starts the
@@ -337,6 +387,20 @@ class InstallationService : Service() {
         val method: InstallationMethod = store.load(id)?.let {
             InstallationMethod.forKey(applicationContext, it.method)
         } ?: InstallationMethod.defaultForHost(applicationContext)
+        val op = InstallOperation(
+            id = "uninstall:$id",
+            title = "Uninstall $id",
+            serviceLog = _log,
+            // Uninstall has no confirm dialog at the cancel boundary —
+            // the user might be tapping Cancel to abort a wipe that's
+            // about to delete their work, and another dialog in the
+            // way risks finishing the wipe before they can react.
+            cancelConfirmation = null,
+            cancelHandler = { cancelUninstall(id) },
+        )
+        OperationsRegistry.register(op)
+        val (notifId, notif) = OperationsNotificationCenter.fgsAnchorFor(op.id)
+        startForeground(notifId, notif)
         val job = scope.launch {
             val installer = Installer(
                 applicationContext, store, BootstrapCache(applicationContext),
@@ -353,7 +417,7 @@ class InstallationService : Service() {
                 clearCurrentJob(id)
             }
         }
-        currentJob = JobState(job, id, JobKind.UNINSTALL)
+        currentJob = JobState(job, id, JobKind.UNINSTALL, op)
     }
 
     /**
@@ -427,12 +491,18 @@ class InstallationService : Service() {
             } catch (_: Throwable) {
                 /* job already finished one way or another */
             }
-            // Refresh the FGS notification text before launching the
-            // follow-up. The install's finally skipped its own
-            // stopForeground because pendingFollowupUninstallId is
-            // still set, so we're already in the foreground state —
-            // this just updates the visible message.
-            startForeground(NOTIFICATION_ID, buildNotification("Cancelling install: cleaning up…"))
+            // Bridge: the install's finally just unregistered its
+            // Operation, which cancelled the install's notification —
+            // we're FGS-anchored to a no-longer-visible notification
+            // until [startUninstall] re-anchors. Post a placeholder
+            // keyed on the uninstall op id so the registry-watcher
+            // upgrades it in place once the uninstall op registers,
+            // exactly the same way [onStartCommand]'s placeholder is
+            // upgraded for direct CLI starts.
+            val (bridgeNotifId, bridgeNotif) = OperationsNotificationCenter.placeholderForegroundFor(
+                applicationContext, "uninstall:$id", "Uninstall $id", "Cancelling install: cleaning up…",
+            )
+            startForeground(bridgeNotifId, bridgeNotif)
             pendingFollowupUninstallId = null
             installCancelTailUninstallId = id
             startUninstall(id)
@@ -532,7 +602,14 @@ class InstallationService : Service() {
         // startInstall/startUninstall can have replaced our slot
         // before now; the id-equality check is just defence in depth
         // for future refactors.
-        if (currentJob?.id == id) {
+        val state = currentJob
+        if (state?.id == id) {
+            // Unregister the Operation adapter from the registry; the
+            // OperationsNotificationCenter cancels its notification.
+            // The op's StateFlow value remains accessible to any
+            // already-bound LogScreenActivity (the panel keeps the
+            // frozen final state), just no further updates.
+            OperationsRegistry.unregister(state.op.id)
             currentJob = null
         }
         if (userCancelledId == id) userCancelledId = null
@@ -573,20 +650,66 @@ class InstallationService : Service() {
         }
     }
 
+    private fun rejectInstall(id: String, reason: String) =
+        rejectAsTransientOp("install:$id", "Install $id", "install '$id'", reason)
+
+    private fun rejectUninstall(id: String, reason: String) =
+        rejectAsTransientOp("uninstall:$id", "Uninstall $id", "uninstall '$id'", reason)
+
     /**
-     * Surface a refused-by-gate request to the bound UI without
-     * mutating disk state. Uses the FAILED progress stage because
-     * that's the one the panel renders as a terminal error; the
-     * message starts with `rejected:` so it's distinguishable from a
-     * mid-operation throw.
+     * Surface a refused-by-gate request through the [OperationsRegistry]
+     * as a brief transient Operation so any bound viewer
+     * ([LogScreenActivity], [InstallActivity]'s panel, …) renders the
+     * FAILED state. Per the project's "unregister immediately on
+     * terminal" choice the op vanishes after [TRANSIENT_REJECT_HOLD_MS];
+     * any bound viewer keeps the frozen state on screen.
+     *
+     * The transient op briefly posts a tray notification (the registry-
+     * watcher does this on every register), then the unregister cancels
+     * it. Net effect: a notification flashes for [TRANSIENT_REJECT_HOLD_MS]
+     * then disappears. Acceptable for a dev / power-user surface; the
+     * primary feedback is on the in-app panel and the broker mirror's
+     * stdout.
+     *
+     * The hold duration is **load-bearing for the broker mirror path**:
+     * `InstallActions.mirrorOperation` waits up to 5s for an op named
+     * `<verb>:<id>` to appear in the registry. As long as
+     * [TRANSIENT_REJECT_HOLD_MS] is well under that window, the broker
+     * action sees the transient before it disappears and reports FAILED.
+     * If you shorten this, also check that contract.
      */
-    private fun reject(what: String, reason: String) {
+    private fun rejectAsTransientOp(
+        opId: String,
+        opTitle: String,
+        what: String,
+        reason: String,
+    ) {
         val msg = "rejected $what: $reason"
         Log.w(TAG, msg)
-        appendLog(msg)
-        publishProgress(InstallProgress(InstallStage.FAILED, msg, errorMessage = reason))
+        // Drop foreground state so we're not anchored to the placeholder
+        // notification posted in onStartCommand. The transient op's own
+        // notification gets posted by the registry-watcher and will be
+        // cancelled when we unregister below.
         stopForeground(STOP_FOREGROUND_REMOVE)
+        val transient = InstallOperation(
+            id = opId, title = opTitle,
+            serviceLog = _log,
+            cancelConfirmation = null,
+            cancelHandler = { /* no-op for a terminal-on-arrival op */ },
+        )
+        OperationsRegistry.register(transient)
+        appendLog(msg)
+        // Publish directly to the transient op (it's not currentJob, so
+        // the worker-side publishProgress wouldn't see it).
+        transient.publish(OperationProgress(OperationStage.FAILED, msg))
+        scope.launch {
+            kotlinx.coroutines.delay(TRANSIENT_REJECT_HOLD_MS)
+            OperationsRegistry.unregister(opId)
+        }
     }
+
+    /** See [rejectAsTransientOp]; load-bearing for the broker mirror. */
+    private val TRANSIENT_REJECT_HOLD_MS: Long = 2_000
 
     private fun firstLine(s: String?): String =
         s?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: "(no detail)"
@@ -610,10 +733,11 @@ class InstallationService : Service() {
         } else {
             p
         }
-        _progress.value = effective
-        // Re-issue the foreground notification so its text stays current.
-        val nm = getSystemService(NotificationManager::class.java)
-        nm?.notify(NOTIFICATION_ID, buildNotification(effective.message))
+        // Write directly to the current op's StateFlow. The
+        // OperationsNotificationCenter watches op.progress and updates
+        // the visible notification on every emit; the broker mirror
+        // and any bound LogScreenActivity collect from the same flow.
+        currentJob?.op?.publish(effective.toOperationProgress())
         // Only log on stage transitions; downloading streams progress
         // every 256 KiB and we don't want each chunk in logcat.
         if (effective.stage != lastLoggedStage) {
@@ -627,42 +751,8 @@ class InstallationService : Service() {
         _log.tryEmit(line)
     }
 
-    private fun ensureChannel() {
-        val nm = getSystemService(NotificationManager::class.java) ?: return
-        if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-            nm.createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "Installation",
-                    NotificationManager.IMPORTANCE_LOW,
-                ).apply {
-                    description = "Long-running install / uninstall jobs"
-                }
-            )
-        }
-    }
-
-    private fun buildNotification(text: String): Notification {
-        val tap = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        // android.R.drawable.stat_sys_download is always present and matches
-        // the "background data" feel of an install operation.
-        return Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("tawc installation")
-            .setContentText(text)
-            .setOngoing(true)
-            .setContentIntent(tap)
-            .build()
-    }
-
     companion object {
         private const val TAG = "tawc-install"
-        private const val CHANNEL_ID = "tawc-install"
-        private const val NOTIFICATION_ID = 0xA001
 
         const val ACTION_INSTALL = "me.phie.tawc.install.SERVICE_INSTALL"
         const val ACTION_UNINSTALL = "me.phie.tawc.install.SERVICE_UNINSTALL"
@@ -687,22 +777,14 @@ class InstallationService : Service() {
             if (distroKey != null) i.putExtra(EXTRA_DISTRO, distroKey)
             if (label != null) i.putExtra(EXTRA_LABEL, label)
             if (mirrorProxyUrl != null) i.putExtra(EXTRA_MIRROR_PROXY, mirrorProxyUrl)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(i)
-            } else {
-                context.startService(i)
-            }
+            context.startForegroundService(i)
         }
 
         fun startUninstall(context: Context, id: String) {
             val i = Intent(context, InstallationService::class.java)
                 .setAction(ACTION_UNINSTALL)
                 .putExtra(EXTRA_ID, id)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(i)
-            } else {
-                context.startService(i)
-            }
+            context.startForegroundService(i)
         }
     }
 }

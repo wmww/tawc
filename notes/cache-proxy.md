@@ -24,9 +24,9 @@ would defeat the cache and make timing comparisons meaningless.
 bash scripts/cache-proxy.sh run
 
 # Terminal B: install with the proxy URL passed in.
-adb shell am start -n me.phie.tawc/.install.InstallActivity \
-    --es autoStart true --es id manjaro --es method tawcroot \
-    --es distro manjaro --es mirrorProxy 'http://127.0.0.1:8080/proxy/'
+bash scripts/install-distro.sh manjaro tawcroot \
+    distro=manjaro \
+    mirrorProxy=http://127.0.0.1:8080/proxy/
 ```
 
 The script has subcommands — run `bash scripts/cache-proxy.sh` (no args)
@@ -118,8 +118,10 @@ proxy_redirect ~^(https?)://([^/]+)/(.*)$ /proxy/$1/$2/$3;
 
 ## Install-side plumbing
 
-`InstallActivity` reads `--es mirrorProxy` and forwards it through
-`InstallationService.startInstall` to `Installer`'s constructor.
+The `install` broker action accepts `--arg mirrorProxy=<url>` and
+forwards it through `InstallationService.startInstall` to `Installer`'s
+constructor; the in-app form's "Use cache proxy" checkbox feeds the
+same path with the standard local URL.
 `Installer.install`:
 
 1. Rewrites the bootstrap tarball URL through the proxy before

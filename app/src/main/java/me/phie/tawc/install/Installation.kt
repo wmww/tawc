@@ -71,9 +71,11 @@ data class Installation(
         // Allowlist for the id component of `<app data>/distros/<id>/`.
         // The id flows into shell scripts (via `installDir.absolutePath`)
         // that are run as root on the chroot path, so anything outside
-        // [a-z0-9_-] would be a path-traversal / shell-metachar foothold
-        // (InstallActivity is exported and any installed app can launch
-        // it with a hostile `--es id` extra). 32 chars is plenty for
+        // [a-z0-9_-] would be a path-traversal / shell-metachar foothold.
+        // The activities are now `exported="false"`, so the only external
+        // entry point is the dev exec broker's `install` / `uninstall`
+        // actions (debug-only, peer-credentialed) — but defense in depth
+        // is cheap; the validator stays. 32 chars is plenty for
         // foreseeable use; tighten further later if we ever care.
         private val ID_PATTERN = Regex("^[a-z0-9][a-z0-9_-]{0,31}$")
 

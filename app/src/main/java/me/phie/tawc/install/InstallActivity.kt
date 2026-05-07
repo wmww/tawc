@@ -1,6 +1,5 @@
 package me.phie.tawc.install
 
-import android.content.DialogInterface
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
@@ -19,33 +18,26 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.color.MaterialColors
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import me.phie.tawc.R
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroRegistry
+import me.phie.tawc.ops.LogScreenActivity
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.verticalLp
 
 /**
- * "Install new distro" screen. Form for picking distro, label, and
- * install method, then swaps to a live progress + log view bound to
- * [InstallationService] via [OperationLogPanel] once the user taps
- * Install.
+ * "Install new distro" screen. Form-only: distro / label / method /
+ * cache-proxy controls plus an Install button. Tapping Install kicks
+ * off [InstallationService] and hands the user off to
+ * [LogScreenActivity] for the live progress view, then finishes itself
+ * — so the back stack is `home → log`, not `home → form → log`.
  *
- * Each visit creates a fresh activity instance and lands on the form —
- * a slot already being installed at the same id is the
- * [InstallationService] gate's job to refuse, not this activity's job
- * to forward to. After a finished install the user backs out to the
- * home screen, so reopening this activity always starts a brand-new
- * form rather than re-showing the previous run's log.
- *
- * `am start … --es autoStart true --es id <id>` skips the form and
- * triggers the install immediately (used by the `am start` install hook
- * documented in `notes/installation.md`). The autoStart fires at most
- * once per launch (`savedInstanceState == null`); a fresh `am start`
- * delivers a new launch intent and re-fires, but a process-death
- * recreation does not.
+ * Mutating an installation never happens as a side-effect of opening
+ * this screen. The button press is the only trigger; CLI install /
+ * uninstall lives on the dev exec broker (see [InstallActions] +
+ * `scripts/install-distro.sh`). This was the
+ * `install-uninstall-trigger-via-activity-launch` issue's resolution.
  */
 class InstallActivity : AppCompatActivity() {
 
@@ -53,10 +45,10 @@ class InstallActivity : AppCompatActivity() {
     private var selectedMethod: String? = null
     private var selectedDistro: String? = null
     private var labelEdited: Boolean = false
+
     /**
      * Tri-state for the "Use cache proxy" checkbox:
-     *   - null: not yet initialised (we'll seed from intent extra or
-     *     the dev-build default of `true`).
+     *   - null: not yet initialised (will be seeded from build type).
      *   - true / false: user-overridden value, persisted across rotations.
      */
     private var useCacheProxy: Boolean? = null
@@ -69,7 +61,6 @@ class InstallActivity : AppCompatActivity() {
     private lateinit var labelField: EditText
     private lateinit var locationLabel: TextView
     private lateinit var installButton: MaterialButton
-    private lateinit var panel: OperationLogPanel
     private lateinit var scaffold: me.phie.tawc.ui.Scaffold
 
     /**
@@ -80,29 +71,16 @@ class InstallActivity : AppCompatActivity() {
      */
     private var resolvedId: String? = null
 
-    private var started = false
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Saved state wins over the launch intent so a user's radio
-        // flip survives rotation: Android re-delivers the original
-        // intent on recreation, which would otherwise shadow the
-        // saved selection.
         selectedMethod = savedInstanceState?.getString(KEY_METHOD)
-            ?: intent?.getStringExtra(EXTRA_METHOD)
         selectedDistro = savedInstanceState?.getString(KEY_DISTRO)
-            ?: intent?.getStringExtra(EXTRA_DISTRO)
         labelEdited = savedInstanceState?.getBoolean(KEY_LABEL_EDITED) == true
-        started = savedInstanceState?.getBoolean(KEY_STARTED) == true
-        // Cache-proxy seed order:
-        //   1. saved instance state (rotation survives)
-        //   2. `--es mirrorProxy <url>` from the launch intent (auto-on)
-        //   3. dev build default: on. Production: off (and the row is
-        //      hidden anyway, see buildCacheProxyRow).
         useCacheProxy = when {
             savedInstanceState?.containsKey(KEY_USE_PROXY) == true ->
                 savedInstanceState.getBoolean(KEY_USE_PROXY)
-            intent?.hasExtra(EXTRA_MIRROR_PROXY) == true -> true
+            // Dev build default: on. Production: off (and the row is
+            // hidden anyway, see buildCacheProxyRow).
             me.phie.tawc.BuildConfig.DEBUG -> true
             else -> false
         }
@@ -122,55 +100,11 @@ class InstallActivity : AppCompatActivity() {
         }
         scaffold.content.addView(formScroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
-        panel = OperationLogPanel(this)
-        panel.view.visibility = if (started) View.VISIBLE else View.GONE
-        if (started) formScroll.visibility = View.GONE
-        // Cancel during install requires a confirm: it triggers a
-        // follow-up uninstall (INSTALLING → FAILED → UNINSTALLING),
-        // which wipes the freshly-laid-down rootfs. There's no user
-        // data at risk yet (gate guarantees an empty slot at install
-        // start) but the time loss alone is worth a confirm tap.
-        //
-        // After a cancelled install, the service flips into
-        // UNINSTALLING for the follow-up wipe — at that point a
-        // second tap of the still-visible Cancel button should behave
-        // like UninstallActivity's Cancel: no confirm dialog, just
-        // abort the wipe directly. Dispatch on the service's current
-        // job kind so we do the right thing in both phases.
-        panel.onCancelClicked = { dispatchCancel() }
-        scaffold.content.addView(panel.view, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-
         setContentView(scaffold.root)
-
-        // Fire autoStart only on the very first onCreate of this
-        // activity instance. Re-creations restore [started]=true from
-        // savedInstanceState and skip this path. A fresh `am start`
-        // produces a null savedInstanceState (Android creates a new
-        // activity instance), so the CLI keeps working.
-        if (savedInstanceState == null && intent.requestsAutoStart()) {
-            val explicitId = intent?.getStringExtra(EXTRA_ID)
-            if (explicitId != null && Installation.isValidId(explicitId)) {
-                resolvedId = explicitId
-            }
-            beginInstall()
-        }
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        if (intent.requestsAutoStart()) {
-            val explicitId = intent.getStringExtra(EXTRA_ID)
-            if (explicitId != null && Installation.isValidId(explicitId)) {
-                resolvedId = explicitId
-            }
-            beginInstall()
-        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putBoolean(KEY_STARTED, started)
         outState.putBoolean(KEY_LABEL_EDITED, labelEdited)
         // Guard the late-init lookup the same way [revalidate] does —
         // saving state can in principle fire before the form is built
@@ -183,16 +117,6 @@ class InstallActivity : AppCompatActivity() {
         useCacheProxy?.let { outState.putBoolean(KEY_USE_PROXY, it) }
     }
 
-    override fun onStart() {
-        super.onStart()
-        panel.bindToService()
-    }
-
-    override fun onStop() {
-        super.onStop()
-        panel.unbind()
-    }
-
     private fun buildFormSection(pad: Int, savedLabelText: String?): LinearLayout {
         val s = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
@@ -200,8 +124,7 @@ class InstallActivity : AppCompatActivity() {
         // list means no Distro supports this device; render an
         // explanatory line rather than a dead radio group, and let
         // the service-level gate refuse the install if the user taps
-        // anyway. The `--es distro …` extra / saved state nudges the
-        // initial selection.
+        // anyway.
         val available = DistroRegistry.availableForHost()
         val initialDistro = (selectedDistro ?: available.firstOrNull()?.key)
         selectedDistro = initialDistro
@@ -211,8 +134,7 @@ class InstallActivity : AppCompatActivity() {
         s.addView(buildInstallDirField(available, savedLabelText), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
 
         // Method picker. Defaults to tawcroot (the recommended method);
-        // the `--es method ...` intent extra and saved instance state
-        // both override.
+        // saved instance state overrides for rotation.
         s.addView(buildMethodPicker(), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
 
         // Dev-only "Use cache proxy" checkbox. Hidden in release builds
@@ -248,9 +170,9 @@ class InstallActivity : AppCompatActivity() {
     /**
      * Build the distro picker. Lists every [Distro] whose Android ABI
      * matches the host. Defaults to the first ABI-matching entry
-     * unless `--es distro …` / saved state nudges otherwise. Hidden
-     * when only one distro matches (the first-class case before
-     * Manjaro) so we don't render a single-choice radio group.
+     * unless saved state nudges otherwise. Hidden when only one distro
+     * matches (the first-class case before Manjaro) so we don't render
+     * a single-choice radio group.
      */
     private fun buildDistroPicker(available: List<Distro>, pad: Int): LinearLayout {
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -385,7 +307,7 @@ class InstallActivity : AppCompatActivity() {
     }
 
     /**
-     * Dev-only "Use cache proxy" checkbox. Drives `useCacheProxy`,
+     * Dev-only "Use cache proxy" checkbox. Drives [useCacheProxy],
      * which gates whether [beginInstall] passes a `mirrorProxy` URL to
      * the service. See `notes/cache-proxy.md`.
      */
@@ -467,127 +389,35 @@ class InstallActivity : AppCompatActivity() {
         // if the user picked chroot anyway.
         val methodKey = selectedMethod ?: TawcrootMethod.KEY
         if (methodKey == ChrootMethod.KEY && !Su.rootAvailable()) {
-            formSection.visibility = View.GONE
-            panel.view.visibility = View.VISIBLE
-            // Also append to the log: bindToService() will overwrite
-            // the status text with the service's StateFlow ("Idle") as
-            // soon as onStart fires, so a status-only error vanishes
-            // and the user sees a misleading "Idle" with no
-            // explanation. The log line is sticky.
-            val msg = "ERROR: root (su) not available — pick proot or tawcroot, or grant Magisk root."
-            panel.setStatus(msg)
-            panel.appendLog(msg)
+            // We don't have a panel anymore; surface as a quick
+            // toast-style status on the form. Service-level gate would
+            // also refuse, but a fail-fast at the form level avoids the
+            // service start.
+            android.widget.Toast.makeText(
+                this,
+                "root (su) not available — pick proot or tawcroot, or grant Magisk root.",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
             return
         }
-        val targetId = resolvedId
-        if (targetId == null) {
-            // Defensive: the Install button is disabled when resolvedId
-            // is null, but autoStart can land here without going via
-            // the form. Surface the refusal clearly.
-            formSection.visibility = View.GONE
-            panel.view.visibility = View.VISIBLE
-            val msg = "ERROR: no valid label / id resolved — set a non-empty label that doesn't collide"
-            panel.setStatus(msg)
-            panel.appendLog(msg)
-            return
-        }
-        formScroll.visibility = View.GONE
-        panel.view.visibility = View.VISIBLE
-        // Wipe any lines the panel may have collected from the
-        // SharedFlow's replay cache between onStart and now (e.g. the
-        // previous uninstall's tail when the user uninstalled then
-        // came back to install again).
-        panel.clearLog()
-        // [InstallationService] is the authoritative gate; we just hand
-        // off and let it decide whether to run or reject. `started` only
-        // tracks UI state (form vs panel) so a process-death recreate
-        // restores the panel view.
+        val targetId = resolvedId ?: return  // button disabled when null
+
         val distroKey = selectedDistro
         val labelText = labelField.text.toString().trim().takeIf { it.isNotEmpty() }
-        // Dev-time cache proxy URL. Resolution order:
-        //   - `--es mirrorProxy <url>` from the launch intent wins
-        //     (so adb workflows can pin a non-default proxy URL);
-        //   - else if the checkbox is on (debug-only) use the standard
-        //     local proxy URL;
-        //   - else null (no proxy — install hits upstream directly,
-        //     which is the only safe behaviour outside dev).
-        // Service-side gates this on BuildConfig.DEBUG so a release
-        // APK ignores a stray extra anyway.
-        val mirrorProxyUrl = intent?.getStringExtra(EXTRA_MIRROR_PROXY)
-            ?: if (useCacheProxy == true) DEFAULT_PROXY_URL else null
-        panel.appendLog(
-            (if (started) "[ui] re-requesting install of '$targetId' via $methodKey"
-             else "[ui] starting install of '$targetId' via $methodKey")
-                + (distroKey?.let { " (distro=$it)" } ?: "")
-                + (labelText?.let { " label='$it'" } ?: "")
-                + (mirrorProxyUrl?.let { " mirrorProxy='$it'" } ?: "")
-        )
-        started = true
+        // Dev-time cache proxy URL: when the (debug-only) checkbox is
+        // on, use the standard local proxy URL; else null. Service-side
+        // gates this on BuildConfig.DEBUG so a release APK ignores any
+        // stray value anyway.
+        val mirrorProxyUrl = if (useCacheProxy == true) DEFAULT_PROXY_URL else null
+
         InstallationService.startInstall(this, targetId, methodKey, distroKey, labelText, mirrorProxyUrl)
-    }
-
-    private fun dispatchCancel() {
-        val service = panel.boundService
-        if (service == null) {
-            panel.appendLog("[ui] cancel ignored: service not bound yet")
-            return
-        }
-        val targetId = resolvedId
-        if (targetId == null) {
-            panel.appendLog("[ui] cancel ignored: no resolved id")
-            return
-        }
-        when (service.currentKind) {
-            InstallationService.JobKind.INSTALL -> confirmCancelInstall(service, targetId)
-            InstallationService.JobKind.UNINSTALL -> {
-                // Follow-up uninstall phase from a previous cancel-
-                // install (or the user opened the install activity
-                // while an uninstall was already in flight). Match
-                // UninstallActivity's behaviour: no confirm.
-                panel.appendLog("[ui] cancelling in-flight uninstall")
-                service.cancelUninstall(targetId)
-            }
-            null -> panel.appendLog("[ui] cancel: no active job")
-        }
-    }
-
-    private fun confirmCancelInstall(service: InstallationService, targetId: String) {
-        // Note: the "no data will be lost" wording is correct because
-        // the install gate only runs against an empty slot (see
-        // notes/installation.md). If a future refactor adds in-place
-        // reconfigure/migration the message must be revisited.
-        val message = "Cancelling will stop the install and remove the partially " +
-            "extracted rootfs at\n${store.installationDir(targetId).absolutePath}.\n" +
-            "Nothing of yours has been written there yet, so no data will be lost."
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle("Cancel install of '$targetId'?")
-            .setMessage(message)
-            .setNegativeButton("Keep installing", null)
-            .setPositiveButton("Cancel install") { _, _ ->
-                panel.appendLog("[ui] user confirmed cancel")
-                service.cancelInstallAndUninstall(targetId)
-            }
-            .show()
-        // Match the destructive-action coloring on DistroInfoActivity:
-        // accent red on the destructive option, neutral on the keep-
-        // going one so it doesn't compete.
-        dialog.getButton(DialogInterface.BUTTON_POSITIVE)?.setTextColor(getColor(R.color.tawc_danger))
-        dialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { btn ->
-            btn.setTextColor(
-                MaterialColors.getColor(btn, com.google.android.material.R.attr.colorOnSurfaceVariant)
-            )
-        }
+        startActivity(LogScreenActivity.intentFor(this, "install:$targetId"))
+        finish()
     }
 
     companion object {
-        const val EXTRA_ID = "id"
-        const val EXTRA_METHOD = "method"
-        const val EXTRA_DISTRO = "distro"
-        /** Dev-time cache proxy URL (see notes/cache-proxy.md). Debug-only. */
-        const val EXTRA_MIRROR_PROXY = "mirrorProxy"
-        /** URL the "Use cache proxy" checkbox sets when no `--es mirrorProxy` is given. */
+        /** URL the "Use cache proxy" checkbox sets. Debug-only. */
         private const val DEFAULT_PROXY_URL = "http://127.0.0.1:8080/proxy/"
-        private const val KEY_STARTED = "tawc.install.started"
         private const val KEY_METHOD = "tawc.install.method"
         private const val KEY_DISTRO = "tawc.install.distro"
         private const val KEY_LABEL_EDITED = "tawc.install.labelEdited"

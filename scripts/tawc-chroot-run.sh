@@ -61,12 +61,9 @@ if [ -z "$METHOD" ]; then
 ERROR: $META not found or unreadable on the device.
 
 Did you install the chroot? From the host:
-  adb shell am start -n me.phie.tawc/.install.InstallActivity \\
-      --es autoStart true --es id $INSTALL_ID \\
-      [--es method chroot|proot]
+  bash scripts/install-distro.sh $INSTALL_ID [tawcroot|proot|chroot]
 
-Tail progress:
-  adb logcat -s tawc-install
+Progress streams to your TTY; the in-app log screen also opens.
 EOF
     exit 1
 fi

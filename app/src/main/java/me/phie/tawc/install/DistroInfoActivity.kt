@@ -1,6 +1,5 @@
 package me.phie.tawc.install
 
-import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.format.Formatter
@@ -22,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
+import me.phie.tawc.ops.LogScreenActivity
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.destructiveButton
 import me.phie.tawc.ui.verticalLp
@@ -29,10 +29,12 @@ import me.phie.tawc.ui.verticalLp
 /**
  * Per-installation detail screen. Shows id/distro/arch/method/source
  * URL/installed-at/full rootfs path, kicks off an async `du -sk`-via-su
- * to fill in size, and exposes the (red, destructive) Uninstall button
- * that opens [UninstallActivity]. Reached by tapping a row on the home
- * screen; size lives here (not on the home list) so opening the
- * launcher doesn't pay the multi-second su cost per row.
+ * to fill in size, and exposes the (red, destructive) Delete button
+ * (Are-You-Sure dialog → [InstallationService.startUninstall] +
+ * [me.phie.tawc.ops.LogScreenActivity] for the live progress view).
+ * Reached by tapping a row on the home screen; size lives here (not
+ * on the home list) so opening the launcher doesn't pay the multi-
+ * second su cost per row.
  */
 class DistroInfoActivity : AppCompatActivity() {
 
@@ -50,7 +52,7 @@ class DistroInfoActivity : AppCompatActivity() {
         scaffold = buildChildScreen(targetId)
         setContentView(scaffold.root)
         // Defer all view population to onResume so a returning trip
-        // from UninstallActivity (which may have flipped the slot
+        // from LogScreenActivity (which may have flipped the slot
         // INSTALLING/READY → FAILED on cancel) re-reads metadata and
         // re-renders the right state row, button, and size probe.
     }
@@ -160,14 +162,13 @@ class DistroInfoActivity : AppCompatActivity() {
             .setMessage(message)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Delete") { _, _ ->
-                // autoStart=true is the explicit trigger contract —
-                // UninstallActivity won't kick off the operation on a
-                // bare launch. The dialog "Delete" press is the user's
-                // confirmation, so we promote it to an autoStart intent.
-                val i = Intent(this, UninstallActivity::class.java)
-                    .putExtra(UninstallActivity.EXTRA_ID, installation.id)
-                    .putExtra(EXTRA_AUTO_START, true)
-                startActivity(i)
+                // The dialog "Delete" press is the user's confirmation;
+                // start the uninstall directly via the service helper
+                // and open LogScreenActivity to view it. No intent-
+                // extras contract — the service is the single mutation
+                // surface.
+                InstallationService.startUninstall(this, installation.id)
+                startActivity(LogScreenActivity.intentFor(this, "uninstall:${installation.id}"))
             }
             .show()
         // Tint the destructive action red so it pops, and the Cancel

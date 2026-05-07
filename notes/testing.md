@@ -98,8 +98,8 @@ so a stale `cargo test` from a `.tawctarget=none` checkout fails fast
 instead of attaching to the wrong target.
 
 Prerequisites: a phone (or emulator) connected via adb, the tawc app
-installed, an in-app distro installed (via `am start … --es autoStart
-true --es id <id>`; see [installation.md](installation.md)), and the
+installed, an in-app distro installed (via `bash scripts/install-distro.sh
+<id> [method]`; see [installation.md](installation.md)), and the
 test suite's chroot packages installed (run
 `bash scripts/install-test-deps.sh` once per chroot install — covers
 gtk3/gtk4/weston/mesa-utils/vulkan-tools). The suite auto-targets the

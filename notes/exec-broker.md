@@ -57,7 +57,11 @@ threads, and closes the socket when the child exits.
 
 ### Header (text, line-oriented)
 
-UTF-8, LF-terminated lines, terminated by an empty line:
+UTF-8, LF-terminated lines, terminated by an empty line. Two mutually
+exclusive header forms — pick one:
+
+**ARGV form** — fork-exec a child process. Used by `tawc-chroot-run.sh`
+and any plain `tawc-exec /path/to/cmd …` invocation.
 
 ```
 TAWCEXEC 1
@@ -70,13 +74,39 @@ CWD /data/local/tmp
 
 ```
 
+**ACTION form** — invoke an in-process broker action. Used by
+`tawc-exec --action install --arg id=arch …` (and the
+`scripts/install-distro.sh` / `scripts/uninstall-distro.sh` wrappers
+on top). The broker looks the action name up in
+`me.phie.tawc.dev.ActionRegistry`; the handler runs in-process and
+streams its output back over the same stream-frame protocol. See
+`me.phie.tawc.install.InstallActions` for the install/uninstall
+handlers.
+
+```
+TAWCEXEC 1
+ACTION install
+ARG id=arch
+ARG method=proot
+ARG mirrorProxy=http://127.0.0.1:8080/proxy/
+
+```
+
 - `TAWCEXEC 1` — magic + version. Must be the first line.
-- `ARGV <s>` — one per arg. At least one required. `argv[0]` is the
-  program path; the broker passes it through to ProcessBuilder
-  unchanged. Strings are UTF-8 and may not contain LF.
-- `ENV <KEY=VALUE>` — zero or more. **Replaces** the inherited
-  environment entirely (no merge). Omit for an empty env.
-- `CWD <path>` — optional. Default: the app process's cwd.
+- `ARGV <s>` (ARGV-form only) — one per arg. At least one required.
+  `argv[0]` is the program path; the broker passes it through to
+  ProcessBuilder unchanged. Strings are UTF-8 and may not contain LF.
+- `ENV <KEY=VALUE>` (ARGV-form only) — zero or more. **Replaces** the
+  inherited environment entirely (no merge). Omit for an empty env.
+- `CWD <path>` (ARGV-form only) — optional. Default: the app process's
+  cwd.
+- `ACTION <name>` (ACTION-form only) — exactly one. Must be a name
+  registered at app startup; unknown names get a STREAM_ERR + exit
+  −1.
+- `ARG <key>=<value>` (ACTION-form only) — zero or more. Per-action
+  semantics; see the handler's docstring.
+- A header containing both `ARGV` and `ACTION` is rejected with a
+  protocol error.
 - The empty line terminates the header. Frame stream begins
   immediately after.
 
@@ -194,6 +224,11 @@ foreground activity (e.g. `am start ...InstallActivity` directly), and
 the broker has no UI / notification needs of its own. A daemon thread
 plus the kernel keeping the process alive while it has user threads is
 enough.
+
+`TawcApplication.onCreate` also calls
+`me.phie.tawc.install.InstallActions.registerAll()` to populate
+`ActionRegistry` with the `install` / `uninstall` handlers before any
+client connection arrives.
 
 Cold-starting any of the app's entry points (MainActivity,
 InstallActivity, CompositorActivity) brings up the broker. Stopping the

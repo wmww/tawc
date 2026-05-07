@@ -30,6 +30,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("tawc-exec: {e}");
             eprintln!("usage: tawc-exec [--cwd DIR] [--env K=V ...] -- ARGV0 [ARG ...]");
+            eprintln!("       tawc-exec --action NAME [--arg K=V ...]");
             return ExitCode::from(2);
         }
     };
@@ -43,15 +44,26 @@ fn main() -> ExitCode {
     }
 }
 
-struct Parsed {
-    argv: Vec<String>,
-    env: Vec<String>,
-    cwd: Option<String>,
+/// Top-level invocation kind. Mirrors the wire protocol: an ARGV-form
+/// header for fork-exec or an ACTION-form header for an in-process
+/// broker action. Mutually exclusive — `parse_args` rejects mixes.
+enum Parsed {
+    Exec {
+        argv: Vec<String>,
+        env: Vec<String>,
+        cwd: Option<String>,
+    },
+    Action {
+        name: String,
+        args: Vec<(String, String)>,
+    },
 }
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut env = Vec::new();
     let mut cwd: Option<String> = None;
+    let mut action_name: Option<String> = None;
+    let mut action_args: Vec<(String, String)> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -68,6 +80,21 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 cwd = Some(args.get(i).ok_or("--cwd needs argument")?.clone());
                 i += 1;
             }
+            "--action" => {
+                i += 1;
+                let v = args.get(i).ok_or("--action needs argument")?.clone();
+                if v.is_empty() { return Err("--action name must not be empty".into()); }
+                action_name = Some(v);
+                i += 1;
+            }
+            "--arg" => {
+                i += 1;
+                let v = args.get(i).ok_or("--arg needs argument")?;
+                let eq = v.find('=').ok_or_else(||
+                    format!("--arg value must be key=value (got '{v}')"))?;
+                action_args.push((v[..eq].to_string(), v[eq+1..].to_string()));
+                i += 1;
+            }
             "-h" | "--help" => return Err("see notes/exec-broker.md".to_string()),
             other if other.starts_with("--") => {
                 return Err(format!("unknown flag '{other}'"));
@@ -78,15 +105,37 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             _ => break,
         }
     }
+    if let Some(name) = action_name {
+        // ACTION form. ARGV must be empty; --env / --cwd are also
+        // ARGV-only (ENV replaces the inherited env for the forked
+        // child, has no meaning in-process).
+        if i < args.len() {
+            return Err("--action takes no positional ARGV".into());
+        }
+        if !env.is_empty() {
+            return Err("--env is for fork-exec mode; not allowed with --action".into());
+        }
+        if cwd.is_some() {
+            return Err("--cwd is for fork-exec mode; not allowed with --action".into());
+        }
+        if name.contains('\n') || action_args.iter().any(|(k, v)| k.contains('\n') || v.contains('\n')) {
+            return Err("--action name / --arg values may not contain LF".into());
+        }
+        return Ok(Parsed::Action { name, args: action_args });
+    }
+    // ARGV form. --action / --arg must not be present.
+    if !action_args.is_empty() {
+        return Err("--arg is for action mode; missing --action".into());
+    }
     let argv: Vec<String> = args[i..].to_vec();
-    if argv.is_empty() { return Err("no command (use `-- ARGV0 ...`)".to_string()); }
+    if argv.is_empty() { return Err("no command (use `-- ARGV0 ...` or `--action NAME`)".to_string()); }
     if argv.iter().any(|a| a.contains('\n')) {
         return Err("argv may not contain LF".to_string());
     }
     if env.iter().any(|a| a.contains('\n')) {
         return Err("env may not contain LF".to_string());
     }
-    Ok(Parsed { argv, env, cwd })
+    Ok(Parsed::Exec { argv, env, cwd })
 }
 
 fn run(p: Parsed) -> io::Result<i32> {
@@ -150,9 +199,23 @@ fn run(p: Parsed) -> io::Result<i32> {
 fn write_header(s: &mut TcpStream, p: &Parsed) -> io::Result<()> {
     let mut h = String::new();
     h.push_str("TAWCEXEC 1\n");
-    for a in &p.argv { h.push_str("ARGV "); h.push_str(a); h.push('\n'); }
-    for e in &p.env  { h.push_str("ENV ");  h.push_str(e); h.push('\n'); }
-    if let Some(c) = &p.cwd { h.push_str("CWD "); h.push_str(c); h.push('\n'); }
+    match p {
+        Parsed::Exec { argv, env, cwd } => {
+            for a in argv { h.push_str("ARGV "); h.push_str(a); h.push('\n'); }
+            for e in env  { h.push_str("ENV ");  h.push_str(e); h.push('\n'); }
+            if let Some(c) = cwd { h.push_str("CWD "); h.push_str(c); h.push('\n'); }
+        }
+        Parsed::Action { name, args } => {
+            h.push_str("ACTION "); h.push_str(name); h.push('\n');
+            for (k, v) in args {
+                h.push_str("ARG ");
+                h.push_str(k);
+                h.push('=');
+                h.push_str(v);
+                h.push('\n');
+            }
+        }
+    }
     h.push('\n');
     s.write_all(h.as_bytes())
 }

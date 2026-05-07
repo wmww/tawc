@@ -44,8 +44,10 @@ object DistroRegistry {
 
     /**
      * Distro auto-selected for a fresh install on this host when the
-     * caller doesn't specify one. First match wins — kept for the
-     * `am start` autoStart path that doesn't pass a distro extra.
+     * caller doesn't specify one. First match wins — used by the
+     * broker `install` action when the caller omits `distro=…`, and
+     * by the in-app form on a single-distro host where the radio
+     * group isn't rendered.
      */
     fun defaultForHost(): Distro? = availableForHost().firstOrNull()
 

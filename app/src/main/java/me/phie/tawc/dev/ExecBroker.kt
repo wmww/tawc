@@ -1,5 +1,6 @@
 package me.phie.tawc.dev
 
+import android.content.Context
 import android.net.LocalServerSocket
 import android.util.Log
 import java.io.IOException
@@ -37,7 +38,16 @@ object ExecBroker {
 
     private val running = AtomicBoolean(false)
 
-    fun start() {
+    /**
+     * Application context, captured on [start]. Per-connection sessions
+     * read this so action handlers can reach Android system services
+     * without each handler having to thread the context through.
+     */
+    @Volatile internal lateinit var appContext: Context
+        private set
+
+    fun start(context: Context) {
+        appContext = context.applicationContext
         if (!running.compareAndSet(false, true)) return
         thread(name = "tawc-exec-broker", isDaemon = true) { acceptLoop() }
     }

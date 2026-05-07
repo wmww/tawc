@@ -74,17 +74,12 @@
 
         <activity
             android:name=".install.InstallActivity"
-            android:exported="true"
+            android:exported="false"
             android:label="Install distro" />
 
         <activity
-            android:name=".install.UninstallActivity"
-            android:exported="true"
-            android:label="Uninstall" />
-
-        <activity
             android:name=".install.DistroInfoActivity"
-            android:exported="true"
+            android:exported="false"
             android:label="Distro info" />
 
         <activity
@@ -96,6 +91,27 @@
             android:name=".tasks.TaskManagerActivity"
             android:exported="false"
             android:label="Task manager" />
+
+        <!-- Generic per-operation log viewer. Pure viewer: opening it
+             never triggers any operation. Exported=true so an
+             am start with operationId from adb can attach to a running
+             op (e.g. one started via the dev exec broker). -->
+        <activity
+            android:name=".ops.LogScreenActivity"
+            android:exported="true"
+            android:label="Operation log" />
+
+        <!-- Notification "Cancel" action target. Looks up the named op
+             in OperationsRegistry and calls Operation.cancel(). Bypasses
+             cancelConfirmation — a notification-action tap is itself the
+             deliberate decision. -->
+        <receiver
+            android:name=".ops.CancelOperationReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="me.phie.tawc.ops.CANCEL_OPERATION" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".install.InstallationService"

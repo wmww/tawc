@@ -127,8 +127,9 @@ The cancel mechanism has three layers:
 
 [InstallationService] is the gate that enforces the table — every
 mutation goes through it, and it consults the on-disk state before
-launching a job. Activities, broadcasts, and `am start --es autoStart`
-are all just inputs; the service decides.
+launching a job. The Install button, the Delete dialog, and the dev
+exec broker's `install` / `uninstall` actions are all just inputs;
+the service decides.
 
 `FAILED` is a parking state: it carries a `failure` string and can only
 be cleared by uninstalling the half-installed (or half-uninstalled)
@@ -172,12 +173,11 @@ The package is split into three layers:
 | `util/AppOwnership.kt`         | `chownAppDirNonRecursive` — resets a freshly-mkdir'd dir to app uid:gid so subsequent app-uid writes succeed. |
 | `InstallProgress.kt`           | Stage enum + progress event used by the service. The pkg-manager-bootstrap stages are `PKG_KEYRING` and `PKG_INSTALL` (distro-agnostic names). |
 | `InstallationService.kt`       | The state-machine gate. Foreground service that consults [InstallationStore], resolves the right [Distro] from [DistroRegistry], and exposes `progress` (StateFlow) + `log` (SharedFlow). |
-| `OperationLogPanel.kt`         | Reusable Android view (bold default-color status line that flips to success-green on `DONE` and danger-red on `FAILED`, accent-tinted progress bar, scrolling log, subdued borderless Cancel button) that binds to the service's `progress`/`log` flows. Cancel visibility tracks the current `InstallStage`; the click handler is supplied by the owning activity so install can wrap with a confirm dialog while uninstall doesn't. Used by both [InstallActivity] and [UninstallActivity] so the per-operation UI lives in one place. |
-| `AutoStart.kt`                 | Shared `EXTRA_AUTO_START` constant + `Intent?.requestsAutoStart()` extension. The single contract that lets [InstallActivity] / [UninstallActivity] tell "this launch is the user / CLI explicitly asking to fire the operation" from "this launch is just opening the page." |
-| `InstallActivity.kt`           | Install form (distro radio, free-form Label EditText with live slug-derived id hint, vertical method radio in `tawcroot (recommended) / proot / chroot (requires root)` order, "What's the difference?" link to [InstallMethodInfoActivity]) → Install button → swap to [OperationLogPanel] for live progress. Recognises `autoStart=true` to skip the form and start immediately. The Install button is disabled while the label is empty / unslugifiable / collides with an existing installation. |
+| `InstallOperation.kt`          | [me.phie.tawc.ops.Operation] adapter. Owns its own `MutableStateFlow<OperationProgress>` (the service's `publishProgress` writes directly to it via `op.publish(...)`); shares the service's `_log` SharedFlow. Constructed once per service-managed install / uninstall / refused-by-gate transient, registered in [me.phie.tawc.ops.OperationsRegistry] for the lifetime of the work. Carries the cancel-confirmation message (install: confirm; uninstall: no confirm). |
+| `InstallActions.kt`            | Broker action handlers (`install` / `uninstall`) registered from [TawcApplication.onCreate] (debug builds only). Validate args, call [InstallationService] companion-object helpers, open [LogScreenActivity] best-effort, and mirror the registered Operation's flows back to the broker socket until terminal. Host disconnect → `Operation.cancel()`. See `notes/exec-broker.md` for protocol. |
+| `InstallActivity.kt`           | Install form (distro radio, free-form Label EditText with live slug-derived id hint, vertical method radio in `tawcroot (recommended) / proot / chroot (requires root)` order, "What's the difference?" link to [InstallMethodInfoActivity]) → Install button → calls [InstallationService.startInstall], opens [LogScreenActivity], and finishes itself. The Install button is disabled while the label is empty / unslugifiable / collides with an existing installation. The activity is `exported="false"` — there is no CLI launch path. |
 | `InstallMethodInfoActivity.kt` | Read-only reference page describing the three install methods (tawcroot / proot / chroot). Linked from the install form's "What's the difference?" affordance so users can compare tradeoffs without leaving the app. |
-| `UninstallActivity.kt`         | Live uninstall progress page bound to [InstallationService]. Has no in-page button — confirmation lives on [DistroInfoActivity]. The uninstall fires only when the launching intent carries `autoStart=true` (same contract as [InstallActivity]); a bare launch / recents reopen just shows the bound service's last status. |
-| `DistroInfoActivity.kt`        | Per-distro detail page (id, label, registry-resolved distro/arch, method, source URL, installed-at, state/failure, full rootfs path) + an async `du -sk` size readout (only for `READY`) + a red Delete button (which opens [UninstallActivity]). The view is rebuilt in `onResume` so a returning trip from a cancelled uninstall (FAILED) refreshes the State row instead of showing the stale READY pre-uninstall snapshot. Reached from a tap on a home-screen row. |
+| `DistroInfoActivity.kt`        | Per-distro detail page (id, label, registry-resolved distro/arch, method, source URL, installed-at, state/failure, full rootfs path) + an async `du -sk` size readout (only for `READY`) + a red Delete button (Are-You-Sure dialog → [InstallationService.startUninstall] + opens [LogScreenActivity]). The view is rebuilt in `onResume` so a returning trip from a cancelled uninstall (FAILED) refreshes the State row instead of showing the stale READY pre-uninstall snapshot. Reached from a tap on a home-screen row. |
 
 The `MainActivity` home screen lists the on-disk installations
 (distro + arch only — size lives on [DistroInfoActivity] because
@@ -186,7 +186,7 @@ down opening the launcher). Each row is tappable and opens the info
 page; the page itself hosts the Uninstall button.
 
 The non-compositor activities (`MainActivity`, `InstallActivity`,
-`UninstallActivity`, `DistroInfoActivity`) extend `AppCompatActivity`
+`DistroInfoActivity`, [LogScreenActivity]) extend `AppCompatActivity`
 and share a small `me.phie.tawc.ui.Scaffold` helper that builds a
 `MaterialToolbar` (with a back/up arrow on child screens) plus a
 content column. The theme is `Theme.Material3.DayNight.NoActionBar`
@@ -403,66 +403,76 @@ mount), but no tool actually walks into it.
 
 ## CLI command interface
 
-Install and uninstall are driven from the host via `am start` into
-[InstallActivity] / [UninstallActivity] with an `autoStart=true` extra.
-Activities launched by `am start` have full FGS-launch privileges, so
-the activity can immediately start `InstallationService` and the
-operation runs to completion in the foreground service whether the
-activity stays open or not.
+Install and uninstall are driven from the host through the **dev exec
+broker** ([notes/exec-broker.md](exec-broker.md)). The broker is the
+single host→app channel for everything: arbitrary command exec
+(`tawc-exec /bin/sh -c …`) and structured app actions
+(`tawc-exec --action install …`). Activities are pure viewers —
+opening any in-app screen never side-effects.
 
-There is intentionally **no broadcast/receiver surface** for running
-arbitrary commands as root in the chroot. The app has Magisk root for
-its own install/uninstall flow; exposing that as a public endpoint
-would let any other app on the device get root execution inside the
-chroot. If we ever need a no-UI handle for the test harness, build it
-with auth baked in (signature permission or uid check) at that point.
+- **Trigger surface (debug builds only):** the broker's `ACTION` header
+  protocol. `install` and `uninstall` action handlers live in
+  `me.phie.tawc.install.InstallActions`, registered from
+  [TawcApplication.onCreate]. They validate args, call
+  [InstallationService.startInstall] / [InstallationService.startUninstall],
+  open [LogScreenActivity] (best-effort; BAL refusal is a no-op for
+  headless tests), then mirror the operation's progress + log flows
+  back to the broker socket until the op terminates. Host disconnect
+  (`Ctrl-C` of `tawc-exec`) sets `ActionContext.cancelFlag`, the
+  handler calls `Operation.cancel()`, and the service runs its normal
+  cancel-cleanup path.
+- **No broadcast / receiver surface.** Earlier versions used
+  `am start … InstallActivity --es autoStart true` and an exported
+  activity to receive the trigger; that conflated "open the page" with
+  "run the mutation" and hit Android's recents-card replay every time
+  the activity was reopened. The broker's `ACTION` form is debug-only
+  by design, so a release APK has no CLI surface at all and a user's
+  phone can't be tricked into installing through any CLI path.
+- **Production:** the only triggers are the in-app `Install` button
+  ([InstallActivity], form-only after the user fills it in) and the
+  `Delete` confirm dialog on [DistroInfoActivity]. Both call
+  [InstallationService] companion-object helpers directly.
 
 ```sh
-# Kick off a fresh install (works cold; the activity briefly surfaces).
-# If the id is already in any state but `(no dir)` the request is
-# refused at the service gate and the activity logs the rejection — the
-# rootfs is *never* re-extracted on top of an existing one.
-adb shell am start \
-    -n me.phie.tawc/.install.InstallActivity \
-    --es autoStart true --es id arch
+# Kick off a fresh install. Streams progress + log to your TTY and
+# opens the in-app log screen. Ctrl-C cancels.
+bash scripts/install-distro.sh arch tawcroot
 
-# Tail the install log (download → extract → configure → pacman):
-adb logcat -s tawc-install
+# Or pick a different distro / pass extras forwarded as broker --arg
+# flags:
+bash scripts/install-distro.sh arch proot \
+    distro=archlinuxarm \
+    mirrorProxy=http://127.0.0.1:8080/proxy/
 
-# Tear down the install. RootfsCleaner kills chroot processes,
-# unmounts strictly, and `find -xdev -depth -delete`s the dir. The
-# uninstall is also the only way to clear a `FAILED` install before
-# trying again.
-adb shell am start \
-    -n me.phie.tawc/.install.UninstallActivity \
-    --es autoStart true --es id arch
+# Tear down. Same channel; the uninstall is also the only way to
+# clear a `FAILED` install before trying again.
+bash scripts/uninstall-distro.sh arch
 ```
 
-`autoStart` is the *only* way the activities trigger a mutating
-operation as a side-effect of being launched — opening either activity
-without it (e.g. tapping a recents card whose Activity instance was
-destroyed and recreated, or `am start ... InstallActivity` with no
-extras) just renders the page; nothing runs. Inside the activity, the
-in-page Install button is the other trigger; UninstallActivity has no
-such button because the confirmation dialog lives on
-[DistroInfoActivity], which then launches UninstallActivity *with*
-`autoStart=true`. The autoStart fire is also gated on
-`savedInstanceState == null` so a config-change recreate doesn't
-re-honour the same launch intent. A fresh `am start` (which delivers a
-new launch intent) does re-fire. Combined with the service-level gate,
-even a leaked auto-start is at worst a no-op rejection.
+The wrappers ensure `MainActivity` is foreground first (the broker
+runs as a background thread inside the app process; Android-14
+`mAllowStartForeground` rules block `startForegroundService` from a
+fully-backgrounded app). `tawc-exec` already brings the app cold-up
+when the process is dead; the foreground precondition matters only
+when the app is alive but backgrounded, which the wrappers handle by
+calling `am start MainActivity` before the broker action.
 
-The shared `autoStart` plumbing lives in `AutoStart.kt`
-(`EXTRA_AUTO_START` + `Intent?.requestsAutoStart()`); both activities
-read it via the extension function. New activities that perform
-mutating operations should follow the same pattern instead of running
-work directly out of `onCreate`.
-
-Listing existing installations from the host: read the metadata
-directly with root.
+Attaching to a running op from another shell:
 
 ```sh
-adb shell "su -c 'ls /data/data/me.phie.tawc/distros/'"
+# Generic viewer; pure viewer, no side-effects on launch.
+adb shell am start \
+    -n me.phie.tawc/me.phie.tawc.ops.LogScreenActivity \
+    --es operationId 'install:arch'
+```
+
+Listing existing installations from the host: read the metadata
+directly via the broker (no su / run-as needed).
+
+```sh
+. scripts/lib/select-device.sh
+. scripts/lib/tawc-exec.sh
+"$TAWC_EXEC_BIN" /system/bin/sh -c 'ls /data/data/me.phie.tawc/distros/'
 ```
 
 ## Required permissions
@@ -712,25 +722,37 @@ verified against the populated keyring (no more `SigLevel = Never`),
 so HTTP for the fallback mirrors is defense-in-depth missing rather
 than a hole. See *Bootstrap integrity* for the load-bearing rules.
 
-## Android 14 FGS rules and why INSTALL/UNINSTALL aren't broadcasts
+## Android 14 FGS rules and the broker action path
 
 `startForegroundService()` from a background broadcast receiver is
 blocked on Android 14+ (`mAllowStartForeground=false`), and Background
 Activity Launches from the same context are also blocked
-(`BAL_BLOCK`). That rules out a clean broadcast endpoint for INSTALL /
-UNINSTALL, which need an FGS to run anything long-running.
+(`BAL_BLOCK`). The broker action path sidesteps this by requiring the
+app to be in the foreground when the action fires — `MainActivity`
+(launched by the wrapper script) puts the process in the foreground
+state, then the broker's accept thread is allowed to call
+`startForegroundService` for [InstallationService].
 
-`am start` directly into `InstallActivity` / `UninstallActivity` (with
-`--es autoStart true`) is the documented CLI for those operations:
-Activities launched by `am start` have full FGS-launch privileges, so
-the activity can start `InstallationService` immediately and the
-install runs to completion whether the activity stays open or not.
+The wrappers (`scripts/install-distro.sh`, `scripts/uninstall-distro.sh`)
+do this transparently:
 
-If a no-UI INSTALL/UNINSTALL trigger is ever needed (e.g. headless
-test workflows that can't run `am start`), the right answer is
-WorkManager `OneTimeWorkRequest.setExpedited()` with a foreground info
-— that's explicitly carved out of the FGS restriction. Not implemented
-because every current caller can run `am start`.
+```sh
+adb shell am start -n me.phie.tawc/.MainActivity   # bring foreground
+"$TAWC_EXEC_BIN" --action install --arg id=…       # then trigger
+```
+
+`tawc-exec` already auto-launches `MainActivity` when the app process
+is dead; the wrapper covers the case where the app is alive but
+backgrounded. If the broker action runs against a truly backgrounded
+app the FGS launch will throw `ForegroundServiceStartNotAllowedException`
+and the action returns a clear error.
+
+If a fully-headless INSTALL/UNINSTALL trigger is ever needed (e.g.
+without an `am start` step), the right escape hatch is WorkManager
+`OneTimeWorkRequest.setExpedited()` with a foreground info — that's
+explicitly carved out of the FGS restriction. Not implemented because
+the wrapper-script pattern works fine for every current caller and
+keeps the trigger surface debug-only.
 
 ## Future directions (designed-for, not implemented)
 

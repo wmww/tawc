@@ -51,8 +51,7 @@ case "$_count" in
         cat >&2 <<EOF
 ERROR: no in-app install found at $_distros/*/.
        Install one with:
-         adb shell am start -n $_pkg/.install.InstallActivity \\
-             --es autoStart true --es id <id> [--es method chroot|proot|tawcroot]
+         bash scripts/install-distro.sh <id> [tawcroot|proot|chroot]
 EOF
         return 1 2>/dev/null || exit 1
         ;;

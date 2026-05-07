@@ -56,8 +56,8 @@ fn resolve_install_id() -> String {
         [one] => (*one).to_string(),
         [] => panic!(
             "no in-app install found at /data/data/{pkg}/distros/*/ — \
-             install one with `adb shell am start -n {pkg}/.install.InstallActivity \
-             --es autoStart true --es id <id>` (see CLAUDE.md Quick Reference)"
+             install one with `bash scripts/install-distro.sh <id> [method]` \
+             (see CLAUDE.md Quick Reference)"
         ),
         many => panic!(
             "multiple installs found at /data/data/{pkg}/distros/ ({}); \

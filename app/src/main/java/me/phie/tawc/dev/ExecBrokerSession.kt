@@ -25,11 +25,18 @@ import kotlin.concurrent.thread
  */
 internal class ExecBrokerSession(private val socket: LocalSocket) {
 
-    private data class ExecRequest(
-        val argv: List<String>,
-        val env: List<Pair<String, String>>?,
-        val cwd: String?,
-    )
+    private sealed class Request {
+        data class Exec(
+            val argv: List<String>,
+            val env: List<Pair<String, String>>?,
+            val cwd: String?,
+        ) : Request()
+
+        data class Action(
+            val name: String,
+            val args: Map<String, String>,
+        ) : Request()
+    }
 
     fun run() {
         val rawIn = socket.inputStream
@@ -44,7 +51,99 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
             return
         }
         val sin = DataInputStream(rawIn)
-        Log.i(ExecBroker.TAG, "exec argv=${req.argv} cwd=${req.cwd}")
+        when (req) {
+            is Request.Exec -> {
+                Log.i(ExecBroker.TAG, "exec argv=${req.argv} cwd=${req.cwd}")
+                runExec(req, sin, sout)
+            }
+            is Request.Action -> {
+                Log.i(ExecBroker.TAG, "action name=${req.name} args=${req.args.keys}")
+                runAction(req, sin, sout)
+            }
+        }
+    }
+
+    /**
+     * Run an in-process broker action: look up the handler in
+     * [ActionRegistry], hand it an [ActionContext] backed by frame
+     * writers, watch the socket for host disconnect to set the
+     * cancelFlag, send the broker-style EXIT frame on completion.
+     */
+    private fun runAction(req: Request.Action, sin: DataInputStream, sout: DataOutputStream) {
+        val handler = ActionRegistry.get(req.name)
+        if (handler == null) {
+            val available = ActionRegistry.names().joinToString(",")
+            sendErrorAndExit(sout, "unknown action '${req.name}' (available: $available)")
+            return
+        }
+
+        val cancelFlag = AtomicBoolean(false)
+        // Watch the socket for host EOF — any read returning EOF (or any
+        // frame at all, which would be a protocol violation since the
+        // action protocol doesn't accept client → server frames) means
+        // the host disconnected. We set cancelFlag so the handler can
+        // bail at its next poll point. The thread itself exits when the
+        // outer accept-loop in [ExecBroker] closes the per-session
+        // socket in its `finally`.
+        thread(name = "tawc-exec-action-watch", isDaemon = true) {
+            try {
+                while (true) {
+                    val b = sin.read()
+                    if (b == -1) break          // socket EOF — host gone
+                    // Drain any framing the host sends; protocol says
+                    // there should be none for actions, but reading
+                    // keeps the buffer from filling and lets us notice
+                    // EOF promptly.
+                    val len = try { sin.readInt() } catch (_: Throwable) { break }
+                    if (len < 0 || len > MAX_FRAME) break
+                    // `readFully` is API 1+; `readNBytes` would be API 33.
+                    if (len > 0) {
+                        val drain = ByteArray(len)
+                        try { sin.readFully(drain) } catch (_: Throwable) { break }
+                    }
+                }
+            } catch (_: Throwable) { /* fall through */ }
+            cancelFlag.set(true)
+        }
+
+        val app = ExecBroker.appContext
+        val ctx = ActionContext(
+            appContext = app,
+            out = { line -> writeStreamFrame(sout, STREAM_STDOUT, "$line\n".toByteArray(Charsets.UTF_8)) },
+            err = { line -> writeStreamFrame(sout, STREAM_STDERR, "$line\n".toByteArray(Charsets.UTF_8)) },
+            cancelFlag = cancelFlag,
+        )
+
+        val exit = try {
+            handler.run(req.args, ctx)
+        } catch (t: Throwable) {
+            Log.w(ExecBroker.TAG, "action '${req.name}' threw", t)
+            try {
+                writeStreamFrame(sout, STREAM_ERR,
+                    "action threw: ${t.javaClass.simpleName}: ${t.message ?: ""}".toByteArray(Charsets.UTF_8))
+            } catch (_: Throwable) {}
+            -1
+        }
+
+        try {
+            synchronized(sout) {
+                sout.write(STREAM_EXIT)
+                sout.writeInt(4)
+                sout.writeInt(exit)
+                sout.flush()
+            }
+        } catch (_: IOException) { /* host gone */ }
+
+        // The watcher is parked on `sin.read()`, which is a blocking FD
+        // I/O call that does NOT respond to Thread.interrupt(). The
+        // outer accept-loop in [ExecBroker] closes `client` in its
+        // per-session `finally`, which unblocks the read with EOF and
+        // lets the daemon thread exit naturally. We don't need to wait
+        // for that here — the EXIT frame above is the host-visible
+        // completion signal.
+    }
+
+    private fun runExec(req: Request.Exec, sin: DataInputStream, sout: DataOutputStream) {
 
         val pb = ProcessBuilder(req.argv)
             .redirectErrorStream(false)
@@ -139,6 +238,38 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
         socketAlive.set(false)
     }
 
+    /**
+     * Write one stream frame (used by [runAction] to push action
+     * output to the host). Synchronizes on [sout] for the same reason
+     * [relayChildOutToSocket] does — multiple writers can race on
+     * stdout / stderr / exit.
+     */
+    private fun writeStreamFrame(sout: DataOutputStream, streamId: Int, payload: ByteArray) {
+        if (payload.size > MAX_FRAME) {
+            // Split oversize payloads. Action handlers typically write
+            // one log line at a time, well under MAX_FRAME, so this is
+            // defensive.
+            var off = 0
+            while (off < payload.size) {
+                val n = minOf(MAX_FRAME, payload.size - off)
+                writeStreamFrame(sout, streamId, payload.copyOfRange(off, off + n))
+                off += n
+            }
+            return
+        }
+        try {
+            synchronized(sout) {
+                sout.write(streamId)
+                sout.writeInt(payload.size)
+                sout.write(payload)
+                sout.flush()
+            }
+        } catch (_: IOException) {
+            // Host disconnected. The session's run() will observe this
+            // via its socket-watcher thread; nothing we can do here.
+        }
+    }
+
     private fun sendErrorAndExit(sout: DataOutputStream, msg: String) {
         try {
             val bytes = msg.toByteArray(Charsets.UTF_8)
@@ -157,8 +288,17 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
      * byte-at-a-time so the next byte on [stream] is the start of the
      * first binary frame — using BufferedReader here would silently
      * absorb frame bytes into its internal buffer.
+     *
+     * Two header shapes are accepted, mutually exclusive:
+     *   - **ARGV-form** (fork-exec): one or more `ARGV <s>` lines plus
+     *     optional `ENV K=V` / `CWD <p>`. The session forks the named
+     *     process and relays stdio.
+     *   - **ACTION-form** (in-process): one `ACTION <name>` line plus
+     *     zero or more `ARG <key>=<value>` lines. The session looks
+     *     [name] up in [ActionRegistry] and runs the handler in-process,
+     *     streaming its output back on stdout/stderr.
      */
-    private fun readHeader(stream: InputStream): ExecRequest {
+    private fun readHeader(stream: InputStream): Request {
         val firstLine = readHeaderLine(stream)
             ?: throw IOException("connection closed before header")
         if (firstLine != "TAWCEXEC 1") {
@@ -167,6 +307,8 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
         val argv = mutableListOf<String>()
         var env: MutableList<Pair<String, String>>? = null
         var cwd: String? = null
+        var actionName: String? = null
+        val actionArgs = mutableMapOf<String, String>()
         while (true) {
             val line = readHeaderLine(stream) ?: throw IOException("EOF in header")
             if (line.isEmpty()) break
@@ -182,11 +324,29 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
                     env += value.substring(0, eq) to value.substring(eq + 1)
                 }
                 "CWD"  -> cwd = value
-                else   -> throw IOException("unknown header key: '$key'")
+                "ACTION" -> {
+                    if (actionName != null) throw IOException("duplicate ACTION line")
+                    if (value.isEmpty()) throw IOException("ACTION needs a name")
+                    actionName = value
+                }
+                "ARG" -> {
+                    val eq = value.indexOf('=')
+                    if (eq < 0) throw IOException("malformed ARG: '$value' (must be key=value)")
+                    actionArgs[value.substring(0, eq)] = value.substring(eq + 1)
+                }
+                else -> throw IOException("unknown header key: '$key'")
             }
         }
-        if (argv.isEmpty()) throw IOException("no ARGV in header")
-        return ExecRequest(argv, env, cwd)
+        val isAction = actionName != null
+        val isExec = argv.isNotEmpty()
+        if (isAction && isExec) {
+            throw IOException("ACTION and ARGV are mutually exclusive in one header")
+        }
+        if (isAction) {
+            return Request.Action(actionName!!, actionArgs)
+        }
+        if (!isExec) throw IOException("no ARGV or ACTION in header")
+        return Request.Exec(argv, env, cwd)
     }
 
     /**

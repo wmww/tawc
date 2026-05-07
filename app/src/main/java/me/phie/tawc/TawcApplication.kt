@@ -7,6 +7,7 @@ import me.phie.tawc.install.BootstrapCache
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.ops.OperationsNotificationCenter
 import java.io.File
 import kotlin.concurrent.thread
 
@@ -29,6 +30,12 @@ import kotlin.concurrent.thread
 class TawcApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Start the per-op notification center before any service can
+        // register an Operation. The center is the single owner of the
+        // `tawc-operations` notification channel and the
+        // OperationsRegistry → notification fan-out — see
+        // me.phie.tawc.ops package KDoc.
+        OperationsNotificationCenter.start(this)
         thread(name = "tawc-startup", isDaemon = true) {
             try {
                 val n = BootstrapCache(this).sweepStale()
@@ -48,7 +55,11 @@ class TawcApplication : Application() {
         // flows often start at InstallActivity. Release builds skip
         // this entirely. See notes/exec-broker.md.
         if (BuildConfig.DEBUG) {
-            ExecBroker.start()
+            ExecBroker.start(this)
+            // Action handlers must register before any host connection;
+            // the broker thread spawned by start() above accepts asynchronously
+            // but won't dispatch ACTION headers to a missing handler.
+            me.phie.tawc.install.InstallActions.registerAll()
         }
     }
 

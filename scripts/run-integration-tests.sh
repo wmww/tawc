@@ -18,8 +18,8 @@
 #     /data/data/me.phie.tawc/distros/<id>/. The suite auto-targets it
 #     when there's exactly one; with multiple, set TAWC_INSTALL_ID=<id>
 #     explicitly. Install via:
-#       adb shell am start -n me.phie.tawc/.install.InstallActivity \
-#           --ez autoStart true --es id <id> [--es distro <distro>]
+#       bash scripts/install-distro.sh <id> [tawcroot|proot|chroot] \
+#           [distro=<distro>]
 #   - Test-suite chroot packages installed (run
 #     `bash scripts/install-test-deps.sh` once per chroot install)
 #   - JAVA_HOME set or java-21-openjdk installed at default path
@@ -88,12 +88,10 @@ if [ "$DO_BUILD" -eq 1 ]; then
 ERROR: in-app install not found at $INSTALL_DIR/.
 
 Install it from the host:
-  adb shell am start -n me.phie.tawc/.install.InstallActivity \\
-      --ez autoStart true --es id $INSTALL_ID \\
-      [--es method chroot|proot|tawcroot] [--es distro <distro>]
+  bash scripts/install-distro.sh $INSTALL_ID [tawcroot|proot|chroot] \\
+      [distro=<distro>]
 
-Then tail progress:
-  adb logcat -s tawc-install
+Progress streams to your TTY; the in-app log screen also opens.
 EOF
         exit 1
     fi

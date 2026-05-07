@@ -18,11 +18,10 @@ This is the current development approach.
 
 ## Chroot Setup
 
-Install (once, via the in-app installer):
+Install (once, via the dev exec broker; progress streams to your TTY
+and the in-app log screen opens automatically):
 ```bash
-adb shell am start -n me.phie.tawc/.install.InstallActivity \
-    --es autoStart true --es id arch
-adb logcat -s tawc-install   # tail progress
+bash scripts/install-distro.sh arch tawcroot
 ```
 
 Then drive the chroot from the host with:
@@ -105,8 +104,8 @@ the rest of the app's UI/management features.
   the app reclaims it. The host-side counterpart is
   `scripts/tawc-chroot-run.sh`, which shells into the same auto-generated
   `enter.sh` over `adb shell su`. See [installation.md](installation.md)
-  for the package map, the `am start --es autoStart …` CLI, and the
-  Android 14 FGS-from-broadcast rationale.
+  for the package map, the broker `--action install/uninstall` CLI,
+  and the Android 14 FGS rationale.
 
 When adding new app features (settings, app launcher, …), put them in
 their own packages under `me.phie.tawc.*` rather than mixing them into
