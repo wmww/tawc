@@ -115,35 +115,6 @@ static long open_chroot_target(const char *guest_path)
 	return tawc_openat(r.base_fd, p, flags, 0);
 }
 
-/* Read the canonical host path of `fd` via /proc/self/fd/<fd>. Strips
- * trailing slashes (matches the supervisor's invariant). Writes a
- * NUL-terminated string into `out` and returns its length, or -errno. */
-static long resolve_fd_host_path(int fd, char *out, size_t out_cap)
-{
-	if (!out || out_cap < 2) return TAWC_EFAULT;
-
-	char link[64];
-	const char *prefix = "/proc/self/fd/";
-	size_t pl = 0;
-	while (prefix[pl]) { link[pl] = prefix[pl]; pl++; }
-	int wrote = tawc_int_to_str(link + pl, sizeof link - pl, fd);
-	if (wrote <= 0) return TAWC_EINVAL;
-
-	long n = tawc_readlinkat(AT_FDCWD, link, out, out_cap - 1);
-	if (n < 0) return n;
-	if ((size_t)n >= out_cap - 1) return TAWC_ENAMETOOLONG;
-	/* Empty / non-absolute readlink result is a /proc not-mounted style
-	 * failure — surface as -EINVAL so the chroot rejection is visible.
-	 * Hitting this in practice means we're already broken (path
-	 * translation also reads /proc/self/fd elsewhere), so the precise
-	 * errno doesn't matter much. */
-	if (n == 0 || out[0] != '/') return TAWC_EINVAL;
-
-	while (n > 1 && out[n - 1] == '/') n--;
-	out[n] = 0;
-	return n;
-}
-
 static long handle_chroot(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
@@ -161,7 +132,8 @@ static long handle_chroot(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int new_root_fd = (int)resv;
 
 	char new_host[sizeof tawcroot_rootfs_host_path];
-	long hp = resolve_fd_host_path(new_root_fd, new_host, sizeof new_host);
+	long hp = tawcroot_proc_fd_to_host_path(new_root_fd, new_host,
+	                                        sizeof new_host);
 	if (hp < 0) {
 		/* Can't recover the host path — abort. The reserved fd
 		 * stays in tawcroot_reserved_fds, leaking until process

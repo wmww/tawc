@@ -118,6 +118,31 @@ void tawcroot_init_self_host_path(void)
 struct tawcroot_bind tawcroot_binds[TAWCROOT_MAX_BINDS];
 size_t               tawcroot_n_binds = 0;
 
+long tawcroot_proc_fd_to_host_path(int fd, char *out, size_t out_cap)
+{
+	if (!out || out_cap < 2) return TAWC_EINVAL;
+
+	char link[64];
+	const char *prefix = "/proc/self/fd/";
+	size_t pl = 0;
+	while (prefix[pl]) { link[pl] = prefix[pl]; pl++; }
+	int wrote = tawc_int_to_str(link + pl, sizeof link - pl, fd);
+	if (wrote <= 0) return TAWC_EINVAL;
+
+	long n = tawc_readlinkat(AT_FDCWD, link, out, out_cap - 1);
+	if (n < 0) return n;
+	if ((size_t)n >= out_cap - 1) return TAWC_ENAMETOOLONG;
+	/* Empty / non-absolute readlink result is a /proc-not-mounted style
+	 * failure. Surface as -EINVAL so callers can distinguish it from a
+	 * "path is too long" overflow. In practice we're already broken if
+	 * /proc isn't mounted (chroot init also depends on it), so the
+	 * precise errno doesn't matter much. */
+	if (n == 0 || out[0] != '/') return TAWC_EINVAL;
+	while (n > 1 && out[n - 1] == '/') n--;
+	out[n] = 0;
+	return n;
+}
+
 void tawcroot_path_probe_openat2(void)
 {
 	struct tawc_open_how how;

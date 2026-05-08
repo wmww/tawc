@@ -476,6 +476,148 @@ static int test_dotdot_clamp_root_relative(void)
 	return fails;
 }
 
+/* fd-relative `..` clamp: openat(rootfs_root_fd, "..", O_PATH) must
+ * resolve to the rootfs root again, not the host's parent of the
+ * rootfs. Real chroot(2) does this in the kernel; tawcroot has to
+ * emulate it. systemd's path_is_root_at probe (chase.c) relies on
+ * the inodes matching -- without the clamp, chase() returns a
+ * relative path where chase() expects an absolute one and aborts
+ * with `Assertion 'path_is_absolute(p)' failed`.
+ *
+ * Also probe an fd-relative `..` from a subdir resolving to a
+ * sibling: openat(<rootfs>/etc, "../etc/probe", O_RDONLY) should
+ * succeed. Pre-fix this would have walked through the kernel's
+ * view of <rootfs>/etc/.. (the host parent of the rootfs); the
+ * `etc` component would then ENOENT. */
+static int test_dotdot_via_dirfd_clamps_at_rootfs(void)
+{
+	int fails = 0;
+
+	long fd_root = inline_openat(AT_FDCWD, "/",
+		O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+	fails += tawc_io_step("openat(\"/\") -> fd at rootfs root",
+			      fd_root >= 0);
+	if (fd_root < 0) return fails;
+
+	struct stat st_root;
+	long sr = inline_fstatat((int)fd_root, "", &st_root, AT_EMPTY_PATH);
+	fails += tawc_io_step("fstatat(rootfs_fd, \"\", AT_EMPTY_PATH)",
+			      sr == 0);
+
+	long fd_dotdot = inline_openat((int)fd_root, "..",
+		O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+	fails += tawc_io_step("openat(rootfs_fd, \"..\") -> fd",
+			      fd_dotdot >= 0);
+	if (fd_dotdot >= 0) {
+		struct stat st_dot;
+		long sd = inline_fstatat((int)fd_dotdot, "", &st_dot,
+					 AT_EMPTY_PATH);
+		fails += tawc_io_step("fstatat(rootfs_fd/.., \"\") ok",
+				      sd == 0);
+		fails += tawc_io_step(
+			"openat(rootfs_fd, \"..\") clamps at rootfs root",
+			sd == 0 &&
+			st_dot.st_ino == st_root.st_ino &&
+			st_dot.st_dev == st_root.st_dev);
+		tawc_io_kv_dec("    rootfs ino", (long)st_root.st_ino);
+		tawc_io_kv_dec("    dotdot ino", (long)st_dot.st_ino);
+		tawc_close((int)fd_dotdot);
+	}
+
+	long fd_etc = inline_openat((int)fd_root, "etc",
+		O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+	fails += tawc_io_step("openat(rootfs_fd, \"etc\") -> fd",
+			      fd_etc >= 0);
+	if (fd_etc >= 0) {
+		long fd_probe = inline_openat((int)fd_etc, "../etc/probe",
+					      O_RDONLY, 0);
+		fails += tawc_io_step(
+			"openat(etc_fd, \"../etc/probe\") -> stays inside rootfs",
+			fd_probe >= 0);
+		if (fd_probe >= 0) tawc_close((int)fd_probe);
+		tawc_io_kv_dec("    rv", fd_probe);
+
+		/* `./..` exercises the component-aware detection: `.`
+		 * alone is not `..`, but the trailing `..` is, so the
+		 * lift must still kick in. Same target as just `..`
+		 * → clamp to rootfs root. */
+		long fd_dot_dotdot = inline_openat((int)fd_etc, "./..",
+			O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+		fails += tawc_io_step(
+			"openat(etc_fd, \"./..\") -> rootfs root",
+			fd_dot_dotdot >= 0);
+		if (fd_dot_dotdot >= 0) {
+			struct stat st_dd;
+			long sdd = inline_fstatat((int)fd_dot_dotdot, "",
+				&st_dd, AT_EMPTY_PATH);
+			fails += tawc_io_step(
+				"openat(etc_fd, \"./..\") inode == rootfs root",
+				sdd == 0 &&
+				st_dd.st_ino == st_root.st_ino &&
+				st_dd.st_dev == st_root.st_dev);
+			tawc_close((int)fd_dot_dotdot);
+		}
+
+		/* Slash runs and intermediate `..` chains: `..//../etc`
+		 * canonicalises to `/etc` after the rootfs-clamped fold
+		 * (etc → up to rootfs → up clamped → etc). */
+		long fd_slashes = inline_openat((int)fd_etc,
+			"..//../etc/probe", O_RDONLY, 0);
+		fails += tawc_io_step(
+			"openat(etc_fd, \"..//../etc/probe\") -> rootfs/etc/probe",
+			fd_slashes >= 0);
+		if (fd_slashes >= 0) tawc_close((int)fd_slashes);
+		tawc_io_kv_dec("    rv", fd_slashes);
+
+		tawc_close((int)fd_etc);
+	}
+
+	tawc_close((int)fd_root);
+	return fails;
+}
+
+/* Bind-src dirfd `..` is a known gap: dirfd_to_guest_abs returns
+ * -ENOENT for bind-src host paths (they fail the rootfs-prefix
+ * check), so the lift falls through to kernel passthrough and the
+ * kernel can walk `..` past the bind src into the host fs. This test
+ * documents the gap by asserting the SOFT property that opening
+ * `bind_dst_fd/..` doesn't crash and either gives us a fd or an
+ * errno; if/when the fix in
+ * issues/tawcroot-fd-relative-dotdot-escapes-bind-src.md lands, the
+ * stricter inode-comparison check below should be flipped on. */
+static int test_dotdot_via_bind_dst_dirfd(void)
+{
+	int fails = 0;
+	if (tawcroot_n_binds == 0) {
+		tawc_io_str("  [skip] no binds configured\n");
+		return 0;
+	}
+
+	char path[512];
+	size_t n = 0;
+	path[n++] = '/';
+	for (size_t j = 0; j < tawcroot_binds[0].dst_len; j++)
+		path[n++] = tawcroot_binds[0].dst[j];
+	path[n] = 0;
+	long fd_bind = inline_openat(AT_FDCWD, path,
+		O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+	fails += tawc_io_step("openat(<bind dst>) -> fd", fd_bind >= 0);
+	if (fd_bind < 0) return fails;
+
+	long fd_dotdot = inline_openat((int)fd_bind, "..",
+		O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+	/* Today: kernel walks above the bind src on the host. The
+	 * resulting fd is a valid kernel fd to whatever sits on the
+	 * host outside the bind src — not what we want, but not
+	 * crashy either. Just assert openat itself returns a non-error. */
+	fails += tawc_io_step(
+		"openat(<bind dst>, \"..\") -> fd (gap: kernel passthrough escapes bind src)",
+		fd_dotdot >= 0);
+	if (fd_dotdot >= 0) tawc_close((int)fd_dotdot);
+	tawc_close((int)fd_bind);
+	return fails;
+}
+
 /* fstatat with fake-root decoration: stat the probe and assert
  * uid==0 / gid==0 even though the host file is owned by `shell`. */
 static int test_fstatat_fake_root_decoration(void)
@@ -2952,6 +3094,8 @@ int tawcroot_phase1_main(const char *rootfs)
 	fails += test_bind_mount_routing();
 	fails += test_dotdot_clamp_etc_etc_probe();
 	fails += test_dotdot_clamp_root_relative();
+	fails += test_dotdot_via_dirfd_clamps_at_rootfs();
+	fails += test_dotdot_via_bind_dst_dirfd();
 	fails += test_fstatat_fake_root_decoration();
 	fails += test_escape_attempt_clamps();
 	fails += test_relative_path_after_chdir();

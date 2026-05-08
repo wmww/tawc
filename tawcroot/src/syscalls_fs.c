@@ -16,10 +16,12 @@
  * Argument shape per arch is in tawcroot_syscall_args (see arch.h):
  *   args.a = arg0 (kernel reg 0), .b = arg1, ...
  *
- * Phase-1 policy: the guest's `dirfd` is currently ignored for *at
- * variants — every path is resolved relative to the rootfs (or the
- * cwd, reverse-translated). Fd-provenance (resolving `/proc/self/fd/N`
- * etc.) is a follow-up.
+ * Dirfd handling: for *at variants with a non-AT_FDCWD `dirfd` and a
+ * relative path, we pass `dirfd` through to the kernel verbatim
+ * (see fetch_and_translate_at) so resolution honours the dirfd's
+ * inode — needed for gpg/pacman-key-style openat(homedir_fd, "name").
+ * Relative paths containing `..` are first lifted to guest-absolute
+ * via /proc/self/fd/<dirfd> so the rootfs prefix clamps the escape.
  */
 
 #include <stddef.h>
@@ -337,11 +339,13 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
  * x86_64 wrappers) — the relative-path branch then treats them as
  * "relative to cwd" and routes through full translation as before.
  *
- * Caveat: `..` traversal from a fd near the rootfs root can still
- * escape, since the kernel walks `..` past the dirfd freely. proot
- * has the same gap on kernels without RESOLVE_BENEATH; tightening via
- * openat2 is a phase-2 follow-up. For our targets (gpg, pacman, libc
- * apps) this passthrough is safe in practice. */
+ * `..` traversal in a fd-relative path is intercepted in
+ * fetch_and_translate_at: the path is lifted to guest-absolute via
+ * the dirfd's /proc/self/fd link, then path_translate's fold clamps
+ * `..` at the rootfs root. Without that, the kernel walks `..` past
+ * the dirfd freely and systemd's path_is_root_at probe (chase.c)
+ * misclassifies the rootfs and aborts with
+ * `Assertion 'path_is_absolute(p)' failed`. */
 static long fetch_and_translate(const char *guest_path,
 				char *path_buf, size_t path_cap,
 				char *suffix,   size_t suffix_cap,
@@ -358,12 +362,79 @@ static long fetch_and_translate(const char *guest_path,
 	return 0;
 }
 
+/* True iff `path` contains a `..` path component. Component-aware: treats
+ * "foo..bar" / "..baz" as not-dotdot. */
+static int path_has_dotdot_component(const char *path)
+{
+	const char *p = path;
+	while (*p) {
+		if (p[0] == '.' && p[1] == '.' && (p[2] == 0 || p[2] == '/'))
+			return 1;
+		while (*p && *p != '/') p++;
+		while (*p == '/') p++;
+	}
+	return 0;
+}
+
+/* Resolve `dirfd` to its guest-side absolute path by reading the kernel's
+ * /proc/self/fd/<n> link and stripping the rootfs host prefix. Output is
+ * NUL-terminated, always starts with `/`, and does not have a trailing
+ * `/` (except for the lone `/`). Returns the length on success (>=1).
+ * -ENOENT means the fd's host path is outside the main rootfs view —
+ * either a bind src dirfd (gap documented in
+ * issues/tawcroot-fd-relative-dotdot-escapes-bind-src.md) or a fd into
+ * the host's /proc tree, neither of which we reverse-translate today. */
+static long dirfd_to_guest_abs(int dirfd, char *out, size_t out_cap)
+{
+	if (dirfd < 0 || dirfd == AT_FDCWD) return TAWC_EINVAL;
+	if (out_cap < 2) return TAWC_ENAMETOOLONG;
+
+	char host[TAWC_PATH_MAX];
+	long n = tawcroot_proc_fd_to_host_path(dirfd, host, sizeof host);
+	if (n < 0) return n;
+
+	if ((size_t)n < tawcroot_rootfs_host_path_len) return TAWC_ENOENT;
+	for (size_t i = 0; i < tawcroot_rootfs_host_path_len; i++)
+		if (host[i] != tawcroot_rootfs_host_path[i]) return TAWC_ENOENT;
+	if ((size_t)n > tawcroot_rootfs_host_path_len &&
+	    host[tawcroot_rootfs_host_path_len] != '/')
+		return TAWC_ENOENT;
+
+	/* Output invariant: at least one byte written (the leading '/'),
+	 * so the caller may safely index out[len - 1]. */
+	size_t off = 0;
+	out[off++] = '/';
+	for (size_t i = tawcroot_rootfs_host_path_len; i < (size_t)n; i++) {
+		if (host[i] == '/' && off > 0 && out[off - 1] == '/') continue;
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
+		out[off++] = host[i];
+	}
+	out[off] = 0;
+	return (long)off;
+}
+
 /* Variant that honours the guest's dirfd for fd-relative resolution.
  * See big comment above for why this matters. Returns -1 in
  * `*base_fd_out` and the literal guest-supplied path in `path_buf`
  * (also via the suffix output, kept identical) when the kernel should
  * resolve directly off `dirfd`; the caller then issues the raw *at
- * syscall with `dirfd` and the literal path. */
+ * syscall with `dirfd` and the literal path.
+ *
+ * Special case: a relative path containing `..` would let the kernel
+ * walk above the dirfd, which on kernel < 5.6 (no openat2 RESOLVE_IN_ROOT)
+ * leaks the host filesystem when the dirfd sits at the rootfs root.
+ * Reproducer: systemd's `path_is_root_at(rootfs_fd, NULL)` opens
+ * `(rootfs_fd, "..")`, gets the host's parent of the rootfs, compares
+ * inodes against rootfs_fd, sees a mismatch, concludes "not at root",
+ * and aborts with `Assertion 'path_is_absolute(p)' failed at chase.c`.
+ * Lift these to the equivalent guest-absolute path via the dirfd's
+ * /proc/self/fd link so tawcroot_path_fold_absolute clamps the `..`
+ * at the rootfs boundary, mimicking real chroot(2) semantics for
+ * dirfds inside the main rootfs view. Caveat: a dirfd opened through
+ * a bind dst points at the bind src on the host, fails the prefix
+ * check in dirfd_to_guest_abs (-ENOENT), and falls through to
+ * kernel passthrough — the kernel can then `..` past the bind src
+ * into the host fs. See issues/tawcroot-fd-relative-dotdot-escapes-bind-src.md. */
 static long fetch_and_translate_at(int dirfd, const char *guest_path,
 				   char *path_buf, size_t path_cap,
 				   char *suffix,   size_t suffix_cap,
@@ -375,6 +446,38 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 		                                     guest_path);
 		if (n < 0) return n;
 		if (path_buf[0] != '/') {
+			if (path_has_dotdot_component(path_buf)) {
+				char abs[TAWC_PATH_MAX];
+				long al = dirfd_to_guest_abs(dirfd, abs,
+				                             sizeof abs);
+				if (al >= 0) {
+					if (abs[al - 1] != '/') {
+						if ((size_t)al + 1 >= sizeof abs)
+							return TAWC_ENAMETOOLONG;
+						abs[al++] = '/';
+					}
+					size_t pi = 0;
+					while (path_buf[pi] &&
+					       (size_t)al + 1 < sizeof abs)
+						abs[al++] = path_buf[pi++];
+					if (path_buf[pi]) return TAWC_ENAMETOOLONG;
+					abs[al] = 0;
+					tawcroot_path_result r =
+						tawcroot_path_translate(
+							abs, suffix,
+							suffix_cap, mode);
+					if (r.err) return r.err;
+					*base_fd_out    = r.base_fd;
+					*use_empty_path = (suffix[0] == 0);
+					return 0;
+				}
+				/* Outside-rootfs dirfd (-ENOENT) or readlink
+				 * failure: fall through to kernel-resolved
+				 * passthrough. The kernel's resolution can't
+				 * escape into the rootfs from outside it, so
+				 * the leak this branch protects against
+				 * doesn't apply. */
+			}
 			/* Relative path with explicit dirfd: kernel resolves
 			 * off the dirfd. Copy path_buf into suffix so callers
 			 * with one output buffer still work. */
@@ -528,20 +631,10 @@ static long compose_fd_relative(int dirfd, const char *gpath_str,
 {
 	if (dirfd < 0 || dirfd == AT_FDCWD) return TAWC_EINVAL;
 	if (gpath_str[0] == '/') return TAWC_EINVAL;
-	if (cap < 2) return TAWC_ENAMETOOLONG;
 
-	char link[64];
-	const char *prefix = "/proc/self/fd/";
-	size_t pl = 0;
-	while (prefix[pl]) { link[pl] = prefix[pl]; pl++; }
-	int wrote = tawc_int_to_str(link + pl, sizeof link - pl, dirfd);
-	if (wrote <= 0) return TAWC_EINVAL;
-
-	long n = tawc_readlinkat(AT_FDCWD, link, out, cap - 1);
+	long n = tawcroot_proc_fd_to_host_path(dirfd, out, cap);
 	if (n < 0) return n;
-	if ((size_t)n >= cap - 1) return TAWC_ENAMETOOLONG;
 	size_t dl = (size_t)n;
-	if (dl == 0) return TAWC_EINVAL;
 	if (out[dl - 1] != '/') {
 		if (dl + 1 >= cap) return TAWC_ENAMETOOLONG;
 		out[dl++] = '/';

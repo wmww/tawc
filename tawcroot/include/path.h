@@ -178,6 +178,15 @@ void tawcroot_path_memoize_well_known(void);
  * `path_resolve.c` can re-fold after splicing a symlink target. */
 long tawcroot_path_fold_absolute(const char *path, char *out, size_t out_cap);
 
+/* Read the canonical kernel-side host path of `fd` via /proc/self/fd/<fd>.
+ * Writes a NUL-terminated string into `out`, strips trailing slashes
+ * (matches the supervisor's invariant), and returns the length on
+ * success. -EINVAL if the readlink yields an empty / non-absolute
+ * result (typically /proc not mounted), -ENAMETOOLONG if `out_cap` is
+ * too small. Used at chroot, fd-relative path-translation, and rootfs
+ * init. */
+long tawcroot_proc_fd_to_host_path(int fd, char *out, size_t out_cap);
+
 /* `/proc/self/exe` synthesis (phase 2e).
  *
  * After manual-load the kernel's view of /proc/self/exe is the

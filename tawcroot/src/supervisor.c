@@ -60,30 +60,19 @@ void tawcroot_supervisor_init(const struct tawcroot_supervisor_args *args)
 	 * unambiguous. */
 	{
 		char canon[sizeof tawcroot_rootfs_host_path];
-		char fdlink[64];
-		size_t fi = 0;
-		const char *p = "/proc/self/fd/";
-		while (*p) fdlink[fi++] = *p++;
-		char tmp[24];
-		int tn = 0;
-		unsigned long u = tawcroot_rootfs_fd > 0
-		    ? (unsigned long)tawcroot_rootfs_fd : 0;
-		if (u == 0) tmp[tn++] = '0';
-		while (u && tn < (int)sizeof tmp) {
-			tmp[tn++] = (char)('0' + (u % 10)); u /= 10;
-		}
-		while (tn > 0) fdlink[fi++] = tmp[--tn];
-		fdlink[fi] = 0;
-
-		long rl = tawc_readlinkat(AT_FDCWD, fdlink, canon,
-		                          sizeof canon - 1);
+		long rl = tawcroot_proc_fd_to_host_path(tawcroot_rootfs_fd,
+		                                        canon, sizeof canon);
 		const char *src;
 		size_t srclen;
-		if (rl > 0 && canon[0] == '/') {
-			canon[rl] = 0;
+		if (rl > 0) {
 			src    = canon;
 			srclen = (size_t)rl;
 		} else {
+			/* /proc not mounted yet, or some other oddity. Fall
+			 * back to the user-supplied path; the legacy mismatch
+			 * bug from before canonicalisation reappears, but
+			 * tawcroot is already broken in deeper ways without
+			 * /proc. */
 			src    = args->rootfs_host_path;
 			srclen = 0;
 			while (src[srclen]) srclen++;
