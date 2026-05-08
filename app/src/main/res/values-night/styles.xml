@@ -15,6 +15,9 @@
         <item name="colorError">@color/tawc_danger</item>
         <item name="colorOnError">@color/tawc_on_danger</item>
 
+        <item name="android:windowBackground">@color/tawc_window_bg</item>
+        <item name="colorSurface">@color/tawc_window_bg</item>
+
         <item name="android:statusBarColor">?attr/colorSurface</item>
         <item name="android:navigationBarColor">?attr/colorSurface</item>
         <item name="android:windowLightStatusBar">false</item>

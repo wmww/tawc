@@ -31,9 +31,11 @@ use crate::host::OutputHost;
 use crate::wlegl::WleglBufferData;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 
-/// Material3 dark surface (#141218) — matches the home/install/distro-info
+/// Tawc dark window surface (#1F1B22) — matches the home/install/distro-info
 /// activities so the compositor's empty space looks like the rest of the app.
-const BACKGROUND_COLOR: Color32F = Color32F::new(0.0784, 0.0706, 0.0941, 1.0);
+/// Mirror any change here in `app/src/main/res/values-night/colors.xml`'s
+/// `tawc_window_bg`.
+const BACKGROUND_COLOR: Color32F = Color32F::new(0.1216, 0.1059, 0.1333, 1.0);
 
 /// GPU-side rendering state, separate from Wayland protocol state.
 ///

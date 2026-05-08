@@ -16,7 +16,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.google.android.material.card.MaterialCardView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,6 +27,7 @@ import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.ui.buildChildScreen
+import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.verticalLp
 
 /**
@@ -207,7 +207,7 @@ class LauncherActivity : AppCompatActivity() {
     }
 
     private fun buildRow(entry: LauncherEntry, pad: Int): View {
-        val card = MaterialCardView(this).apply {
+        val card = tawcCard().apply {
             isClickable = true
             isFocusable = true
             setOnClickListener { launchEntry(entry) }

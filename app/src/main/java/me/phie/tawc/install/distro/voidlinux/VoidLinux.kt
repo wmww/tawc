@@ -64,13 +64,13 @@ internal sealed class VoidLinux(
 }
 
 internal object VoidLinuxX86_64 : VoidLinux(
-    displayName = "Void Linux (x86)",
+    displayName = "Void Linux",
     linuxArch = "x86_64",
     androidAbi = "x86_64",
 )
 
 internal object VoidLinuxAarch64 : VoidLinux(
-    displayName = "Void Linux ARM",
+    displayName = "Void Linux",
     linuxArch = "aarch64",
     androidAbi = "arm64-v8a",
 )

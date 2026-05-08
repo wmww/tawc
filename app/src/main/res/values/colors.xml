@@ -18,4 +18,20 @@
          shouting. The dark-theme override in values-night brightens it
          for contrast against the dark background. -->
     <color name="tawc_success">#2E7D32</color>
+
+    <!-- Window background. Slightly grey rather than near-white so
+         cards (which are pure white) lift off the page without needing
+         a stroke or shadow. -->
+    <color name="tawc_window_bg">#EDE7EF</color>
+
+    <!-- Card / panel surface. Lighter than the window background — the
+         iOS settings-style "white card on grey page" look. -->
+    <color name="tawc_card_bg">#FFFFFF</color>
+
+    <!-- Tonal (subdued) button colors — Cancel, Manage, Task manager.
+         Plain mid-grey in the same family as the surfaces, white text;
+         visually subordinate to the accent (which is the only chromatic
+         button on the page). -->
+    <color name="tawc_tonal_bg">#7C7783</color>
+    <color name="tawc_on_tonal">#FFFFFF</color>
 </resources>

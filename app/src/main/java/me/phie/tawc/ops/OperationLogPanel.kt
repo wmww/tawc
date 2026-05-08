@@ -22,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import me.phie.tawc.R
+import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.tonalButton
 
 /**
@@ -88,9 +89,15 @@ class OperationLogPanel(private val activity: Activity) {
             textSize = 11f
             setTextIsSelectable(true)
             movementMethod = ScrollingMovementMethod.getInstance()
+            val innerPad = pad / 2
+            setPadding(innerPad, innerPad, innerPad, innerPad)
         }
         logScroll.addView(logText)
-        view.addView(logScroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        // Wrap the log in a card so it reads as its own panel against
+        // the screen background — same fill/no-stroke treatment as the
+        // home screen's distro cards and the task manager.
+        val logCard = activity.tawcCard().apply { addView(logScroll) }
+        view.addView(logCard, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
         // Tonal (shaded fill, no border) so it stays a quieter sibling
         // to the primary path while still reading as a button. Hidden

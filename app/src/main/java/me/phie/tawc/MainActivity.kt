@@ -8,7 +8,6 @@ import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.google.android.material.card.MaterialCardView
 import me.phie.tawc.compositor.CompositorService
 import me.phie.tawc.install.DistroInfoActivity
 import me.phie.tawc.install.InstallActivity
@@ -19,6 +18,7 @@ import me.phie.tawc.launcher.LauncherActivity
 import me.phie.tawc.tasks.TaskManagerActivity
 import me.phie.tawc.ui.buildHomeScreen
 import me.phie.tawc.ui.primaryButton
+import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
 
@@ -51,16 +51,15 @@ class MainActivity : AppCompatActivity() {
         startForegroundService(Intent(this, CompositorService::class.java))
 
         val scaffold = buildHomeScreen("tawc")
-        val pad = (16 * resources.displayMetrics.density).toInt()
 
         listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scaffold.content.addView(listContainer, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+        scaffold.content.addView(listContainer, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin))
 
         scaffold.content.addView(
-            primaryButton("Task manager") {
+            tonalButton("Task manager") {
                 startActivity(Intent(this@MainActivity, TaskManagerActivity::class.java))
             },
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin),
         )
 
         scaffold.content.addView(
@@ -86,7 +85,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildCard(inst: Installation): View {
-        val card = MaterialCardView(this)
+        val card = tawcCard()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(cardPad, cardPad, cardPad, cardPad)

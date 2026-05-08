@@ -8,4 +8,20 @@
     <!-- Brighter green for dark mode so the "Installed" / "Deleted"
          status reads cleanly on the dark surface. -->
     <color name="tawc_success">#66BB6A</color>
+
+    <!-- Window background. Lifted off pure-black towards a neutral
+         dark grey so cards (which are darker) recess into the page.
+         Compositor's BACKGROUND_COLOR mirrors this — keep them in
+         sync. -->
+    <color name="tawc_window_bg">#1F1B22</color>
+
+    <!-- Card / panel surface. Darker than the window background — the
+         page is the "elevated" surface; cards are wells in it. -->
+    <color name="tawc_card_bg">#0F0D13</color>
+
+    <!-- Tonal (subdued) button colors — Cancel, Manage, Task manager.
+         Plain mid-grey, white text; visually subordinate to the accent
+         (which is the only chromatic button on the page). -->
+    <color name="tawc_tonal_bg">#3A363D</color>
+    <color name="tawc_on_tonal">#FFFFFF</color>
 </resources>

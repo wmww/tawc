@@ -9,7 +9,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.google.android.material.card.MaterialCardView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +23,7 @@ import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.destructiveButton
+import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.verticalLp
 
 /**
@@ -63,7 +63,7 @@ class TaskManagerActivity : AppCompatActivity() {
         // Empty state shown immediately so the screen isn't blank
         // during the first scan; flipped to GONE if results arrive.
         emptyView = TextView(this).apply {
-            text = "No guest processes running."
+            text = "No Linux processes running."
             alpha = 0.6f
             textSize = 16f
             gravity = Gravity.CENTER
@@ -149,7 +149,7 @@ class TaskManagerActivity : AppCompatActivity() {
     }
 
     private fun buildGroupCard(title: String, procs: List<ProcessInfo>): View {
-        val card = MaterialCardView(this)
+        val card = tawcCard()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(cardPad, cardPad, cardPad, cardPad)

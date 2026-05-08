@@ -17,6 +17,13 @@
         <item name="colorError">@color/tawc_danger</item>
         <item name="colorOnError">@color/tawc_on_danger</item>
 
+        <!-- Override the Material3 default surface so the page is a
+             muted grey rather than near-white/near-black. Cards then
+             pick the opposite extreme (white in light mode, near-black
+             in dark) to read as their own surface. -->
+        <item name="android:windowBackground">@color/tawc_window_bg</item>
+        <item name="colorSurface">@color/tawc_window_bg</item>
+
         <!-- Tint the system bars to the window surface so the yellow
              accent doesn't bleed into the status bar. windowLightStatusBar
              flips icons to dark for light mode; values-night/styles.xml

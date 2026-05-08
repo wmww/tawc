@@ -311,6 +311,12 @@ class InstallActivity : AppCompatActivity() {
                 collides -> "Already installed at ${store.installationDir(slug).absolutePath}"
                 else -> store.installationDir(slug).absolutePath
             }
+            val colorAttr = if (resolvedId == null) {
+                com.google.android.material.R.attr.colorError
+            } else {
+                com.google.android.material.R.attr.colorOnSurfaceVariant
+            }
+            locationLabel.setTextColor(MaterialColors.getColor(locationLabel, colorAttr))
         }
 
         if (::installButton.isInitialized) {

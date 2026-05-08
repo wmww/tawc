@@ -77,7 +77,7 @@ The dev-time host nginx caching reverse proxy lives at `build/cache-proxy/` (sta
 Don't be too long-winded in docs, comments, error messages, output to user and prose generally. Keep stuff compact and to-the-point, you're not being paid by the word. Only include extensive details where appropriate and actually useful.
 
 ## Background
-The compositor clears every frame to a flat color matching the rest of the app's UI (Material3 dark surface, ~`#141218`). The constant is `BACKGROUND_COLOR` in `render.rs`.
+The compositor clears every frame to a flat color matching the rest of the app's UI (`tawc_window_bg`, `#1F1B22` in dark mode). The constant is `BACKGROUND_COLOR` in `render.rs`; the matching Android resource is `tawc_window_bg` in `values-night/colors.xml`. Keep them in sync.
 
 ## Wayland Buffers
 We support both hardware buffers (AHB) and SHM buffers. SHM buffers are tinted magenta to make fallback paths obvious. Do not remove magenta tinting unless explicitly asked.
