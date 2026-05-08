@@ -31,6 +31,7 @@ fn main() -> ExitCode {
             eprintln!("tawc-exec: {e}");
             eprintln!("usage: tawc-exec [--cwd DIR] [--env K=V ...] -- ARGV0 [ARG ...]");
             eprintln!("       tawc-exec --action NAME [--arg K=V ...]");
+            eprintln!("       tawc-exec --in-chroot ID [-- CMD ...]");
             return ExitCode::from(2);
         }
     };
@@ -45,8 +46,9 @@ fn main() -> ExitCode {
 }
 
 /// Top-level invocation kind. Mirrors the wire protocol: an ARGV-form
-/// header for fork-exec or an ACTION-form header for an in-process
-/// broker action. Mutually exclusive — `parse_args` rejects mixes.
+/// header for fork-exec, an ACTION-form header for an in-process
+/// broker action, or a RUNINSIDE-form header for chroot dispatch.
+/// Mutually exclusive — `parse_args` rejects mixes.
 enum Parsed {
     Exec {
         argv: Vec<String>,
@@ -57,6 +59,13 @@ enum Parsed {
         name: String,
         args: Vec<(String, String)>,
     },
+    /// Run a command inside an installed chroot. The broker dispatches
+    /// to the install's [InstallationMethod.startInside]. `cmd` empty =
+    /// interactive `bash -l`.
+    RunInside {
+        install_id: String,
+        cmd: String,
+    },
 }
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
@@ -64,6 +73,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut cwd: Option<String> = None;
     let mut action_name: Option<String> = None;
     let mut action_args: Vec<(String, String)> = Vec::new();
+    let mut run_inside_id: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -95,6 +105,13 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 action_args.push((v[..eq].to_string(), v[eq+1..].to_string()));
                 i += 1;
             }
+            "--in-chroot" => {
+                i += 1;
+                let v = args.get(i).ok_or("--in-chroot needs install id")?.clone();
+                if v.is_empty() { return Err("--in-chroot id must not be empty".into()); }
+                run_inside_id = Some(v);
+                i += 1;
+            }
             "-h" | "--help" => return Err("see notes/exec-broker.md".to_string()),
             other if other.starts_with("--") => {
                 return Err(format!("unknown flag '{other}'"));
@@ -104,6 +121,26 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             // callers don't need to remember it.
             _ => break,
         }
+    }
+    if let Some(id) = run_inside_id {
+        // RUNINSIDE form. Positional args after `--` (or directly) are
+        // joined with spaces and become the bash -lc command. Empty
+        // (no positional args) means interactive `bash -l`.
+        if action_name.is_some() || !action_args.is_empty() {
+            return Err("--action / --arg can't be combined with --in-chroot".into());
+        }
+        if !env.is_empty() || cwd.is_some() {
+            return Err("--env / --cwd are ARGV-form only; not allowed with --in-chroot".into());
+        }
+        let cmd = if i < args.len() {
+            args[i..].join(" ")
+        } else {
+            String::new()
+        };
+        if id.contains('\n') || cmd.contains('\n') {
+            return Err("install id / cmd may not contain LF".into());
+        }
+        return Ok(Parsed::RunInside { install_id: id, cmd });
     }
     if let Some(name) = action_name {
         // ACTION form. ARGV must be empty; --env / --cwd are also
@@ -128,7 +165,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         return Err("--arg is for action mode; missing --action".into());
     }
     let argv: Vec<String> = args[i..].to_vec();
-    if argv.is_empty() { return Err("no command (use `-- ARGV0 ...` or `--action NAME`)".to_string()); }
+    if argv.is_empty() {
+        return Err("no command (use `-- ARGV0 ...`, `--action NAME`, or `--in-chroot ID -- CMD`)".to_string());
+    }
     if argv.iter().any(|a| a.contains('\n')) {
         return Err("argv may not contain LF".to_string());
     }
@@ -213,6 +252,13 @@ fn write_header(s: &mut TcpStream, p: &Parsed) -> io::Result<()> {
                 h.push('=');
                 h.push_str(v);
                 h.push('\n');
+            }
+        }
+        Parsed::RunInside { install_id, cmd } => {
+            h.push_str("RUNINSIDE "); h.push_str(install_id); h.push('\n');
+            // Empty cmd means interactive shell — omit the CMD line.
+            if !cmd.is_empty() {
+                h.push_str("CMD "); h.push_str(cmd); h.push('\n');
             }
         }
     }

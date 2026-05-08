@@ -22,14 +22,6 @@ class InstallationStore(context: Context) {
     fun rootfsDir(id: String): File = File(installationDir(id), "rootfs")
     fun metadataFile(id: String): File = File(installationDir(id), "metadata.json")
 
-    /**
-     * Path to the auto-generated `enter.sh` (mount + chroot wrapper).
-     * Sibling of `rootfs/` so it lives in the app-uid-owned dir
-     * (writable from in-app code without root) but is invoked via
-     * `su -c '<path>'` so root drives the chroot exec.
-     */
-    fun enterScriptFile(id: String): File = File(installationDir(id), "enter.sh")
-
     /** Discover installations on disk by scanning [baseDir]. */
     fun list(): List<Installation> {
         val dir = baseDir

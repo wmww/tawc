@@ -83,7 +83,7 @@ if [ "$DO_BUILD" -eq 1 ]; then
     bash "$ROOT_DIR/scripts/app-build-install.sh" --no-launch
 
     echo "=== Verifying in-app install is present at $INSTALL_DIR ==="
-    if ! "$TAWC_EXEC_BIN" /system/bin/sh -c "test -x $INSTALL_DIR/enter.sh" >/dev/null 2>&1; then
+    if ! "$TAWC_EXEC_BIN" /system/bin/sh -c "test -d $INSTALL_DIR/rootfs" >/dev/null 2>&1; then
         cat >&2 <<EOF
 ERROR: in-app install not found at $INSTALL_DIR/.
 

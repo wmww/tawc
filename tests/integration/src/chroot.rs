@@ -87,10 +87,9 @@ fn ensure_chroot_app(name: &str) -> io::Result<String> {
     ])?;
 
     // Build inside the build install. When TAWC_BUILD_INSTALL_ID
-    // overrides the test install, drive enter.sh of the build install
-    // directly via `scripts/tawc-chroot-run.sh` rather than reusing
-    // `adb::chroot_run` (which is bound to the test install's
-    // metadata.json / method).
+    // overrides the test install, run inside the build install via
+    // `scripts/tawc-chroot-run.sh` rather than reusing
+    // `adb::chroot_run` (which is bound to the test install's id).
     let output = if build_install == test_install {
         adb::chroot_run(&format!("/bin/bash {}/build.sh", chroot_build))?
     } else {

@@ -124,18 +124,7 @@ class ProotMethod(context: Context) : InstallationMethod {
      * rendering take effect without reinstalling — same contract as
      * [ChrootMethod.runInside].
      */
-    override fun runInside(
-        rootfs: String,
-        command: String,
-        onLine: ((String) -> Unit)?,
-    ): MethodResult {
-        // Refresh enter.sh; cheap and keeps host-side `tawc-chroot-run`
-        // in sync. The host launcher needs an enter.sh on disk anyway;
-        // in-app callers go through this argv path directly.
-        val enterFile = File(File(rootfs).parentFile, "enter.sh")
-        enterFile.writeText(renderEnterScript(rootfs))
-        enterFile.setExecutable(true, false)
-
+    override fun startInside(rootfs: String, command: String?): Process {
         // Pre-create the bind targets and proot's scratch dir. proot
         // refuses to bind to a guest path that doesn't exist on disk,
         // so we materialise `<rootfs>/data/data/<pkg>` (the wayland
@@ -147,60 +136,46 @@ class ProotMethod(context: Context) : InstallationMethod {
         for (dir in LIBHYBRIS_BIND_DIRS) {
             File(rootfs, dir.removePrefix("/")).mkdirs()
         }
+        // Refresh /etc/profile.d/01-tawc.sh on every entry so changes
+        // here pick up without reinstalling.
+        File(rootfs, "etc/profile.d").mkdirs()
+        File(rootfs, "etc/profile.d/01-tawc.sh").writeText(PROOT_PROFILE_D_TAWC)
 
-        // We invoke proot via the system shell rather than direct
-        // ProcessBuilder argv. Direct ProcessBuilder exec of the proot
-        // binary from app context produces a silent exit-255 (process
-        // forks, the loader stub fails to execve_no_trans through
-        // SELinux+seccomp gauntlet, but with redirectErrorStream and
-        // no shell wrapping we can't see why). Going through
-        // `/system/bin/sh -c '<proot args>'` makes the shell handle
-        // exec for us — Android's app seccomp policy allows that
-        // path and we still get any errors back via stdout. The
-        // user's command is base64-encoded so we don't have to worry
-        // about quoting it through this extra shell layer.
-        val cmdB64 = android.util.Base64.encodeToString(
-            command.toByteArray(Charsets.UTF_8),
-            android.util.Base64.NO_WRAP,
+        // We invoke proot through `/system/bin/sh -c …` rather than as
+        // direct ProcessBuilder argv. Direct exec of the proot binary
+        // from app context produces a silent exit-255 (process forks,
+        // the loader stub fails to execve_no_trans through the
+        // SELinux+seccomp gauntlet); the shell-mediated path works.
+        //
+        // setsid upholds the chroot-session invariant (see
+        // notes/chroot-sessions.md): every chroot invocation runs in
+        // its own session.
+        //
+        // The user command is passed as positional arg `$1` to dodge
+        // shell-layer quoting — sh -c "<script>" $0 $1 makes $1 = the
+        // user command verbatim.
+        val prootArgvShell = prootArgv(rootfs).joinToString(" ") { shellQuote(it) }
+        val script = if (command != null) {
+            "exec /system/bin/setsid $prootArgvShell /bin/bash -lc \"\$1\""
+        } else {
+            "exec /system/bin/setsid $prootArgvShell /bin/bash -l"
+        }
+        val argv = listOf(
+            "/system/bin/sh", "-c", script,
+            "tawc-proot",                  // $0
+            command ?: "",                 // $1 (ignored if no command)
         )
-        val debugLog = "$prootTmpDir/last-run.log"
-        val prootCmd = buildString {
-            // PROOT_TMP_DIR is /tmp by default and /tmp isn't writable
-            // by the app uid on Android.
-            append("export PROOT_TMP_DIR=").append(shellQuote(prootTmpDir)).append("; ")
-            // PROOT_LOADER points at our vendored loader stub so proot
-            // skips the extract-to-tmp+execve dance (blocked by
-            // Android's no-exec-in-app-home-dir rule for API 29+).
-            append("export PROOT_LOADER=").append(shellQuote(prootLoader)).append("; ")
-            // Tee everything proot prints into a side log so we can
-            // read it after the run; with pipe quirks we sometimes
-            // lose proot's last lines via the merged-fd reader alone.
-            append("(")
-            for (arg in prootArgv(rootfs)) {
-                append(shellQuote(arg)); append(' ')
+        // PROOT_TMP_DIR & PROOT_LOADER via env (cleaner than `export`
+        // in the shell). PROOT_TMP_DIR avoids /tmp (not app-writable
+        // on Android); PROOT_LOADER points at our vendored loader
+        // stub so proot skips the extract-to-tmp+execve dance that
+        // API 29+ blocks for app data dirs.
+        return ProcessBuilder(argv)
+            .also {
+                it.environment()["PROOT_TMP_DIR"] = prootTmpDir
+                it.environment()["PROOT_LOADER"] = prootLoader
             }
-            // Bash inside proot decodes the base64 payload and evals
-            // it. Single-quoting the whole bash script keeps the outer
-            // /system/bin/sh from interpreting `$(...)` itself before
-            // proot ever sees the command.
-            append("/bin/bash -lc 'eval \"\$(printf %s ")
-            append(cmdB64)
-            append(" | base64 -d)\"'")
-            append(") 2>&1 | tee ").append(shellQuote(debugLog))
-            // Read PIPESTATUS[0] (proot's exit) — without it the
-            // outer shell's $? would be tee's, which is always 0.
-            // Both bash and mksh expose ${PIPESTATUS[N]} this way.
-            append("; rc=\${PIPESTATUS[0]}; echo \"proot exit=\$rc\" >> ").append(shellQuote(debugLog))
-            append("; exit \$rc")
-        }
-        val r = runShell(listOf("/system/bin/sh"), prootCmd, onLine)
-        if (!r.ok) {
-            // Best-effort: read the side log so callers see whatever
-            // proot did manage to print before disappearing.
-            val sideLog = try { File(debugLog).readText().take(4096) } catch (_: Exception) { "(no side log)" }
-            Log.e(TAG, "proot failed; side log:\n$sideLog")
-        }
-        return r
+            .start()
     }
 
     /** Quote [s] for inclusion in a /system/bin/sh single-quoted arg. */
@@ -329,15 +304,15 @@ class ProotMethod(context: Context) : InstallationMethod {
             }
         }
 
-        // Pass 2: explicit `enter.sh` → `metadata.json.tmp` →
-        // `metadata.json` → `rmdir` order so the `metadata.json`
-        // unlink is the second-to-last visible artefact, with only
-        // the empty installDir left and `rmdir` finishing things
-        // near-atomically. See RootfsCleaner.wipe for the same
-        // reasoning.
-        log("delete: container at $installDir (enter.sh, metadata.json, rmdir)")
+        // Pass 2: explicit metadata.json + container rmdir. The
+        // metadata.json unlink is the second-to-last visible artefact,
+        // with only the empty installDir left and `rmdir` finishing
+        // things near-atomically. See RootfsCleaner.wipe for the same
+        // reasoning. (Older installs may have a leftover enter.sh on
+        // disk — `rm -f` is fine if it's missing.)
+        log("delete: container at $installDir (metadata.json, rmdir)")
         val pass2Script = buildString {
-            appendLine("rm -f $installPathQ/enter.sh")
+            appendLine("rm -f $installPathQ/enter.sh")  // legacy artifact
             appendLine("rm -f $installPathQ/metadata.json.tmp")
             appendLine("rm -f $installPathQ/metadata.json")
             appendLine("rmdir $installPathQ")
@@ -357,15 +332,12 @@ class ProotMethod(context: Context) : InstallationMethod {
         throw IOException("Recursive delete failed for $installDir (exit=${r.exitCode})")
     }
 
-    override fun enterScript(context: Context, rootfs: String): String =
-        renderEnterScript(rootfs)
-
     // ---- internals ---------------------------------------------------
 
     /**
      * The standard proot argv that every in-rootfs invocation prefixes.
      * Doesn't include the user command — that's appended by
-     * [runInside] / `enter.sh` separately.
+     * [startInside] separately.
      */
     private fun prootArgv(rootfs: String): List<String> = buildList {
         add(prootBin)
@@ -400,135 +372,28 @@ class ProotMethod(context: Context) : InstallationMethod {
         addAll(listOf("-b", "$TAWC_DATA:$TAWC_DATA"))
     }
 
-    /**
-     * Body of the per-install `enter.sh` for proot mode. Runs as the
-     * app uid (no `su`) so host-side launchers wrap with
-     * `run-as me.phie.tawc <enter.sh> <b64>` instead of
-     * `su -c '<enter.sh> <b64>'`. The b64 payload is decoded inside
-     * the rootfs's bash so the same single-quoted layered-quoting trick
-     * we use for chroot still works.
-     */
-    private fun renderEnterScript(rootfs: String): String = buildString {
-        appendLine("#!/system/bin/sh")
-        appendLine("# Auto-generated by ProotMethod.renderEnterScript. Do not edit by hand —")
-        appendLine("# rewritten on every install / chroot entry.")
-        appendLine("set -eu")
-        // Host-side launchers (`adb shell run-as me.phie.tawc enter.sh`)
-        // start mksh with cwd=/data/local, where it has no write
-        // permission for here-doc temp files. Force TMPDIR + cwd to a
-        // location app uid can write. We create proot-tmp first, since
-        // it might have been purged by Android's cache cleanup.
-        // Every path-bearing variable goes through shellQuote so a
-        // future install id with a quote character (or any other shell
-        // metacharacter) can't break out of the single-quoted literal.
-        // Today's nativeLibraryDir + cacheDir + rootfs paths don't
-        // contain quotes, but the abstraction shouldn't depend on that.
-        appendLine("mkdir -p ${shellQuote(prootTmpDir)}")
-        appendLine("export TMPDIR=${shellQuote(prootTmpDir)}")
-        appendLine("cd \"\$TMPDIR\" 2>/dev/null || true")
-        appendLine("PROOT=${shellQuote(prootBin)}")
-        appendLine("ROOTFS=${shellQuote(rootfs)}")
-        appendLine("TAWC_DATA=${shellQuote(TAWC_DATA)}")
-        // proot writes a per-invocation loader to its scratch dir;
-        // /tmp isn't writable by the app uid on Android, so we point
-        // at the app's cacheDir and ensure it exists on every entry
-        // (Android may purge it under storage pressure).
-        appendLine("PROOT_TMP_DIR=${shellQuote(prootTmpDir)}")
-        appendLine("PROOT_LOADER=${shellQuote(prootLoader)}")
-        appendLine("export PROOT_TMP_DIR PROOT_LOADER")
-        appendLine("mkdir -p \"\$PROOT_TMP_DIR\"")
-        // Backing store for the `/dev/shm` bind below — see [devShmDir].
-        appendLine("DEV_SHM_DIR=${shellQuote(devShmDir)}")
-        appendLine("mkdir -p \"\$DEV_SHM_DIR\"")
-        // Materialise every bind target before proot looks for it.
-        // proot refuses bind dst paths that don't resolve on disk.
-        // Wayland socket dir, plus the libhybris-related Android
-        // sysfs/apex mounts (see [LIBHYBRIS_BIND_DIRS]).
-        appendLine("mkdir -p \"\$ROOTFS\$TAWC_DATA\"")
-        for (dir in LIBHYBRIS_BIND_DIRS) {
-            appendLine("mkdir -p \"\$ROOTFS${dir}\"")
-        }
-        // Refresh /etc/profile.d/01-tawc.sh on every entry, mirroring
-        // ChrootMounter.mountScript. This is the env that makes
-        // WAYLAND_DISPLAY / LD_LIBRARY_PATH / XDG_RUNTIME_DIR sane for
-        // the in-chroot bash; refreshing here lets us tweak it without
-        // reinstalling.
-        appendLine(
-            """
-            mkdir -p "${'$'}ROOTFS/etc/profile.d"
-            cat > "${'$'}ROOTFS/etc/profile.d/01-tawc.sh" <<'TAWC_PROF_EOF'
-            # WAYLAND_DISPLAY is the absolute path to the socket
-            # (rather than the bare display name + symlinked
-            # /tmp/wayland-0 trick the chroot path uses). On proot,
-            # connect(2) on the symlink fails with EPERM — the
-            # symlink's target is interpreted relative to the host
-            # filesystem root and the resulting path bypasses proot's
-            # `-b /data/data/<pkg>` rewrite. Passing the absolute
-            # path directly hits the bind translation cleanly.
-            export WAYLAND_DISPLAY=/data/data/me.phie.tawc/wayland-0
-            export XDG_RUNTIME_DIR=/tmp
-            export LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
-            export HYBRIS_EGLPLATFORM=wayland
-            # Maintain a /tmp/wayland-0 symlink alongside the absolute
-            # path. WAYLAND_DISPLAY ignores it (it's an absolute path
-            # already), but `scripts/run-integration-tests.sh` and
-            # `notes/`-documented one-liners use `test -e
-            # <rootfs>/tmp/wayland-0` as a compositor-ready probe,
-            # and the symlink target follows back to the live socket.
-            ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
-            # Disable Firefox's per-subprocess seccomp/namespace
-            # sandboxes. Firefox's content / GPU / RDD / Utility / GMP /
-            # socket / VR processes set up their own seccomp filters and
-            # PID/user namespaces during startup; under proot every
-            # process is already a ptrace tracee with proot's own
-            # syscall filter active, and Firefox's sandbox setup
-            # SIGSEGVs every subprocess immediately ("[Parent] WARNING:
-            # process N exited on signal 11"). Disabling them lets the
-            # subprocesses come up; the chroot path doesn't need this
-            # because there's no ptrace tracer there. Less secure in
-            # principle, but the whole rootfs is already an app-uid
-            # sandbox.
-            export MOZ_DISABLE_CONTENT_SANDBOX=1
-            export MOZ_DISABLE_GPU_SANDBOX=1
-            export MOZ_DISABLE_RDD_SANDBOX=1
-            export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1
-            export MOZ_DISABLE_UTILITY_SANDBOX=1
-            export MOZ_DISABLE_GMP_SANDBOX=1
-            export MOZ_DISABLE_VR_SANDBOX=1
-            TAWC_PROF_EOF
-            chmod 644 "${'$'}ROOTFS/etc/profile.d/01-tawc.sh"
-            """.trimIndent(),
-        )
-        // The proot invocation. The libhybris bind list is rendered
-        // inline once, kept identical to [prootArgv] so the in-app
-        // and host-launcher paths see the same chroot view. shellQuote
-        // each path so a future addition with a metachar can't break
-        // the script (today's hardcoded paths are safe; this is just
-        // not relying on that).
-        val libhybrisBindFlags = LIBHYBRIS_BIND_DIRS.joinToString(" ") { "-b ${shellQuote(it)}" }
-        appendLine(
-            """
-            if [ ${'$'}# -gt 0 ] && [ -n "${'$'}1" ]; then
-                CMD=${'$'}(printf %s "${'$'}1" | base64 -d)
-                exec "${'$'}PROOT" -r "${'$'}ROOTFS" -0 -w / \
-                    --kill-on-exit --link2symlink \
-                    -b /dev -b /proc -b /sys \
-                    -b "${'$'}DEV_SHM_DIR:/dev/shm" \
-                    $libhybrisBindFlags \
-                    -b "${'$'}TAWC_DATA:${'$'}TAWC_DATA" \
-                    /bin/bash -lc "${'$'}CMD"
-            else
-                exec "${'$'}PROOT" -r "${'$'}ROOTFS" -0 -w / \
-                    --kill-on-exit --link2symlink \
-                    -b /dev -b /proc -b /sys \
-                    -b "${'$'}DEV_SHM_DIR:/dev/shm" \
-                    $libhybrisBindFlags \
-                    -b "${'$'}TAWC_DATA:${'$'}TAWC_DATA" \
-                    /bin/bash -l
-            fi
-            """.trimIndent(),
-        )
-    }
+    /** Contents of `/etc/profile.d/01-tawc.sh` for proot mode. Refreshed
+     * by [startInside] on every entry so changes here pick up without
+     * reinstalling. WAYLAND_DISPLAY is the absolute path (not a bare
+     * display name + /tmp symlink) because proot's symlink-target
+     * resolution misses the `-b /data/data/<pkg>` rewrite. The
+     * `MOZ_DISABLE_*_SANDBOX` lines are proot-specific: under proot's
+     * ptrace tracer Firefox's per-subprocess sandbox setup SIGSEGVs;
+     * the chroot/tawcroot paths don't need this. */
+    private val PROOT_PROFILE_D_TAWC = """
+        export WAYLAND_DISPLAY=/data/data/me.phie.tawc/wayland-0
+        export XDG_RUNTIME_DIR=/tmp
+        export LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
+        export HYBRIS_EGLPLATFORM=wayland
+        ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
+        export MOZ_DISABLE_CONTENT_SANDBOX=1
+        export MOZ_DISABLE_GPU_SANDBOX=1
+        export MOZ_DISABLE_RDD_SANDBOX=1
+        export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1
+        export MOZ_DISABLE_UTILITY_SANDBOX=1
+        export MOZ_DISABLE_GMP_SANDBOX=1
+        export MOZ_DISABLE_VR_SANDBOX=1
+    """.trimIndent() + "\n"
 
     /**
      * Run [script] under [argv] (typically `/system/bin/sh`). Pipes

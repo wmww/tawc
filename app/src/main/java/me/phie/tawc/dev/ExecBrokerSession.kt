@@ -36,6 +36,21 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
             val name: String,
             val args: Map<String, String>,
         ) : Request()
+
+        /**
+         * Run a command inside an installed chroot. The broker reads
+         * the install's recorded method from `metadata.json`,
+         * dispatches to [InstallationMethod.startInside], and streams
+         * stdio back exactly like [Exec]. Single entry point for every
+         * "enter the chroot" path — replaces the prior on-disk
+         * `enter.sh` + ARGV-form Exec dance.
+         *
+         * `cmd == null` is interactive `bash -l`.
+         */
+        data class RunInside(
+            val installId: String,
+            val cmd: String?,
+        ) : Request()
     }
 
     fun run() {
@@ -60,7 +75,40 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
                 Log.i(ExecBroker.TAG, "action name=${req.name} args=${req.args.keys}")
                 runAction(req, sin, sout)
             }
+            is Request.RunInside -> {
+                Log.i(ExecBroker.TAG, "runInside install=${req.installId} cmd=${req.cmd?.take(64)}")
+                runInside(req, sin, sout)
+            }
         }
+    }
+
+    /**
+     * Resolve the install's method via metadata.json and start the
+     * subprocess via [InstallationMethod.startInside]. The streaming /
+     * cancel / waitFor scaffolding is shared with [runExec] via
+     * [streamProcess] — only the spawn primitive differs.
+     */
+    private fun runInside(req: Request.RunInside, sin: DataInputStream, sout: DataOutputStream) {
+        val app = ExecBroker.appContext
+        val store = me.phie.tawc.install.InstallationStore(app)
+        val inst = store.load(req.installId)
+        if (inst == null) {
+            sendErrorAndExit(sout, "no install '${req.installId}' (state file missing)")
+            return
+        }
+        val method = me.phie.tawc.install.InstallationMethod.forKey(app, inst.method)
+        if (method == null) {
+            sendErrorAndExit(sout, "unknown method '${inst.method}' for install '${req.installId}'")
+            return
+        }
+        val rootfs = store.rootfsDir(req.installId).absolutePath
+        val proc: Process = try {
+            method.startInside(rootfs, req.cmd)
+        } catch (t: Throwable) {
+            sendErrorAndExit(sout, "startInside: ${t.javaClass.simpleName}: ${t.message}")
+            return
+        }
+        streamProcess(proc, sin, sout)
     }
 
     /**
@@ -144,7 +192,6 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
     }
 
     private fun runExec(req: Request.Exec, sin: DataInputStream, sout: DataOutputStream) {
-
         val pb = ProcessBuilder(req.argv)
             .redirectErrorStream(false)
         // Always clear and rebuild env from the header — never leak the
@@ -163,7 +210,20 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
             sendErrorAndExit(sout, "spawn: ${t.message}")
             return
         }
+        streamProcess(proc, sin, sout)
+    }
 
+    /**
+     * Relay [proc]'s stdout/stderr to the socket as STREAM_STDOUT /
+     * STREAM_STDERR frames, forward incoming socket frames to [proc]'s
+     * stdin, send STREAM_EXIT with the exit code. Cancels the process
+     * tree (proc + descendants) on host disconnect.
+     *
+     * Shared by [runExec] (generic argv form) and [runInside] (chroot
+     * dispatch form) — they only differ in how the [Process] gets
+     * spawned.
+     */
+    private fun streamProcess(proc: Process, sin: DataInputStream, sout: DataOutputStream) {
         val socketAlive = AtomicBoolean(true)
 
         // Pump child stdout / stderr → socket. Both threads are
@@ -289,7 +349,7 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
      * first binary frame — using BufferedReader here would silently
      * absorb frame bytes into its internal buffer.
      *
-     * Two header shapes are accepted, mutually exclusive:
+     * Three header shapes are accepted, mutually exclusive:
      *   - **ARGV-form** (fork-exec): one or more `ARGV <s>` lines plus
      *     optional `ENV K=V` / `CWD <p>`. The session forks the named
      *     process and relays stdio.
@@ -297,6 +357,11 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
      *     zero or more `ARG <key>=<value>` lines. The session looks
      *     [name] up in [ActionRegistry] and runs the handler in-process,
      *     streaming its output back on stdout/stderr.
+     *   - **RUNINSIDE-form** (chroot dispatch): one `RUNINSIDE <id>`
+     *     line plus an optional `CMD <command>` line. The session
+     *     resolves the install's method, calls
+     *     [InstallationMethod.startInside], and streams stdio.
+     *     `CMD` absent = interactive `bash -l`.
      */
     private fun readHeader(stream: InputStream): Request {
         val firstLine = readHeaderLine(stream)
@@ -309,6 +374,8 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
         var cwd: String? = null
         var actionName: String? = null
         val actionArgs = mutableMapOf<String, String>()
+        var runInsideId: String? = null
+        var runInsideCmd: String? = null
         while (true) {
             val line = readHeaderLine(stream) ?: throw IOException("EOF in header")
             if (line.isEmpty()) break
@@ -334,18 +401,30 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
                     if (eq < 0) throw IOException("malformed ARG: '$value' (must be key=value)")
                     actionArgs[value.substring(0, eq)] = value.substring(eq + 1)
                 }
+                "RUNINSIDE" -> {
+                    if (runInsideId != null) throw IOException("duplicate RUNINSIDE line")
+                    if (value.isEmpty()) throw IOException("RUNINSIDE needs an install id")
+                    runInsideId = value
+                }
+                "CMD" -> {
+                    // Empty CMD value is allowed (means "no cmd, interactive
+                    // shell"), so don't reject "" — just store it.
+                    if (runInsideCmd != null) throw IOException("duplicate CMD line")
+                    runInsideCmd = value
+                }
                 else -> throw IOException("unknown header key: '$key'")
             }
         }
         val isAction = actionName != null
         val isExec = argv.isNotEmpty()
-        if (isAction && isExec) {
-            throw IOException("ACTION and ARGV are mutually exclusive in one header")
+        val isRunInside = runInsideId != null
+        val forms = listOf(isAction, isExec, isRunInside).count { it }
+        if (forms > 1) {
+            throw IOException("ARGV / ACTION / RUNINSIDE are mutually exclusive in one header")
         }
-        if (isAction) {
-            return Request.Action(actionName!!, actionArgs)
-        }
-        if (!isExec) throw IOException("no ARGV or ACTION in header")
+        if (isAction) return Request.Action(actionName!!, actionArgs)
+        if (isRunInside) return Request.RunInside(runInsideId!!, runInsideCmd)
+        if (!isExec) throw IOException("no ARGV / ACTION / RUNINSIDE in header")
         return Request.Exec(argv, env, cwd)
     }
 

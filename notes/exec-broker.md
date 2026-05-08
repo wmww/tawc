@@ -57,11 +57,11 @@ threads, and closes the socket when the child exits.
 
 ### Header (text, line-oriented)
 
-UTF-8, LF-terminated lines, terminated by an empty line. Two mutually
-exclusive header forms — pick one:
+UTF-8, LF-terminated lines, terminated by an empty line. Three
+mutually exclusive header forms — pick one:
 
-**ARGV form** — fork-exec a child process. Used by `tawc-chroot-run.sh`
-and any plain `tawc-exec /path/to/cmd …` invocation.
+**ARGV form** — fork-exec a child process. Used for raw command exec
+(file copies, `cat /proc/foo`, etc.).
 
 ```
 TAWCEXEC 1
@@ -92,6 +92,20 @@ ARG mirrorProxy=http://127.0.0.1:8080/proxy/
 
 ```
 
+**RUNINSIDE form** — run a command inside an installed chroot. The
+broker reads the install's recorded method from `metadata.json` and
+calls `InstallationMethod.startInside`, the single Kotlin entry point
+for "enter the chroot" (notes/chroot-sessions.md). Used by
+`tawc-chroot-run.sh`, `install-test-deps.sh`, and the integration
+test crate. Omit `CMD` for interactive `bash -l`.
+
+```
+TAWCEXEC 1
+RUNINSIDE arch
+CMD pacman -Syu
+
+```
+
 - `TAWCEXEC 1` — magic + version. Must be the first line.
 - `ARGV <s>` (ARGV-form only) — one per arg. At least one required.
   `argv[0]` is the program path; the broker passes it through to
@@ -105,8 +119,13 @@ ARG mirrorProxy=http://127.0.0.1:8080/proxy/
   −1.
 - `ARG <key>=<value>` (ACTION-form only) — zero or more. Per-action
   semantics; see the handler's docstring.
-- A header containing both `ARGV` and `ACTION` is rejected with a
-  protocol error.
+- `RUNINSIDE <install-id>` (RUNINSIDE-form only) — exactly one.
+  Resolves to `<distros>/<id>/`; unknown id gets STREAM_ERR + exit −1.
+- `CMD <command>` (RUNINSIDE-form only) — optional. The command runs
+  via `bash -lc <command>` inside the rootfs. Omit for interactive
+  `bash -l`.
+- ARGV / ACTION / RUNINSIDE are mutually exclusive in one header;
+  combining is a protocol error.
 - The empty line terminates the header. Frame stream begins
   immediately after.
 
@@ -267,6 +286,8 @@ Usage:
 
 ```
 tawc-exec [--cwd DIR] [--env K=V ...] -- ARGV0 ARGV1 ...
+tawc-exec --action NAME [--arg K=V ...]
+tawc-exec --in-chroot ID [-- CMD ...]
 ```
 
 It:

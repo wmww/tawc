@@ -2,20 +2,6 @@ use std::io;
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
 
-const PKG: &str = "me.phie.tawc";
-
-/// Path to the on-device chroot wrapper rendered by the in-app
-/// installer (see [`ChrootMounter.enterScript`] /
-/// [`ProotMethod.renderEnterScript`]). Mount + chroot logic lives
-/// there; these helpers just deliver the (base64-encoded) command to
-/// it via the right adb-side wrapper.
-fn enter_script() -> String {
-    format!("/data/data/{}/distros/{}/enter.sh", PKG, crate::install_id())
-}
-fn meta_path() -> String {
-    format!("/data/data/{}/distros/{}/metadata.json", PKG, crate::install_id())
-}
-
 /// Path to the host-side tawc-exec helper. Absolute path lets tests
 /// invoke it without needing it on $PATH. Built by
 /// `scripts/build-tawc-exec.sh`. Override via `TAWC_EXEC_BIN`.
@@ -54,137 +40,28 @@ pub fn chroot_host_exec(argv: &[&str]) -> io::Result<Output> {
 
 /// Run a command inside the in-app Linux install on the phone.
 ///
-/// For `tawcroot` / `proot` installs: routed through the dev exec
-/// broker (see `notes/exec-broker.md`), which runs the command as the
-/// app uid in the app's `untrusted_app` SELinux domain — same context
-/// as a user-launched run.
-///
-/// For `chroot` installs: still through `adb shell su -c '<enter.sh>
-/// ...'` because `chroot(2)` requires CAP_SYS_CHROOT.
-///
-/// Method is read from the install's `metadata.json` once per process.
+/// Routed through the broker's RUNINSIDE handler, which dispatches
+/// to the install's [InstallationMethod.startInside] (see
+/// notes/exec-broker.md, notes/chroot-sessions.md). Single entry point
+/// for every install method — chroot handles its own `su` internally.
 pub fn chroot_run(cmd: &str) -> io::Result<Output> {
-    let b64 = b64_encode(cmd.as_bytes());
-    match install_method() {
-        m @ ("proot" | "tawcroot") => {
-            let scratch = format!("/data/data/{}/cache/{}-tmp", PKG, m);
-            let inner = format!(
-                "mkdir -p {scratch} && cd {scratch} && exec /system/bin/sh {enter} {b64}",
-                scratch = scratch,
-                enter = enter_script(),
-                b64 = b64,
-            );
-            Command::new(tawc_exec_bin())
-                .args(["--cwd", &scratch,
-                       "--env", &format!("TMPDIR={}", scratch),
-                       "--env", "PATH=/system/bin:/system/xbin",
-                       "/system/bin/sh", "-c", &inner])
-                .output()
-        }
-        // Chroot still needs root. Same shape as before.
-        _ => shell(&format!("su -c '{} {}'", enter_script(), b64)),
-    }
+    Command::new(tawc_exec_bin())
+        .args(["--in-chroot", &crate::install_id(), "--", cmd])
+        .output()
 }
 
 /// Spawn a command in the chroot with piped stdout/stderr (non-blocking).
 /// Returns the Child process. Caller is responsible for reading output.
+///
+/// Same broker dispatch as [chroot_run]. The chroot-session invariant
+/// (notes/chroot-sessions.md) is enforced inside
+/// [InstallationMethod.startInside] — no caller-side `setsid` needed.
 pub fn chroot_spawn(cmd: &str) -> io::Result<std::process::Child> {
-    let b64 = b64_encode(cmd.as_bytes());
-    match install_method() {
-        m @ ("proot" | "tawcroot") => {
-            let scratch = format!("/data/data/{}/cache/{}-tmp", PKG, m);
-            let inner = format!(
-                "mkdir -p {scratch} && cd {scratch} && exec /system/bin/sh {enter} {b64}",
-                scratch = scratch,
-                enter = enter_script(),
-                b64 = b64,
-            );
-            Command::new(tawc_exec_bin())
-                .args(["--cwd", &scratch,
-                       "--env", &format!("TMPDIR={}", scratch),
-                       "--env", "PATH=/system/bin:/system/xbin",
-                       "/system/bin/sh", "-c", &inner])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-        }
-        _ => Command::new("adb")
-            .args(["shell", &format!("su -c '{} {}'", enter_script(), b64)])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn(),
-    }
-}
-
-/// Detected install method (`"chroot"` / `"proot"` / `"tawcroot"`),
-/// cached after the first probe. Returning the string keeps callers
-/// free to pass it through to log lines without round-tripping
-/// through an enum.
-fn install_method() -> &'static str {
-    static M: OnceLock<String> = OnceLock::new();
-    M.get_or_init(|| {
-        // Read metadata.json via the broker. Runs as the app uid, so
-        // it can read the private data dir without root or run-as.
-        let meta = meta_path();
-        let raw = Command::new(tawc_exec_bin())
-            .args(["/system/bin/cat", &meta])
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
-        // Pull "method" out of the JSON without a serde dep — single
-        // field, low schema risk. awk -F'"' on the matching line
-        // mirrors what `scripts/tawc-chroot-run.sh` does.
-        for line in raw.lines() {
-            if let Some(rest) = line.split_once("\"method\"") {
-                if let Some(after_colon) = rest.1.split_once(':') {
-                    let v = after_colon.1.trim().trim_start_matches('"');
-                    if let Some(end) = v.find('"') {
-                        return v[..end].to_string();
-                    }
-                }
-            }
-        }
-        // No metadata yet (or unreadable) — assume chroot. Tests that
-        // depend on chroot_run will fail with a clearer error than a
-        // missing-method panic anyway.
-        "chroot".to_string()
-    }).as_str()
-}
-
-/// Standard base64 (RFC 4648) with `=` padding, no line breaks. Inlined
-/// rather than pulling a crate in for ~25 lines that the test harness
-/// uses in exactly one place.
-fn b64_encode(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(((data.len() + 2) / 3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(T[((n >> 18) & 63) as usize] as char);
-        out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::b64_encode;
-    #[test]
-    fn b64_matches_reference() {
-        // Spot-check against known values.
-        assert_eq!(b64_encode(b""), "");
-        assert_eq!(b64_encode(b"f"), "Zg==");
-        assert_eq!(b64_encode(b"fo"), "Zm8=");
-        assert_eq!(b64_encode(b"foo"), "Zm9v");
-        assert_eq!(b64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(b64_encode(b"hello"), "aGVsbG8=");
-        assert_eq!(b64_encode(b"\xff\xfe\xfd"), "//79");
-    }
+    Command::new(tawc_exec_bin())
+        .args(["--in-chroot", &crate::install_id(), "--", cmd])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
 /// Send text to the compositor via broadcast intent — equivalent to

@@ -85,6 +85,21 @@ impl ChrootProcess {
         let deadline = Instant::now() + PID_TIMEOUT;
         while Instant::now() < deadline {
             if let Some((pid, pgid)) = self.read_pid_and_pgid() {
+                // Invariant: each chroot spawn must run in its own session
+                // (see notes/chroot-sessions.md). If the discovered PGID is
+                // the broker's, no setsid happened on the way in — and the
+                // PGID-based kill in `stop()` would target every Android
+                // app instead of just this test's children.
+                if let Some(broker) = broker_pgid() {
+                    assert_ne!(
+                        pgid, broker,
+                        "spawned child inherited the app's PGID ({}) — \
+                         no new session was created. Check that \
+                         InstallationMethod.startInside includes setsid \
+                         (see notes/chroot-sessions.md).",
+                        broker
+                    );
+                }
                 self.pid = Some(pid);
                 self.pgid = Some(pgid);
                 self.cleanup_pidfile();
@@ -312,4 +327,29 @@ fn collect_descendant_pgids(root_pid: u32) -> Vec<u32> {
     }
 
     pgids.into_iter().collect()
+}
+
+/// PGID of the on-device broker (the `me.phie.tawc` JVM that
+/// `tawc-exec` connects to). Cached after the first probe. `None` if
+/// the probe fails — callers should treat that as "skip the check"
+/// rather than as a positive answer, since failing the invariant
+/// silently is worse than failing it loudly.
+///
+/// Used to detect "no setsid happened" — see ensure_pgid's assertion.
+fn broker_pgid() -> Option<u32> {
+    use std::sync::OnceLock;
+    static B: OnceLock<Option<u32>> = OnceLock::new();
+    *B.get_or_init(|| {
+        // `pidof` is in toybox; one-shot ok. Then read field 5 of
+        // /proc/<pid>/stat (skipping past the comm field's parens
+        // since it could contain whitespace).
+        let pid_out = adb::shell("pidof me.phie.tawc").ok()?;
+        let pid: u32 = String::from_utf8_lossy(&pid_out.stdout)
+            .split_whitespace().next()?.parse().ok()?;
+        let stat_out = adb::shell(&format!("cat /proc/{}/stat", pid)).ok()?;
+        let stat = String::from_utf8_lossy(&stat_out.stdout);
+        let stat = stat.trim();
+        let after_comm = stat.rfind(')')? + 2;
+        stat.get(after_comm..)?.split_whitespace().nth(2)?.parse().ok()
+    })
 }

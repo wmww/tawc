@@ -36,6 +36,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [tawcroot.md](notes/tawcroot.md) -- design + implementation plan for the from-scratch C systrap-based proot replacement (lives in `tawcroot/`)
 - [distro-options.md](notes/distro-options.md) -- survey of viable glibc distros (Debian, Void, Manjaro ARM, …) and why musl/bionic alternatives don't fit
 - [cache-proxy.md](notes/cache-proxy.md) -- dev-time host nginx caching reverse proxy for distro mirrors (adb reverse + URL-passthrough format)
+- [chroot-sessions.md](notes/chroot-sessions.md) -- invariant: every chroot invocation must run in its own session, and where each launch path upholds it
 
 Keep notes up to date with new choices, discoveries and project state. This is an agent-written project, existing code/notes may be wrong. Stay vigilant, and fix/record problems as you find them (even when working on something else).
 

@@ -65,33 +65,31 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         runShell(listOf("/system/bin/sh"), "set -eu\n$script", onLine)
 
     /**
-     * Run [command] inside a tawcroot rootfs at [rootfs]. Argv shape:
+     * Start a tawcroot subprocess running [command] inside [rootfs].
+     * Argv shape:
      *
-     *   tawcroot -r <rootfs> -b /apex -b /vendor -b /system \
-     *            [-b /system_ext] [-b /linkerconfig] \
-     *            -b /dev -b /proc -b /sys \
-     *            -b /data/data/me.phie.tawc:/data/data/me.phie.tawc \
-     *            -- /bin/bash -lc <command>
+     *   /system/bin/setsid <tawcroot> -r <rootfs> \
+     *       -b /dev:/dev -b /proc:/proc -b /sys:/sys \
+     *       -b /apex:/apex [-b /vendor:/vendor ...] \
+     *       -b /data/data/me.phie.tawc:/data/data/me.phie.tawc \
+     *       -- /bin/bash -lc <command>
      *
-     * Bind set mirrors [ProotMethod.prootArgv] minus the proot-only
-     * tweaks (`/dev/shm`, link2symlink, kill-on-exit). The libhybris
-     * bind dirs are filtered to existing host paths at class-load.
+     * Bind set mirrors [ProotMethod] minus the proot-only tweaks
+     * (`/dev/shm`, link2symlink, kill-on-exit). Libhybris bind dirs
+     * are filtered to existing host paths at class-load.
+     *
+     * `setsid` upholds the chroot-session invariant
+     * (notes/chroot-sessions.md): every chroot invocation runs in
+     * its own session. The visible symptoms are gpg-agent's main
+     * loop spinning at 100% CPU under pacman-key (inherited pgrp +
+     * signal mask) and the integration test framework's PGID-based
+     * cleanup; the underlying contract is general.
      *
      * `bash -lc` so the chroot's `/etc/profile.d/01-tawc.sh` runs
-     * (PATH, LD_LIBRARY_PATH, WAYLAND_DISPLAY).
+     * (PATH, LD_LIBRARY_PATH, WAYLAND_DISPLAY). The profile is
+     * refreshed below before the spawn.
      */
-    override fun runInside(
-        rootfs: String,
-        command: String,
-        onLine: ((String) -> Unit)?,
-    ): MethodResult {
-        // Refresh enter.sh on every entry — same lifecycle contract
-        // as ChrootMethod / ProotMethod (host launcher path needs an
-        // up-to-date script).
-        val enterFile = File(File(rootfs).parentFile, "enter.sh")
-        enterFile.writeText(renderEnterScript(rootfs))
-        enterFile.setExecutable(true, false)
-
+    override fun startInside(rootfs: String, command: String?): Process {
         // Pre-create bind targets. tawcroot's `tawcroot_path_add_bind`
         // opens the SRC dir at startup; the in-rootfs DST dir doesn't
         // need to exist (it's purely a name-rewriting key). We still
@@ -101,45 +99,76 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         for (dir in LIBHYBRIS_BIND_DIRS) {
             File(rootfs, dir.removePrefix("/")).mkdirs()
         }
+        // Refresh /etc/profile.d/01-tawc.sh so changes to the Wayland
+        // env take effect without reinstalling. tawcroot does NOT need
+        // the MOZ_DISABLE_*_SANDBOX vars proot does — there's no
+        // ptrace-vs-Firefox-sandbox conflict here.
+        File(rootfs, "etc/profile.d").mkdirs()
+        File(rootfs, "etc/profile.d/01-tawc.sh").writeText(TAWCROOT_PROFILE_D_TAWC)
 
-        val cmdB64 = android.util.Base64.encodeToString(
-            command.toByteArray(Charsets.UTF_8),
-            android.util.Base64.NO_WRAP,
-        )
-        // Invoke through enter.sh — same shape as host-side launchers
-        // (`scripts/tawc-chroot-run.sh`). enter.sh's cd-into-$ROOTFS/tmp +
-        // explicit env setup matters in two places: gpg-agent (and other
-        // daemons pacman-key spawns) inherit a sane TMPDIR and HOME from
-        // the in-chroot login shell, and the host kernel cwd is set
-        // INSIDE the rootfs (not its parent) so getcwd reverse-translates
-        // cleanly. Doing the tawcroot invocation here directly skipped
-        // both, leaving gpg-agent in a busy-loop accept() while still
-        // wired to the install service's session.
-        //
-        // setsid wraps the whole thing so daemons that pacman-key spawns
-        // (gpg-agent specifically) get their own session, decoupled from
-        // the install service's. Without this, gpg-agent inherits a
-        // signal mask / pgrp combination that causes its main loop to
-        // spin at 100% CPU instead of cleanly daemonising.
-        //
-        // We invoke `sh <enter.sh>` instead of execing enter.sh directly
-        // so the kernel never has to `execute_no_trans` an `app_data_file`.
-        // From API 29+ the `untrusted_app` SELinux domain denies that
-        // (Android's W^X rule for the app data dir), which surfaces as
-        // `setsid: exec <enter.sh>: Permission denied` even though the
-        // file mode and DAC are fine. Reading the script as data and
-        // letting `/system/bin/sh` (a `system_file`) interpret it
-        // sidesteps the restriction; host-side launchers go through
-        // `run-as` (which runs in `runas_app`, where exec_no_trans on
-        // app_data_file is allowed) so they keep working unchanged.
-        val enterAbs = enterFile.absolutePath
-        val tawcrootCmd =
-            "exec setsid /system/bin/sh ${shellQuote(enterAbs)} ${shellQuote(cmdB64)} 2>&1 < /dev/null"
-        return runShell(listOf("/system/bin/sh"), tawcrootCmd, onLine)
+        val argv = buildList {
+            add("/system/bin/setsid")
+            add(tawcrootBin)
+            addAll(listOf("-r", rootfs))
+            for ((src, dst) in bindSpecs()) addAll(listOf("-b", "$src:$dst"))
+            add("--")
+            add("/bin/bash")
+            if (command != null) {
+                add("-lc"); add(command)
+            } else {
+                add("-l")
+            }
+        }
+        // TMPDIR points inside the rootfs so getcwd reverse-translation
+        // works cleanly and daemons pacman-key spawns (gpg-agent) get
+        // a sane writable tmp.
+        val tmpdir = "$rootfs/tmp"
+        File(tmpdir).mkdirs()
+        return ProcessBuilder(argv)
+            .directory(File(tmpdir))
+            .also { it.environment()["TMPDIR"] = tmpdir }
+            .start()
     }
 
     private fun shellQuote(s: String): String =
         "'" + s.replace("'", "'\\''") + "'"
+
+    /** Used by [runOutside] / [wipe]: run a short shell script via
+     * `argv` (typically `/system/bin/sh`), feed [script] on stdin,
+     * collect combined stdout+stderr. */
+    private fun runShell(
+        argv: List<String>,
+        script: String,
+        onLine: ((String) -> Unit)?,
+    ): MethodResult {
+        val pb = ProcessBuilder(argv).redirectErrorStream(true)
+        val proc = pb.start()
+        proc.outputStream.bufferedWriter().use { w -> w.write(script); w.write("\n") }
+        val sb = StringBuilder()
+        val readerThread = Thread {
+            try {
+                proc.inputStream.bufferedReader().forEachLine { line ->
+                    if (sb.length < 256 * 1024) {
+                        if (sb.isNotEmpty()) sb.append('\n')
+                        sb.append(line)
+                    }
+                    onLine?.invoke(line)
+                }
+            } catch (e: IOException) {
+                Log.w(TAG, "runShell stdout: $e")
+            }
+        }.also { it.isDaemon = true; it.start() }
+        try {
+            proc.waitFor()
+        } catch (e: InterruptedException) {
+            proc.destroyForcibly()
+            readerThread.join(2000)
+            Thread.currentThread().interrupt()
+            throw e
+        }
+        readerThread.join(2000)
+        return MethodResult(proc.exitValue(), sb.toString())
+    }
 
     /**
      * Pure-Kotlin extract via [ProotArchiveExtractor]. Same rationale
@@ -203,16 +232,9 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         throw IOException("Recursive delete failed for $installDir (exit=${r.exitCode})")
     }
 
-    override fun enterScript(context: Context, rootfs: String): String =
-        renderEnterScript(rootfs)
-
     // ---- internals ---------------------------------------------------
 
     /** The full bind list, in declared order, as `(src, dst)` pairs.
-     *
-     * Single source of truth for both [tawcrootArgv] (programmatic
-     * invocation) and [renderEnterScript] (shell-script form) — adding
-     * a bind here updates both call sites at once.
      *
      * Order: /dev → /proc → /sys → libhybris dirs → TAWC_DATA.
      * No `/dev/shm` bind: tawcroot's SIGSYS handler emulates POSIX
@@ -225,142 +247,35 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         add(TAWC_DATA to TAWC_DATA)
     }
 
-    /** Standard tawcroot argv that every in-rootfs invocation prefixes.
-     *
-     * Note: tawcroot's `-b` always takes `src:dst` form (unlike proot,
-     * which accepts a bare `-b /dev` to mean `-b /dev:/dev`). Pass the
-     * full `src:dst` for every entry. */
-    private fun tawcrootArgv(rootfs: String): List<String> = buildList {
-        add(tawcrootBin)
-        addAll(listOf("-r", rootfs))
-        for ((src, dst) in bindSpecs()) addAll(listOf("-b", "$src:$dst"))
-        add("--")
-    }
+    companion object {
+        const val KEY = "tawcroot"
+        private const val TAG = "tawc-install"
+        private const val TAWC_DATA = "/data/data/me.phie.tawc"
 
-    /**
-     * Body of the per-install `enter.sh` for tawcroot mode. Runs as
-     * the app uid (no `su`); host-side launchers wrap with
-     * `run-as me.phie.tawc <enter.sh> <b64>`.
-     */
-    private fun renderEnterScript(rootfs: String): String = buildString {
-        appendLine("#!/system/bin/sh")
-        appendLine("# Auto-generated by TawcrootMethod.renderEnterScript. Do not")
-        appendLine("# edit by hand — rewritten on every install / chroot entry.")
-        appendLine("set -eu")
-        // Same TMPDIR dance as ProotMethod — `run-as` starts mksh in
-        // a cwd where here-doc temp file creation can fail.
-        appendLine("export TMPDIR=${shellQuote(rootfs)}/tmp")
-        appendLine("mkdir -p \"\$TMPDIR\" 2>/dev/null || true")
-        appendLine("cd \"\$TMPDIR\" 2>/dev/null || true")
-        appendLine("TAWCROOT=${shellQuote(tawcrootBin)}")
-        appendLine("ROOTFS=${shellQuote(rootfs)}")
-        appendLine("TAWC_DATA=${shellQuote(TAWC_DATA)}")
-        // Bind targets must exist on disk inside the rootfs view since
-        // some downstream code stat()'s them. Match ProotMethod.
-        appendLine("mkdir -p \"\$ROOTFS\$TAWC_DATA\"")
-        for (dir in LIBHYBRIS_BIND_DIRS) {
-            appendLine("mkdir -p \"\$ROOTFS$dir\"")
-        }
-        // Refresh /etc/profile.d/01-tawc.sh. Note: tawcroot does NOT
-        // need the MOZ_DISABLE_*_SANDBOX env vars proot does — the
-        // ptrace-tracer-vs-Firefox-sandbox conflict doesn't exist
-        // here. Firefox can keep its sandboxes on under tawcroot.
-        appendLine(
-            """
-            mkdir -p "${'$'}ROOTFS/etc/profile.d"
-            cat > "${'$'}ROOTFS/etc/profile.d/01-tawc.sh" <<'TAWC_PROF_EOF'
+        /** Contents of `/etc/profile.d/01-tawc.sh` for tawcroot mode.
+         * Sourced by login bash inside the rootfs to set Wayland env
+         * and surface X11 sockets at canonical paths. Refreshed by
+         * [startInside] on every entry so changes here pick up
+         * without reinstalling. */
+        private val TAWCROOT_PROFILE_D_TAWC = """
             export WAYLAND_DISPLAY=/data/data/me.phie.tawc/wayland-0
             export XDG_RUNTIME_DIR=/tmp
             export LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
             export HYBRIS_EGLPLATFORM=wayland
             export DISPLAY=:0
-            # SDL2 prefers X11 whenever DISPLAY is set, but our Xwayland
-            # is GLAMOR-disabled — SDL apps that probe the X11 backend
-            # would bind our X server and immediately fail. Force the
-            # Wayland-first ordering so SDL takes the libhybris/EGL
-            # Wayland path. X11 stays in the list as a fallback (matches
-            # ChrootMounter).
+            # SDL2 prefers X11 when DISPLAY is set, but our Xwayland is
+            # GLAMOR-disabled — SDL apps that probe X11 die on
+            # createWindow. Force Wayland-first.
             export SDL_VIDEODRIVER=wayland,x11
             ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
-            # X11 sockets land in the host's /data/data/me.phie.tawc/xtmp/
-            # (Android has no /tmp). The chroot's bind on /data/data/me.phie.tawc
-            # makes them visible at the same path inside; surface them at the
-            # canonical /tmp/.X11-unix/ so X clients with bare `DISPLAY=:0`
-            # find them without per-app `unix:/path` overrides.
-            # Use ln -sfn so re-running this with the dir already linked
-            # doesn't dereference into a nested .X11-unix/.X11-unix.
+            # X11 sockets land in /data/data/me.phie.tawc/xtmp/ on the
+            # host (Android has no /tmp); surface them at /tmp/.X11-unix.
             ln -sfn /data/data/me.phie.tawc/xtmp/.X11-unix /tmp/.X11-unix 2>/dev/null
             for lock in /data/data/me.phie.tawc/xtmp/.X*-lock; do
                 [ -f "${'$'}lock" ] || continue
                 ln -sf "${'$'}lock" "/tmp/${'$'}{lock##*/}" 2>/dev/null
             done
-            TAWC_PROF_EOF
-            chmod 644 "${'$'}ROOTFS/etc/profile.d/01-tawc.sh"
-            """.trimIndent(),
-        )
-        // The tawcroot invocation. Bind list rendered from
-        // [bindSpecs] so the order matches [tawcrootArgv] exactly.
-        // Each path goes through shellQuote so future additions with
-        // shell metachars don't break out.
-        val bindFlags = bindSpecs().joinToString(" \\\n                    ") {
-            (src, dst) -> "-b ${shellQuote("$src:$dst")}"
-        }
-        appendLine(
-            """
-            if [ ${'$'}# -gt 0 ] && [ -n "${'$'}1" ]; then
-                CMD=${'$'}(printf %s "${'$'}1" | base64 -d)
-                exec "${'$'}TAWCROOT" -r "${'$'}ROOTFS" \
-                    $bindFlags \
-                    -- /bin/bash -lc "${'$'}CMD"
-            else
-                exec "${'$'}TAWCROOT" -r "${'$'}ROOTFS" \
-                    $bindFlags \
-                    -- /bin/bash -l
-            fi
-            """.trimIndent(),
-        )
-    }
-
-    private fun runShell(
-        argv: List<String>,
-        script: String,
-        onLine: ((String) -> Unit)?,
-    ): MethodResult {
-        val pb = ProcessBuilder(argv).redirectErrorStream(true)
-        val proc = pb.start()
-        proc.outputStream.bufferedWriter().use { w ->
-            w.write(script); w.write("\n")
-        }
-        val sb = StringBuilder()
-        val readerThread = Thread {
-            try {
-                proc.inputStream.bufferedReader().forEachLine { line ->
-                    if (sb.length < 256 * 1024) {
-                        if (sb.isNotEmpty()) sb.append('\n')
-                        sb.append(line)
-                    }
-                    onLine?.invoke(line)
-                }
-            } catch (e: IOException) {
-                Log.w(TAG, "tawcroot stdout reader: $e")
-            }
-        }.also { it.isDaemon = true; it.start() }
-        try {
-            proc.waitFor()
-        } catch (e: InterruptedException) {
-            proc.destroyForcibly()
-            readerThread.join(2000)
-            Thread.currentThread().interrupt()
-            throw e
-        }
-        readerThread.join(2000)
-        return MethodResult(proc.exitValue(), sb.toString())
-    }
-
-    companion object {
-        const val KEY = "tawcroot"
-        private const val TAG = "tawc-install"
-        private const val TAWC_DATA = "/data/data/me.phie.tawc"
+        """.trimIndent() + "\n"
 
         /** Same set as ProotMethod (kept in sync deliberately —
          * libhybris dlopen targets bionic GPU libraries via these). */

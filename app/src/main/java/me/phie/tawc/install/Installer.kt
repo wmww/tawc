@@ -34,9 +34,8 @@ import java.io.InterruptedIOException
  *                             (chroot → toybox tar via su; proot →
  *                             pure-Kotlin [ProotArchiveExtractor]),
  *                             honouring `bootstrap.stripPrefix`.
- *   5. CONFIGURING          — [Distro.configure] writes /etc files,
- *                             then [writeEnterScript] renders
- *                             `enter.sh`.
+ *   5. CONFIGURING          — [Distro.configure] writes /etc files
+ *                             (mirrorlist, pacman.conf tweaks, etc.).
  *   6. PKG_KEYRING          — [Distro.initPackageManager] (pacman-key
  *                             init / keyring populate / pacman -Syu
  *                             for Arch; apt-get update for Debian).
@@ -198,15 +197,12 @@ class Installer(
         }
 
         checkCancel()
-        // Stage 3: configure. /etc files via Distro.configure, then
-        // the auto-generated enter.sh that both in-app callers (via
-        // method.runInside) and host-side scripts/tawc-chroot-run.sh
-        // invoke. enter.sh is generic across distros, so Installer
-        // writes it (not Distro). Without enter.sh later pacman steps
-        // can't run.
+        // Stage 3: configure. /etc files via Distro.configure. The
+        // chroot-entry mechanics (mounts, bind-table, setsid, exec)
+        // live entirely in [InstallationMethod.startInside] now —
+        // there's nothing to materialise on disk between calls.
         progress(InstallProgress(InstallStage.CONFIGURING, "Configuring chroot…"))
         distro.configure(method, rootfsPath, mirrorProxy, log)
-        writeEnterScript(rootfsPath, log)
         // Symlink the APK-bundled libhybris tree into /usr/local/lib.
         // Must follow distro.configure (which may create /usr/local
         // structure) and precede package-manager bootstrap (so any
@@ -275,23 +271,4 @@ class Installer(
         progress(InstallProgress(InstallStage.DONE, "Deleted"))
     }
 
-    /**
-     * Render `<installation-dir>/enter.sh` from the install method.
-     * Owned by app uid, so a plain file write is enough. Made +x so
-     * either `su -c '<path>'` (chroot) or `run-as <pkg> <path>`
-     * (proot) can exec it directly. Both in-app callers
-     * ([InstallationMethod.runInside] in chroot mode, or
-     * [InstallationMethod.runInside] in proot mode) and host tooling
-     * call this single file, so the launcher logic only lives in the
-     * method's [InstallationMethod.enterScript] renderer.
-     */
-    private fun writeEnterScript(rootfsPath: String, log: (String) -> Unit) {
-        val file = store.enterScriptFile(id)
-        file.writeText(method.enterScript(context, rootfsPath))
-        if (!file.setExecutable(true, false)) {
-            log("warn: failed to chmod +x ${file.absolutePath}")
-        } else {
-            log("wrote ${file.absolutePath}")
-        }
-    }
 }

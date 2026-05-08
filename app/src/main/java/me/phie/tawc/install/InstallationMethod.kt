@@ -81,12 +81,40 @@ interface InstallationMethod {
     ): MethodResult
 
     /**
-     * Run [command] *inside* [rootfs] (a `bash -lc` shell rooted at
-     * `rootfs`). For [ChrootMethod] this routes through the on-disk
-     * `enter.sh` (mount + chroot) under `su`; for [ProotMethod] it
-     * exec's the vendored proot binary with `-r <rootfs> -0` plus the
-     * standard binds (`/dev`, `/proc`, `/sys`, the app data dir for
-     * the Wayland socket).
+     * Start a subprocess running [command] inside [rootfs] (a
+     * `bash -lc` shell rooted there) and return the started [Process]
+     * for the caller to stream stdio from. Caller is responsible for
+     * `waitFor()` and reaping.
+     *
+     * This is the single entry point for "enter the chroot" — the
+     * broker's RUNINSIDE handler and the in-app [runInside] helper
+     * both route here. Chroot-session invariant
+     * (notes/chroot-sessions.md) is upheld in here, in one place.
+     *
+     * `command == null` means interactive `bash -l` — drops into a
+     * login shell with no command. Useful for `tawc-chroot-run.sh`
+     * with no args.
+     *
+     * Method-specific notes:
+     *   - [ChrootMethod] needs `su` (CAP_SYS_CHROOT). The bind-mount
+     *     + chroot script is piped to `su` via stdin, which means the
+     *     in-rootfs bash doesn't see the caller's stdin. The other
+     *     methods don't have this limitation.
+     *   - [TawcrootMethod] / [ProotMethod] run as the app uid via
+     *     `ProcessBuilder.start()` with `setsid` prepended.
+     *
+     * Pre-setup (mkdirs for bind targets, refresh of
+     * `/etc/profile.d/01-tawc.sh`) happens in Kotlin here; nothing
+     * needs to be on disk between calls.
+     */
+    fun startInside(rootfs: String, command: String?): Process
+
+    /**
+     * Convenience wrapper around [startInside] for in-process callers
+     * that just want the exit code and combined output (e.g. the
+     * Installer pipeline's `pacman -Syyu` step). Default impl streams
+     * stdout/stderr line-by-line through [onLine] and waits for the
+     * process to exit.
      *
      * `bash -lc` so the profile.d entries run and the chroot's PATH,
      * `LD_LIBRARY_PATH`, `WAYLAND_DISPLAY` env get set.
@@ -95,7 +123,7 @@ interface InstallationMethod {
         rootfs: String,
         command: String,
         onLine: ((String) -> Unit)? = null,
-    ): MethodResult
+    ): MethodResult = MethodRunHelper.runInside(this, rootfs, command, onLine)
 
     /**
      * Tar-extract [tarball] into [rootfs]. The implementations diverge:
@@ -132,21 +160,6 @@ interface InstallationMethod {
      * slot in `FAILED` state if the dir survives.
      */
     fun wipe(installDir: File, log: (String) -> Unit)
-
-    /**
-     * Render the contents of `enter.sh` for an installation rooted at
-     * [rootfs]. Both in-app callers (via this method's [runInside])
-     * and host-side `scripts/tawc-chroot-run.sh` exec this exact script,
-     * so the launcher logic only lives here.
-     *
-     * For [ChrootMethod] the script is a `#!/system/bin/sh` that
-     * assumes its caller is uid 0 — it does the bind mounts then
-     * `exec chroot`. For [ProotMethod] the script runs as app uid and
-     * just exec's the proot binary with the right flags. The host
-     * launcher script branches on the install's `method` to decide
-     * whether to wrap in `su -c` or `run-as <pkg>`.
-     */
-    fun enterScript(context: Context, rootfs: String): String
 
     companion object {
         /**

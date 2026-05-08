@@ -1,7 +1,6 @@
 package me.phie.tawc.install
 
 import android.content.Context
-import android.util.Base64
 import java.io.File
 
 /**
@@ -32,20 +31,43 @@ object ChrootMethod : InstallationMethod {
     }
 
     /**
-     * Refresh `enter.sh` to the latest [ChrootMounter.enterScript]
-     * output and exec it via `su` with a base64-encoded command.
+     * Start a chroot subprocess running [command] inside [rootfs] under
+     * `su`. The bind-mount + chroot setup script is piped to su via
+     * stdin; the subsequent in-rootfs bash inherits that stdin pipe,
+     * but by the time bash takes over we've already written everything
+     * we want and the shell has consumed it (the `exec setsid chroot`
+     * line replaces the shell, leaving any further stdin bytes for
+     * bash).
+     *
+     * `setsid` upholds the chroot-session invariant
+     * (notes/chroot-sessions.md): every chroot invocation runs in its
+     * own session.
      */
-    override fun runInside(
-        rootfs: String,
-        command: String,
-        onLine: ((String) -> Unit)?,
-    ): MethodResult {
-        val enterFile = File(File(rootfs).parentFile, "enter.sh")
-        enterFile.writeText(ChrootMounter.enterScript(rootfs))
-        enterFile.setExecutable(true, false)
-        val cmdB64 = Base64.encodeToString(command.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        val r = Su.run("exec '${enterFile.absolutePath}' $cmdB64", onLine = onLine)
-        return MethodResult(r.exitCode, r.output)
+    override fun startInside(rootfs: String, command: String?): Process {
+        // Magisk's su inherits the calling process's mount namespace,
+        // so we wrap with `unshare -m` so any leaked binds go away when
+        // the script exits. (See [Su.run]'s docstring for context.)
+        val proc = ProcessBuilder(listOf("su", "-c", "exec unshare -m -- /system/bin/sh"))
+            .start()
+        val script = buildString {
+            appendLine("set -eu")
+            appendLine(ChrootMounter.mountScript(rootfs))
+            // Quote rootfs and (if present) the user command into the
+            // script. Both go through shellQuote so paths with quotes
+            // can't break out.
+            val rootfsQ = "'" + rootfs.replace("'", "'\\''") + "'"
+            if (command != null) {
+                val cmdQ = "'" + command.replace("'", "'\\''") + "'"
+                appendLine("exec setsid chroot $rootfsQ /bin/bash -lc $cmdQ")
+            } else {
+                appendLine("exec setsid chroot $rootfsQ /bin/bash -l")
+            }
+        }
+        // Write+flush; intentionally don't close (exec replaces the
+        // shell so further stdin bytes flow into the in-rootfs bash).
+        val w = proc.outputStream.bufferedWriter()
+        w.write(script); w.write("\n"); w.flush()
+        return proc
     }
 
     /** Delegates to [Archive.extractAsRoot] (the historical path). */
@@ -70,7 +92,4 @@ object ChrootMethod : InstallationMethod {
     override fun wipe(installDir: File, log: (String) -> Unit) {
         RootfsCleaner.wipe(installDir, log)
     }
-
-    override fun enterScript(context: Context, rootfs: String): String =
-        ChrootMounter.enterScript(rootfs)
 }

@@ -4,11 +4,7 @@ import android.app.Application
 import android.util.Log
 import me.phie.tawc.dev.ExecBroker
 import me.phie.tawc.install.BootstrapCache
-import me.phie.tawc.install.Installation
-import me.phie.tawc.install.InstallationMethod
-import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.ops.OperationsNotificationCenter
-import java.io.File
 import kotlin.concurrent.thread
 
 /**
@@ -43,11 +39,6 @@ class TawcApplication : Application() {
             } catch (t: Throwable) {
                 Log.w(TAG, "Bootstrap cache sweep failed", t)
             }
-            try {
-                refreshEnterScripts()
-            } catch (t: Throwable) {
-                Log.w(TAG, "enter.sh refresh failed", t)
-            }
         }
         // Dev-only exec broker. Started here (not from MainActivity)
         // so it's available no matter which Activity / Service the
@@ -60,30 +51,6 @@ class TawcApplication : Application() {
             // the broker thread spawned by start() above accepts asynchronously
             // but won't dispatch ACTION headers to a missing handler.
             me.phie.tawc.install.InstallActions.registerAll()
-        }
-    }
-
-    /**
-     * Re-render `<distros>/<id>/enter.sh` for every install in
-     * [Installation.State.READY] so the bake-in `nativeLibraryDir`
-     * path is fresh after an APK upgrade. Cheap (<1 KB write per
-     * install) and idempotent.
-     */
-    private fun refreshEnterScripts() {
-        val store = InstallationStore(this)
-        for (inst in store.list()) {
-            if (inst.state != Installation.State.READY) continue
-            val method = InstallationMethod.forKey(this, inst.method) ?: continue
-            val rootfs = store.rootfsDir(inst.id).absolutePath
-            val script = method.enterScript(this, rootfs)
-            val file = store.enterScriptFile(inst.id)
-            try {
-                file.writeText(script)
-                file.setExecutable(true, false)
-                Log.d(TAG, "refreshed ${file.absolutePath} (method=${inst.method})")
-            } catch (t: Throwable) {
-                Log.w(TAG, "couldn't refresh ${file.absolutePath}", t)
-            }
         }
     }
 
