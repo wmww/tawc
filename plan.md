@@ -198,7 +198,7 @@ for the full design.
   §"Which syscalls need translation" wired through the dispatch table.
 - Phase 4 — emulator integration (x86_64 AVD): `tawcroot/build`,
   jniLib packaging as `libtawcroot.so`, `TawcrootMethod.kt` next to
-  `ProotMethod.kt`, dispatch in `scripts/tawc-chroot-run.sh`, wrapper
+  `ProotMethod.kt`, dispatch in `scripts/tawc-rootfs-run.sh`, wrapper
   script. Run `pacman -Syu` to completion; verify the lp64-`access`-on-
   x86_64 stacked-filter case (only fires on x86_64).
 - Phase 5 — aarch64 port (real device): `arch/aarch64.h` + stub asm,
@@ -228,7 +228,7 @@ for the full design.
   suite, OnePlus 9". **Phase 5d in-app install green (2026-05-02):
   18/18 integration tests pass after installing through the
   in-app installer (`InstallActivity --es method tawcroot`)
-  rather than the adb-shell `scripts/tawc-chroot-run.sh` path used
+  rather than the adb-shell `scripts/tawc-rootfs-run.sh` path used
   by 5c. Three more tawcroot bugs surfaced and got fixed:
   (1) `prod_rootfs_init` / `loader_exec_child` had `probe_openat2`
   running with SIGSYS still blocked from the inherited initial
@@ -248,12 +248,12 @@ for the full design.
   `/tmp/.X11-unix → /data/data/me.phie.tawc/xtmp/.X11-unix`,
   so X clients in the chroot couldn't reach Xwayland. Switched
   to invoking the per-install `enter.sh` (same shape as
-  `scripts/tawc-chroot-run.sh`) and added `DISPLAY=:0` +
+  `scripts/tawc-rootfs-run.sh`) and added `DISPLAY=:0` +
   `SDL_VIDEODRIVER=wayland,x11` + the X-socket symlink to its
   profile.d body. One workaround still active and tracked
   separately: `pacman-key --init`'s `gpg-agent` spins at 100%
   CPU when started from the in-app installer process (works
-  fine via `scripts/tawc-chroot-run.sh` from adb shell), so
+  fine via `scripts/tawc-rootfs-run.sh` from adb shell), so
   `ArchPacmanCommon` pins `SigLevel = Never` and skips
   `pacman-key` for tawcroot installs — see
   `issues/tawcroot-gpg-agent-hangs-from-app-context.md`.**

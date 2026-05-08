@@ -139,7 +139,8 @@ class ProotMethod(context: Context) : InstallationMethod {
         // Refresh /etc/profile.d/01-tawc.sh on every entry so changes
         // here pick up without reinstalling.
         File(rootfs, "etc/profile.d").mkdirs()
-        File(rootfs, "etc/profile.d/01-tawc.sh").writeText(PROOT_PROFILE_D_TAWC)
+        File(rootfs, "etc/profile.d/01-tawc.sh")
+            .writeText(RootfsProfile.build(RootfsProfile.Method.PROOT))
 
         // We invoke proot through `/system/bin/sh -c …` rather than as
         // direct ProcessBuilder argv. Direct exec of the proot binary
@@ -147,8 +148,8 @@ class ProotMethod(context: Context) : InstallationMethod {
         // the loader stub fails to execve_no_trans through the
         // SELinux+seccomp gauntlet); the shell-mediated path works.
         //
-        // setsid upholds the chroot-session invariant (see
-        // notes/chroot-sessions.md): every chroot invocation runs in
+        // setsid upholds the rootfs-session invariant (see
+        // notes/rootfs-sessions.md): every chroot invocation runs in
         // its own session.
         //
         // The user command is passed as positional arg `$1` to dodge
@@ -212,7 +213,7 @@ class ProotMethod(context: Context) : InstallationMethod {
     /**
      * Recursive delete with one wrinkle: tracees that ran under a
      * proot-via-su entry (e.g. integration tests that go through
-     * `scripts/tawc-chroot-run.sh`'s `su -c '<enter.sh>'` path on rooted
+     * `scripts/tawc-rootfs-run.sh`'s `su -c '<enter.sh>'` path on rooted
      * devices) leave on-disk files with `uid=0` ownership, even though
      * the install was originally proot/app-uid. Plain `chmod -R` from
      * app uid then can't make those files writable, and the
@@ -371,29 +372,6 @@ class ProotMethod(context: Context) : InstallationMethod {
         // `/tmp/wayland-0` to that location.
         addAll(listOf("-b", "$TAWC_DATA:$TAWC_DATA"))
     }
-
-    /** Contents of `/etc/profile.d/01-tawc.sh` for proot mode. Refreshed
-     * by [startInside] on every entry so changes here pick up without
-     * reinstalling. WAYLAND_DISPLAY is the absolute path (not a bare
-     * display name + /tmp symlink) because proot's symlink-target
-     * resolution misses the `-b /data/data/<pkg>` rewrite. The
-     * `MOZ_DISABLE_*_SANDBOX` lines are proot-specific: under proot's
-     * ptrace tracer Firefox's per-subprocess sandbox setup SIGSEGVs;
-     * the chroot/tawcroot paths don't need this. */
-    private val PROOT_PROFILE_D_TAWC = """
-        export WAYLAND_DISPLAY=/data/data/me.phie.tawc/wayland-0
-        export XDG_RUNTIME_DIR=/tmp
-        export LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
-        export HYBRIS_EGLPLATFORM=wayland
-        ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
-        export MOZ_DISABLE_CONTENT_SANDBOX=1
-        export MOZ_DISABLE_GPU_SANDBOX=1
-        export MOZ_DISABLE_RDD_SANDBOX=1
-        export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1
-        export MOZ_DISABLE_UTILITY_SANDBOX=1
-        export MOZ_DISABLE_GMP_SANDBOX=1
-        export MOZ_DISABLE_VR_SANDBOX=1
-    """.trimIndent() + "\n"
 
     /**
      * Run [script] under [argv] (typically `/system/bin/sh`). Pipes

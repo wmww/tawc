@@ -30,7 +30,7 @@ fn pidfile_helper_device() -> String {
 /// Uses a pidfile helper to capture the PID without relying on process name
 /// lookup. The PGID is read from /proc/PID/stat on the host. `stop()` kills
 /// the entire process tree via process group signals.
-pub struct ChrootProcess {
+pub struct RootfsProcess {
     /// The local adb shell process.
     child: std::process::Child,
     /// Path to the pidfile on the device (accessible from host and chroot).
@@ -42,7 +42,7 @@ pub struct ChrootProcess {
     stopped: bool,
 }
 
-impl ChrootProcess {
+impl RootfsProcess {
     /// Spawn a command in the chroot.
     ///
     /// Wraps the command with a pidfile helper that writes the process PID
@@ -68,7 +68,7 @@ impl ChrootProcess {
             "{} {} {}",
             PIDFILE_HELPER_CHROOT, pidfile_chroot, cmd
         );
-        let child = adb::chroot_spawn(&wrapped)?;
+        let child = adb::rootfs_spawn(&wrapped)?;
 
         Ok(Self {
             child,
@@ -86,7 +86,7 @@ impl ChrootProcess {
         while Instant::now() < deadline {
             if let Some((pid, pgid)) = self.read_pid_and_pgid() {
                 // Invariant: each chroot spawn must run in its own session
-                // (see notes/chroot-sessions.md). If the discovered PGID is
+                // (see notes/rootfs-sessions.md). If the discovered PGID is
                 // the broker's, no setsid happened on the way in — and the
                 // PGID-based kill in `stop()` would target every Android
                 // app instead of just this test's children.
@@ -96,7 +96,7 @@ impl ChrootProcess {
                         "spawned child inherited the app's PGID ({}) — \
                          no new session was created. Check that \
                          InstallationMethod.startInside includes setsid \
-                         (see notes/chroot-sessions.md).",
+                         (see notes/rootfs-sessions.md).",
                         broker
                     );
                 }
@@ -162,7 +162,7 @@ impl ChrootProcess {
     fn read_pid_and_pgid(&self) -> Option<(u32, u32)> {
         // Pidfile lives inside the chroot rootfs (under app data) — read
         // via the broker (runs as the app uid).
-        let output = adb::chroot_host_exec(&[
+        let output = adb::rootfs_host_exec(&[
             "/system/bin/cat", &self.pidfile_device,
         ]).ok()?;
         let pid: u32 = String::from_utf8_lossy(&output.stdout)
@@ -187,19 +187,19 @@ impl ChrootProcess {
 
     /// Remove the pidfile from the device.
     fn cleanup_pidfile(&self) {
-        let _ = adb::chroot_host_exec(&[
+        let _ = adb::rootfs_host_exec(&[
             "/system/bin/rm", "-f", &self.pidfile_device,
         ]);
     }
 }
 
-impl Drop for ChrootProcess {
+impl Drop for RootfsProcess {
     fn drop(&mut self) {
         if !self.stopped {
             // Fallback cleanup if stop() wasn't called (e.g. test panicked).
             if let Some(pid) = self.pid {
                 for pgid in collect_descendant_pgids(pid) {
-                    let _ = adb::chroot_run(&format!(
+                    let _ = adb::rootfs_run(&format!(
                         "kill -KILL -- -{} 2>/dev/null; true",
                         pgid
                     ));
@@ -234,7 +234,7 @@ fn ensure_pidfile_helper() -> io::Result<()> {
     let helper_dev = pidfile_helper_device();
     // Copy into the rootfs via the broker — runs as the app uid which
     // owns the rootfs tree.
-    adb::chroot_host_exec(&[
+    adb::rootfs_host_exec(&[
         "/system/bin/sh", "-c",
         &format!("cp {} {} && chmod +x {}", staging, helper_dev, helper_dev),
     ])?;
@@ -254,20 +254,20 @@ fn kill_process_tree(pid: u32, timeout: Duration) -> Result<(), String> {
 
     // SIGTERM all process groups
     for &pgid in &pgids {
-        let _ = adb::chroot_run(&format!("kill -TERM -- -{} 2>/dev/null; true", pgid));
+        let _ = adb::rootfs_run(&format!("kill -TERM -- -{} 2>/dev/null; true", pgid));
     }
     thread::sleep(Duration::from_millis(500));
 
     // SIGKILL stragglers
     for &pgid in &pgids {
-        let _ = adb::chroot_run(&format!("kill -KILL -- -{} 2>/dev/null; true", pgid));
+        let _ = adb::rootfs_run(&format!("kill -KILL -- -{} 2>/dev/null; true", pgid));
     }
 
     // Wait until all process groups are dead
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         let all_gone = pgids.iter().all(|&pgid| {
-            let output = adb::chroot_run(&format!(
+            let output = adb::rootfs_run(&format!(
                 "kill -0 -- -{} 2>/dev/null && echo RUNNING || echo GONE",
                 pgid
             ));

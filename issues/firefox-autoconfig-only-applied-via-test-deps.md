@@ -39,7 +39,7 @@ Three places make sense:
    things into the rootfs at install time. Requires the prefs to be
    carried alongside the APK (~1 KB).
 2. **Lazily, the first time Firefox is launched.** Hook the
-   `tawc-chroot-run` path or a future per-app launcher so Firefox-
+   `tawc-rootfs-run` path or a future per-app launcher so Firefox-
    targeted invocations idempotently materialise the autoconfig
    files before exec'ing. Avoids paying disk for users who never
    install Firefox.

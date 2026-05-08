@@ -26,7 +26,7 @@ import java.io.IOException
  *   3. **`find -xdev -depth -delete`** — never `rm -rf`, since toybox
  *      `rm` has no `--one-file-system`. `-xdev` is belt-and-braces
  *      against any mount [ChrootMounter.unmount] missed (e.g. a leak
- *      via `scripts/tawc-chroot-run.sh` that bound `/dev` at runtime).
+ *      via `scripts/tawc-rootfs-run.sh` that bound `/dev` at runtime).
  *      The delete is split into **two passes** so a cancel mid-wipe
  *      can never strand the slot without `metadata.json`: pass 1
  *      walks the rootfs subtree only, pass 2 tears down `metadata.json`

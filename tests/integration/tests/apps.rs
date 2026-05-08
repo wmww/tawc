@@ -11,14 +11,14 @@
 
 use std::time::Duration;
 
-use tawc_integration::chroot_process::ChrootProcess;
+use tawc_integration::rootfs_process::RootfsProcess;
 use tawc_integration::helpers::{
     assert_compositor_clean, launch_and_wait_for_ahb, require_compositor, saw_ahb_import,
     saw_shm_import, TIMEOUT,
 };
-use tawc_integration::{adb, chroot, compositor};
+use tawc_integration::{adb, rootfs, compositor};
 
-const FIREFOX_CMD: &str = "GDK_GL=gles:always firefox --no-remote";
+const FIREFOX_CMD: &str = "firefox --no-remote";
 
 const FIREFOX_LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 const STK_LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -29,7 +29,7 @@ const XWAYLAND_LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 fn test_firefox_launches_with_hardware_buffers() {
     // Remove lock/crash files so Firefox doesn't show the troubleshoot-mode dialog
     // (killall doesn't give Firefox a clean shutdown, leaving these behind)
-    let _ = adb::chroot_run(
+    let _ = adb::rootfs_run(
         "rm -f ~/.config/mozilla/firefox/*/.parentlock \
               ~/.config/mozilla/firefox/*/lock \
               ~/.config/mozilla/firefox/*/sessionstore.jsonlz4 \
@@ -144,7 +144,7 @@ fn test_gtk3_app_uses_shm_buffers() {
     require_compositor();
     adb::logcat_clear().expect("Failed to clear logcat");
 
-    let mut app = ChrootProcess::spawn("GDK_GL=disabled gtk3-demo-application")
+    let mut app = RootfsProcess::spawn("GDK_GL=disabled gtk3-demo-application")
         .expect("spawn gtk3-demo-application");
     app.ensure_pgid();
 
@@ -189,12 +189,13 @@ fn test_gtk3_app_uses_shm_buffers() {
     assert_compositor_clean();
 }
 
-/// GTK3 with `GDK_GL=gles:always` renders through android_wlegl and presents
-/// via AHB hardware buffers.
+/// GTK3 with the chroot's default `GDK_GL=gles:always` (set by the
+/// shared profile.d snippet — see `RootfsProfile.kt`) renders through
+/// android_wlegl and presents via AHB hardware buffers.
 #[test]
 fn test_gtk3_app_uses_hardware_buffers() {
     let mut app = launch_and_wait_for_ahb(
-        "GDK_GL=gles:always gtk3-demo-application",
+        "gtk3-demo-application",
         "gtk3-demo-application",
         GTK_LAUNCH_TIMEOUT,
     );
@@ -248,7 +249,7 @@ fn test_gtk4_app_uses_shm_buffers() {
     require_compositor();
     adb::logcat_clear().expect("Failed to clear logcat");
 
-    let mut app = ChrootProcess::spawn("GSK_RENDERER=cairo gtk4-widget-factory")
+    let mut app = RootfsProcess::spawn("GSK_RENDERER=cairo gtk4-widget-factory")
         .expect("spawn gtk4-widget-factory");
     app.ensure_pgid();
 
@@ -320,7 +321,7 @@ fn test_xwayland_xclock_renders_via_shm() {
     // already exported by 01-tawc.sh on chroot entry, but be explicit
     // so the test doesn't depend on env order.
     let mut app =
-        ChrootProcess::spawn("DISPLAY=:0 xclock -update 1").expect("spawn xclock");
+        RootfsProcess::spawn("DISPLAY=:0 xclock -update 1").expect("spawn xclock");
     app.ensure_pgid();
 
     let deadline = std::time::Instant::now() + XWAYLAND_LAUNCH_TIMEOUT;
@@ -486,14 +487,14 @@ fn test_tawc_dri_ahb_present_round_trip() {
     require_compositor();
     adb::logcat_clear().expect("logcat clear");
 
-    let bin = chroot::ensure_tawc_dri_test().expect("build tawc-dri-test");
+    let bin = rootfs::ensure_tawc_dri_test().expect("build tawc-dri-test");
     // HOLD_SECS=1 is enough — the test client commits the AHB once, the
     // X server attaches it to the wl_surface, and the compositor logs
     // the wlegl create_buffer / texture import. We don't need to keep
     // the window mapped for screencap inspection in an integration test
     // that only verifies the compositor logs.
     let cmd = format!("DISPLAY=:0 TAWC_DRI_HOLD_SECS=1 {}", bin);
-    let output = adb::chroot_run(&cmd).expect("run tawc-dri-test");
+    let output = adb::rootfs_run(&cmd).expect("run tawc-dri-test");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -557,7 +558,7 @@ fn test_tawc_dri_ahb_present_animated_loop() {
     require_compositor();
     adb::logcat_clear().expect("logcat clear");
 
-    let bin = chroot::ensure_tawc_dri_test().expect("build tawc-dri-test");
+    let bin = rootfs::ensure_tawc_dri_test().expect("build tawc-dri-test");
     // 120 frames at 60fps = 2 seconds. Long enough to surface a leak
     // (~120 per-frame AHB+wl_buffer pairs accumulated server-side)
     // without bloating the test runtime.
@@ -566,7 +567,7 @@ fn test_tawc_dri_ahb_present_animated_loop() {
         "DISPLAY=:0 TAWC_DRI_LOOP_FRAMES={} {}",
         FRAMES, bin
     );
-    let output = adb::chroot_run(&cmd).expect("run tawc-dri-test loop");
+    let output = adb::rootfs_run(&cmd).expect("run tawc-dri-test loop");
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -651,7 +652,7 @@ fn test_eglx11_renders_via_ahb() {
     require_compositor();
     adb::logcat_clear().expect("logcat clear");
 
-    let bin = chroot::ensure_eglx11_test().expect("build eglx11-test");
+    let bin = rootfs::ensure_eglx11_test().expect("build eglx11-test");
     // 30 frames is plenty to surface init failures and to give the
     // compositor's per-X11 SurfaceView time to attach (same race the
     // `tawc-dri-test` HOLD_SECS dance handles).
@@ -659,7 +660,7 @@ fn test_eglx11_renders_via_ahb() {
         "DISPLAY=:0 HYBRIS_EGLPLATFORM=x11 TAWC_EGLX11_FRAMES=30 {}",
         bin
     );
-    let output = adb::chroot_run(&cmd).expect("run eglx11-test");
+    let output = adb::rootfs_run(&cmd).expect("run eglx11-test");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -725,7 +726,7 @@ fn test_es2gears_x11_renders_via_ahb() {
     // total frame count, so longer runs would only dilute signal.
     let cmd = "DISPLAY=:0 HYBRIS_EGLPLATFORM=x11 timeout 4 es2gears_x11 \
                > /dev/null 2>&1; true";
-    let output = adb::chroot_run(cmd).expect("run es2gears_x11");
+    let output = adb::rootfs_run(cmd).expect("run es2gears_x11");
     assert!(
         output.status.success(),
         "es2gears_x11 wrapper exited non-zero ({:?}). The wrapper ends \

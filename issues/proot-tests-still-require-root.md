@@ -1,6 +1,6 @@
 # Integration test harness requires root even against a proot install
 
-The proot install + runtime path is genuinely rootless — `adb.rs:90` dispatches `run-as $PKG` for proot installs, and `scripts/tawc-chroot-run.sh` does the same. But the integration test scaffolding ignores the install method and goes straight through `su -c` for any operation that doesn't enter the chroot via `enter.sh`. Result: running `scripts/run-integration-tests.sh` against a proot install still triggers a superuser-permission popup (observed in practice) and silently requires the device to be rooted.
+The proot install + runtime path is genuinely rootless — `adb.rs:90` dispatches `run-as $PKG` for proot installs, and `scripts/tawc-rootfs-run.sh` does the same. But the integration test scaffolding ignores the install method and goes straight through `su -c` for any operation that doesn't enter the chroot via `enter.sh`. Result: running `scripts/run-integration-tests.sh` against a proot install still triggers a superuser-permission popup (observed in practice) and silently requires the device to be rooted.
 
 This is a real gap. One of the headline reasons to ship proot at all is to support unrooted devices, and the test suite is what we'd point a contributor at to verify that path actually works.
 

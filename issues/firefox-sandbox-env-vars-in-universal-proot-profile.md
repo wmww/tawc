@@ -1,6 +1,6 @@
 # Firefox-specific `MOZ_DISABLE_*_SANDBOX` env vars baked into the universal proot profile
 
-`ProotMethod.renderEnterScript` writes seven Firefox-specific env vars
+`RootfsProfile.build(PROOT)` writes seven Firefox-specific env vars
 into `/etc/profile.d/01-tawc.sh` for every proot install:
 
 ```
@@ -60,7 +60,7 @@ seccomp on tracees that ask to install their own filter." Concretely:
 - **Option C: detect Firefox at runtime and inject env in our
   process spawner.** When the in-app launcher (future
   per-app spawner) detects an executable named `firefox`, set the
-  env vars there. Doesn't help command-line `tawc-chroot-run firefox`
+  env vars there. Doesn't help command-line `tawc-rootfs-run firefox`
   though.
 
 ## Why we didn't fix it inline
@@ -79,7 +79,6 @@ needs proot fork changes.
 
 ## References
 
-- `app/src/main/java/me/phie/tawc/install/ProotMethod.kt`
-  (`renderEnterScript` body, the `MOZ_DISABLE_*` exports inside
-  `/etc/profile.d/01-tawc.sh`)
+- `app/src/main/java/me/phie/tawc/install/RootfsProfile.kt`
+  (the `MOZ_DISABLE_*` exports gated on `Method.PROOT`)
 - `notes/proot.md` "Firefox under proot" — documents the why.

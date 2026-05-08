@@ -21,7 +21,7 @@ import kotlin.concurrent.thread
  *    Play Store auto-update), the path stamped at install time
  *    points at the *previous* APK's lib dir, which the OS deletes
  *    when the new APK is in place. Re-rendering on every cold start
- *    keeps host-side `scripts/tawc-chroot-run.sh` working.
+ *    keeps host-side `scripts/tawc-rootfs-run.sh` working.
  */
 class TawcApplication : Application() {
     override fun onCreate() {

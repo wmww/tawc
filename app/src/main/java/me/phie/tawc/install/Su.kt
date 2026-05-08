@@ -73,7 +73,7 @@ object Su {
      * mode) — joins the global (init) mount namespace, so `mount` /
      * `umount` calls affect every other process on the device. Used by
      * [ChrootMounter.unmount] to clean up bind mounts leaked into the
-     * global namespace by host-side `tawc-chroot-run` invocations
+     * global namespace by host-side `tawc-rootfs-run` invocations
      * (which inherit the adb shell's mount-master `su`). We deliberately
      * do *not* unshare the `-mm` path: the global namespace is the whole
      * point of `-mm`.

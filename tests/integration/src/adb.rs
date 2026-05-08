@@ -34,7 +34,7 @@ pub fn shell(cmd: &str) -> io::Result<Output> {
 /// (empty-by-default) child PATH; pass `--cwd` / `--env` separately
 /// if needed by using the broker directly. For these tests the helper
 /// is mainly used to copy files into the rootfs.
-pub fn chroot_host_exec(argv: &[&str]) -> io::Result<Output> {
+pub fn rootfs_host_exec(argv: &[&str]) -> io::Result<Output> {
     Command::new(tawc_exec_bin()).args(argv).output()
 }
 
@@ -42,23 +42,23 @@ pub fn chroot_host_exec(argv: &[&str]) -> io::Result<Output> {
 ///
 /// Routed through the broker's RUNINSIDE handler, which dispatches
 /// to the install's [InstallationMethod.startInside] (see
-/// notes/exec-broker.md, notes/chroot-sessions.md). Single entry point
+/// notes/exec-broker.md, notes/rootfs-sessions.md). Single entry point
 /// for every install method — chroot handles its own `su` internally.
-pub fn chroot_run(cmd: &str) -> io::Result<Output> {
+pub fn rootfs_run(cmd: &str) -> io::Result<Output> {
     Command::new(tawc_exec_bin())
-        .args(["--in-chroot", &crate::install_id(), "--", cmd])
+        .args(["--in-rootfs", &crate::install_id(), "--", cmd])
         .output()
 }
 
 /// Spawn a command in the chroot with piped stdout/stderr (non-blocking).
 /// Returns the Child process. Caller is responsible for reading output.
 ///
-/// Same broker dispatch as [chroot_run]. The chroot-session invariant
-/// (notes/chroot-sessions.md) is enforced inside
+/// Same broker dispatch as [rootfs_run]. The rootfs-session invariant
+/// (notes/rootfs-sessions.md) is enforced inside
 /// [InstallationMethod.startInside] — no caller-side `setsid` needed.
-pub fn chroot_spawn(cmd: &str) -> io::Result<std::process::Child> {
+pub fn rootfs_spawn(cmd: &str) -> io::Result<std::process::Child> {
     Command::new(tawc_exec_bin())
-        .args(["--in-chroot", &crate::install_id(), "--", cmd])
+        .args(["--in-rootfs", &crate::install_id(), "--", cmd])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

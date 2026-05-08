@@ -65,7 +65,7 @@ manual runs.
 ### Running Manually
 
 ```bash
-bash scripts/tawc-chroot-run.sh '/tmp/gtk4-debug-app/gtk4-debug-app text-input'
+bash scripts/tawc-rootfs-run.sh '/tmp/gtk4-debug-app/gtk4-debug-app text-input'
 ```
 
 ## Integration Tests

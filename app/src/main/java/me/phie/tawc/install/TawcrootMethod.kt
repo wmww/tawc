@@ -78,8 +78,8 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      * (`/dev/shm`, link2symlink, kill-on-exit). Libhybris bind dirs
      * are filtered to existing host paths at class-load.
      *
-     * `setsid` upholds the chroot-session invariant
-     * (notes/chroot-sessions.md): every chroot invocation runs in
+     * `setsid` upholds the rootfs-session invariant
+     * (notes/rootfs-sessions.md): every chroot invocation runs in
      * its own session. The visible symptoms are gpg-agent's main
      * loop spinning at 100% CPU under pacman-key (inherited pgrp +
      * signal mask) and the integration test framework's PGID-based
@@ -100,11 +100,10 @@ class TawcrootMethod(context: Context) : InstallationMethod {
             File(rootfs, dir.removePrefix("/")).mkdirs()
         }
         // Refresh /etc/profile.d/01-tawc.sh so changes to the Wayland
-        // env take effect without reinstalling. tawcroot does NOT need
-        // the MOZ_DISABLE_*_SANDBOX vars proot does — there's no
-        // ptrace-vs-Firefox-sandbox conflict here.
+        // env take effect without reinstalling.
         File(rootfs, "etc/profile.d").mkdirs()
-        File(rootfs, "etc/profile.d/01-tawc.sh").writeText(TAWCROOT_PROFILE_D_TAWC)
+        File(rootfs, "etc/profile.d/01-tawc.sh")
+            .writeText(RootfsProfile.build(RootfsProfile.Method.TAWCROOT))
 
         val argv = buildList {
             add("/system/bin/setsid")
@@ -251,31 +250,6 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         const val KEY = "tawcroot"
         private const val TAG = "tawc-install"
         private const val TAWC_DATA = "/data/data/me.phie.tawc"
-
-        /** Contents of `/etc/profile.d/01-tawc.sh` for tawcroot mode.
-         * Sourced by login bash inside the rootfs to set Wayland env
-         * and surface X11 sockets at canonical paths. Refreshed by
-         * [startInside] on every entry so changes here pick up
-         * without reinstalling. */
-        private val TAWCROOT_PROFILE_D_TAWC = """
-            export WAYLAND_DISPLAY=/data/data/me.phie.tawc/wayland-0
-            export XDG_RUNTIME_DIR=/tmp
-            export LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
-            export HYBRIS_EGLPLATFORM=wayland
-            export DISPLAY=:0
-            # SDL2 prefers X11 when DISPLAY is set, but our Xwayland is
-            # GLAMOR-disabled — SDL apps that probe X11 die on
-            # createWindow. Force Wayland-first.
-            export SDL_VIDEODRIVER=wayland,x11
-            ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
-            # X11 sockets land in /data/data/me.phie.tawc/xtmp/ on the
-            # host (Android has no /tmp); surface them at /tmp/.X11-unix.
-            ln -sfn /data/data/me.phie.tawc/xtmp/.X11-unix /tmp/.X11-unix 2>/dev/null
-            for lock in /data/data/me.phie.tawc/xtmp/.X*-lock; do
-                [ -f "${'$'}lock" ] || continue
-                ln -sf "${'$'}lock" "/tmp/${'$'}{lock##*/}" 2>/dev/null
-            done
-        """.trimIndent() + "\n"
 
         /** Same set as ProotMethod (kept in sync deliberately —
          * libhybris dlopen targets bionic GPU libraries via these). */

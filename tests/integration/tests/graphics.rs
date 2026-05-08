@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use tawc_integration::chroot_process::ChrootProcess;
+use tawc_integration::rootfs_process::RootfsProcess;
 use tawc_integration::helpers::{
     assert_client_animating, assert_compositor_clean, launch_and_wait_for_ahb, require_compositor,
     saw_ahb_import, saw_shm_import, TIMEOUT,
@@ -37,7 +37,7 @@ const VKCUBE_LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 fn test_vulkaninfo_loads_android_driver() {
     require_compositor();
 
-    let out = adb::chroot_run("vulkaninfo --summary").expect("failed to run vulkaninfo in chroot");
+    let out = adb::rootfs_run("vulkaninfo --summary").expect("failed to run vulkaninfo in chroot");
     assert!(
         out.status.success(),
         "vulkaninfo exited non-zero: status={:?}\nstdout:\n{}\nstderr:\n{}",
@@ -79,7 +79,7 @@ fn test_vulkaninfo_loads_android_driver() {
 fn test_eglinfo_loads_android_driver() {
     require_compositor();
 
-    let out = adb::chroot_run("eglinfo -B").expect("failed to run eglinfo in chroot");
+    let out = adb::rootfs_run("eglinfo -B").expect("failed to run eglinfo in chroot");
     assert!(
         out.status.success(),
         "eglinfo exited non-zero: status={:?}\nstdout:\n{}\nstderr:\n{}",
@@ -116,7 +116,7 @@ fn test_weston_simple_shm_uses_shm_buffers() {
     require_compositor();
     adb::logcat_clear().expect("Failed to clear logcat");
 
-    let mut app = ChrootProcess::spawn("weston-simple-shm").expect("spawn weston-simple-shm");
+    let mut app = RootfsProcess::spawn("weston-simple-shm").expect("spawn weston-simple-shm");
     app.ensure_pgid();
 
     let deadline = std::time::Instant::now() + WESTON_LAUNCH_TIMEOUT;

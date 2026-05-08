@@ -1,9 +1,9 @@
 pub mod adb;
-pub mod chroot;
-pub mod chroot_process;
 pub mod compositor;
 pub mod debug_app;
 pub mod helpers;
+pub mod rootfs;
+pub mod rootfs_process;
 
 use std::sync::OnceLock;
 
@@ -42,7 +42,7 @@ fn resolve_install_id() -> String {
     // Run via the dev exec broker (runs as the app uid). No root, no
     // run-as. Same code path the host scripts use; see
     // `notes/exec-broker.md`.
-    let output = crate::adb::chroot_host_exec(&["/system/bin/sh", "-c", &probe])
+    let output = crate::adb::rootfs_host_exec(&["/system/bin/sh", "-c", &probe])
         .expect("failed to invoke broker to resolve TAWC_INSTALL_ID");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut ids: Vec<&str> = stdout

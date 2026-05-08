@@ -35,7 +35,7 @@ adb push "$src_dir/build.sh" "$TAWC_SCRATCH/$app_name-build.sh" >/dev/null
                              cp $TAWC_SCRATCH/$app_name-build.sh $build_dir/build.sh"
 
 echo "=== $app_name: building ==="
-"$ROOT_DIR/scripts/tawc-chroot-run.sh" "/bin/bash /tmp/$app_name/build.sh"
+"$ROOT_DIR/scripts/tawc-rootfs-run.sh" "/bin/bash /tmp/$app_name/build.sh"
 
 echo "=== $app_name: done ==="
 echo "Binary (inside chroot): /tmp/$app_name/$app_name"

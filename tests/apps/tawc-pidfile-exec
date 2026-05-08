@@ -1,10 +1,10 @@
 #!/bin/bash
-# Helper for ChrootProcess: writes PID to a file then exec's the command.
+# Helper for RootfsProcess: writes PID to a file then exec's the command.
 # Usage: tawc-pidfile-exec PIDFILE COMMAND...
 # The PID written is this script's bash interpreter PID. exec bash -c
 # replaces this process (bash optimizes single-command bash -c into exec),
 # so the PID stays the same. The PGID (readable from /proc/PID/stat) is
-# what ChrootProcess uses for cleanup.
+# what RootfsProcess uses for cleanup.
 PIDFILE="$1"
 shift
 echo $$ > "$PIDFILE"

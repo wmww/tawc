@@ -40,12 +40,12 @@ adb shell su -c 'rm -f /data/data/me.phie.tawc/distros/void/rootfs/tmp/.X11-unix
 
 Workaround for now: never invoke `enter.sh` directly via `su -c`
 against a tawcroot install — always go through
-`scripts/tawc-chroot-run.sh`, which dispatches by method and uses
+`scripts/tawc-rootfs-run.sh`, which dispatches by method and uses
 `run-as` for tawcroot.
 
 ## Fix directions
 
-- **`TawcrootMethod.kt` profile script**: detect a root-owned `/tmp/.X11-unix`
+- **`RootfsProfile.kt` profile body**: detect a root-owned `/tmp/.X11-unix`
   and decline to create the symlink (or fail loud) rather than silently
   inheriting the bad state. Probably wants `[ "$(stat -c %u /tmp/.X11-unix)" = "$(id -u)" ] || rm -f /tmp/.X11-unix` before the `ln -sfn`.
 - **Or** change the symlink target site from `/tmp/.X11-unix` to a

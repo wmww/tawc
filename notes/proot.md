@@ -175,7 +175,7 @@ The full list of things Android does differently that we paper over:
    own `cacheDir` before invoking proot.
 
 3. **mksh's here-doc temp files** — when the host launcher
-   (`scripts/tawc-chroot-run.sh`) shells into `enter.sh` via `run-as
+   (`scripts/tawc-rootfs-run.sh`) shells into `enter.sh` via `run-as
    me.phie.tawc`, the shell's default cwd is `/data/local` (uid
    `shell`'s default), where app uid has no write access. mksh's
    here-doc machinery falls over trying to create a temp file there.

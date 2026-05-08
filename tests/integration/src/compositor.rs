@@ -161,7 +161,7 @@ pub fn is_running() -> io::Result<bool> {
     if pid_output.stdout.iter().filter(|b| b.is_ascii_digit()).count() == 0 {
         return Ok(false);
     }
-    let exists = adb::chroot_host_exec(&[
+    let exists = adb::rootfs_host_exec(&[
         "/system/bin/sh", "-c",
         "test -e /data/data/me.phie.tawc/wayland-0",
     ])?;

@@ -1791,7 +1791,7 @@ The Kotlin `InstallationMethod` enum already has an `extra` slot
 `InstallActivity` defaults to it on rootless devices once we're
 confident.
 
-`scripts/tawc-chroot-run.sh` reads `metadata.json` to decide between
+`scripts/tawc-rootfs-run.sh` reads `metadata.json` to decide between
 chroot/proot/tawcroot (today it's just chroot/proot). One more
 case in the `case method` switch.
 
@@ -2010,7 +2010,7 @@ Not part of the standing test loop — these run by hand once when
 wiring things up, plus periodically as smoke:
 
 1. APK plumbing (`TawcrootMethod`, jniLib packaging, wrapper
-   script generation, dispatch in `tawc-chroot-run`).
+   script generation, dispatch in `tawc-rootfs-run`).
 2. SELinux execve-from-`nativeLibraryDir` smoke.
 3. Final perf comparison vs proot in the real deployment.
 4. libhybris/AHB syscall coverage check on a real device.
@@ -2267,7 +2267,7 @@ coverage.
 
 - **PHASE 5 COMPLETE on x86_64 emulator.** A full `tawcroot`-method
    Arch install via the in-app `InstallActivity` reaches `state: READY`,
-   and `bash scripts/tawc-chroot-run.sh "uname -a; id; pacman --version"`
+   and `bash scripts/tawc-rootfs-run.sh "uname -a; id; pacman --version"`
    produces clean Arch output (`Linux localhost ...`, `uid=0(root)`,
    `Pacman v7.1.0`) on the host shell. End-to-end app launch through
    the APK + run-as + tawcroot chain works.
@@ -2558,11 +2558,11 @@ coverage.
    in-handler), no `--link2symlink` (built into the linkat handler), no
    `MOZ_DISABLE_*_SANDBOX` envs (no ptrace tracer for Firefox's
    sandbox to fight). The install activity has a third radio button;
-   `scripts/tawc-chroot-run.sh` dispatches `tawcroot` alongside chroot/proot.
+   `scripts/tawc-rootfs-run.sh` dispatches `tawcroot` alongside chroot/proot.
    Outstanding: real-device run (phase 5), `pacman -Syu` to completion
    (phase 6).
 - **Phase 5 — emulator end-to-end**: ✓ DONE on x86_64. Install via APK
-   succeeds (`state: READY`, `method: tawcroot`). `tawc-chroot-run`
+   succeeds (`state: READY`, `method: tawcroot`). `tawc-rootfs-run`
    from the host shell runs `uname -a`, `id`, `pacman --version`,
    bash pipelines (`ls /etc | head`), bash fork+exec, manual-load of
    real Arch glibc binaries — all working.
@@ -2570,7 +2570,7 @@ coverage.
 - **Phase 5b — aarch64 port**: ✓ DONE on OnePlus 9 (Android 14, kernel
    5.4.284) for the smoke-command criterion. Install via APK reaches
    `state: READY` (`--es method tawcroot --es id arch-tawcroot`),
-   and `tawc-chroot-run "uname -a; id; pacman --version | head -1;
+   and `tawc-rootfs-run "uname -a; id; pacman --version | head -1;
    ls /etc | head"` produces clean Arch glibc output through the bash
    → fork → execve → handler → exec_handler_perform → execveat self
    → --exec-child → loader chain. `pacman-key --init` and

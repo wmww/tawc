@@ -31,7 +31,7 @@ fn main() -> ExitCode {
             eprintln!("tawc-exec: {e}");
             eprintln!("usage: tawc-exec [--cwd DIR] [--env K=V ...] -- ARGV0 [ARG ...]");
             eprintln!("       tawc-exec --action NAME [--arg K=V ...]");
-            eprintln!("       tawc-exec --in-chroot ID [-- CMD ...]");
+            eprintln!("       tawc-exec --in-rootfs ID [-- CMD ...]");
             return ExitCode::from(2);
         }
     };
@@ -105,10 +105,10 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 action_args.push((v[..eq].to_string(), v[eq+1..].to_string()));
                 i += 1;
             }
-            "--in-chroot" => {
+            "--in-rootfs" => {
                 i += 1;
-                let v = args.get(i).ok_or("--in-chroot needs install id")?.clone();
-                if v.is_empty() { return Err("--in-chroot id must not be empty".into()); }
+                let v = args.get(i).ok_or("--in-rootfs needs install id")?.clone();
+                if v.is_empty() { return Err("--in-rootfs id must not be empty".into()); }
                 run_inside_id = Some(v);
                 i += 1;
             }
@@ -127,10 +127,10 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         // joined with spaces and become the bash -lc command. Empty
         // (no positional args) means interactive `bash -l`.
         if action_name.is_some() || !action_args.is_empty() {
-            return Err("--action / --arg can't be combined with --in-chroot".into());
+            return Err("--action / --arg can't be combined with --in-rootfs".into());
         }
         if !env.is_empty() || cwd.is_some() {
-            return Err("--env / --cwd are ARGV-form only; not allowed with --in-chroot".into());
+            return Err("--env / --cwd are ARGV-form only; not allowed with --in-rootfs".into());
         }
         let cmd = if i < args.len() {
             args[i..].join(" ")
@@ -166,7 +166,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     }
     let argv: Vec<String> = args[i..].to_vec();
     if argv.is_empty() {
-        return Err("no command (use `-- ARGV0 ...`, `--action NAME`, or `--in-chroot ID -- CMD`)".to_string());
+        return Err("no command (use `-- ARGV0 ...`, `--action NAME`, or `--in-rootfs ID -- CMD`)".to_string());
     }
     if argv.iter().any(|a| a.contains('\n')) {
         return Err("argv may not contain LF".to_string());

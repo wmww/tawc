@@ -4,7 +4,7 @@ The chroot install method's `enter.sh` does `chroot $ROOTFS /bin/bash
 -l` after `su` and bind mounts. The chroot syscall itself needs root,
 which is fine — but we never drop privileges before exec'ing bash, so
 **every process running inside the chroot has uid 0**. Bash, weston,
-Firefox, GTK demos, anything launched via `tawc-chroot-run` or any
+Firefox, GTK demos, anything launched via `tawc-rootfs-run` or any
 future in-app Wayland client launcher.
 
 This is just inertia, not a kernel requirement. The standard Unix
@@ -19,7 +19,7 @@ workload."
   reacts oddly, Electron apps don't always work.
 - Files created in `/home/...` (Firefox profile, dotfiles, the user's
   cache) end up root-owned. When the user inspects via host
-  `tawc-chroot-run` or wires up file sharing in future, the
+  `tawc-rootfs-run` or wires up file sharing in future, the
   ownership is wrong.
 - Less robust against bugs/crashes in Wayland clients trashing
   arbitrary `/etc` / `/usr` files. Today they have full uid-0 powers.
@@ -36,7 +36,7 @@ Two execution modes inside the chroot, picked by the caller:
   flow's `pacman-key`, `pacman -Syu`, `pacman -S <pkg>`. pacman
   explicitly refuses to run as non-root anyway.
 - **as-user** for user-launched apps: weston, Firefox, GTK clients,
-  the interactive `tawc-chroot-run` shell when the user types it.
+  the interactive `tawc-rootfs-run` shell when the user types it.
 
 A single regular user inside the rootfs (`useradd -m user`, uid
 1000) is enough. The wayland socket is mode 0777 so any uid can
@@ -58,7 +58,7 @@ A single regular user inside the rootfs (`useradd -m user`, uid
 - Wayland client launch path (whoever ends up calling `runInside`
   to spawn user clients): pass `asUser=true`.
 - `ArchPacmanCommon.installBasePackages` etc.: keep `asUser=false`.
-- `scripts/tawc-chroot-run.sh`: maybe a `--root` flag for the rare
+- `scripts/tawc-rootfs-run.sh`: maybe a `--root` flag for the rare
   user case who needs the privileged shell, default to as-user.
 
 Existing rootfs ownership stays root-owned for system files. Only

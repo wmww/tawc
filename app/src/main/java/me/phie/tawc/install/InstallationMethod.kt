@@ -89,10 +89,10 @@ interface InstallationMethod {
      * This is the single entry point for "enter the chroot" — the
      * broker's RUNINSIDE handler and the in-app [runInside] helper
      * both route here. Chroot-session invariant
-     * (notes/chroot-sessions.md) is upheld in here, in one place.
+     * (notes/rootfs-sessions.md) is upheld in here, in one place.
      *
      * `command == null` means interactive `bash -l` — drops into a
-     * login shell with no command. Useful for `tawc-chroot-run.sh`
+     * login shell with no command. Useful for `tawc-rootfs-run.sh`
      * with no args.
      *
      * Method-specific notes:

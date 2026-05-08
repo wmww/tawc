@@ -150,7 +150,7 @@ echo "=== Installing chroot test deps: ${PKGS[*]} ==="
 # the other order (a) fails when /usr/lib/firefox doesn't exist yet,
 # and (b) would have the package install clobber the fake-bwrap we
 # just dropped.
-"$ROOT_DIR/scripts/tawc-chroot-run.sh" "$INSTALL_CMD"
+"$ROOT_DIR/scripts/tawc-rootfs-run.sh" "$INSTALL_CMD"
 
 # Drop in `tests/apps/fake-bwrap` over the chroot's `/usr/bin/bwrap`. The
 # stock kernel on the test devices ships without `CONFIG_USER_NS`, so

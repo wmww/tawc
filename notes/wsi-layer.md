@@ -11,14 +11,17 @@ distro libraries to prevent incompatible code paths:
 
 ## Chroot environment
 
-Set by `ChrootMounter` (rewritten on every chroot entry) via
-`/etc/profile.d/01-tawc.sh`:
+Built by `RootfsProfile.kt` and rewritten on every chroot entry by
+each install method into `/etc/profile.d/01-tawc.sh`:
 
 ```
-WAYLAND_DISPLAY=wayland-0
+WAYLAND_DISPLAY=/data/data/me.phie.tawc/wayland-0
 XDG_RUNTIME_DIR=/tmp
 LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
 HYBRIS_EGLPLATFORM=wayland
+DISPLAY=:0
+SDL_VIDEODRIVER=wayland,x11
+GDK_GL=gles:always
 ```
 
 `/usr/local/lib/gl-shims` holds the GL shim libraries — populated by

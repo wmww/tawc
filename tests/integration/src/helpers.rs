@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::chroot_process::ChrootProcess;
+use crate::rootfs_process::RootfsProcess;
 use crate::debug_app::DebugApp;
-use crate::{adb, chroot, compositor};
+use crate::{adb, rootfs, compositor};
 
 /// Default deadline for short waits (compositor state queries, app startup
 /// after a window is mapped, etc).
@@ -29,7 +29,7 @@ pub fn require_compositor() {
 pub fn ensure_gtk4_debug_app() -> String {
     require_compositor();
     static BIN: OnceLock<String> = OnceLock::new();
-    BIN.get_or_init(|| chroot::ensure_debug_app().expect("gtk4 debug app build"))
+    BIN.get_or_init(|| rootfs::ensure_debug_app().expect("gtk4 debug app build"))
         .clone()
 }
 
@@ -139,18 +139,18 @@ pub fn assert_compositor_clean() {
         .expect("Screen still shows toplevels after cleanup");
 }
 
-/// Spawn a long-running graphical app via ChrootProcess and wait until the
+/// Spawn a long-running graphical app via RootfsProcess and wait until the
 /// compositor sees an AHB buffer import (= the app has rendered its first
 /// hardware-buffered frame). Panics if the app crashes or doesn't render
 /// within `timeout`.
 ///
 /// On return the process is still running; the caller is responsible for
 /// stopping it (typically via `proc.stop()`).
-pub fn launch_and_wait_for_ahb(cmd: &str, name: &str, timeout: Duration) -> ChrootProcess {
+pub fn launch_and_wait_for_ahb(cmd: &str, name: &str, timeout: Duration) -> RootfsProcess {
     require_compositor();
     adb::logcat_clear().expect("Failed to clear logcat");
 
-    let mut proc = ChrootProcess::spawn(cmd).unwrap_or_else(|e| panic!("Failed to spawn {name}: {e}"));
+    let mut proc = RootfsProcess::spawn(cmd).unwrap_or_else(|e| panic!("Failed to spawn {name}: {e}"));
     proc.ensure_pgid();
 
     let deadline = Instant::now() + timeout;

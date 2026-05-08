@@ -123,10 +123,6 @@ object ChrootMounter {
             fi
             """.trimIndent()
         )
-        // Refresh profile.d/01-tawc.sh on every chroot entry so changes to
-        // the Wayland env (LD_LIBRARY_PATH, HYBRIS_EGLPLATFORM, …) take
-        // effect without reinstalling. Cheap (<1ms). 00-path.sh is
-        // install-time-only because it's identical for every install.
         sb.appendLine(
             """
             # XWayland: the bionic-built Xwayland binary on the Android side
@@ -142,29 +138,19 @@ object ChrootMounter {
             fi
             """.trimIndent()
         )
+        // Refresh profile.d/01-tawc.sh on every chroot entry so changes to
+        // the Wayland env (LD_LIBRARY_PATH, HYBRIS_EGLPLATFORM, …) take
+        // effect without reinstalling. Cheap (<1ms). 00-path.sh is
+        // install-time-only because it's identical for every install.
         sb.appendLine(
             """
             mkdir -p "${'$'}ROOTFS/etc/profile.d"
             cat > "${'$'}ROOTFS/etc/profile.d/01-tawc.sh" <<'TAWC_PROF_EOF'
-            # tawc Wayland compositor environment (refreshed each chroot entry)
-            export WAYLAND_DISPLAY=wayland-0
-            export XDG_RUNTIME_DIR=/tmp
-            export LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
-            export HYBRIS_EGLPLATFORM=wayland
-            export DISPLAY=:0
-            # Bias SDL2 toward the Wayland backend. SDL2 normally tries X11
-            # first if `DISPLAY` is set (which it is now, for X-only clients
-            # like xclock/xeyes), but our Xwayland is built without GLAMOR
-            # so any SDL app that needs GL acceleration through X11 dies on
-            # createWindow. Listing wayland first with x11 as fallback gives
-            # SDL apps the libhybris/EGL path while leaving X11 reachable
-            # for clients that genuinely need it.
-            export SDL_VIDEODRIVER=wayland,x11
-            ln -sf /data/data/me.phie.tawc/wayland-0 /tmp/wayland-0 2>/dev/null
-            TAWC_PROF_EOF
-            chmod 644 "${'$'}ROOTFS/etc/profile.d/01-tawc.sh"
             """.trimIndent()
         )
+        sb.append(RootfsProfile.build(RootfsProfile.Method.CHROOT))
+        sb.appendLine("TAWC_PROF_EOF")
+        sb.appendLine("""chmod 644 "${'$'}ROOTFS/etc/profile.d/01-tawc.sh"""")
         return sb.toString()
     }
 

@@ -39,8 +39,8 @@ object ChrootMethod : InstallationMethod {
      * line replaces the shell, leaving any further stdin bytes for
      * bash).
      *
-     * `setsid` upholds the chroot-session invariant
-     * (notes/chroot-sessions.md): every chroot invocation runs in its
+     * `setsid` upholds the rootfs-session invariant
+     * (notes/rootfs-sessions.md): every chroot invocation runs in its
      * own session.
      */
     override fun startInside(rootfs: String, command: String?): Process {

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::chroot_process::ChrootProcess;
+use crate::rootfs_process::RootfsProcess;
 
 const PROTOCOL_PREFIX: &str = "TAWC_DEBUG:";
 
@@ -14,7 +14,7 @@ const MIN_ACTION_DELAY: Duration = Duration::from_millis(50);
 /// A running instance of a debug app (gtk3-debug-app or gtk4-debug-app) with
 /// structured output capture.
 pub struct DebugApp {
-    process: ChrootProcess,
+    process: RootfsProcess,
     /// All received protocol lines (without the TAWC_DEBUG: prefix).
     lines: Arc<Mutex<Vec<String>>>,
     /// Channel for new protocol lines as they arrive.
@@ -25,15 +25,15 @@ impl DebugApp {
     /// Start the debug app with the given subcommand.
     /// `binary_path` is the path inside the chroot (e.g. "/tmp/gtk3-debug-app/gtk3-debug-app").
     /// `env` is a shell-style env prefix prepended to the command, e.g.
-    /// `"GDK_GL=gles:always"` or `"GDK_GL=disabled"` to pick GTK3's buffer
-    /// path. Pass `""` for no extra env.
+    /// `"GDK_GL=disabled"` to override the chroot's default `gles:always`
+    /// and force GTK3's SHM path. Pass `""` for no extra env.
     pub fn start(binary_path: &str, subcommand: &str, env: &str) -> io::Result<Self> {
         let cmd = if env.is_empty() {
             format!("{} {}", binary_path, subcommand)
         } else {
             format!("{} {} {}", env, binary_path, subcommand)
         };
-        let mut proc = ChrootProcess::spawn(&cmd)?;
+        let mut proc = RootfsProcess::spawn(&cmd)?;
 
         let stdout = proc.take_stdout().expect("stdout was piped");
         let lines = Arc::new(Mutex::new(Vec::new()));

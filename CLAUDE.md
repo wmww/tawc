@@ -1,4 +1,4 @@
-Hi Claude! This project is Tess's Android Wayland Compositor (tawc). It's an Android app and set of chroot scripts to run desktop Linux programs on Android.
+Hi Claude! This project is Tess's Android Wayland Compositor (tawc). It's an Android app and set of rootfs-build scripts to run desktop Linux programs on Android.
 
 ## Plan
 [plan.md](plan.md) has the implementation roadmap.
@@ -26,9 +26,9 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [input.md](notes/input.md) -- touch input architecture
 - [text-input.md](notes/text-input.md) -- text input design (Android IME <-> zwp_text_input_v3)
 - [firefox.md](notes/firefox.md) -- Firefox-specific setup and issues
-- [android.md](notes/android.md) -- socket sharing, SELinux, chroot setup
+- [android.md](notes/android.md) -- socket sharing, SELinux, rootfs setup
 - [emulator.md](notes/emulator.md) -- AVD setup, Magisk root, x86_64 chroot, what works/doesn't
-- [installation.md](notes/installation.md) -- in-app Kotlin chroot installer; broker `--action install/uninstall` CLI for adb-driven workflows
+- [installation.md](notes/installation.md) -- in-app Kotlin rootfs installer; broker `--action install/uninstall` CLI for adb-driven workflows
 - [launcher.md](notes/launcher.md) -- per-distro app picker + Rust .desktop scanner with icon resolution
 - [log-screen.md](notes/log-screen.md) -- generic Operation/registry/LogScreen abstraction shared between install, uninstall, and future broker actions
 - [proot.md](notes/proot.md) -- rootless install method: vendored Termux/proot fork, why upstream proot doesn't work on Android, Android quirks worked around
@@ -36,7 +36,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [tawcroot.md](notes/tawcroot.md) -- design + implementation plan for the from-scratch C systrap-based proot replacement (lives in `tawcroot/`)
 - [distro-options.md](notes/distro-options.md) -- survey of viable glibc distros (Debian, Void, Manjaro ARM, …) and why musl/bionic alternatives don't fit
 - [cache-proxy.md](notes/cache-proxy.md) -- dev-time host nginx caching reverse proxy for distro mirrors (adb reverse + URL-passthrough format)
-- [chroot-sessions.md](notes/chroot-sessions.md) -- invariant: every chroot invocation must run in its own session, and where each launch path upholds it
+- [rootfs-sessions.md](notes/rootfs-sessions.md) -- invariant: every entry into a rootfs must run in its own session, and where each launch path upholds it
 
 Keep notes up to date with new choices, discoveries and project state. This is an agent-written project, existing code/notes may be wrong. Stay vigilant, and fix/record problems as you find them (even when working on something else).
 
@@ -58,7 +58,7 @@ The dev-time host nginx caching reverse proxy lives at `build/cache-proxy/` (sta
 ## Workflow
 - Debugging against both a real Android phone via adb or an emulator (x86_64 AVD with Magisk) are supported
 - libhybris/GPU drivers are not supported on thet emulator — see [emulator.md](notes/emulator.md)
-- The standing target is set in `./.tawctarget` (one word: `physical`, `emulator`, or `none`). A missing file or `none` means **no device interaction is permitted** — every host script (`scripts/tawc-chroot-run.sh`, `scripts/run-integration-tests.sh`, `scripts/install-test-deps.sh`, `tawcroot/test --device`, …) sources `scripts/lib/select-device.sh` and will refuse to run. This is the default on a fresh checkout.
+- The standing target is set in `./.tawctarget` (one word: `physical`, `emulator`, or `none`). A missing file or `none` means **no device interaction is permitted** — every host script (`scripts/tawc-rootfs-run.sh`, `scripts/run-integration-tests.sh`, `scripts/install-test-deps.sh`, `tawcroot/test --device`, …) sources `scripts/lib/select-device.sh` and will refuse to run. This is the default on a fresh checkout.
 - **Never edit `.tawctarget` yourself** — it represents the user's standing choice. To use a different target for one command, set `TAWC_TARGET=physical` or `TAWC_TARGET=emulator` (or `ANDROID_SERIAL=<serial>`) on the command line. Don't rewrite the file.
 - Single-target auto-fallback is intentionally absent: with no opt-in, host scripts won't talk to whatever happens to be plugged in. A target mismatch (e.g. `.tawctarget=emulator` but the AVD isn't running) is also a hard error — bring the right target up, or override `TAWC_TARGET` for that command. Never silently substitute the other kind.
 - If the target is `none` and the user asks you to do something that needs a device, ask them which target to use rather than picking one yourself.
@@ -66,7 +66,7 @@ The dev-time host nginx caching reverse proxy lives at `build/cache-proxy/` (sta
 - Work autonomously when possible. If you need human help to set up your dev loop, ask
 - When analyzing screenshots, use a sub-agent so the image doesn't end up in main context
 - If `su` is available on the phone, use it instead of `adb root`
-- Use existing scripts (eg `scripts/tawc-chroot-run.sh`) instead of one-shotting commands
+- Use existing scripts (eg `scripts/tawc-rootfs-run.sh`) instead of one-shotting commands
 - Feel free to edit scripts/files that have problems
 - Only git commit when told to
 - Keep commit messages short — a few lines or at most one paragraph explaining the why. Real documentation (design docs, verification logs, structural commentary, point-by-point breakdowns) belongs in `notes/`, not in the git history
@@ -92,7 +92,7 @@ I'm letting you play with my phone, try not to fuck it up.
 - The emulator is fair game — feel free to reboot, kill qemu, wipe the AVD, etc.
 
 ## Organization
-Avoid junking up devices (delete screenshots when done). On the phone, the chroot lives in the app's private data dir (`/data/data/me.phie.tawc/distros/<id>/rootfs/`).
+Avoid junking up devices (delete screenshots when done). On the phone, the rootfs lives in the app's private data dir (`/data/data/me.phie.tawc/distros/<id>/rootfs/`).
 
 **On-device path policy:** the only place anything outside the app's private dir may write is `/data/local/tmp/tawc-dev/` (exposed as `$TAWC_SCRATCH` from `scripts/lib/tawc-scratch.sh`, and `TAWC_SCRATCH` from the Rust integration crate). Test/debug artefacts, `adb push` staging, screenshots, fake-bwrap, firefox configs, tawcroot test binaries — **all** go there. **Production must never touch `/data/local/...` or `/sdcard/...`** — everything the running app needs ships in the APK and lives under `/data/data/me.phie.tawc/`, so `pm uninstall` removes every trace. New scripts that need on-device scratch should `source scripts/lib/tawc-scratch.sh` (or use the Rust constant) rather than reaching for `/data/local/tmp/` directly.
 
@@ -107,7 +107,7 @@ has bitten us with hardcoded `/home/ai/libxkbcommon` paths in
 
 ## Libhybris fork
 - **libhybris fork:** https://github.com/wmww/libhybris — pinned by commit hash in `deps/deps.list`, auto-cloned to `deps/libhybris` by `scripts/build-libhybris.sh` on first run (and HEAD-verified on every run). Already gitignored via `deps/.gitignore`.
-- **Build:** `bash scripts/build-libhybris.sh [--clean]`. Cross-compiles for aarch64 glibc using the host toolchain — see [notes/building.md](notes/building.md) for deps. Output staged in `build/libhybris-aarch64/install/` and packed into the APK as `assets/libhybris/arm64-v8a.tar` by Gradle's `packLibhybris` task. The Kotlin installer extracts the asset on first compositor start and symlinks the tree into `<rootfs>/usr/local/lib/` at chroot install time (`LibhybrisLinker.kt`).
+- **Build:** `bash scripts/build-libhybris.sh [--clean]`. Cross-compiles for aarch64 glibc using the host toolchain — see [notes/building.md](notes/building.md) for deps. Output staged in `build/libhybris-aarch64/install/` and packed into the APK as `assets/libhybris/arm64-v8a.tar` by Gradle's `packLibhybris` task. The Kotlin installer extracts the asset on first compositor start and symlinks the tree into `<rootfs>/usr/local/lib/` at install time (`LibhybrisLinker.kt`).
 - **Fork docs:** `deps/libhybris/TAWC_FORK.md` documents the fork's lineage and our changes. Keep it up to date when modifying libhybris.
 - Our libhybris fork is a set of clean, self-contained commits on top of https://github.com/libhybris/libhybris
 - We combine commits that are logically part of the same change, unless the commits originally came from other forks (not written by us)
@@ -122,32 +122,32 @@ has bitten us with hardcoded `/home/ai/libxkbcommon` paths in
 ## Quick Reference
 - **Building from a fresh system:** see [notes/building.md](notes/building.md) for host packages, env, vendored repos, and the full walkthrough. Keep that doc in sync as you change build deps.
 - **Vendored deps:** pinned in `deps/deps.list`. Build scripts auto-clone + verify HEAD; `bash scripts/update-deps.sh [name…]` is the one command that mutates dep checkouts (use after pulling a manifest update or after a "wrong commit" build error). Bumping a dep = bumping `deps.list` + running `update-deps`.
-- **Dev exec broker:** debug-build-only in-app `LocalServerSocket` that lets host scripts run commands as the app uid + SELinux domain — same context as a user-launched run. Started from `TawcApplication.onCreate` when `BuildConfig.DEBUG`. Replaces nearly every previous `run-as` / `su -c` call: chroot-run, install-test-deps, integration tests, the install-id probe, the readiness check. The remaining privileged paths are the `chroot` install method (`chroot(2)` needs root), `tawcroot/test --device` (handler tests need `mknod` privilege), and `scripts/emulator.sh` setup. Host helper at `tools/tawc-exec/`; sourced library at `scripts/lib/tawc-exec.sh`. See [notes/exec-broker.md](notes/exec-broker.md) for the protocol and `SO_PEERCRED` security model.
+- **Dev exec broker:** debug-build-only in-app `LocalServerSocket` that lets host scripts run commands as the app uid + SELinux domain — same context as a user-launched run. Started from `TawcApplication.onCreate` when `BuildConfig.DEBUG`. Replaces nearly every previous `run-as` / `su -c` call: rootfs-run, install-test-deps, integration tests, the install-id probe, the readiness check. The remaining privileged paths are the `chroot` install method (`chroot(2)` needs root), `tawcroot/test --device` (handler tests need `mknod` privilege), and `scripts/emulator.sh` setup. Host helper at `tools/tawc-exec/`; sourced library at `scripts/lib/tawc-exec.sh`. See [notes/exec-broker.md](notes/exec-broker.md) for the protocol and `SO_PEERCRED` security model.
 - **Build (everything):** `JAVA_HOME=/usr/lib/jvm/java-21-openjdk ANDROID_HOME=$HOME/Android/Sdk ./gradlew assembleDebug` — Gradle auto-invokes `scripts/build-libhybris.sh`, `scripts/build-libxkbcommon.sh`, `scripts/build-xwayland.sh`, `scripts/build-proot.sh`, and `tawcroot/build` as needed (each task is up-to-date when its output binary already exists).
 - **Build (libhybris standalone):** `bash scripts/build-libhybris.sh [--clean]`. Aarch64 glibc cross-build, output in `build/libhybris-aarch64/install/`; bundled into the APK by the Gradle `packLibhybris` task.
 - **Build (libxkbcommon standalone):** `bash scripts/build-libxkbcommon.sh [--abi=aarch64|x86_64|both] [--clean]`. Clones a pinned upstream tag into `deps/libxkbcommon/` (gitignored) if missing — no patches.
 - **Build (proot standalone):** `bash scripts/build-proot.sh [--abi=aarch64|x86_64|both] [--clean]`. Clones the pinned [Termux fork](https://github.com/termux/proot) into `./deps/proot/` and downloads talloc into `./deps/proot-deps/` (both gitignored). Outputs `libproot.so` + `libproot-loader.so` jniLibs. See [notes/proot.md](notes/proot.md) for why we use Termux's fork and not upstream proot-me.
 - **Build (tawcroot standalone):** `bash tawcroot/build [--abi=aarch64|x86_64|both|host] [--testhost] [--clean]`. Static non-PIE ET_EXEC, `-nostdlib` freestanding. `aarch64`/`x86_64` are NDK cross-builds staged at `app/src/main/jniLibs/<abi>/libtawcroot.so` (production only — no test scaffolding). `host` is a native glibc x86_64 build at `build/tawcroot-host/tawcroot` for fast iteration; also produces `tawcroot-testhost` (test-driving twin) and `tests` (cleat orchestrator). The host build is incremental — driven by `tawcroot/Makefile` with `gcc -MMD -MP` header dep tracking and `-j$(nproc)` parallel compile (cold build ~700ms, warm ~30ms). For inner-loop iteration you can run `make -C tawcroot` directly; `tawcroot/build --abi=host` adds the cleat clone step. `--testhost` adds `tawcroot-testhost` for cross-ABIs (used by `tawcroot/test --device`). cleat is cloned into `./deps/cleat/` on first `--abi=host` and is built **only** into the test orchestrator — never into either tawcroot binary. See [notes/tawcroot.md](notes/tawcroot.md).
 - **Test (tawcroot):** `bash tawcroot/test [--host|--device] [--no-build] [FILTER...]`. Default: `--host`; flips to `--device` if `TAWC_TARGET=physical|emulator` is set in the env (an explicit `--host`/`--device` flag wins). Host mode execs the cleat-driven runner at `build/tawcroot-host/tests`, which forks `tawcroot-testhost` for handler-layer cases (phase-0 foundation smoke, phase-1 path translation + runtime invariants), forks production `tawcroot` for integration cases, and runs unit cases in-process. `FILTER` args are full-match regexes against `module`, `name`, or `module::name` (e.g. `'.*phase.*'`, `phase0_foundation_smoke`, `handler/test_phase1`). Exit code is 0 on pass, 1 on any failure. `--device` mode pushes the NDK-cross-built cleat orchestrator (`build/tawcroot-<abi>/tests`) plus `tawcroot`, `tawcroot-testhost`, and fixtures to `$TAWC_SCRATCH` (`/data/local/tmp/tawc-dev/`), then runs the **same** four-layer cleat suite there via `su -c`. `FILTER` args propagate verbatim. Device target is picked the same way as other scripts (`.tawctarget` / `TAWC_TARGET=physical|emulator`).
-- **Install methods:** `tawcroot` is the default and the **only officially supported** method — `chroot` and `proot` are debug-only (release builds ship just tawcroot; see `notes/installation.md` "Install methods"). All three are exposed in debug builds for the dev loop. Build-time override: `-PtawcMethods=tawcroot[,proot[,chroot]]`. `scripts/tawc-chroot-run.sh` works against any method (reads `metadata.json` to dispatch).
+- **Install methods:** `tawcroot` is the default and the **only officially supported** method — `chroot` and `proot` are debug-only (release builds ship just tawcroot; see `notes/installation.md` "Install methods"). All three are exposed in debug builds for the dev loop. Build-time override: `-PtawcMethods=tawcroot[,proot[,chroot]]`. `scripts/tawc-rootfs-run.sh` works against any method (reads `metadata.json` to dispatch).
 - **Install distro (CLI):** `bash scripts/install-distro.sh <id> [tawcroot|proot|chroot] [key=value …]`. Triggers an install via the dev exec broker (`tawc-exec --action install`); progress + log lines stream to your TTY and the in-app `LogScreenActivity` opens automatically. Method defaults to **tawcroot** (recommended); `proot`/`chroot` are debug-build-only and rejected on release APKs. Extra `key=value` args become broker `--arg` flags — supported keys are `distro=<key>`, `label=<text>`, `mirrorProxy=<url>`. The slot id `<id>` is the on-disk dir name; rootfs lands at `/data/data/me.phie.tawc/distros/<id>/rootfs/`. Test/run scripts auto-detect the unique slot; with multiple installs, pin one via `TAWC_INSTALL_ID=<id>`. Ctrl-C cancels the install (broker socket close → action calls `Operation.cancel`).
 - **Uninstall distro (CLI):** `bash scripts/uninstall-distro.sh <id>`. Same broker path; no confirm prompt at the host (matches the in-app behaviour where Cancel during uninstall doesn't confirm — see notes/installation.md).
 - **Build, install & launch:** `bash scripts/app-build-install.sh` (uses `.tawctarget` / `TAWC_TARGET`; `--no-build` reuses the existing APK; `--no-launch` installs without starting). The launch path is `MainActivity` — `am start … .compositor.CompositorActivity` directly does not work.
 - **Tawc-exec (run any command as app uid):** `bash -c '. scripts/lib/select-device.sh; . scripts/lib/tawc-exec.sh; tawc_exec /system/bin/cat /data/data/me.phie.tawc/distros/<id>/metadata.json'`. Useful for inspecting app data without `run-as`/`su`. Auto-launches the app if the broker isn't bound.
-- **Chroot (interactive):** `bash scripts/tawc-chroot-run.sh`
-- **Run Wayland app:** `bash scripts/tawc-chroot-run.sh '<command>'` (env vars set by profile)
-- **Firefox:** `bash scripts/tawc-chroot-run.sh 'GDK_GL=gles:always firefox --no-remote'`
+- **Rootfs (interactive):** `bash scripts/tawc-rootfs-run.sh`
+- **Run Wayland app:** `bash scripts/tawc-rootfs-run.sh '<command>'` (env vars set by profile)
+- **Firefox:** `bash scripts/tawc-rootfs-run.sh 'firefox --no-remote'`
 - **Screenshot:** `adb shell screencap -p /data/local/tmp/tawc-dev/screenshot.png && adb pull /data/local/tmp/tawc-dev/screenshot.png /tmp/screenshot.png` (analyze with sub-agent, then `adb shell rm /data/local/tmp/tawc-dev/screenshot.png && rm /tmp/screenshot.png`). No `su` needed — `screencap` works as the `shell` uid and the scratch dir is shell-writable.
 - **Logs:** `adb logcat -s tawc-native` (Rust) or `adb logcat -s tawc` (Kotlin). Filter frame spam: `grep -v renderer_gles2_frame`
 - **Kill Firefox:** `adb shell "su -c 'killall firefox'"`
 - **Restart compositor:** `bash scripts/app-build-install.sh --no-build` (force-stops, reinstalls the existing APK, launches MainActivity)
 - **Simulate touch:** `adb shell input tap X Y` (screen pixel coords, 1:1 with SurfaceView due to immersive fullscreen)
 - **Touch debug loop:** Screenshot -> identify coords -> tap -> screenshot -> verify. Compositor uses 2x scale (logical = physical/2). Nearby UI elements are easy to confuse.
-- **Install test deps in chroot:** `bash scripts/install-test-deps.sh` (run once per chroot install — gtk3/gtk4/weston/mesa-utils/vulkan-tools/pkg-config; tests do not auto-install)
+- **Install test deps in rootfs:** `bash scripts/install-test-deps.sh` (run once per install — gtk3/gtk4/weston/mesa-utils/vulkan-tools/pkg-config; tests do not auto-install)
 - **Integration tests:** `bash scripts/run-integration-tests.sh [filter]` (builds everything, deploys, runs all tests; the optional arg is a libtest substring filter, e.g. `apps::` or `apps::test_firefox`)
-- **Integration tests (skip rebuild):** add `--no-build` to reuse the already-deployed APK / libhybris / chroot helpers
+- **Integration tests (skip rebuild):** add `--no-build` to reuse the already-deployed APK / libhybris / rootfs helpers
 - (`run-integration-tests.sh` sources `scripts/lib/select-device.sh` itself; when both targets are connected, run with `TAWC_TARGET=physical` or `TAWC_TARGET=emulator`.)
 - **Build debug app:** `bash scripts/build-debug-app.sh` (gtk4-debug-app)
-- **Run GTK4 debug app:** `bash scripts/tawc-chroot-run.sh '/tmp/gtk4-debug-app/gtk4-debug-app text-input'`
+- **Run GTK4 debug app:** `bash scripts/tawc-rootfs-run.sh '/tmp/gtk4-debug-app/gtk4-debug-app text-input'`
 - **Inject text (for testing):** `adb shell am broadcast -a me.phie.tawc.TEXT_INPUT --es text "hello"`
 - **Inject keyevent (for testing):** `adb shell am broadcast -a me.phie.tawc.KEY_EVENT --ei keycode 67`

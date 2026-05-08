@@ -15,15 +15,15 @@ unbacked `/dev/shm`) are both fixed; details in
 ## Launching
 
 ```bash
-bash scripts/tawc-chroot-run.sh 'GDK_GL=gles:always firefox --no-remote'
+bash scripts/tawc-rootfs-run.sh 'firefox --no-remote'
 ```
 
-The only Firefox-specific env var we need is `GDK_GL=gles:always`, which
-forces GTK to use GLES (not desktop GL) for rendering. Wayland backend
-and hardware acceleration are auto-selected by Firefox 149 when
-`WAYLAND_DISPLAY` is set and no `DISPLAY` socket is reachable; the older
-`MOZ_ENABLE_WAYLAND=1` / `MOZ_ACCELERATED=1` / `DISPLAY=` opt-ins are no
-longer required.
+No Firefox-specific env vars. `GDK_GL=gles:always` is set globally by
+the chroot's `/etc/profile.d/01-tawc.sh` (see `RootfsProfile.kt` and
+"Why GDK_GL=gles:always" below). Wayland backend and hardware
+acceleration are auto-selected by Firefox 149 when `WAYLAND_DISPLAY` is
+set and no `DISPLAY` socket is reachable; the older `MOZ_ENABLE_WAYLAND=1`
+/ `MOZ_ACCELERATED=1` / `DISPLAY=` opt-ins are no longer required.
 
 ### Sandbox
 
@@ -60,15 +60,21 @@ visibility for fork+exec patterns (Mozilla parent → content IPC) is
 preserved via the non-CLOEXEC internal fd surviving `execveat` and
 the `exec_state` ferry rebuilding the (name → fd) map in the child.
 
-### Why GDK_GL=gles:always (not disabled)
+### Why GDK_GL=gles:always
 
-With `gles:always`, GTK uses GLES via libhybris's vendor EGL, producing AHB
-buffers for the window chrome. With `GDK_GL=disabled`, GTK renders everything
-via SHM (CPU) — the magenta-tinted SHM path in the compositor.
+Set chroot-wide by `RootfsProfile.kt`. With `gles:always`, GTK uses
+GLES via libhybris's vendor EGL, producing AHB buffers for the window
+chrome. Default GTK behaviour probes for desktop GL/GLX, fails through
+our shim's NULL stubs, and falls back to its software/cairo path —
+which presents via SHM and shows up magenta-tinted in the compositor
+(GTK chrome only; Firefox's WebRender content still goes through libGL
+→ AHB cleanly). `GDK_GL=disabled` is the same SHM path, just reached
+explicitly.
 
-This requires the libGLESv2 shim (see "GL Library Shims" below) to provide
-GLX stubs. Without the stubs, libepoxy (GTK's GL dispatch) aborts when
-probing for GLX symbols in a GLES-only library.
+The `gles:always` path requires the libGLESv2 shim (see "GL Library
+Shims" below) to provide GLX stubs. Without the stubs, libepoxy (GTK's
+GL dispatch) aborts when probing for GLX symbols in a GLES-only
+library.
 
 ## GL Library Shims
 
