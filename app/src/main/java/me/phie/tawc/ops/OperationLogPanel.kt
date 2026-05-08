@@ -160,6 +160,21 @@ class OperationLogPanel(private val activity: Activity) {
         boundOperation = null
     }
 
+    /**
+     * Clear the rendered log + status. Used by viewers that swap the
+     * panel from one op to another (e.g. [LogScreenActivity.onNewIntent])
+     * so the user doesn't see the previous op's frozen content under
+     * the new op's toolbar title.
+     */
+    fun reset() {
+        statusText.text = ""
+        logText.text = ""
+        progressBar.isIndeterminate = true
+        progressBar.progress = 0
+        progressBar.visibility = View.GONE
+        cancelButton.visibility = View.GONE
+    }
+
     fun appendLog(line: String) {
         // Cap on-screen log to keep memory bounded; full history is in logcat.
         val cur = logText.text

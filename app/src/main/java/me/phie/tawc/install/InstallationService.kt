@@ -20,6 +20,7 @@ import kotlinx.coroutines.runInterruptible
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.ops.CancelConfirmation
+import me.phie.tawc.ops.MutableOperation
 import me.phie.tawc.ops.OperationProgress
 import me.phie.tawc.ops.OperationStage
 import me.phie.tawc.ops.OperationsNotificationCenter
@@ -82,7 +83,7 @@ import me.phie.tawc.tasks.ProcessScanner
  * and just before launching the follow-up uninstall the cancel coroutine
  * re-anchors `startForeground` to a placeholder notification keyed on
  * the *uninstall* op id. The follow-up [startUninstall] then registers
- * its [InstallOperation] under the same id, and the registry-watcher's
+ * its [MutableOperation] under the same id, and the registry-watcher's
  * [OperationsNotificationCenter] notify upgrades the placeholder in
  * place. The service is therefore continuously FGS-anchored across the
  * transition (no out-of-memory-kill window), and the visible
@@ -93,7 +94,7 @@ class InstallationService : Service() {
 
     enum class JobKind { INSTALL, UNINSTALL }
 
-    private data class JobState(val job: Job, val id: String, val kind: JobKind, val op: InstallOperation)
+    private data class JobState(val job: Job, val id: String, val kind: JobKind, val op: MutableOperation)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -306,10 +307,10 @@ class InstallationService : Service() {
             appendLog("[install] using mirror proxy ${mirrorProxy.base}")
         }
         val rootfsPath = store.rootfsDir(id).absolutePath
-        val op = InstallOperation(
+        val op = MutableOperation(
             id = "install:$id",
             title = "Install $id",
-            serviceLog = _log,
+            log = _log,
             cancelConfirmation = CancelConfirmation(
                 title = "Cancel install of '$id'?",
                 message = "Cancelling will stop the install and remove the partially " +
@@ -391,10 +392,10 @@ class InstallationService : Service() {
         val method: InstallationMethod = store.load(id)?.let {
             InstallationMethod.forKey(applicationContext, it.method)
         } ?: InstallationMethod.defaultForHost(applicationContext)
-        val op = InstallOperation(
+        val op = MutableOperation(
             id = "uninstall:$id",
             title = "Uninstall $id",
-            serviceLog = _log,
+            log = _log,
             // Uninstall has no confirm dialog at the cancel boundary —
             // the user might be tapping Cancel to abort a wipe that's
             // about to delete their work, and another dialog in the
@@ -695,9 +696,9 @@ class InstallationService : Service() {
         // notification gets posted by the registry-watcher and will be
         // cancelled when we unregister below.
         stopForeground(STOP_FOREGROUND_REMOVE)
-        val transient = InstallOperation(
+        val transient = MutableOperation(
             id = opId, title = opTitle,
-            serviceLog = _log,
+            log = _log,
             cancelConfirmation = null,
             cancelHandler = { /* no-op for a terminal-on-arrival op */ },
         )

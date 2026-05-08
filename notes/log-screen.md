@@ -36,9 +36,12 @@ adding a new kind of operation doesn't touch any UI code.
 
 ## Adding a new kind of operation
 
-1. Implement [Operation] (see `me.phie.tawc.install.InstallOperation`
-   for the canonical example — a thin adapter over a service's existing
-   StateFlow + SharedFlow).
+1. Implement [Operation], or use the default [me.phie.tawc.ops.MutableOperation]
+   — a thin adapter with a freely-mutable progress StateFlow plus a
+   caller-supplied log SharedFlow + cancel handler. [InstallationService]
+   uses it for install/uninstall jobs and refused-by-gate transients;
+   [me.phie.tawc.dev.BrokerOpMirror] uses it for the broker's
+   OP_TITLE log-screen path.
 2. Register it in [OperationsRegistry] when the work starts;
    unregister + close in `finally`.
 3. (Optional) Surface from CLI by writing a [BrokerAction] handler in

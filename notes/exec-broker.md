@@ -71,8 +71,17 @@ ARGV echo hello; cat
 ENV PATH=/system/bin:/system/xbin
 ENV HOME=/data/local/tmp
 CWD /data/local/tmp
+OP_TITLE Repair distro X
 
 ```
+
+`OP_TITLE` is optional and may appear on ARGV or RUNINSIDE forms (not
+on ACTION — those handlers manage their own log screen). When set,
+the broker registers a [me.phie.tawc.ops.Operation] in
+`OperationsRegistry`, opens `LogScreenActivity` so the panel attaches,
+and tees every chunk of process stdout/stderr into the op's log flow
+(line-buffered) for the in-app surface. The host TTY still sees the
+raw byte stream — the mirror is purely additive.
 
 **ACTION form** — invoke an in-process broker action. Used by
 `tawc-exec --action install --arg id=arch …` (and the
@@ -97,12 +106,14 @@ broker reads the install's recorded method from `metadata.json` and
 calls `InstallationMethod.startInside`, the single Kotlin entry point
 for "enter the chroot" (notes/rootfs-sessions.md). Used by
 `tawc-rootfs-run.sh`, `install-test-deps.sh`, and the integration
-test crate. Omit `CMD` for interactive `bash -l`.
+test crate. Omit `CMD` for interactive `bash -l`. `OP_TITLE` is
+optional and behaves the same as on ARGV form.
 
 ```
 TAWCEXEC 1
 RUNINSIDE arch
 CMD pacman -Syu
+OP_TITLE arch: pacman -Syu
 
 ```
 
@@ -124,6 +135,9 @@ CMD pacman -Syu
 - `CMD <command>` (RUNINSIDE-form only) — optional. The command runs
   via `bash -lc <command>` inside the rootfs. Omit for interactive
   `bash -l`.
+- `OP_TITLE <title>` (ARGV-form / RUNINSIDE-form only) — optional. When
+  set, mirrors process stdio into a `LogScreenActivity` panel titled
+  with `<title>`. See [BrokerOpMirror].
 - ARGV / ACTION / RUNINSIDE are mutually exclusive in one header;
   combining is a protocol error.
 - The empty line terminates the header. Frame stream begins
@@ -296,10 +310,18 @@ exec semantics it should use `"$TAWC_EXEC_BIN"` directly.
 Usage:
 
 ```
-tawc-exec [--cwd DIR] [--env K=V ...] -- ARGV0 ARGV1 ...
+tawc-exec [--cwd DIR] [--env K=V ...] [--op-title TITLE] -- ARGV0 ARGV1 ...
 tawc-exec --action NAME [--arg K=V ...]
-tawc-exec --in-rootfs ID [-- CMD ...]
+tawc-exec --in-rootfs ID [--op-title TITLE] [-- CMD ...]
 ```
+
+`--op-title TITLE` opts into the in-app log-screen mirror — the broker
+posts an Operation, opens `LogScreenActivity`, and streams stdout /
+stderr lines into it as they come in. `tawc-rootfs-run.sh` sets a
+sensible default title for non-interactive command invocations
+(scriptable callers can override via `TAWC_OP_TITLE=<title>` or set
+`TAWC_OP_TITLE=` to suppress); integration tests don't set it (they'd
+flicker the screen open hundreds of times per run).
 
 It:
 

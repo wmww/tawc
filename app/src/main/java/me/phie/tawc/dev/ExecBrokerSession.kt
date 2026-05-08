@@ -26,10 +26,18 @@ import kotlin.concurrent.thread
 internal class ExecBrokerSession(private val socket: LocalSocket) {
 
     private sealed class Request {
+        /**
+         * `opTitle` is the optional `OP_TITLE` header — when non-null,
+         * the broker mirrors the process's stdio into a
+         * [me.phie.tawc.ops.Operation] surfaced through
+         * [me.phie.tawc.ops.LogScreenActivity] (in addition to streaming
+         * back to the host as usual). See [BrokerOpMirror].
+         */
         data class Exec(
             val argv: List<String>,
             val env: List<Pair<String, String>>?,
             val cwd: String?,
+            val opTitle: String?,
         ) : Request()
 
         data class Action(
@@ -45,11 +53,13 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
          * "enter the chroot" path — replaces the prior on-disk
          * `enter.sh` + ARGV-form Exec dance.
          *
-         * `cmd == null` is interactive `bash -l`.
+         * `cmd == null` is interactive `bash -l`. `opTitle` semantics
+         * match [Exec.opTitle].
          */
         data class RunInside(
             val installId: String,
             val cmd: String?,
+            val opTitle: String?,
         ) : Request()
     }
 
@@ -108,7 +118,12 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
             sendErrorAndExit(sout, "startInside: ${t.javaClass.simpleName}: ${t.message}")
             return
         }
-        streamProcess(proc, sin, sout)
+        val mirror = req.opTitle?.let { title ->
+            BrokerOpMirror.create(app, title).also {
+                it.start("[${req.installId}] ${req.cmd ?: "(interactive shell)"}")
+            }
+        }
+        streamProcess(proc, sin, sout, mirror)
     }
 
     /**
@@ -210,7 +225,12 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
             sendErrorAndExit(sout, "spawn: ${t.message}")
             return
         }
-        streamProcess(proc, sin, sout)
+        val mirror = req.opTitle?.let { title ->
+            BrokerOpMirror.create(ExecBroker.appContext, title).also {
+                it.start(req.argv.joinToString(" "))
+            }
+        }
+        streamProcess(proc, sin, sout, mirror)
     }
 
     /**
@@ -221,18 +241,42 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
      *
      * Shared by [runExec] (generic argv form) and [runInside] (chroot
      * dispatch form) — they only differ in how the [Process] gets
-     * spawned.
+     * spawned. When `mirror` is non-null, every chunk also tees into
+     * the in-app log screen.
      */
-    private fun streamProcess(proc: Process, sin: DataInputStream, sout: DataOutputStream) {
+    private fun streamProcess(
+        proc: Process,
+        sin: DataInputStream,
+        sout: DataOutputStream,
+        mirror: BrokerOpMirror?,
+    ) {
+        try {
+            streamProcessInner(proc, sin, sout, mirror)
+        } finally {
+            // Best-effort idempotent finalisation. Any throw between
+            // here and the structured exit path leaves the op stuck in
+            // the registry forever (notification pinned, no terminal
+            // stage). [BrokerOpMirror.finish] no-ops if already called
+            // on the structured path, so calling it again here is safe.
+            try { mirror?.finish(-1) } catch (_: Throwable) { /* swallow */ }
+        }
+    }
+
+    private fun streamProcessInner(
+        proc: Process,
+        sin: DataInputStream,
+        sout: DataOutputStream,
+        mirror: BrokerOpMirror?,
+    ) {
         val socketAlive = AtomicBoolean(true)
 
         // Pump child stdout / stderr → socket. Both threads are
         // daemons so they won't keep the JVM alive on shutdown.
         val outT = thread(name = "tawc-exec-stdout", isDaemon = true) {
-            relayChildOutToSocket(proc.inputStream, STREAM_STDOUT, sout, socketAlive)
+            relayChildOutToSocket(proc.inputStream, STREAM_STDOUT, sout, socketAlive, mirror, true)
         }
         val errT = thread(name = "tawc-exec-stderr", isDaemon = true) {
-            relayChildOutToSocket(proc.errorStream, STREAM_STDERR, sout, socketAlive)
+            relayChildOutToSocket(proc.errorStream, STREAM_STDERR, sout, socketAlive, mirror, false)
         }
 
         // Two events race: socket EOF (host disconnected) or child
@@ -258,24 +302,21 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
             try { proc.waitFor() } catch (_: InterruptedException) {}
             finished.countDown()
         }
+
+        // Wire the in-panel Cancel button (when present) to the same
+        // kill path host disconnect uses. Unblocks `finished` so we
+        // proceed to reap + send the exit frame.
+        mirror?.setCancelHandler {
+            if (proc.isAlive) {
+                hostDisconnected.set(true)
+                finished.countDown()
+            }
+        }
+
         finished.await()
 
         if (hostDisconnected.get() && proc.isAlive) {
-            // destroyForcibly() SIGKILLs the immediate child, but its
-            // descendants get reparented to init and survive — bash
-            // running `sleep 600`, etc. Snapshot the process tree
-            // before the kill (walk /proc/*/status looking for matching
-            // PPid: lines, see [collectDescendants]), then SIGKILL each
-            // captured pid by hand. Pids can in theory be reused across
-            // the kill window, but on Android pid_max is 32k+ and this
-            // is dev tooling.
-            val rootPid = pidOf(proc)
-            val descendants = if (rootPid > 0) collectDescendants(rootPid) else emptyList()
-            Log.i(ExecBroker.TAG, "cancel rootPid=$rootPid descendants=$descendants")
-            proc.destroyForcibly()
-            for (p in descendants) {
-                try { Os.kill(p, OsConstants.SIGKILL) } catch (_: Throwable) {}
-            }
+            killProcessTree(proc, "cancel")
         }
 
         val exit = try { proc.waitFor() } catch (_: InterruptedException) { -1 }
@@ -296,6 +337,27 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
             // Host already disconnected — nothing to do.
         }
         socketAlive.set(false)
+        mirror?.finish(exit)
+    }
+
+    /**
+     * SIGKILL [proc] + every captured descendant. Used both by the
+     * host-disconnect path and by an in-panel Cancel tap. We can't
+     * use `/proc/<pid>/task/<pid>/children` (requires
+     * `CONFIG_PROC_CHILDREN`, missing on Android stock kernels), so
+     * we walk every `/proc/<pid>/status` looking for matching `PPid:` lines —
+     * see [collectDescendants]. Pids can in theory be reused across
+     * the kill window, but on Android pid_max is 32k+ and this is
+     * dev tooling.
+     */
+    private fun killProcessTree(proc: Process, reason: String) {
+        val rootPid = pidOf(proc)
+        val descendants = if (rootPid > 0) collectDescendants(rootPid) else emptyList()
+        Log.i(ExecBroker.TAG, "$reason rootPid=$rootPid descendants=$descendants")
+        proc.destroyForcibly()
+        for (p in descendants) {
+            try { Os.kill(p, OsConstants.SIGKILL) } catch (_: Throwable) {}
+        }
     }
 
     /**
@@ -376,6 +438,7 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
         val actionArgs = mutableMapOf<String, String>()
         var runInsideId: String? = null
         var runInsideCmd: String? = null
+        var opTitle: String? = null
         while (true) {
             val line = readHeaderLine(stream) ?: throw IOException("EOF in header")
             if (line.isEmpty()) break
@@ -412,6 +475,11 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
                     if (runInsideCmd != null) throw IOException("duplicate CMD line")
                     runInsideCmd = value
                 }
+                "OP_TITLE" -> {
+                    if (opTitle != null) throw IOException("duplicate OP_TITLE line")
+                    if (value.isEmpty()) throw IOException("OP_TITLE needs a non-empty title")
+                    opTitle = value
+                }
                 else -> throw IOException("unknown header key: '$key'")
             }
         }
@@ -422,10 +490,13 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
         if (forms > 1) {
             throw IOException("ARGV / ACTION / RUNINSIDE are mutually exclusive in one header")
         }
-        if (isAction) return Request.Action(actionName!!, actionArgs)
-        if (isRunInside) return Request.RunInside(runInsideId!!, runInsideCmd)
+        if (isAction) {
+            if (opTitle != null) throw IOException("OP_TITLE is not allowed with ACTION")
+            return Request.Action(actionName!!, actionArgs)
+        }
+        if (isRunInside) return Request.RunInside(runInsideId!!, runInsideCmd, opTitle)
         if (!isExec) throw IOException("no ARGV / ACTION / RUNINSIDE in header")
-        return Request.Exec(argv, env, cwd)
+        return Request.Exec(argv, env, cwd, opTitle)
     }
 
     /**
@@ -565,17 +636,27 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
      * Stops on stream EOF (child closed) or on socket I/O error. Frame
      * writes are synchronized on [sout] so stdout / stderr / exit don't
      * interleave at the byte level.
+     *
+     * When [mirror] is non-null, each chunk is also tee'd into the
+     * in-app log screen. We keep teeing even after the socket dies so
+     * the user sees the rest of a job whose host TTY went away.
      */
     private fun relayChildOutToSocket(
         from: InputStream,
         streamId: Int,
         sout: DataOutputStream,
         socketAlive: AtomicBoolean,
+        mirror: BrokerOpMirror?,
+        isStdout: Boolean,
     ) {
         val buf = ByteArray(4096)
-        while (socketAlive.get()) {
+        while (true) {
             val n = try { from.read(buf) } catch (_: IOException) { -1 }
             if (n <= 0) break
+            if (mirror != null) {
+                if (isStdout) mirror.appendOut(buf, 0, n) else mirror.appendErr(buf, 0, n)
+            }
+            if (!socketAlive.get()) continue
             synchronized(sout) {
                 try {
                     sout.write(streamId)
@@ -584,7 +665,6 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
                     sout.flush()
                 } catch (_: IOException) {
                     socketAlive.set(false)
-                    return
                 }
             }
         }

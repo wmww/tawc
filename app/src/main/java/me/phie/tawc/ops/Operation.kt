@@ -18,8 +18,9 @@ import kotlinx.coroutines.flow.StateFlow
  *     registered op shows "no such operation" — only currently-bound
  *     viewers keep their last-rendered state frozen.
  *
- * Concrete implementations today: see `install/InstallOperation.kt`,
- * which adapts [InstallationService]'s flows + cancel methods.
+ * The default impl is [MutableOperation] — see [InstallationService] for
+ * the canonical use, and [me.phie.tawc.dev.ExecBrokerSession]'s OP_TITLE
+ * mirror path for a broker-driven one.
  */
 interface Operation {
     /**

@@ -38,7 +38,6 @@ me.phie.tawc.install/
   InstallProgress.kt              # stages: ..., PKG_KEYRING, PKG_INSTALL, ...
   InstallActivity.kt              # form has distro radio when >1 distro matches host
   DistroInfoActivity.kt           # title + rows resolved via DistroRegistry
-  InstallOperation.kt             # Operation adapter for the ops/ layer
   InstallActions.kt               # broker `install`/`uninstall` action handlers (debug)
   Installer.kt                    # generic pipeline (replaces ArchInstaller);
                                   #   calls Distro.resolveBootstrap() before download

@@ -1,5 +1,8 @@
 package me.phie.tawc.install
 
+import me.phie.tawc.ops.OperationProgress
+import me.phie.tawc.ops.OperationStage
+
 /**
  * Coarse stages of the install pipeline. Used to drive a progress bar /
  * status label in the UI and to label log lines in broadcast output.
@@ -32,3 +35,15 @@ data class InstallProgress(
     val percent: Int? = null,
     val errorMessage: String? = null,
 )
+
+internal fun InstallProgress.toOperationProgress(): OperationProgress =
+    OperationProgress(
+        stage = when (stage) {
+            InstallStage.IDLE -> OperationStage.IDLE
+            InstallStage.DONE -> OperationStage.DONE
+            InstallStage.FAILED -> OperationStage.FAILED
+            else -> OperationStage.RUNNING
+        },
+        message = message,
+        percent = percent,
+    )

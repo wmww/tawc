@@ -37,8 +37,35 @@ _script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 INSTALL_ID="$TAWC_INSTALL_ID"
 
+# Non-interactive `tawc-rootfs-run.sh "<cmd>"` mirrors stdio into the
+# in-app log screen by default — the user's mental model is "I asked the
+# phone to run this; show me what's happening on the phone too." Skip
+# the panel for interactive shells (panel can't usefully render them)
+# and when TAWC_OP_TITLE= is set to empty (escape hatch for callers
+# that want pure stdio relay, e.g. nested tawc-rootfs-run inside a
+# script that already shows its own panel). Default title trims long
+# command lines so the toolbar stays readable.
+default_title() {
+    # 60-char total budget on the toolbar (install id prefix included).
+    # Bash ${var:0:n} is character-indexed under a UTF-8 locale, which
+    # any dev workstation will have — falls back to byte slicing under
+    # LC_ALL=C, which is fine for the all-ASCII commands we expect.
+    local prefix="$INSTALL_ID: "
+    local cmd="$*"
+    local budget=$((60 - ${#prefix}))
+    if [ "$budget" -ge 8 ] && [ "${#cmd}" -gt "$budget" ]; then
+        cmd="${cmd:0:$((budget - 3))}..."
+    fi
+    printf '%s%s' "$prefix" "$cmd"
+}
+
 if [ $# -gt 0 ]; then
-    exec "$TAWC_EXEC_BIN" --in-rootfs "$INSTALL_ID" -- "$@"
+    title="${TAWC_OP_TITLE-$(default_title "$@")}"
+    if [ -n "$title" ]; then
+        exec "$TAWC_EXEC_BIN" --in-rootfs "$INSTALL_ID" --op-title "$title" -- "$@"
+    else
+        exec "$TAWC_EXEC_BIN" --in-rootfs "$INSTALL_ID" -- "$@"
+    fi
 else
     exec "$TAWC_EXEC_BIN" --in-rootfs "$INSTALL_ID"
 fi

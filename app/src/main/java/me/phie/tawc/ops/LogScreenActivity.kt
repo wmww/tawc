@@ -12,7 +12,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import me.phie.tawc.R
@@ -37,6 +40,10 @@ import me.phie.tawc.ui.buildChildScreen
  *   - Cold open against an id that's not in the registry → "no such
  *     operation" placeholder. (Per the project's "unregister
  *     immediately on terminal" choice, the registry holds no history.)
+ *   - A new launchIntent arrives via [onNewIntent] (singleTop) for a
+ *     different op id → the binding swaps to the new op, the frozen
+ *     state from the previous op is replaced. Used by the broker's
+ *     OP_TITLE path so back-to-back commands all surface here.
  *
  * Launch:
  *   `LogScreenActivity.intentFor(ctx, "install:arch")` from in-app
@@ -60,29 +67,36 @@ class LogScreenActivity : AppCompatActivity() {
     private lateinit var panel: OperationLogPanel
     private lateinit var emptyView: TextView
 
-    private var opId: String? = null
+    /**
+     * Currently-displayed op id. Updates when [onNewIntent] arrives so a
+     * SINGLE_TOP relaunch for a different op rebinds the panel instead
+     * of being silently dropped.
+     */
+    private val currentOpId = MutableStateFlow<String?>(null)
 
     /**
-     * Sticky once the registry's lookup for [opId] returns a non-null
-     * Operation. Used to distinguish "op terminated mid-view" (keep
-     * the frozen panel) from "cold open, op never existed" (show the
-     * empty-state placeholder).
+     * Sticky once the registry's lookup for the current op id returns
+     * a non-null Operation. Used to distinguish "op terminated mid-
+     * view" (keep the frozen panel) from "cold open, op never existed"
+     * (show the empty-state placeholder). Reset when [currentOpId]
+     * changes so a new op gets a clean cold-open state.
      */
     private var everBound = false
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        opId = intent?.getStringExtra(EXTRA_OPERATION_ID)
-        if (opId.isNullOrEmpty()) {
+        val initialId = intent?.getStringExtra(EXTRA_OPERATION_ID)
+        if (initialId.isNullOrEmpty()) {
             android.util.Log.w(TAG, "LogScreenActivity launched without an operationId — finishing")
             finish()
             return
         }
+        currentOpId.value = initialId
 
-        scaffold = buildChildScreen(opId!!)
+        scaffold = buildChildScreen(initialId)
         panel = OperationLogPanel(this)
         emptyView = TextView(this).apply {
-            text = "No operation in flight for '$opId'."
             setTextColor(
                 MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant)
             )
@@ -90,7 +104,8 @@ class LogScreenActivity : AppCompatActivity() {
         scaffold.content.addView(panel.view, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         scaffold.content.addView(emptyView, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         // Both views start invisible; the registry collector below sets
-        // exactly one of them visible based on whether [opId] resolves.
+        // exactly one of them visible based on whether the current op
+        // id resolves.
         panel.view.visibility = View.GONE
         emptyView.visibility = View.GONE
         setContentView(scaffold.root)
@@ -98,8 +113,11 @@ class LogScreenActivity : AppCompatActivity() {
         panel.onCancelClicked = { dispatchCancel() }
 
         lifecycleScope.launch {
-            OperationsRegistry.ops
-                .map { it[opId] }
+            currentOpId
+                .flatMapLatest { id ->
+                    if (id.isNullOrEmpty()) kotlinx.coroutines.flow.flowOf(null)
+                    else OperationsRegistry.ops.map { it[id] }
+                }
                 .distinctUntilChanged()
                 .collect { op ->
                     if (op != null) {
@@ -116,12 +134,34 @@ class LogScreenActivity : AppCompatActivity() {
                             panel.view.visibility = View.VISIBLE
                             emptyView.visibility = View.GONE
                         } else {
+                            emptyView.text = "No operation in flight for '${currentOpId.value}'."
                             panel.view.visibility = View.GONE
                             emptyView.visibility = View.VISIBLE
                         }
                     }
                 }
         }
+    }
+
+    /**
+     * SINGLE_TOP relaunch for a different op id (typical: broker-driven
+     * back-to-back rootfs commands, each opening their own log screen).
+     * Update [currentOpId] so the registry collector swaps bindings;
+     * reset the frozen-on-terminal sticky so the new op gets the empty
+     * placeholder if it's already gone.
+     */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        val newId = intent?.getStringExtra(EXTRA_OPERATION_ID)
+        if (newId.isNullOrEmpty() || newId == currentOpId.value) return
+        everBound = false
+        // Clear the panel's previously-rendered text so the user
+        // doesn't briefly see the old op's frozen log lines under the
+        // new op's toolbar title before the registry collector has
+        // applied the binding.
+        panel.unbind()
+        panel.reset()
+        currentOpId.value = newId
     }
 
     private fun dispatchCancel() {

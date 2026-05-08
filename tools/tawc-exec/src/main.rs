@@ -29,9 +29,9 @@ fn main() -> ExitCode {
         Ok(p) => p,
         Err(e) => {
             eprintln!("tawc-exec: {e}");
-            eprintln!("usage: tawc-exec [--cwd DIR] [--env K=V ...] -- ARGV0 [ARG ...]");
+            eprintln!("usage: tawc-exec [--cwd DIR] [--env K=V ...] [--op-title TITLE] -- ARGV0 [ARG ...]");
             eprintln!("       tawc-exec --action NAME [--arg K=V ...]");
-            eprintln!("       tawc-exec --in-rootfs ID [-- CMD ...]");
+            eprintln!("       tawc-exec --in-rootfs ID [--op-title TITLE] [-- CMD ...]");
             return ExitCode::from(2);
         }
     };
@@ -49,11 +49,16 @@ fn main() -> ExitCode {
 /// header for fork-exec, an ACTION-form header for an in-process
 /// broker action, or a RUNINSIDE-form header for chroot dispatch.
 /// Mutually exclusive — `parse_args` rejects mixes.
+///
+/// `op_title` (Exec / RunInside): when present, the broker mirrors
+/// process stdio into an in-app log screen titled with this string.
+/// `--op-title` on the host CLI controls it.
 enum Parsed {
     Exec {
         argv: Vec<String>,
         env: Vec<String>,
         cwd: Option<String>,
+        op_title: Option<String>,
     },
     Action {
         name: String,
@@ -65,6 +70,7 @@ enum Parsed {
     RunInside {
         install_id: String,
         cmd: String,
+        op_title: Option<String>,
     },
 }
 
@@ -74,6 +80,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut action_name: Option<String> = None;
     let mut action_args: Vec<(String, String)> = Vec::new();
     let mut run_inside_id: Option<String> = None;
+    let mut op_title: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -112,6 +119,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 run_inside_id = Some(v);
                 i += 1;
             }
+            "--op-title" => {
+                i += 1;
+                let v = args.get(i).ok_or("--op-title needs argument")?.clone();
+                if v.is_empty() { return Err("--op-title must not be empty".into()); }
+                if v.contains('\n') { return Err("--op-title may not contain LF".into()); }
+                op_title = Some(v);
+                i += 1;
+            }
             "-h" | "--help" => return Err("see notes/exec-broker.md".to_string()),
             other if other.starts_with("--") => {
                 return Err(format!("unknown flag '{other}'"));
@@ -140,7 +155,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         if id.contains('\n') || cmd.contains('\n') {
             return Err("install id / cmd may not contain LF".into());
         }
-        return Ok(Parsed::RunInside { install_id: id, cmd });
+        return Ok(Parsed::RunInside { install_id: id, cmd, op_title });
     }
     if let Some(name) = action_name {
         // ACTION form. ARGV must be empty; --env / --cwd are also
@@ -154,6 +169,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         }
         if cwd.is_some() {
             return Err("--cwd is for fork-exec mode; not allowed with --action".into());
+        }
+        if op_title.is_some() {
+            return Err("--op-title is not allowed with --action (the action's own log screen handles this)".into());
         }
         if name.contains('\n') || action_args.iter().any(|(k, v)| k.contains('\n') || v.contains('\n')) {
             return Err("--action name / --arg values may not contain LF".into());
@@ -174,7 +192,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     if env.iter().any(|a| a.contains('\n')) {
         return Err("env may not contain LF".to_string());
     }
-    Ok(Parsed::Exec { argv, env, cwd })
+    Ok(Parsed::Exec { argv, env, cwd, op_title })
 }
 
 fn run(p: Parsed) -> io::Result<i32> {
@@ -239,10 +257,11 @@ fn write_header(s: &mut TcpStream, p: &Parsed) -> io::Result<()> {
     let mut h = String::new();
     h.push_str("TAWCEXEC 1\n");
     match p {
-        Parsed::Exec { argv, env, cwd } => {
+        Parsed::Exec { argv, env, cwd, op_title } => {
             for a in argv { h.push_str("ARGV "); h.push_str(a); h.push('\n'); }
             for e in env  { h.push_str("ENV ");  h.push_str(e); h.push('\n'); }
             if let Some(c) = cwd { h.push_str("CWD "); h.push_str(c); h.push('\n'); }
+            if let Some(t) = op_title { h.push_str("OP_TITLE "); h.push_str(t); h.push('\n'); }
         }
         Parsed::Action { name, args } => {
             h.push_str("ACTION "); h.push_str(name); h.push('\n');
@@ -254,12 +273,13 @@ fn write_header(s: &mut TcpStream, p: &Parsed) -> io::Result<()> {
                 h.push('\n');
             }
         }
-        Parsed::RunInside { install_id, cmd } => {
+        Parsed::RunInside { install_id, cmd, op_title } => {
             h.push_str("RUNINSIDE "); h.push_str(install_id); h.push('\n');
             // Empty cmd means interactive shell — omit the CMD line.
             if !cmd.is_empty() {
                 h.push_str("CMD "); h.push_str(cmd); h.push('\n');
             }
+            if let Some(t) = op_title { h.push_str("OP_TITLE "); h.push_str(t); h.push('\n'); }
         }
     }
     h.push('\n');
