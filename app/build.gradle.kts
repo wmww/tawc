@@ -259,6 +259,14 @@ tawcAbis.forEach { abi ->
         environment("ANDROID_NDK_HOME", "${android.ndkDirectory}")
         commandLine("bash", "tawcroot/build", "--abi=$scriptAbi")
         inputs.file("$tawcRoot/tawcroot/build")
+        // Source + header changes must invalidate the cache. Without this,
+        // adding a new .c file (and listing it in `tawcroot/build`) is the
+        // only kind of edit that gets noticed — pure source/header edits
+        // are silently dropped, leaving a stale binary in jniLibs. The
+        // chroot.c regression (added in commit 4244bbb but not rebuilt
+        // for aarch64 until this fix) was exactly that.
+        inputs.dir("$tawcRoot/tawcroot/src")
+        inputs.dir("$tawcRoot/tawcroot/include")
         // Pin bumps in deps/deps.list must invalidate the cache (cleat).
         inputs.file("$tawcRoot/deps/deps.list")
         inputs.file("$tawcRoot/scripts/lib/deps.sh")

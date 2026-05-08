@@ -1854,6 +1854,33 @@ ships as `libproot.so` + `libproot-loader.so`; tawcroot ships as
 `libtawcroot.so` for production, with `tawcroot-testhost` and
 `tests` as host-only test artifacts).
 
+### Source list lives in two places
+
+The production `.c` set is duplicated between `tawcroot/build`
+(`SRC_C_PROD`, used for the NDK cross-builds and on-device tests)
+and `tawcroot/Makefile` (`PROD_C`, used for the host build that
+`tawcroot/test --host` exercises). **Adding a new `.c` file means
+editing both.**
+
+The split exists for a reason — the host Makefile uses gcc with
+header-dep tracking for fast incremental builds; the cross-build
+needs NDK-flavoured bash that the Makefile would clutter — but it's
+a correctness trap. The chroot.c regression was exactly this: it
+was added to `PROD_C` but missed in `SRC_C_PROD`, so `tawcroot/test
+--host` passed (host build was complete) while the device shipped a
+binary that didn't even include the chroot handler. (There would
+have been a linker error if the cross-build had run, but Gradle's
+`buildTawcroot` task didn't list source dirs as inputs and skipped
+the rebuild — so the stale pre-fix binary stayed staged in jniLibs.)
+
+Mitigations: Gradle's `buildTawcroot$abi` now lists `tawcroot/src`
+and `tawcroot/include` as inputs (so source-only edits invalidate
+the cache), and the cross-build *does* fail loudly on link if a
+referenced symbol is missing — once it actually runs. If the two
+lists drift again, `tawcroot/test --device` is the canonical way to
+catch it: running the on-device tests forces a cross-build for the
+target ABI and any link error surfaces immediately.
+
 ## Installer integration
 
 A new `TawcrootMethod.kt` next to `ProotMethod.kt`. Same shape:
