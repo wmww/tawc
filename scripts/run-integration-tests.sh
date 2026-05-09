@@ -159,10 +159,11 @@ if [ -n "$TEST_FILTER" ]; then
 else
     echo "=== Running integration tests ==="
 fi
-# Note: the debug app build is handled by the Rust test harness
-# (chroot::ensure_debug_app) with freshness caching. Chroot packages
-# are NOT auto-installed — run `bash scripts/install-test-deps.sh` once
-# per chroot install.
+# Note: the test programs (gtk4-debug-app, tawc-dri-test, eglx11-test)
+# are built by `scripts/install-test-deps.sh`, not by the Rust harness.
+# The harness checks that `/tmp/<name>/<name>` exists in the rootfs and
+# fails fast with a pointer back to install-test-deps if not. Re-run
+# install-test-deps after editing any source under `tests/apps/`.
 cd "$ROOT_DIR/tests/integration"
 set +e
 cargo test -- "${LIBTEST_ARGS[@]}"

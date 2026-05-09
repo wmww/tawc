@@ -100,9 +100,14 @@ instead of attaching to the wrong target.
 Prerequisites: a phone (or emulator) connected via adb, the tawc app
 installed, an in-app distro installed (via `bash scripts/install-distro.sh
 <id> [method]`; see [installation.md](installation.md)), and the
-test suite's chroot packages installed (run
-`bash scripts/install-test-deps.sh` once per chroot install — covers
-gtk3/gtk4/weston/mesa-utils/vulkan-tools). The suite auto-targets the
+test suite's chroot packages **and binaries** installed by
+`bash scripts/install-test-deps.sh`. That script installs the runtime
+package set (gtk3/gtk4/weston/mesa-utils/vulkan-tools/…) plus a C
+toolchain, then compiles every in-rootfs test program from
+`tests/apps/<name>/` into `/tmp/<name>/<name>` inside the rootfs.
+**Re-run install-test-deps after editing any `tests/apps/<name>/*`
+source** — tests check the binaries exist and refuse to run if not,
+they do not compile anything at runtime. The suite auto-targets the
 unique install if there's only one, otherwise pin via
 `TAWC_INSTALL_ID=<id>`. Some modules have additional prerequisites (e.g.
 libhybris on a real device for the GPU-rendering tests); see each
@@ -128,10 +133,9 @@ approach goes directly through the same JNI path as real IME input.
 
 ```
 Host (cargo test)                    Phone
-  │                                    │
-  ├─ adb push source ──────────────────┤ (one-time build, cached by mtime stamp)
-  ├─ adb shell (build in chroot) ──────┤
-  │                                    │
+  │                                    │ (test programs already compiled
+  │                                    │  by install-test-deps; the
+  │                                    │  harness only checks they exist)
   ├─ adb shell (start client) ─────────┤──→ gtk4-debug-app  /  firefox  /  …
   │     └─ piped stdout ←──────────────┤     └─ TAWC_DEBUG:READY (debug app only)
   │                                    │
@@ -154,9 +158,12 @@ Host (cargo test)                    Phone
 ### Key Modules
 
 - **`adb.rs`**: Shell commands, chroot execution, broadcast-based input injection
-- **`chroot.rs`**: `ensure_debug_app()` (build gtk4-debug-app, cached by mtime).
-  Tests do **not** install chroot packages at runtime — required packages
-  must be installed up-front via `scripts/install-test-deps.sh`.
+- **`rootfs.rs`**: `ensure_debug_app` / `ensure_tawc_dri_test` /
+  `ensure_eglx11_test` — each one just probes for `/tmp/<name>/<name>`
+  inside the rootfs and returns its path, errorring with a pointer at
+  `scripts/install-test-deps.sh` if the binary is missing. Tests do
+  **not** compile anything; they also do not install chroot packages.
+  Both happen up-front in `scripts/install-test-deps.sh`.
 - **`debug_app.rs`**: Start/stop lifecycle, stdout reader thread, `wait_for()` with timeout
 - **`compositor.rs`**: Check whether the compositor is running (`is_running`,
   `assert_running`) and query its state via broadcast. The compositor itself

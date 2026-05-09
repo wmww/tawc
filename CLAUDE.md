@@ -143,7 +143,7 @@ has bitten us with hardcoded `/home/ai/libxkbcommon` paths in
 - **Restart compositor:** `bash scripts/app-build-install.sh --no-build` (force-stops, reinstalls the existing APK, launches MainActivity)
 - **Simulate touch:** `adb shell input tap X Y` (screen pixel coords, 1:1 with SurfaceView due to immersive fullscreen)
 - **Touch debug loop:** Screenshot -> identify coords -> tap -> screenshot -> verify. Compositor uses 2x scale (logical = physical/2). Nearby UI elements are easy to confuse.
-- **Install test deps in rootfs:** `bash scripts/install-test-deps.sh` (run once per install — gtk3/gtk4/weston/mesa-utils/vulkan-tools/pkg-config; tests do not auto-install)
+- **Install test deps in rootfs:** `bash scripts/install-test-deps.sh` — run once per install for the package set (gtk3/gtk4/weston/mesa-utils/vulkan-tools/pkg-config + a C toolchain), and **re-run after editing any source under `tests/apps/`** to rebuild the in-rootfs test programs (gtk4-debug-app, tawc-dri-test, eglx11-test). Tests check the binaries exist and bail with a pointer back here if not — they do not compile anything at runtime.
 - **Integration tests:** `bash scripts/run-integration-tests.sh [filter]` (builds everything, deploys, runs all tests; the optional arg is a libtest substring filter, e.g. `apps::` or `apps::test_firefox`)
 - **Integration tests (skip rebuild):** add `--no-build` to reuse the already-deployed APK / libhybris / rootfs helpers
 - (`run-integration-tests.sh` sources `scripts/lib/select-device.sh` itself; when both targets are connected, run with `TAWC_TARGET=physical` or `TAWC_TARGET=emulator`.)

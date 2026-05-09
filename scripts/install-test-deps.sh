@@ -1,11 +1,17 @@
 #!/bin/bash
-# Install the chroot packages the integration test suite needs.
+# Install the chroot packages the integration test suite needs AND
+# build the small in-rootfs test programs (gtk4-debug-app, tawc-dri-test,
+# eglx11-test) that drive those tests.
 #
-# Run once per chroot install. Idempotent: re-running just makes the
-# package manager confirm everything's already there. The integration
-# tests deliberately do NOT install anything at runtime — they assume
-# these packages are present, so test runs aren't distro-specific and
-# don't surprise you with package installs in the middle of a test.
+# Run once per chroot install — and re-run whenever you edit any source
+# under `tests/apps/<name>/`. The integration tests check that the
+# binaries are present (`tests/integration/src/rootfs.rs`) and bail out
+# with a pointer back to this script if not. Tests do NOT compile
+# anything at runtime, so a stale binary keeps running until you re-run
+# this script.
+#
+# Idempotent: re-running just confirms packages then rebuilds the
+# binaries from the current sources.
 #
 # Distro-aware: reads `metadata.json` to dispatch between pacman
 # (Arch / Manjaro) and xbps (Void) install paths. Same logical
@@ -29,6 +35,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=../scripts/lib/select-device.sh
 source "$ROOT_DIR/scripts/lib/select-device.sh"
+# shellcheck source=../scripts/lib/tawc-scratch.sh
+source "$ROOT_DIR/scripts/lib/tawc-scratch.sh"
 # shellcheck source=../scripts/lib/tawc-exec.sh
 source "$ROOT_DIR/scripts/lib/tawc-exec.sh"
 # shellcheck source=../scripts/lib/tawc-install-id.sh
@@ -54,7 +62,8 @@ case "$DISTRO_KEY" in
         # Pacman package set. Comments name the test cases each item
         # exists for.
         PKGS=(
-            # gtk4-debug-app build (compiled in chroot by ensure_debug_app)
+            # Test-app build chain (gtk4-debug-app, tawc-dri-test,
+            # eglx11-test compiled by the build phase below).
             gcc gtk4 pkg-config
             # apps:: tests — gtk3-demos provides gtk3-demo-application,
             # gtk4-demos provides gtk4-widget-factory; firefox + supertuxkart
@@ -111,6 +120,12 @@ case "$DISTRO_KEY" in
         # files, and harfbuzz NULL-derefs trying to shape with no
         # usable face. Arch's bootstrap already has Bitstream / Liberation.
         PKGS=(
+            # `base-devel` is Void's gcc + binutils + make + autoconf etc.
+            # meta — needed to compile gtk4-debug-app and the other test
+            # programs in the build phase below. Arch's PKGS list adds
+            # `gcc` explicitly above; on Void the meta is the idiomatic
+            # way to pull the C toolchain.
+            base-devel
             gtk4 gtk4-devel pkg-config
             gtk+3 gtk+3-devel gtk+3-demo gtk4-demo firefox supertuxkart
             glxinfo weston Vulkan-Tools
@@ -151,5 +166,38 @@ echo "=== Installing chroot test deps: ${PKGS[*]} ==="
 # See syscalls_fs.c:open_proc_overflow_id_shadow + notes/tawcroot.md.
 TAWC_OP_TITLE="install test deps ($DISTRO_KEY)" \
     "$ROOT_DIR/scripts/rootfs-run.sh" "$INSTALL_CMD"
+
+# --- Build phase ---
+# Compile each in-rootfs test program from its sources at
+# `tests/apps/<name>/` so the integration suite's freshness check
+# (`tests/integration/src/rootfs.rs`) finds a binary at
+# `/tmp/<name>/<name>` inside the rootfs. Tests do not rebuild — they
+# error pointing back here if a binary is missing.
+build_test_app() {
+    local name="$1"
+    local src_dir="$ROOT_DIR/tests/apps/$name"
+    local rootfs_path="/tmp/$name"
+    local fs_build_dir="$TAWC_DISTROS_DIR/rootfs$rootfs_path"
+    local staging="$TAWC_SCRATCH/$name-src"
+
+    [ -d "$src_dir" ] || { echo "ERROR: missing $src_dir" >&2; exit 1; }
+
+    echo "=== Building $name ==="
+    "$TAWC_EXEC_BIN" /system/bin/sh -c "mkdir -p $TAWC_SCRATCH"
+    adb shell rm -rf "$staging" >/dev/null
+    adb push "$src_dir" "$staging" >/dev/null
+    # cp + chmod via the broker — runs as the app uid which owns the
+    # rootfs tree (no su / no run-as / no ownership-flip dance).
+    "$TAWC_EXEC_BIN" /system/bin/sh -c \
+        "mkdir -p $fs_build_dir && cp $staging/* $fs_build_dir && chmod -R a+rwX $fs_build_dir"
+    "$ROOT_DIR/scripts/rootfs-run.sh" "/bin/bash $rootfs_path/build.sh"
+}
+
+# Apps that integration tests actually consume — keep this list in sync
+# with `tests/integration/src/rootfs.rs::ensure_*`. `adreno-struct-varying`
+# under `tests/apps/` is debug-only and intentionally not built here.
+for app in gtk4-debug-app tawc-dri-test eglx11-test; do
+    build_test_app "$app"
+done
 
 echo "=== Done ==="
