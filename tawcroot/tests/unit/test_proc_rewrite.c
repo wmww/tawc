@@ -35,6 +35,7 @@ static void mk_bind_full(struct tawcroot_bind *b,
 	size_t dn = strlen(dst);
 	memcpy(b->src, src, sn + 1);
 	memcpy(b->dst, dst, dn + 1);
+	b->src_len = sn;
 	b->dst_len = dn;
 	b->src_fd  = 0;
 	b->active  = 1;

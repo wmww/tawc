@@ -576,15 +576,12 @@ static int test_dotdot_via_dirfd_clamps_at_rootfs(void)
 	return fails;
 }
 
-/* Bind-src dirfd `..` is a known gap: dirfd_to_guest_abs returns
- * -ENOENT for bind-src host paths (they fail the rootfs-prefix
- * check), so the lift falls through to kernel passthrough and the
- * kernel can walk `..` past the bind src into the host fs. This test
- * documents the gap by asserting the SOFT property that opening
- * `bind_dst_fd/..` doesn't crash and either gives us a fd or an
- * errno; if/when the fix in
- * issues/tawcroot-fd-relative-dotdot-escapes-bind-src.md lands, the
- * stricter inode-comparison check below should be flipped on. */
+/* Bind-src dirfd `..` clamps at the bind-dst boundary in the guest
+ * view. The phase-1 fixture binds <TMPDIR>/...-bindsrc to /lib64, so
+ * a dirfd opened through /lib64 walks `..` to the guest rootfs root
+ * (not the host's /tmp). dirfd_to_guest_abs reverse-translates the
+ * bind-src host path to /<bind.dst>/..., the appended `..` folds
+ * to "/", and the second-pass translate routes through rootfs_fd. */
 static int test_dotdot_via_bind_dst_dirfd(void)
 {
 	int fails = 0;
@@ -604,16 +601,89 @@ static int test_dotdot_via_bind_dst_dirfd(void)
 	fails += tawc_io_step("openat(<bind dst>) -> fd", fd_bind >= 0);
 	if (fd_bind < 0) return fails;
 
+	long fd_root = inline_openat(AT_FDCWD, "/",
+		O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+	fails += tawc_io_step("openat(\"/\") -> fd at rootfs root",
+			      fd_root >= 0);
+
 	long fd_dotdot = inline_openat((int)fd_bind, "..",
 		O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
-	/* Today: kernel walks above the bind src on the host. The
-	 * resulting fd is a valid kernel fd to whatever sits on the
-	 * host outside the bind src — not what we want, but not
-	 * crashy either. Just assert openat itself returns a non-error. */
 	fails += tawc_io_step(
-		"openat(<bind dst>, \"..\") -> fd (gap: kernel passthrough escapes bind src)",
+		"openat(<bind dst>, \"..\") -> fd",
 		fd_dotdot >= 0);
+
+	if (fd_dotdot >= 0 && fd_root >= 0) {
+		struct stat st_dd, st_root;
+		long sd = inline_fstatat((int)fd_dotdot, "", &st_dd,
+		                         AT_EMPTY_PATH);
+		long sr = inline_fstatat((int)fd_root, "", &st_root,
+		                         AT_EMPTY_PATH);
+		fails += tawc_io_step(
+			"openat(<bind dst>, \"..\") clamps at rootfs root",
+			sd == 0 && sr == 0 &&
+			st_dd.st_ino == st_root.st_ino &&
+			st_dd.st_dev == st_root.st_dev);
+		tawc_io_kv_dec("    rootfs ino", (long)st_root.st_ino);
+		tawc_io_kv_dec("    dotdot ino", (long)st_dd.st_ino);
+	}
+
 	if (fd_dotdot >= 0) tawc_close((int)fd_dotdot);
+	if (fd_root   >= 0) tawc_close((int)fd_root);
+	tawc_close((int)fd_bind);
+	return fails;
+}
+
+/* Bind-src dirfd `..` must NOT escape into the host. From a dirfd
+ * opened through a bind dst, naive kernel passthrough of `..` would
+ * walk up the host tree past the bind src; the phase-1 fixture plants
+ * FAKE_ROOTFS_SIBLING/foo/host-secret at <TMPDIR> (sibling of the bind
+ * src) precisely as a probe target the rootfs view never exposes.
+ * dirfd_to_guest_abs reverse-translates the bind-src host path to
+ * /<bind.dst>/<remainder>, fetch_and_translate_at's `..` lift folds it,
+ * and the second-pass translate routes back through the bind so `..`
+ * clamps at the bind-dst boundary.
+ *
+ * We probe via faccessat(F_OK), not openat: the openat handler routes
+ * through openat2(RESOLVE_IN_ROOT) on kernels ≥ 5.6 which incidentally
+ * clamps `..` at base_fd, so an openat probe wouldn't exercise this
+ * code path. faccessat (and other *at syscalls) forwards verbatim,
+ * making it the right vector for a regression test. */
+static int test_dotdot_via_bind_dst_does_not_escape_to_host(void)
+{
+	int fails = 0;
+	if (tawcroot_n_binds == 0) {
+		tawc_io_str("  [skip] no binds configured\n");
+		return 0;
+	}
+
+	char path[512];
+	size_t n = 0;
+	path[n++] = '/';
+	for (size_t j = 0; j < tawcroot_binds[0].dst_len; j++)
+		path[n++] = tawcroot_binds[0].dst[j];
+	path[n] = 0;
+	long fd_bind = inline_openat(AT_FDCWD, path,
+		O_PATH | O_DIRECTORY | O_CLOEXEC, 0);
+	fails += tawc_io_step("openat(<bind dst>) -> fd (escape probe)",
+			      fd_bind >= 0);
+	if (fd_bind < 0) return fails;
+
+	/* FAKE_BINDSRC = "<TMPDIR>/tawcroot-test-rootfs-phase1-bindsrc" and
+	 * FAKE_ROOTFS_SIBLING = "<TMPDIR>/tawcroot-test-rootfs-phase1-evil"
+	 * are siblings — so `../tawcroot-test-rootfs-phase1-evil/...`
+	 * from the bind dirfd is the same regardless of TAWCROOT_TEST_TMPDIR.
+	 *
+	 * faccessat(F_OK, 0): rv==0 would mean "the kernel reached the file",
+	 * i.e. the dirfd `..` walked past the bind src and into /tmp on the
+	 * host. The fix clamps at the bind-dst boundary, so rv must be < 0. */
+	long rv = inline_faccessat((int)fd_bind,
+		"../tawcroot-test-rootfs-phase1-evil/foo/host-secret",
+		0 /* F_OK */, 0);
+	fails += tawc_io_step(
+		"faccessat(<bind dst dirfd>, \"../<sibling>/host-secret\", F_OK) "
+		"clamps at bind-dst boundary (no host escape)",
+		rv != 0);
+	tawc_io_kv_dec("    rv", rv);
 	tawc_close((int)fd_bind);
 	return fails;
 }
@@ -3272,6 +3342,7 @@ int tawcroot_phase1_main(const char *rootfs)
 	fails += test_dotdot_clamp_root_relative();
 	fails += test_dotdot_via_dirfd_clamps_at_rootfs();
 	fails += test_dotdot_via_bind_dst_dirfd();
+	fails += test_dotdot_via_bind_dst_does_not_escape_to_host();
 	fails += test_fstatat_fake_root_decoration();
 	fails += test_escape_attempt_clamps();
 	fails += test_relative_path_after_chdir();

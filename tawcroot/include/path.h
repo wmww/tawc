@@ -118,10 +118,18 @@ struct tawcroot_bind {
 	size_t dst_len;              /* length of `dst`, excluding NUL        */
 	char   dst[256];             /* current-root-relative dst (NO leading
 	                              * '/'). Re-anchored on chroot.          */
-	char   src[256];             /* host src path, ferried through to
-	                              * --exec-child so the new tawcroot
-	                              * incarnation can re-open it. Stable
-	                              * across chroot — host fs doesn't move. */
+	size_t src_len;              /* length of `src`, excluding NUL. 0 ⇒
+	                              * src not populated (test fixtures);
+	                              * dirfd_to_guest_abs skips such binds.  */
+	char   src[256];             /* canonicalized host src path (kernel
+	                              * view via /proc/self/fd of src_fd at
+	                              * add-bind time) — used by
+	                              * dirfd_to_guest_abs for reverse-
+	                              * translating bind-src dirfds, and
+	                              * ferried through to --exec-child so
+	                              * the new tawcroot can re-open it.
+	                              * Stable across chroot — host fs doesn't
+	                              * move.                                 */
 };
 
 extern struct tawcroot_bind tawcroot_binds[TAWCROOT_MAX_BINDS];

@@ -402,14 +402,66 @@ static int path_has_dotdot_component(const char *path)
 	return 0;
 }
 
+/* Helper: copy `host[start..n)` into `out` as a guest-absolute path
+ * with leading '/' (preserving / collapsing internal '/' runs). Used by
+ * both the rootfs-prefix and bind-src branches of dirfd_to_guest_abs.
+ * Returns the written length, or -ENAMETOOLONG. */
+static long write_guest_abs_suffix(char *out, size_t out_cap,
+                                   const char *host, size_t start, size_t n,
+                                   const char *bind_dst, size_t bind_dst_len)
+{
+	size_t off = 0;
+	if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
+	out[off++] = '/';
+	for (size_t i = 0; i < bind_dst_len; i++) {
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
+		out[off++] = bind_dst[i];
+	}
+	for (size_t i = start; i < n; i++) {
+		if (host[i] == '/' && off > 0 && out[off - 1] == '/') continue;
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
+		out[off++] = host[i];
+	}
+	out[off] = 0;
+	return (long)off;
+}
+
+/* True iff `host[0..n)` starts with `prefix[0..pl)` and the next byte (if
+ * any) is `/` — i.e. the prefix matches at a component boundary. */
+static int host_prefix_match(const char *host, size_t n,
+                             const char *prefix, size_t pl)
+{
+	if (pl == 0) return 0;
+	if (pl > n)  return 0;
+	for (size_t i = 0; i < pl; i++)
+		if (host[i] != prefix[i]) return 0;
+	if (n > pl && host[pl] != '/') return 0;
+	return 1;
+}
+
 /* Resolve `dirfd` to its guest-side absolute path by reading the kernel's
- * /proc/self/fd/<n> link and stripping the rootfs host prefix. Output is
- * NUL-terminated, always starts with `/`, and does not have a trailing
- * `/` (except for the lone `/`). Returns the length on success (>=1).
- * -ENOENT means the fd's host path is outside the main rootfs view —
- * either a bind src dirfd (gap documented in
- * issues/tawcroot-fd-relative-dotdot-escapes-bind-src.md) or a fd into
- * the host's /proc tree, neither of which we reverse-translate today. */
+ * /proc/self/fd/<n> link. Output is NUL-terminated, always starts with
+ * `/`, and does not have a trailing `/` (except for the lone `/`).
+ * Returns the length on success (>=1).
+ *
+ * Reverse-translates the host path against the longest-prefix match
+ * across the rootfs root and every active bind.src. Bind hits rewrite
+ * to /<bind.dst>/<remainder>; the rootfs hit strips the rootfs prefix
+ * and yields the in-rootfs guest-absolute path. Without the bind branch,
+ * fd-relative `..` from a dirfd opened through a bind dst would fall
+ * through to kernel passthrough and walk past the bind src into the
+ * host fs (resolved security issue, deleted from issues/).
+ *
+ * "Longest-prefix overall" matches forward translation in
+ * tawcroot_path_translate_with_ctx and proc_rewrite — when a self-bind
+ * (src under the rootfs) creates an alias, the bind name wins both
+ * directions, so fd-relative `..` clamps at the bind boundary the
+ * guest expects.
+ *
+ * bind.src is canonicalized at add_bind time via /proc/self/fd of the
+ * same fd the kernel will later report, so a user-supplied src that
+ * traverses a symlink still matches its post-resolution form. -ENOENT
+ * means no prefix matched — e.g. a fd into the host's /proc tree. */
 static long dirfd_to_guest_abs(int dirfd, char *out, size_t out_cap)
 {
 	if (dirfd < 0 || dirfd == AT_FDCWD) return TAWC_EINVAL;
@@ -419,24 +471,32 @@ static long dirfd_to_guest_abs(int dirfd, char *out, size_t out_cap)
 	long n = tawcroot_proc_fd_to_host_path(dirfd, host, sizeof host);
 	if (n < 0) return n;
 
-	if ((size_t)n < tawcroot_rootfs_host_path_len) return TAWC_ENOENT;
-	for (size_t i = 0; i < tawcroot_rootfs_host_path_len; i++)
-		if (host[i] != tawcroot_rootfs_host_path[i]) return TAWC_ENOENT;
-	if ((size_t)n > tawcroot_rootfs_host_path_len &&
-	    host[tawcroot_rootfs_host_path_len] != '/')
-		return TAWC_ENOENT;
+	const struct tawcroot_bind *best_bind = 0;
+	size_t best_pl = 0;
 
-	/* Output invariant: at least one byte written (the leading '/'),
-	 * so the caller may safely index out[len - 1]. */
-	size_t off = 0;
-	out[off++] = '/';
-	for (size_t i = tawcroot_rootfs_host_path_len; i < (size_t)n; i++) {
-		if (host[i] == '/' && off > 0 && out[off - 1] == '/') continue;
-		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
-		out[off++] = host[i];
+	if (host_prefix_match(host, (size_t)n, tawcroot_rootfs_host_path,
+	                      tawcroot_rootfs_host_path_len))
+		best_pl = tawcroot_rootfs_host_path_len;
+
+	for (size_t bi = 0; bi < tawcroot_n_binds; bi++) {
+		const struct tawcroot_bind *b = &tawcroot_binds[bi];
+		if (!b->active || b->src_len == 0) continue;
+		if (!host_prefix_match(host, (size_t)n, b->src, b->src_len))
+			continue;
+		if (b->src_len > best_pl) {
+			best_bind = b;
+			best_pl = b->src_len;
+		}
 	}
-	out[off] = 0;
-	return (long)off;
+
+	if (best_bind)
+		return write_guest_abs_suffix(out, out_cap, host,
+		                              best_pl, (size_t)n,
+		                              best_bind->dst, best_bind->dst_len);
+	if (best_pl > 0)
+		return write_guest_abs_suffix(out, out_cap, host,
+		                              best_pl, (size_t)n, 0, 0);
+	return TAWC_ENOENT;
 }
 
 /* Variant that honours the guest's dirfd for fd-relative resolution.
@@ -455,12 +515,13 @@ static long dirfd_to_guest_abs(int dirfd, char *out, size_t out_cap)
  * and aborts with `Assertion 'path_is_absolute(p)' failed at chase.c`.
  * Lift these to the equivalent guest-absolute path via the dirfd's
  * /proc/self/fd link so tawcroot_path_fold_absolute clamps the `..`
- * at the rootfs boundary, mimicking real chroot(2) semantics for
- * dirfds inside the main rootfs view. Caveat: a dirfd opened through
- * a bind dst points at the bind src on the host, fails the prefix
- * check in dirfd_to_guest_abs (-ENOENT), and falls through to
- * kernel passthrough — the kernel can then `..` past the bind src
- * into the host fs. See issues/tawcroot-fd-relative-dotdot-escapes-bind-src.md. */
+ * at the rootfs boundary, mimicking real chroot(2) semantics. The lift
+ * works for dirfds opened through a bind dst too: dirfd_to_guest_abs
+ * reverse-translates bind-src host paths to /<bind.dst>/<remainder>,
+ * and the second-pass tawcroot_path_translate routes back through the
+ * bind so `..` clamps at the bind boundary. Outside-rootfs+outside-binds
+ * fds (e.g. host /proc tree) still ENOENT and fall through to kernel
+ * passthrough — there's nothing in our view to escape into. */
 static long fetch_and_translate_at(int dirfd, const char *guest_path,
 				   char *path_buf, size_t path_cap,
 				   char *suffix,   size_t suffix_cap,

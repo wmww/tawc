@@ -247,15 +247,31 @@ long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
 	for (size_t i = 0; i < n; i++) b->dst[i] = d[i];
 	b->dst[n] = 0;
 
-	/* Stash the host src path so exec_handler can ferry it through to
-	 * --exec-child for the new tawcroot incarnation to re-open. */
+	/* Stash the host src path canonicalized through the kernel's view —
+	 * /proc/self/fd of the just-opened src_fd resolves any symlinks /
+	 * `..` / trailing slash, giving us the bytes /proc/self/fd will
+	 * later return for any dirfd opened *through* this bind. That match
+	 * is what lets dirfd_to_guest_abs reverse-translate bind-src
+	 * dirfds and clamp fd-relative `..` at the bind-dst boundary
+	 * (issues/tawcroot-fd-relative-dotdot-escapes-bind-src.md). The
+	 * canonical form is also re-openable, so it's still safe to ferry
+	 * through to --exec-child. Fallback to the raw user-supplied path
+	 * if /proc/self/fd is unavailable: the ferry still works, the
+	 * reverse-translate just won't fire for symlink-traversed srcs. */
 	{
-		size_t k = 0;
-		while (src_host[k] && k + 1 < sizeof b->src) {
-			b->src[k] = src_host[k];
-			k++;
+		long pn = tawcroot_proc_fd_to_host_path(b->src_fd, b->src,
+		                                        sizeof b->src);
+		if (pn > 0) {
+			b->src_len = (size_t)pn;
+		} else {
+			size_t k = 0;
+			while (src_host[k] && k + 1 < sizeof b->src) {
+				b->src[k] = src_host[k];
+				k++;
+			}
+			b->src[k]  = 0;
+			b->src_len = k;
 		}
-		b->src[k] = 0;
 	}
 	tawcroot_n_binds++;
 	return 0;

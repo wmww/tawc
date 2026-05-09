@@ -101,8 +101,9 @@ static void mk_bind(struct tawcroot_bind *b, int fd, const char *dst)
 	size_t n = strlen(dst);
 	b->dst_len = n;
 	memcpy(b->dst, dst, n);
-	b->dst[n] = 0;
-	b->src[0] = 0;
+	b->dst[n]  = 0;
+	b->src[0]  = 0;
+	b->src_len = 0;
 }
 
 /* ----- Direct fold tests (was: covered only via resolver) ----- */
@@ -576,7 +577,8 @@ static struct tawcroot_bind mk_bind_with_dst(const char *dst)
 	size_t n = strlen(dst);
 	b.dst_len = n;
 	for (size_t i = 0; i < n; i++) b.dst[i] = dst[i];
-	b.dst[n] = 0;
+	b.dst[n]  = 0;
+	b.src_len = 0;
 	return b;
 }
 
