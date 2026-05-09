@@ -73,12 +73,14 @@ Some keys must be real keyboard events, not text-input-v3 operations:
 
 ### sendKeyEvent mapping
 
-| Android KeyEvent | Action |
-|---|---|
-| KEYCODE_DEL (backspace) | `wl_keyboard` key event (evdev KEY_BACKSPACE=14) |
-| KEYCODE_FORWARD_DEL | `wl_keyboard` key event (evdev KEY_DELETE=111) |
-| KEYCODE_ENTER | `wl_keyboard` key event (evdev KEY_ENTER=28). Also intercepted from `commitText("\n")`. |
-| KEYCODE_TAB | `commit_string("\t")` + `done` |
+Every Android `KeyEvent` we recognise becomes a real `wl_keyboard` press+release pair (text-input-v3 has no key-event channel). Translation lives in `compositor/src/keymap.rs::android_to_evdev` and covers:
+
+- editing: Backspace, Delete, Enter, Tab, Escape, Space
+- navigation: arrows, Home/End, PageUp/Down, Insert
+- modifiers/locks: Shift/Ctrl/Alt/Meta (L+R), CapsLock, NumLock, ScrollLock, Pause, SysRq
+- F1–F12, A–Z, 0–9, common punctuation, full numpad
+
+`commitText("\n")` is intercepted in `nativeCommitText` and routed through the same `KEY_ENTER` path — Gboard sends Enter that way. Anything outside the table (media keys, gamepad buttons, Android-specific BACK/HOME/MENU) is logged and dropped.
 
 ### BaseInputConnection and Editable
 

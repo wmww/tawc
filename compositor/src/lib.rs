@@ -23,6 +23,7 @@ mod compositor;
 mod render;
 mod event_loop;
 mod input;
+mod keymap;
 mod launcher;
 mod text_input;
 mod xwayland;
@@ -305,7 +306,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeCommitTex
     let text: String = env.get_string(&text).map(|s| s.into()).unwrap_or_default();
     // Gboard sends Enter as commitText("\n") — route as a real key event
     if text == "\n" {
-        text_input::send_text_input_event(text_input::TextInputEvent::KeyPress { keycode: text_input::EVDEV_KEY_ENTER }); // KEY_ENTER
+        text_input::send_text_input_event(text_input::TextInputEvent::KeyPress { keycode: keymap::EVDEV_KEY_ENTER });
     } else {
         text_input::send_text_input_event(text_input::TextInputEvent::CommitString {
             text,
@@ -358,30 +359,12 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSendKeyEv
     _class: JClass,
     keycode: i32,
 ) {
-    // Map Android keycodes to text-input-v3 concepts at the JNI boundary.
-    const KEYCODE_DEL: i32 = 67;        // backspace
-    const KEYCODE_FORWARD_DEL: i32 = 112;
-    const KEYCODE_ENTER: i32 = 66;
-    const KEYCODE_TAB: i32 = 61;
-
-    const EVDEV_KEY_BACKSPACE: u32 = 14;
-    const EVDEV_KEY_DELETE: u32 = 111;
-
-    let event = match keycode {
-        KEYCODE_DEL => text_input::TextInputEvent::KeyPress { keycode: EVDEV_KEY_BACKSPACE },
-        KEYCODE_FORWARD_DEL => text_input::TextInputEvent::KeyPress { keycode: EVDEV_KEY_DELETE },
-        KEYCODE_ENTER => text_input::TextInputEvent::KeyPress { keycode: text_input::EVDEV_KEY_ENTER },
-        KEYCODE_TAB => text_input::TextInputEvent::CommitString {
-            text: "\t".to_string(),
-            delete_before: 0,
-            delete_after: 0,
-        },
-        _ => {
-            info!("Unhandled key event: keycode={}", keycode);
-            return;
-        }
-    };
-    text_input::send_text_input_event(event);
+    match keymap::android_to_evdev(keycode) {
+        Some(evdev) => text_input::send_text_input_event(
+            text_input::TextInputEvent::KeyPress { keycode: evdev },
+        ),
+        None => info!("Unhandled key event: keycode={}", keycode),
+    }
 }
 
 // ---------------------------------------------------------------------------

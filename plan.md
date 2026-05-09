@@ -164,14 +164,6 @@ patches, packaging, and the AHB-everywhere Phase 2 plan that follows.
   sequence.
 - Phase 3 (probably skip): server-side GL acceleration.
 
-## wl_keyboard (non-text keys)
-Arrow keys, escape, tab, Ctrl+C/V/Z need wl_keyboard (no text-input-v3 equivalent).
-
-- Solve xkbcommon on Android (XKB_CONFIG_ROOT -> chroot, or embed keymap)
-- seat.add_keyboard() with US layout
-- Map Android key events to wl_keyboard scancodes
-- Modifier state tracking, Bluetooth keyboard support
-
 ## Polish & Protocols
 - Server-side decorations (xdg-decoration)
 - Cursor rendering

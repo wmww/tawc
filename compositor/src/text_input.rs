@@ -38,9 +38,6 @@ use crate::compositor::TawcState;
 // Android → Compositor text input events (via calloop channel)
 // ---------------------------------------------------------------------------
 
-/// Evdev keycode constants for keys sent as wl_keyboard events.
-pub const EVDEV_KEY_ENTER: u32 = 28;
-
 pub enum TextInputEvent {
     /// Insert finalized text (from commitText or tab key). Replaces any
     /// active preedit on the client side per the protocol's done ordering.
