@@ -1,5 +1,6 @@
 package me.phie.tawc.install.distro.manjaro
 
+import me.phie.tawc.install.MirrorProxy
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -32,9 +33,14 @@ internal object GitHubReleaseResolver {
      * the release lacks the asset, the asset is missing a server-side
      * `digest`, or anything else goes wrong.
      */
-    fun resolveLatest(owner: String, repo: String, assetName: String): Asset {
+    fun resolveLatest(
+        owner: String,
+        repo: String,
+        assetName: String,
+        mirrorProxy: MirrorProxy? = null,
+    ): Asset {
         val apiUrl = "https://api.github.com/repos/$owner/$repo/releases/latest"
-        val body = downloadString(apiUrl)
+        val body = downloadString(mirrorProxy?.wrap(apiUrl) ?: apiUrl)
         val json = JSONObject(body)
         val assets = json.optJSONArray("assets")
             ?: throw IOException("GitHub release JSON has no `assets` array (url=$apiUrl)")

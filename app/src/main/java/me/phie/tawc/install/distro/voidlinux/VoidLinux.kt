@@ -35,9 +35,9 @@ internal sealed class VoidLinux(
         verification = BootstrapVerification.None,
     )
 
-    final override fun resolveBootstrap(log: (String) -> Unit): DistroBootstrap {
+    final override fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy?): DistroBootstrap {
         log("void: resolving latest $linuxArch ROOTFS via sha256sum.txt")
-        val r = VoidSha256Resolver.resolveLatest(linuxArch)
+        val r = VoidSha256Resolver.resolveLatest(linuxArch, mirrorProxy)
         log("void: latest=${r.filename} sha256=${r.sha256Hex}")
         return DistroBootstrap(
             url = r.downloadUrl,

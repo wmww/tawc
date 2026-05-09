@@ -1,5 +1,6 @@
 package me.phie.tawc.install.distro.voidlinux
 
+import me.phie.tawc.install.MirrorProxy
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -30,8 +31,9 @@ internal object VoidSha256Resolver {
      * `"aarch64"`) — the glibc variant, never musl. Throws [IOException]
      * if the manifest can't be fetched or the matching line is missing.
      */
-    fun resolveLatest(linuxArch: String): Resolved {
-        val manifest = downloadString("$MIRROR/sha256sum.txt")
+    fun resolveLatest(linuxArch: String, mirrorProxy: MirrorProxy? = null): Resolved {
+        val manifestUrl = "$MIRROR/sha256sum.txt"
+        val manifest = downloadString(mirrorProxy?.wrap(manifestUrl) ?: manifestUrl)
         // Lines look like:
         //   SHA256 (void-x86_64-ROOTFS-20250202.tar.xz) = <64 hex>
         // We want the glibc rootfs, i.e. `void-<arch>-ROOTFS-*.tar.xz`,

@@ -50,12 +50,13 @@ internal object ManjaroArm : Distro {
         verification = BootstrapVerification.None,
     )
 
-    override fun resolveBootstrap(log: (String) -> Unit): DistroBootstrap {
+    override fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy?): DistroBootstrap {
         log("manjaro-arm: resolving latest release via GitHub API")
         val asset = GitHubReleaseResolver.resolveLatest(
             owner = "manjaro-arm",
             repo = "rootfs",
             assetName = "Manjaro-ARM-aarch64-latest.tar.gz",
+            mirrorProxy = mirrorProxy,
         )
         log("manjaro-arm: latest=${asset.downloadUrl} sha256=${asset.sha256Hex}")
         return DistroBootstrap(

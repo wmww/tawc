@@ -14,11 +14,13 @@ import java.net.URL
  * entry per path, regardless of signed-redirect tokens).
  *
  * Verification URLs (PGP `.sig`, ALARM `.md5` sidecars, GitHub
- * Releases REST API) intentionally do **not** flow through this — see
- * notes/cache-proxy.md "What gets cached" for the policy. The
- * security model for cross-mirror cross-checks rests on the two
- * checksum endpoints being independently operated, and proxying both
- * through the same nginx would undo that.
+ * Releases REST API, Void's `sha256sum.txt`) **also** flow through this
+ * in dev builds. That collapses the cross-mirror integrity story
+ * (both checksum endpoints sharing one nginx instead of being
+ * independently operated), but the alternative — tarball cached,
+ * digests fetched fresh — produces a permanent verification mismatch
+ * the moment upstream rotates the artifact, with no in-band recovery.
+ * Release builds never construct a [MirrorProxy].
  *
  * Construction is intentionally light — pass the bare base URL the
  * user supplied via `--es mirrorProxy` and we'll cope with a missing

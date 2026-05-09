@@ -48,11 +48,21 @@ object SignatureVerifier {
      * mismatch, bad signature). Caller must NOT proceed to extract on
      * exception — the gate is there to keep unverified bytes out of
      * the rootfs.
+     *
+     * @param mirrorProxy debug-builds-only knob: when non-null, every
+     *   HTTP fetch here (PGP `.sig`, ALARM `.md5` sidecars) is routed
+     *   through it. Defeats the cross-mirror "two independent operators"
+     *   integrity story by funnelling both endpoints through one nginx,
+     *   but keeps the dev cache coherent: without this, the proxy would
+     *   serve a stale tarball while verification URLs fetched fresh
+     *   upstream digests, producing a permanent md5 mismatch until the
+     *   proxy was manually cleared. Release builds always pass null.
      */
     fun verify(
         context: Context,
         tarball: File,
         verification: BootstrapVerification,
+        mirrorProxy: me.phie.tawc.install.MirrorProxy? = null,
     ) {
         when (verification) {
             BootstrapVerification.None -> {
@@ -65,8 +75,8 @@ object SignatureVerifier {
                 return
             }
 
-            is BootstrapVerification.Pgp -> verifyPgp(context, tarball, verification)
-            is BootstrapVerification.CrossMirrorMd5 -> verifyCrossMirrorMd5(tarball, verification)
+            is BootstrapVerification.Pgp -> verifyPgp(context, tarball, verification, mirrorProxy)
+            is BootstrapVerification.CrossMirrorMd5 -> verifyCrossMirrorMd5(tarball, verification, mirrorProxy)
             is BootstrapVerification.Sha256 -> verifySha256(tarball, verification)
         }
     }
@@ -115,9 +125,10 @@ object SignatureVerifier {
         context: Context,
         tarball: File,
         v: BootstrapVerification.Pgp,
+        mirrorProxy: me.phie.tawc.install.MirrorProxy?,
     ) {
         Log.d(TAG, "Verifying PGP signature for ${tarball.name}")
-        val sigBytes = downloadBytes(v.signatureUrl)
+        val sigBytes = downloadBytes(mirrorProxy?.wrap(v.signatureUrl) ?: v.signatureUrl)
         val signature = parseDetachedSignature(sigBytes)
         val keys = loadKeyRing(context, v.keyResource)
         val key = keys.getPublicKey(signature.keyID)
@@ -175,6 +186,7 @@ object SignatureVerifier {
     private fun verifyCrossMirrorMd5(
         tarball: File,
         v: BootstrapVerification.CrossMirrorMd5,
+        mirrorProxy: me.phie.tawc.install.MirrorProxy?,
     ) {
         require(v.checksumUrls.size >= 2) {
             "CrossMirrorMd5 needs at least 2 independent checksum URLs"
@@ -186,8 +198,14 @@ object SignatureVerifier {
             require(url.startsWith("https://")) {
                 "CrossMirrorMd5 URL must be HTTPS (was $url) — defeats the cross-check otherwise"
             }
+            // Validate the upstream URL is HTTPS (above), then optionally
+            // route the fetch through the dev mirror proxy. With the proxy
+            // in use the cross-mirror story collapses (both fetches go
+            // through one nginx), but it keeps the cache coherent with
+            // the proxied tarball — see [verify].
+            val effectiveUrl = mirrorProxy?.wrap(url) ?: url
             try {
-                val body = String(downloadBytes(url), Charsets.US_ASCII)
+                val body = String(downloadBytes(effectiveUrl), Charsets.US_ASCII)
                 val token = body.trim().substringBefore(' ').lowercase()
                 require(token.length == 32 && token.all { it.isDigit() || it in 'a'..'f' }) {
                     "Malformed MD5 fetched from $url: '$token'"

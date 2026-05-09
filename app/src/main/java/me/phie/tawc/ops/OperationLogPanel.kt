@@ -122,30 +122,8 @@ class OperationLogPanel(private val activity: Activity) {
         val cs = CoroutineScope(Dispatchers.Main)
         collectScope = cs
 
-        val danger = activity.getColor(R.color.tawc_danger)
-        val success = activity.getColor(R.color.tawc_success)
-        val defaultTextColor = MaterialColors.getColor(
-            statusText, com.google.android.material.R.attr.colorOnSurface,
-        )
-
         cs.launch {
-            op.progress.collectLatest { p ->
-                statusText.text = p.message
-                statusText.setTextColor(when (p.stage) {
-                    OperationStage.FAILED -> danger
-                    OperationStage.DONE -> success
-                    else -> defaultTextColor
-                })
-                if (p.percent != null) {
-                    progressBar.isIndeterminate = false
-                    progressBar.progress = p.percent
-                } else {
-                    progressBar.isIndeterminate = true
-                }
-                val terminal = p.stage.isTerminal || p.stage == OperationStage.IDLE
-                progressBar.visibility = if (terminal) View.GONE else View.VISIBLE
-                cancelButton.visibility = if (terminal) View.GONE else View.VISIBLE
-            }
+            op.progress.collectLatest { p -> applyProgress(p) }
         }
 
         cs.launch {
@@ -153,11 +131,45 @@ class OperationLogPanel(private val activity: Activity) {
         }
     }
 
-    /** Stop collecting. Leaves the views as-is so the owner can show the frozen final state. */
+    /**
+     * Stop collecting. Leaves the views as-is so the owner can show the
+     * frozen final state. Reads the bound op's latest progress value
+     * synchronously *before* cancelling the scope: a terminal-then-
+     * unregister race means the registry-driven unbind can fire before
+     * the panel's collector has dispatched the final emit, in which case
+     * the views would otherwise stay stuck on the penultimate stage —
+     * that's why uninstall ("DELETING → DONE", microseconds apart) used
+     * to never paint the green "Deleted" status. We pump the StateFlow
+     * value ourselves to close that window.
+     */
     fun unbind() {
+        boundOperation?.progress?.value?.let { applyProgress(it) }
         collectScope?.cancel()
         collectScope = null
         boundOperation = null
+    }
+
+    private fun applyProgress(p: OperationProgress) {
+        val danger = activity.getColor(R.color.tawc_danger)
+        val success = activity.getColor(R.color.tawc_success)
+        val defaultTextColor = MaterialColors.getColor(
+            statusText, com.google.android.material.R.attr.colorOnSurface,
+        )
+        statusText.text = p.message
+        statusText.setTextColor(when (p.stage) {
+            OperationStage.FAILED -> danger
+            OperationStage.DONE -> success
+            else -> defaultTextColor
+        })
+        if (p.percent != null) {
+            progressBar.isIndeterminate = false
+            progressBar.progress = p.percent
+        } else {
+            progressBar.isIndeterminate = true
+        }
+        val terminal = p.stage.isTerminal || p.stage == OperationStage.IDLE
+        progressBar.visibility = if (terminal) View.GONE else View.VISIBLE
+        cancelButton.visibility = if (terminal) View.GONE else View.VISIBLE
     }
 
     /**

@@ -86,8 +86,14 @@ interface Distro {
      * server-computed SHA-256 from the `digest` field. Runs before
      * download; failures throw so we never attempt a download whose
      * verification can't be set up.
+     *
+     * @param mirrorProxy debug-builds-only knob: when non-null,
+     *   implementations that fetch over HTTP for resolution (GitHub
+     *   Releases API, Void's `sha256sum.txt`) should route through it
+     *   so the dev cache stays coherent with the proxied tarball
+     *   download. See `notes/cache-proxy.md`.
      */
-    fun resolveBootstrap(log: (String) -> Unit): DistroBootstrap = bootstrap
+    fun resolveBootstrap(log: (String) -> Unit, mirrorProxy: MirrorProxy? = null): DistroBootstrap = bootstrap
 
     /** Base packages to `pacman -S --needed` (or equivalent) at install time. */
     val basePackages: List<String>

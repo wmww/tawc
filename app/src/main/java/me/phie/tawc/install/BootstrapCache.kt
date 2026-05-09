@@ -63,6 +63,24 @@ class BootstrapCache(private val dir: File) {
     }
 
     /**
+     * Drop the cached tarball + verified-md5 sidecar for [arch] /
+     * [format]. Called by [me.phie.tawc.install.Installer] after a
+     * verification failure: the local file is by definition not what
+     * we want, and a stale `.md5.verified` sidecar would lie to a
+     * future offline-fallback verify.
+     */
+    fun evict(arch: String, format: BootstrapFormat) {
+        val tarball = pathFor(arch, format)
+        if (tarball.exists() && tarball.delete()) {
+            Log.d(TAG, "Evicted bootstrap cache: ${tarball.name}")
+        }
+        val sidecar = File(tarball.parentFile, tarball.name + ".md5.verified")
+        if (sidecar.exists() && sidecar.delete()) {
+            Log.d(TAG, "Evicted bootstrap sidecar: ${sidecar.name}")
+        }
+    }
+
+    /**
      * Path to the FIFO that [Archive.extractAsRoot] streams zstd-
      * decompressed bytes through when extracting `.tar.zst` bootstraps
      * (toybox tar can't read zstd, and piping into `su`'s stdin loses

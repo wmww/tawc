@@ -4,6 +4,7 @@ import android.content.Context
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.util.AppOwnership
 import me.phie.tawc.install.util.HumanSize
+import java.io.File
 import java.io.IOException
 import java.io.InterruptedIOException
 
@@ -114,7 +115,7 @@ class Installer(
         // ran against (matters for distros with dynamic resolution like
         // ManjaroArm, where the latest GitHub release tag changes
         // weekly). Failure here aborts before disk state is laid down.
-        val bootstrap = distro.resolveBootstrap(log)
+        val bootstrap = distro.resolveBootstrap(log, mirrorProxy)
 
         store.save(
             Installation(
@@ -130,51 +131,85 @@ class Installer(
             )
         )
 
-        checkCancel()
-        // Stage 1: download. BootstrapCache owns the cache dir
-        // entirely — filename scheme, freshness mtime, TTL janitor —
-        // so the installer just hands it (cacheKey, url, format).
-        progress(InstallProgress(
-            InstallStage.DOWNLOADING,
-            "Downloading ${distro.linuxArch} bootstrap…",
-        ))
         // Funnel the bootstrap fetch through the dev-time mirror cache
         // when set. The proxy URL is only what the wire request goes to;
         // metadata.json's [Installation.sourceUrl] still records the
         // canonical upstream URL above so the install record reads
         // sensibly across runs with/without the proxy.
         val effectiveBootstrapUrl = mirrorProxy?.wrap(bootstrap.url) ?: bootstrap.url
-        log("download: $effectiveBootstrapUrl")
-        val cacheFile = cache.download(
-            distro.cacheKey,
-            effectiveBootstrapUrl,
-            bootstrap.format,
-        ) { read, total ->
-            val pct = total?.let { ((read * 100) / it).toInt().coerceIn(0, 100) }
-            val totalLabel = total?.let { HumanSize.format(it) } ?: "?"
+
+        // Stages 1+2: download and integrity-check, with one retry on
+        // verify failure. The cached tarball at
+        // `<cacheDir>/install/bootstrap-<arch>.tar.<ext>` survives across
+        // uninstall+reinstall cycles, and Downloader's "skip if size
+        // matches Content-Length" check happily reuses a corrupt blob if
+        // the on-wire size happens to match — without this loop a single
+        // bad download (or a stale entry served by some upstream cache)
+        // sticks forever. On the second failure we surface a hint
+        // pointing at the dev cache proxy, since that's the most common
+        // source of "tarball drifted out of sync with the live .md5".
+        var attempt = 0
+        var verified: File? = null
+        while (verified == null) {
+            checkCancel()
+            // Stage 1: download. BootstrapCache owns the cache dir
+            // entirely — filename scheme, freshness mtime, TTL janitor —
+            // so the installer just hands it (cacheKey, url, format).
             progress(InstallProgress(
                 InstallStage.DOWNLOADING,
-                "Downloading bootstrap: ${HumanSize.format(read)} / $totalLabel",
-                pct,
+                "Downloading ${distro.linuxArch} bootstrap…",
             ))
-        }
+            log("download: $effectiveBootstrapUrl" + if (attempt > 0) " (retry $attempt)" else "")
+            val cf = cache.download(
+                distro.cacheKey,
+                effectiveBootstrapUrl,
+                bootstrap.format,
+            ) { read, total ->
+                val pct = total?.let { ((read * 100) / it).toInt().coerceIn(0, 100) }
+                val totalLabel = total?.let { HumanSize.format(it) } ?: "?"
+                progress(InstallProgress(
+                    InstallStage.DOWNLOADING,
+                    "Downloading bootstrap: ${HumanSize.format(read)} / $totalLabel",
+                    pct,
+                ))
+            }
 
-        checkCancel()
-        // Stage 2: integrity check. PGP-verify the just-downloaded
-        // tarball against the distro's [BootstrapVerification] before
-        // any byte hits the rootfs. Throws on mismatch / missing
-        // signature key / forged blob — and parks the install in
-        // FAILED upstream so the user can uninstall + retry from a
-        // clean tree. Distros that opt in to
-        // [BootstrapVerification.None] (e.g. ALARM, where upstream
-        // publishes no signature) get a loud warning and proceed —
-        // see notes/installation.md "Bootstrap integrity".
-        progress(InstallProgress(
-            InstallStage.VERIFYING,
-            "Verifying bootstrap signature…",
-        ))
-        log("verify: ${bootstrap.verification::class.simpleName}")
-        SignatureVerifier.verify(context, cacheFile, bootstrap.verification)
+            checkCancel()
+            // Stage 2: integrity check. PGP-verify the just-downloaded
+            // tarball against the distro's [BootstrapVerification] before
+            // any byte hits the rootfs. Throws on mismatch / missing
+            // signature key / forged blob — and parks the install in
+            // FAILED upstream so the user can uninstall + retry from a
+            // clean tree. Distros that opt in to
+            // [BootstrapVerification.None] (e.g. ALARM, where upstream
+            // publishes no signature) get a loud warning and proceed —
+            // see notes/installation.md "Bootstrap integrity".
+            progress(InstallProgress(
+                InstallStage.VERIFYING,
+                "Verifying bootstrap signature…",
+            ))
+            log("verify: ${bootstrap.verification::class.simpleName}")
+            try {
+                SignatureVerifier.verify(context, cf, bootstrap.verification, mirrorProxy)
+                verified = cf
+            } catch (e: IOException) {
+                if (attempt >= 1) {
+                    if (mirrorProxy != null) {
+                        log(
+                            "verify: failed twice through the dev cache proxy at " +
+                                "${mirrorProxy.base} — its cached entries (tarball + " +
+                                "digests) appear out of sync with each other. " +
+                                "Ask the user to clear build/cache-proxy/cache/ and retry.",
+                        )
+                    }
+                    throw e
+                }
+                log("verify: failed (${e.message}); evicting local cache and retrying once")
+                cache.evict(distro.cacheKey, bootstrap.format)
+                attempt++
+            }
+        }
+        val cacheFile: File = verified
 
         checkCancel()
         // Stage 3: extract. The rootfs dir does not exist yet — the
