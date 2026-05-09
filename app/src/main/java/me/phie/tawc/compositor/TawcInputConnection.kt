@@ -138,14 +138,13 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         // `commitText(word, 1)` then `commitText("\n", 1)` for every later
         // Enter, treating the previous word as composing and "re-committing"
         // it. The bytes are unchanged, but the IC's normal path would emit
-        // `delete_surrounding_text(len(word))` + `commit_string(word)`. That
-        // delete is wrong on the wire whenever the actual buffer cursor has
-        // moved past the marked region (e.g. it's now past a `\n` GTK didn't
-        // include in surrounding text), and we'd slice arbitrary bytes off
-        // the buffer — the user-visible "extra h prepended on each Enter".
-        // Since the commit text equals the bytes already there, skip the
-        // wire round-trip entirely; the buffer is already correct. Real
-        // tap-to-retype with different text falls through to the normal path.
+        // backspaces + commit_string and re-render the same word, with the
+        // backspaces sometimes slicing past the marked region into bytes
+        // GTK didn't include in surrounding text — the user-visible "extra h
+        // prepended on each Enter". When the commit text equals the bytes
+        // already there, skip the wire round-trip entirely; the buffer is
+        // already correct. Real tap-to-retype with different text falls
+        // through to the normal path.
         if (!composingRegionIsPreedit) {
             val ed = editable
             if (ed != null) {
@@ -163,6 +162,12 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         val (before, after) = computeReplaceDeltas()
         Log.d(TAG, "InputConnection.commitText: \"$str\" cursorPos=$newCursorPosition delete=$before/$after")
         super.commitText(text, newCursorPosition)
+        // Pass the delete deltas (if any) through to the compositor so the
+        // wire delete + commit happens atomically inside one done() — the
+        // client otherwise fires set_surrounding_text(cause=other) between
+        // the two and our preedit-clearing logic undoes the IME's commit.
+        // (Standalone deleteSurroundingText takes the [emitKeys] path
+        // instead — see its override below.)
         NativeBridge.nativeCommitText(str, before, after)
         composingRegionIsPreedit = false
         return true
@@ -199,12 +204,47 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
     }
 
     /**
+     * Convert a (before, after) UTF-16 unit pair into the count of
+     * Backspace / Forward-Delete key presses that produce the same
+     * deletion in the focused Wayland client. We treat each user-perceived
+     * character (codepoint, with surrogate pairs counted once) as one key
+     * press — that's what every Wayland client interprets a Backspace to
+     * mean, regardless of whether it tracks an editable buffer for IME
+     * purposes.
+     *
+     * When the Editable mirror is empty (the Wayland client never pushed
+     * surrounding text — terminals, anything that enables text-input-v3
+     * just for the soft keyboard but holds no editable buffer), the unit
+     * counts pass straight through. That's exact for ASCII, which is the
+     * only case where an empty mirror coexists with a non-zero unit count.
+     */
+    private fun unitsToKeyCounts(beforeUnits: Int, afterUnits: Int): Pair<Int, Int> {
+        if (beforeUnits == 0 && afterUnits == 0) return Pair(0, 0)
+        val ed = editable
+        if (ed == null || ed.isEmpty()) return Pair(beforeUnits, afterUnits)
+        val cursor = Selection.getSelectionStart(ed).coerceIn(0, ed.length)
+        val beforeStart = (cursor - beforeUnits).coerceAtLeast(0)
+        val afterEnd = (cursor + afterUnits).coerceAtMost(ed.length)
+        return Pair(
+            Character.codePointCount(ed, beforeStart, cursor),
+            Character.codePointCount(ed, cursor, afterEnd),
+        )
+    }
+
+    /** Send `before` Backspace + `after` Forward-Delete key events. */
+    private fun emitKeys(before: Int, after: Int) {
+        repeat(before) { NativeBridge.nativeSendKeyEvent(KeyEvent.KEYCODE_DEL) }
+        repeat(after) { NativeBridge.nativeSendKeyEvent(KeyEvent.KEYCODE_FORWARD_DEL) }
+    }
+
+    /**
      * If the Editable has a composing region that DOES NOT correspond to
      * the Wayland preedit (i.e. set by [setComposingRegion] — committed
      * text on the Wayland side), return the (before, after) UTF-16 unit
-     * deltas around the cursor that span that region. The caller passes
-     * them to native; the compositor turns them into
-     * `delete_surrounding_text` on the wire.
+     * deltas around the cursor that span that region. Caller passes them
+     * to [NativeBridge.nativeCommitText] / [NativeBridge.nativeSetComposingText];
+     * the compositor turns them into a `delete_surrounding_text` event
+     * emitted in the same atomic done() as the commit/preedit.
      *
      * Returns (0, 0) when:
      *  - the region IS the Wayland preedit (the protocol's done-ordering
@@ -235,8 +275,10 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
         Log.d(TAG, "InputConnection.deleteSurroundingText: before=$beforeLength after=$afterLength")
+        // Snapshot key counts BEFORE super collapses the deleted span.
+        val (beforeKeys, afterKeys) = unitsToKeyCounts(beforeLength, afterLength)
         super.deleteSurroundingText(beforeLength, afterLength)
-        NativeBridge.nativeDeleteSurroundingText(beforeLength, afterLength)
+        emitKeys(beforeKeys, afterKeys)
         return true
     }
 

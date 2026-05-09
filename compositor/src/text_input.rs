@@ -41,31 +41,26 @@ use crate::compositor::TawcState;
 pub enum TextInputEvent {
     /// Insert finalized text (from commitText or tab key). Replaces any
     /// active preedit on the client side per the protocol's done ordering.
-    /// If the client-side text under the soon-to-be-replaced composing
-    /// region was committed text (Gboard's `setComposingRegion` flow,
-    /// not a previous `setComposingText`), `delete_before`/`delete_after`
-    /// are non-zero and identify the bytes the client should drop before
-    /// the new commit — measured in UTF-16 code units around the cursor.
+    /// `delete_before`/`delete_after` are non-zero when the IME is replacing
+    /// a `setComposingRegion`-marked region (committed text on Wayland);
+    /// the protocol's atomic done-ordering combines the delete and commit
+    /// in one round-trip, which the client treats as IME-initiated rather
+    /// than user-typing — important so the client doesn't fire
+    /// `set_surrounding_text(cause=other)` between the delete and commit
+    /// and trip our preedit-clearing logic.
     CommitString { text: String, delete_before: u32, delete_after: u32 },
-    /// Set preedit/composing text (from setComposingText). Replaces the
-    /// previous preedit; cursor lives at the end of the preedit.
-    /// `delete_before`/`delete_after` carry the same meaning as for
-    /// `CommitString` — when Gboard marks already-committed text as
-    /// composing (`setComposingRegion`) and then `setComposingText`
-    /// replaces it, the original text must be deleted from the client's
-    /// committed buffer before the new preedit is shown.
+    /// Set preedit/composing text (from setComposingText). Same atomic
+    /// delete-then-replace contract as [CommitString].
     SetPreeditString { text: String, delete_before: u32, delete_after: u32 },
     /// Finalize current preedit (from finishComposingText): commit it as
     /// final text and clear the preedit. Without this, finishComposingText
     /// would discard the composing text.
     FinishComposingText,
-    /// Delete surrounding text (from Android IME's deleteSurroundingText).
-    /// before/after are in Android's UTF-16 code units, NOT bytes or chars —
-    /// the compositor converts using the client's stored surrounding text.
-    DeleteSurroundingText { before: u32, after: u32 },
     /// Send an actual wl_keyboard key event (evdev keycode).
     /// Used for Enter, Backspace, Delete, etc. — keys that should be real
-    /// key events rather than text-input-v3 operations.
+    /// key events rather than text-input-v3 operations. Also covers the
+    /// IC's translation of standalone `deleteSurroundingText` into
+    /// Backspace presses.
     KeyPress { keycode: u32 },
 }
 
@@ -534,12 +529,19 @@ impl TextInputState {
 
             match &event {
                 TextInputEvent::CommitString { text, delete_before, delete_after } => {
-                    // If the client's current cursor sits inside committed
-                    // text that Gboard has marked as composing (via
-                    // setComposingRegion), the IME is asking us to *replace*
-                    // that text with this commit. The replacement requires
-                    // an explicit delete_surrounding_text — Wayland's preedit
-                    // model doesn't carry "this committed text is composing".
+                    // If the IME is replacing a setComposingRegion span (still
+                    // committed text on Wayland), we get non-zero deltas.
+                    // Apply them as `delete_surrounding_text` in the SAME
+                    // done() cycle as the commit_string — the protocol's
+                    // atomic delete-then-insert is what keeps the client from
+                    // firing a `set_surrounding_text(cause=other)` between
+                    // the delete and the commit (which would land in our
+                    // preedit-clearing logic and undo the IME's commit).
+                    //
+                    // Standalone deleteSurroundingText (Gboard's plain
+                    // backspace) does NOT come through here — the IC
+                    // translates it to wl_keyboard Backspaces at the source,
+                    // see TawcInputConnection.deleteSurroundingText.
                     let (before_bytes, after_bytes) = utf16_units_to_bytes(
                         inst.surrounding.as_ref(),
                         *delete_before,
@@ -559,8 +561,9 @@ impl TextInputState {
                     inst.current_preedit = None;
                 }
                 TextInputEvent::SetPreeditString { text, delete_before, delete_after } => {
-                    // Same delete-then-replace pattern as CommitString, but
-                    // the new content lands as preedit, not committed text.
+                    // Same atomic delete-then-replace as CommitString, but
+                    // the new content lands as preedit overlay rather than
+                    // committed text.
                     let (before_bytes, after_bytes) = utf16_units_to_bytes(
                         inst.surrounding.as_ref(),
                         *delete_before,
@@ -598,30 +601,6 @@ impl TextInputState {
                         }
                     }
                     ti.preedit_string(None, 0, 0);
-                }
-                TextInputEvent::DeleteSurroundingText { before, after } => {
-                    // Android sends UTF-16 code unit counts. Wayland needs
-                    // UTF-8 byte counts. Use the client's last reported
-                    // surrounding text to convert exactly.
-                    let (before_bytes, after_bytes) = utf16_units_to_bytes(
-                        inst.surrounding.as_ref(),
-                        *before,
-                        *after,
-                    );
-                    if before_bytes == 0 && after_bytes == 0 {
-                        // Nothing to delete; skip the round-trip entirely.
-                        continue;
-                    }
-                    // Per done ordering: existing preedit is replaced by
-                    // cursor (step 1), then surrounding text is deleted
-                    // relative to that cursor (step 2). We don't touch the
-                    // preedit here, so any active preedit is cleared as a
-                    // side-effect. That matches Android semantics, where
-                    // deleteSurroundingText typically applies after
-                    // finishing or replacing the composing region.
-                    ti.preedit_string(None, 0, 0);
-                    ti.delete_surrounding_text(before_bytes, after_bytes);
-                    inst.current_preedit = None;
                 }
                 TextInputEvent::KeyPress { .. } => {
                     unreachable!("KeyPress handled in event_loop.rs")
@@ -800,9 +779,16 @@ fn byte_offset_to_utf16_count(text: &str, byte_offset: usize) -> usize {
 /// byte counts, using the client's stored surrounding text. Falls back to
 /// 1:1 mapping (ASCII assumption) if no surrounding text is available.
 ///
+/// Used only by the combined commit-or-preedit-with-delete path
+/// (Gboard's `setComposingRegion` + `commitText`/`setComposingText`
+/// "tap to retype" replace). Standalone `deleteSurroundingText` is
+/// translated to wl_keyboard Backspace key events at the IC layer
+/// before reaching the channel — see `TawcInputConnection`.
+///
 /// Critical for non-BMP characters (emoji, etc.): a single emoji is 1 Rust
 /// `char` but 2 UTF-16 code units and 4 UTF-8 bytes. Android's
-/// `deleteSurroundingText(2, 0)` for an emoji must become `(4, 0)`.
+/// `setComposingText("X", 2, 0)` to replace an emoji must become a
+/// `delete_surrounding_text(4, 0)` on the wire.
 fn utf16_units_to_bytes(
     surrounding: Option<&SurroundingText>,
     before_units: u32,
@@ -813,9 +799,7 @@ fn utf16_units_to_bytes(
         None => {
             // No surrounding text from client; assume 1 byte == 1 UTF-16 unit
             // (true for ASCII). Wrong for non-ASCII but we have nothing to
-            // measure against — Android IMEs typically only send delete after
-            // we've reported surrounding text anyway.
-            info!("utf16_units_to_bytes: no surrounding text, assuming ASCII");
+            // measure against.
             return (before_units, after_units);
         }
     };
@@ -851,6 +835,7 @@ fn utf16_units_to_bytes(
 
     (before_bytes as u32, after_bytes as u32)
 }
+
 
 // ---------------------------------------------------------------------------
 // Protocol dispatch: zwp_text_input_manager_v3

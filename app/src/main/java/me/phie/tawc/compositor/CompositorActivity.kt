@@ -126,7 +126,11 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
                     val before = intent.getIntExtra("before", 0)
                     val after = intent.getIntExtra("after", 0)
                     Log.d(TAG, "TestInput: deleteSurroundingText $before/$after")
-                    NativeBridge.nativeDeleteSurroundingText(before, after)
+                    // Backspace / Forward-Delete keys — same wire as the IC path.
+                    // The bypass exists to skip the local Editable mirror, not to
+                    // exercise a separate Wayland code path.
+                    repeat(before) { NativeBridge.nativeSendKeyEvent(android.view.KeyEvent.KEYCODE_DEL) }
+                    repeat(after) { NativeBridge.nativeSendKeyEvent(android.view.KeyEvent.KEYCODE_FORWARD_DEL) }
                 }
                 "me.phie.tawc.KEY_EVENT" -> {
                     val keycode = intent.getIntExtra("keycode", -1)

@@ -341,19 +341,6 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeFinishCom
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeDeleteSurroundingText(
-    _env: JNIEnv,
-    _class: JClass,
-    before: i32,
-    after: i32,
-) {
-    text_input::send_text_input_event(text_input::TextInputEvent::DeleteSurroundingText {
-        before: before as u32,
-        after: after as u32,
-    });
-}
-
-#[unsafe(no_mangle)]
 pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSendKeyEvent(
     _env: JNIEnv,
     _class: JClass,

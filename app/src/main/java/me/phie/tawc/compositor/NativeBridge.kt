@@ -121,7 +121,12 @@ object NativeBridge {
      *  from the Wayland client's committed buffer first — non-zero only
      *  when the IME is replacing a region established by
      *  setComposingRegion (still committed text on Wayland), zero
-     *  otherwise. */
+     *  otherwise. The compositor sends this as a single atomic
+     *  `delete_surrounding_text` + `commit_string` + `done` so the client
+     *  doesn't fire `set_surrounding_text(cause=other)` between the two
+     *  and trip our preedit-clearing logic. (Standalone
+     *  deleteSurroundingText goes through [nativeSendKeyEvent] from the
+     *  IC instead — see TawcInputConnection.) */
     external fun nativeCommitText(text: String, deleteBefore: Int, deleteAfter: Int)
 
     /** setComposingText from InputConnection. Same delete semantics as
@@ -130,9 +135,6 @@ object NativeBridge {
 
     /** finishComposingText from InputConnection */
     external fun nativeFinishComposingText()
-
-    /** deleteSurroundingText from InputConnection */
-    external fun nativeDeleteSurroundingText(before: Int, after: Int)
 
     /** sendKeyEvent mapped to keycode */
     external fun nativeSendKeyEvent(keycode: Int)

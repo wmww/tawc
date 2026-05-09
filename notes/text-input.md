@@ -20,7 +20,7 @@ Text-input-v3 is a double-buffered, serial-synchronized protocol.
 - `enter(surface)` / `leave(surface)`: Text input focus.
 - `preedit_string(text, cursor_begin, cursor_end)`: Composing text preview. cursor_begin/cursor_end are byte offsets — when equal, shown as a caret; when different, shown as highlight.
 - `commit_string(text)`: Final text to insert.
-- `delete_surrounding_text(before_length, after_length)`: Bytes to delete. Relative to cursor position from client's last `set_surrounding_text`. If preedit is present, before_length counts from preedit start, after_length from preedit end.
+- `delete_surrounding_text(before_length, after_length)`: Bytes to delete. Relative to cursor position from client's last `set_surrounding_text`. Emitted ONLY in the same `done()` cycle as a `commit_string` / `preedit_string` (Gboard's `setComposingRegion` replace pattern) — see "Why standalone deletion is a key event" below.
 - `done(serial)`: Apply all pending events. Serial = number of client commits seen.
 
 **Done event application order (critical):**
@@ -45,12 +45,19 @@ Text-input-v3 is a double-buffered, serial-synchronized protocol.
 
 Firefox won't send text-input-v3 `enable` unless the seat has keyboard capability and the surface has keyboard focus. The seat must advertise keyboard capability (`seat.add_keyboard()`) and send `wl_keyboard.enter` to the focused surface.
 
-### Keys sent as wl_keyboard events (not text-input-v3)
+### Why standalone deletion is a key event
 
-Some keys must be real keyboard events, not text-input-v3 operations:
-- **Backspace** (evdev KEY_BACKSPACE=14): Real key event lets the client handle deletion natively, avoiding UTF-8 byte/character count mismatch issues.
-- **Forward Delete** (evdev KEY_DELETE=111): Same rationale.
-- **Enter** (evdev KEY_ENTER=28): Real key event required for single-line fields (URL bars) which ignore `commit_string("\n")`.
+Wayland's `delete_surrounding_text` is defined relative to "the current cursor index from the client's last `set_surrounding_text`." Clients that enable text-input but don't push surrounding text — terminals are the canonical case (VTE under Wayland brings the soft keyboard up but holds no editable buffer behind the prompt) — close the connection if you send it to them, since the cursor index it references is undefined for them. The integration test `test_surroundingless_client_uses_keyboard_for_backspace` exercises this shape against `gtk4-debug-app text-input-no-surrounding`.
+
+The IC translates standalone `deleteSurroundingText(N, M)` into N×Backspace + M×Forward-Delete `wl_keyboard` events at the source, before the JNI call — `TawcInputConnection.deleteSurroundingText`. UTF-16-unit counts become user-perceived-character counts via `unitsToKeyCounts` (uses `Character.codePointCount` on the Editable mirror), so an emoji surrogate pair → one Backspace, not two. When the Editable is empty (terminal-like clients, no mirror to consult) the unit counts pass straight through — exact for ASCII, which is the only case where an empty mirror coexists with a non-zero unit count.
+
+The combined commit-or-preedit-WITH-delete path (Gboard's `setComposingRegion` + `commitText`/`setComposingText` "tap to retype") still uses the protocol's `delete_surrounding_text` event in the SAME `done()` as the `commit_string` / `preedit_string`. Splitting that into BS keys + commit_string would let the client fire `set_surrounding_text(cause=other)` between the two — which the compositor's preedit-clearing logic interprets as "the user moved the cursor, drop the IME's preedit," undoing the commit. The protocol path keeps it atomic.
+
+Open trade-off: the combined path still vulnerable to the same crash as standalone delete if a surrounding-less client (e.g. terminal) is the one receiving the `setComposingRegion` + replace flow. Gboard does that on tap-to-retype of typed words; in a terminal the user would have to tap-select a typed word to trigger it, which is rare. Tracked as a follow-up — proper fix needs the compositor to suppress the preedit-clear when the cause=other event is the echo of its own freshly-emitted Backspaces.
+
+### Keys also sent as wl_keyboard events
+
+- **Enter** (evdev KEY_ENTER=28): real key event required for single-line fields (URL bars) which ignore `commit_string("\n")`. Gboard sends this both via `sendKeyEvent(KEYCODE_ENTER)` and via `commitText("\n")` — the JNI layer reroutes the latter to the same key path.
 
 ### Not needed
 
@@ -63,11 +70,11 @@ Some keys must be real keyboard events, not text-input-v3 operations:
 
 | InputConnection method | Action | Wayland equivalent |
 |---|---|---|
-| `commitText(text, pos)` | Insert finalized text | `commit_string(text)` + `done` |
-| `setComposingText(text, pos)` | Set composing text | `preedit_string(text, len, len)` + `done` |
+| `commitText(text, pos)` | Insert finalized text | (atomic delete for setComposingRegion replace) `delete_surrounding_text(before, after)` + `commit_string(text)` + `done` |
+| `setComposingText(text, pos)` | Set composing text | (atomic delete) `delete_surrounding_text(before, after)` + `preedit_string(text, len, len)` + `done` |
 | `finishComposingText()` | Finalize composing text | `commit_string(tracked_preedit)` + `preedit_string(None)` + `done` |
-| `deleteSurroundingText(before, after)` | Delete around cursor (char counts) | `delete_surrounding_text(byte_before, byte_after)` + `done` |
-| `sendKeyEvent(event)` | Hardware key event | Mapped to wl_keyboard or text-input-v3 |
+| `deleteSurroundingText(before, after)` | Delete around cursor (char counts) | Backspace×before + Forward-Delete×after on `wl_keyboard` (see "Why standalone deletion is a key event") |
+| `sendKeyEvent(event)` | Hardware key event | `wl_keyboard` press+release via `keymap::android_to_evdev` |
 | `getTextBeforeCursor(n)` | IME queries editor text | Served from BaseInputConnection's Editable |
 | `getTextAfterCursor(n)` | IME queries editor text | Served from BaseInputConnection's Editable |
 
@@ -129,9 +136,14 @@ Android Gboard (IME)
      ↓
 InputConnection callbacks (TawcInputConnection.kt)
   - Calls super (updates BaseInputConnection Editable)
-  - Calls JNI (sends to compositor)
+  - deleteSurroundingText: unitsToKeyCounts → emitKeys → nativeSendKeyEvent
+    (and STOP — no nativeDeleteSurroundingText, see "Why standalone deletion is a key event")
+  - commitText/setComposingText with computeReplaceDeltas() != 0:
+    nativeCommitText(text, before, after) / nativeSetComposingText(text, before, after)
+    — the deletes ride atomically with the commit/preedit on the wire
+  - Plain commitText/setComposingText/finishComposingText: corresponding native call
      ↓
-TextInputEvent enum + calloop channel
+TextInputEvent enum + calloop channel (KeyPress / CommitString / SetPreeditString / FinishComposingText)
      ↓
 Event loop source (event_loop.rs)
      ↓
@@ -141,7 +153,7 @@ Else: text_input_state.handle_android_event()
 Protocol events to client:
   - preedit_string(text, cursor_begin=len, cursor_end=len)
   - commit_string(text)
-  - delete_surrounding_text(byte_before, byte_after)
+  - delete_surrounding_text(byte_before, byte_after) — only with a same-cycle commit/preedit
   - done(serial)
      ↓
 Wayland client (Firefox) applies per done ordering
@@ -197,9 +209,11 @@ Wayland's text-input-v3 has no equivalent — preedit is overlay, not a span ove
 - `setComposingRegion(start, end)` → flag = `false` (the marked region is committed text on Wayland).
 - `commitText` / `finishComposingText` / `updateFromCompositor` → flag = `false` (no region after).
 
-When the next `setComposingText` or `commitText` runs and the flag is `false`, the IC computes (before, after) UTF-16 unit deltas around the cursor that span the existing composing region. These deltas travel as extra parameters on `nativeSetComposingText` / `nativeCommitText`. The compositor emits `delete_surrounding_text(before_bytes, after_bytes)` first, then the new preedit/commit string. Without this delete, the original word stays in committed text and the replacement becomes a duplicate.
+When the next `setComposingText` or `commitText` runs and the flag is `false`, the IC computes (before, after) UTF-16 unit deltas around the cursor that span the existing composing region. These deltas travel as extra parameters on `nativeSetComposingText` / `nativeCommitText`. The compositor emits `delete_surrounding_text(before_bytes, after_bytes)` first, then the new preedit/commit string, all in one `done()` cycle. Without this delete the original word stays in committed text and the replacement becomes a duplicate.
 
 This only works when the cursor is *inside* the composing region — Wayland's `delete_surrounding_text` deletes around the cursor. IMEs typically pick a region that contains the cursor (the word at the click location), so the constraint is rarely violated. When the cursor sits outside the region, the IC falls back to plain preedit_string and accepts the divergence — `set_surrounding_text` from the client will reconcile the Editable.
+
+Standalone `deleteSurroundingText` (Gboard's plain Backspace) does NOT come through this path — see "Why standalone deletion is a key event" above.
 
 ### Cursor synchronisation gate on delta propagation
 
@@ -223,9 +237,7 @@ Three units are in play and they don't all agree:
 - **Android `InputConnection`:** UTF-16 code units (Java `char`). `deleteSurroundingText(2, 0)` for an emoji means 2 UTF-16 units, which is one non-BMP scalar = 4 UTF-8 bytes.
 - **Rust `char`:** Unicode scalar values. One emoji = 1 Rust char = 2 UTF-16 units = 4 UTF-8 bytes.
 
-`utf16_units_to_bytes` walks the stored surrounding text counting UTF-16 units (`char::len_utf16`) and accumulates UTF-8 bytes (`char::len_utf8`). Falls back to 1:1 mapping when no surrounding text is available. `byte_offset_to_utf16_count` does the inverse direction for selection updates pushed back to Android.
-
-Backspace and forward-delete are sent as real `wl_keyboard` key events instead of `delete_surrounding_text`, sidestepping the conversion entirely — the client deletes a character with full knowledge of its own text encoding.
+For surrounding-text round-trips, `byte_offset_to_utf16_count` converts the client's UTF-8 byte cursor/anchor into the UTF-16 code-unit counts Android wants. For the combined commit-with-delete path, `utf16_units_to_bytes` walks the stored surrounding text counting UTF-16 units (`char::len_utf16`) and accumulates UTF-8 bytes (`char::len_utf8`), falling back to 1:1 mapping when no surrounding text is available. For standalone deletion, `unitsToKeyCounts` (Kotlin) walks the Editable mirror to convert UTF-16 unit counts into Backspace key counts — one keypress per codepoint, so a surrogate-pair emoji becomes one Backspace, not two.
 
 ### Keyboard visibility deferred
 
