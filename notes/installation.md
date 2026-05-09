@@ -55,7 +55,7 @@ Everything lives under the app's private data dir:
       cache/install/bootstrap-<cacheKey>.tar.{zst,gz}.part        # transient Downloader in-flight file (sweep evicts unconditionally)
       distros/
         <id>/
-          metadata.json              # JSON: schemaVersion, id, label?, distro, arch, method, installedAtMillis, installedAtAppVersionCode, sourceUrl, state, failure?
+          metadata.json              # JSON: schemaVersion, id, label?, distro, arch, method, installedAtMillis, installedAtAppVersionCode, sourceUrl, state, failure?, tawcStamp?, tawcInstalls?
           rootfs/                    # the chroot itself (what `arch-chroot` would chroot into)
 
 The on-disk layout, the [Installation] data class, and
@@ -263,17 +263,25 @@ reported as `InstallProgress` to the UI and per-line logged to logcat
      [TawcrootMethod]). No on-disk env state inside the rootfs that
      the app version would have to keep rewriting; env changes pick
      up next entry without a reinstall.
-   - `LibhybrisLinker.link` symlinks the APK-bundled libhybris tree
-     into `<rootfs>/usr/local/lib/`. The source tree at
-     `/data/data/me.phie.tawc/files/libhybris/lib/` is extracted from
-     `assets/libhybris/<abi>.tar` by `CompositorService.ensureLibhybris‐
-     Extracted` (called from both compositor service start and here,
-     so the chroot install never sees a half-extracted tree). Each
-     entry under `lib/` becomes a symlink in `/usr/local/lib/`,
-     including the `libhybris/` plugin subdir (EGL/Vulkan platform
-     plugins + bionic-linker plugin) and the `gl-shims/` subdir.
+   - `TawcInstaller.installInto` lays down the APK-bundled libhybris
+     tree (and its glvnd vendor JSON) as **real files** inside the
+     rootfs, not symlinks and not bind mounts. Same generic mechanism
+     handles any future "ship file X into every rootfs" need; only
+     consumer today is `LibhybrisInstallProvider`. Files land at
+     `/usr/lib/hybris/{*.so,gl-shims/,libhybris/}` (a tawc-owned
+     namespace; `/usr/local/lib/` stays free for the user's own
+     installs) plus `/usr/share/glvnd/egl_vendor.d/00_libhybris.json`.
      `LD_LIBRARY_PATH` (set by [RootfsEnv]) is
-     `/usr/local/lib/gl-shims:/usr/local/lib`.
+     `/usr/lib/hybris/gl-shims:/usr/lib/hybris`. The source tree at
+     `<filesDir>/libhybris/lib/` is extracted from
+     `assets/libhybris/<abi>.tar` by `CompositorService.ensureLibhybris‐
+     Extracted` (called from both compositor service start and here).
+     The set of files written into the rootfs is recorded in
+     `metadata.json` (`tawcInstalls` array, `tawcStamp` matching
+     `CompositorService.currentExtractStamp`); `TawcInstaller` is
+     also called from `TawcApplication.onCreate` so an APK upgrade
+     wipes the old set and re-copies fresh on first app start. See
+     *Why copy, not bind* below for the design call.
    - `rm -rf` of bootstrap cruft: `/boot`, `/usr/lib/firmware`,
      `/usr/lib/modules`, `/var/cache/pacman/pkg`, and the docs/locale
      trees under `/usr/share`. ~1.8 GB of immediate reclaim before
@@ -418,16 +426,69 @@ canonical `/data/data/...` form — naive substring matching misses
 every entry. The match is also a strict prefix check (`==` or starts
 with `r"/"`) so paths containing `.` don't over-match other mounts.
 
-## Compositor socket
+## /usr/share/tawc
 
-The compositor still puts its Wayland socket at
-`/data/data/me.phie.tawc/wayland-0`. The mount snippet bind-mounts the
-entire `/data/data/me.phie.tawc` directory at the matching path inside
-the chroot, and [RootfsEnv] exports `WAYLAND_DISPLAY` as that absolute
-path — wayland clients honour absolute values directly, so no
-`/tmp/wayland-0` symlink is needed. The data-dir bind-mount is a benign
-path recursion (the rootfs lives inside the very dir we mount), but no
-tool actually walks into it.
+The compositor puts its Wayland socket at
+`<appData>/share/wayland-0` and Xwayland's `xtmp/.X11-unix/` listening
+socket dir at `<appData>/share/xtmp/.X11-unix/`. Each install method
+bind-mounts JUST `<appData>/share/` at `/usr/share/tawc` inside the
+rootfs (asymmetric bind on tawcroot/proot, real bind-mount on chroot).
+[RootfsEnv] exports `WAYLAND_DISPLAY=/usr/share/tawc/wayland-0` so
+wayland clients see the canonical in-rootfs path. Xwayland's X11
+sockets get an additional asymmetric bind from
+`<appData>/share/xtmp/.X11-unix` to `/tmp/.X11-unix`, since libxcb
+hardcodes `/tmp/.X11-unix/X<N>` for the `:N` form of `$DISPLAY`.
+
+We deliberately **don't** bind the whole `<appData>` tree the way an
+earlier version did — that exposed the libhybris asset extract
+(`<filesDir>/libhybris/`), the proot scratch dir, the bootstrap cache
+(`<cacheDir>/install/...`), and every other piece of app-private
+state to in-rootfs writes. A package install scriptlet hitting any of
+those would corrupt host state shared across rootfses (and tawcroot
+runs as the actual app uid, so file permissions don't help — the
+rootfs has the same uid as the bind src files). Limiting the bind to
+`<appData>/share/` keeps the cross-rootfs writable surface scoped to
+"things the compositor explicitly publishes for clients."
+
+## Why copy, not bind
+
+App-shipped files inside the rootfs (libhybris, glvnd vendor JSON,
+anything else `TawcInstaller` might gain in future) are **copied**
+in, not bound. Copies are per-rootfs-owned, so a rootfs that overwrites
+or deletes them doesn't affect other rootfses or the host-side asset
+extract. The cost is disk (~12 MB per arm64 install) and a brief
+copy on each app upgrade.
+
+Binding was the obvious shape (no install-time work, source-of-truth
+auto-tracks the APK) but ran into two structural problems:
+
+1. **No read-only bind in tawcroot or proot.** Real `mount --bind -o ro`
+   semantics aren't available at the path-translation layer; both tools
+   would have to grow a per-bind RO flag plus per-syscall enforcement
+   (openat write-mode → EROFS, fchmod / ftruncate / setxattr blocked
+   on tainted fds, etc.). Without RO, anything inside the rootfs can
+   write through the bind into shared host state.
+2. **Bind = replacement, not merge.** A single-file bind into a
+   distro-managed dir like `/usr/share/glvnd/egl_vendor.d/` doesn't
+   show up in `readdir` at the parent (tawcroot's `getdents` is a
+   passthrough; the kernel only sees the on-disk dir). And a whole-dir
+   bind would shadow files the distro package (e.g. libglvnd) wants
+   to ship there, breaking package install.
+
+`TawcInstaller` records its writes in `Installation.tawcInstalls` (a
+list of `{src, dest, type=COPY|LINK}`) tagged with the
+`tawcStamp` from `CompositorService.currentExtractStamp(context)` —
+which combines `versionCode + lastUpdateTime` so every `adb install
+-r` triggers a refresh, not just real version bumps. On app start,
+`TawcApplication` calls `TawcInstaller.installAll` which walks every
+slot; mismatched stamp → wipe the previous manifest's dests, run all
+providers, copy/link, persist. Empty manifest (no libhybris on
+x86_64) still records the stamp so subsequent starts hit the no-op
+fast path.
+
+If/when a real RO bind primitive exists in tawcroot, this can revert
+to bind for everything except files that have to coexist with
+distro-managed siblings in the same dir.
 
 ## CLI command interface
 

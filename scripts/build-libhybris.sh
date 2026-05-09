@@ -198,12 +198,32 @@ if [ ! -x "$LIBHYBRIS_DIR/hybris/configure" ] || [ "$CLEAN" = "1" ]; then
 fi
 
 # ── configure ──
+# `--prefix=/usr/lib/hybris --libdir=/usr/lib/hybris` is what makes
+# libhybris bake the on-device install path into its .so files
+# directly:
+#
+#   - libtool stamps DT_RUNPATH=$libdir into every shared library, so
+#     libhybris-common's DT_NEEDED libs (libEGL → libhybris-common,
+#     etc.) resolve through /usr/lib/hybris on the device without an
+#     LD_LIBRARY_PATH override.
+#   - The PKGLIBDIR macro (consumed by hybris/{egl,vulkan}/ws.c to
+#     dlopen `eglplatform_<name>.so` / `vulkanplatform_<name>.so`) is
+#     `$(pkglibdir)/` = `$libdir/$PACKAGE/` = `/usr/lib/hybris/libhybris/`.
+#   - LINKER_PLUGIN_DIR (common/hooks.c → bionic linker plugin dlopen)
+#     is `$(libdir)/libhybris/linker` = `/usr/lib/hybris/libhybris/linker`.
+#
+# Both line up with [LibhybrisInstallProvider]'s GUEST_PLUGIN_DIR /
+# `…/linker`, so the Kotlin side doesn't need HYBRIS_*_DIR env-var
+# overrides anymore. (LD_LIBRARY_PATH is still needed for the
+# by-name `dlopen("libEGL.so")` first-level lookup since we don't
+# ship --enable-glvnd; see notes/wsi-layer.md.)
 if [ ! -f "$BUILD_DIR/Makefile" ] || [ "$CLEAN" = "1" ]; then
-    echo "==> configure (host=$HOST_TRIPLE prefix=/usr/local)"
+    echo "==> configure (host=$HOST_TRIPLE prefix=/usr/lib/hybris)"
     ( cd "$BUILD_DIR" && \
       ./configure \
         --host="$HOST_TRIPLE" \
-        --prefix=/usr/local \
+        --prefix=/usr/lib/hybris \
+        --libdir=/usr/lib/hybris \
         --with-android-headers="$ANDROID_HEADERS_DIR" \
         --enable-arch=arm64 \
         --enable-wayland \
@@ -249,7 +269,7 @@ for dir in $DIRS; do
 done
 
 # ── Verify ──
-LIB_DIR="$PREFIX/usr/local/lib"
+LIB_DIR="$PREFIX/usr/lib/hybris"
 echo "==> verify"
 MISSING=""
 for lib in \
@@ -285,10 +305,11 @@ fi
 
 # ── GL shims ──
 # Self-contained shim directory that goes alongside libhybris in the
-# install tree. The chroot install symlinks this into /usr/local/lib/
-# gl-shims and we put it on LD_LIBRARY_PATH ahead of /usr/local/lib so
-# `dlopen("libGL.so.1")` and `dlopen("libGLESv2.so.2")` land on our
-# shims instead of glvnd / Mesa. See deps/libhybris-shims/libgl-shim.c for why.
+# install tree. [LibhybrisInstallProvider] copies it into each rootfs
+# at `/usr/lib/hybris/gl-shims/`, and [RootfsEnv] puts that path on
+# LD_LIBRARY_PATH ahead of `/usr/lib/hybris` so `dlopen("libGL.so.1")`
+# and `dlopen("libGLESv2.so.2")` land on our shims instead of glvnd /
+# Mesa. See deps/libhybris-shims/libgl-shim.c for why.
 #
 # Layout:
 #   gl-shims/
@@ -311,7 +332,7 @@ patchelf --set-soname libGLESv2_hybris.so "$SHIM_DIR/libGLESv2_hybris.so"
     -o "$SHIM_DIR/libGLESv2.so.2" \
     "$REPO_DIR/deps/libhybris-shims/libglesv2-shim.c" \
     -L"$SHIM_DIR" -l:libGLESv2_hybris.so \
-    -Wl,-rpath,/usr/local/lib/gl-shims \
+    -Wl,-rpath,/usr/lib/hybris/gl-shims \
     -Wl,--no-as-needed \
     -Wl,-soname,libGLESv2.so.2
 ln -sf libGLESv2.so.2 "$SHIM_DIR/libGLESv2.so"
@@ -325,7 +346,7 @@ ln -sf libGLESv2.so.2 "$SHIM_DIR/libGL.so.1"
     -o "$SHIM_DIR/libGL.so" \
     "$REPO_DIR/deps/libhybris-shims/libgl-shim.c" \
     -L"$SHIM_DIR" -l:libGL.so.1 \
-    -Wl,-rpath,/usr/local/lib/gl-shims \
+    -Wl,-rpath,/usr/lib/hybris/gl-shims \
     -Wl,--no-as-needed \
     -Wl,-soname,libGL.so.1
 

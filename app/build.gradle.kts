@@ -292,7 +292,14 @@ tawcAbis.forEach { abi ->
 if ("arm64-v8a" in tawcAbis) {
     val tawcRoot = rootProject.projectDir
     val libhybrisAbi = "arm64-v8a"
-    val libhybrisInstallDir = "$tawcRoot/build/libhybris-aarch64/install/usr/local"
+    // build-libhybris.sh now passes `--prefix=/usr/lib/hybris
+    // --libdir=/usr/lib/hybris` so all the on-device paths libhybris
+    // bakes into its .so files (DT_RUNPATH, PKGLIBDIR, LINKER_PLUGIN_DIR)
+    // line up with where [LibhybrisInstallProvider] copies them. The
+    // DESTDIR install therefore lays files at
+    // `install/usr/lib/hybris/{libfoo.so, libhybris/, gl-shims/}` —
+    // pack from there.
+    val libhybrisInstallDir = "$tawcRoot/build/libhybris-aarch64/install/usr/lib/hybris"
     val libhybrisAssetFile = "src/main/assets/libhybris/$libhybrisAbi.tar"
 
     val buildLibhybrisTask = tasks.register<Exec>("buildLibhybris") {
@@ -317,17 +324,24 @@ if ("arm64-v8a" in tawcAbis) {
         // symlinks from individual assets, but happily ships an opaque
         // .tar that the runtime can untar with symlinks intact. We use
         // `--format=ustar` for portability and chdir into the install
-        // tree so paths in the tar are relative ("lib/libhybris-...",
-        // not "/home/ai/...").
+        // tree so paths in the tar are relative.
+        //
+        // Tar contents are flat (libEGL.so, libhybris/, gl-shims/, …
+        // at the tar root) — `CompositorService.ensureLibhybrisExtracted`
+        // extracts them into `<filesDir>/libhybris/` and
+        // [LibhybrisInstallProvider] walks that dir directly.
         doFirst { mkdir(file(libhybrisAssetFile).parentFile) }
         workingDir = file(libhybrisInstallDir)
-        // Exclude libtool's `.la` archives and pkg-config metadata —
-        // they reference host-side cross-toolchain paths that don't
-        // exist on-device and aren't read at runtime.
+        // Exclude:
+        //  - `.la`        — libtool archives, reference host paths
+        //  - `pkgconfig/` — `.pc` files, also reference host paths
+        //  - `include/`   — C headers, not needed at runtime
+        //  - `bin/`       — `getprop`/`setprop` utilities, not used
         commandLine("tar", "--format=ustar",
             "--exclude=*.la", "--exclude=pkgconfig",
-            "-cf", "${project.projectDir}/$libhybrisAssetFile", "lib")
-        inputs.dir("$libhybrisInstallDir/lib")
+            "--exclude=include", "--exclude=bin",
+            "-cf", "${project.projectDir}/$libhybrisAssetFile", ".")
+        inputs.dir(libhybrisInstallDir)
         outputs.file(libhybrisAssetFile)
     }
 

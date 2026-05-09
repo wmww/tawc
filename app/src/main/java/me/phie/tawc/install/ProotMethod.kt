@@ -105,12 +105,14 @@ class ProotMethod(context: Context) : InstallationMethod {
      *   - `-0`                  — emulate uid 0 for the tracee tree.
      *   - `-b /dev`, `-b /proc`, `-b /sys` — pass kernel-managed
      *     filesystems through; proot doesn't fake these.
-     *   - `-b <appData>:<appData>` — same path inside and outside so
-     *     `WAYLAND_DISPLAY` (a unix socket at
-     *     `/data/data/me.phie.tawc/wayland-0`) is reachable.
-     *   - `-b <appData>/xtmp/.X11-unix:/tmp/.X11-unix` — surfaces
-     *     Xwayland's listening socket at the canonical X11 path. Fake
-     *     bind, no in-rootfs symlink needed.
+     *   - `-b <appData>/share:/usr/share/tawc` — exposes JUST the
+     *     compositor's `share/` subdir (wayland socket, Xwayland
+     *     xtmp) at /usr/share/tawc inside the rootfs. Deliberately
+     *     not the whole <appData> tree.
+     *   - `-b <appData>/share/xtmp/.X11-unix:/tmp/.X11-unix` —
+     *     surfaces Xwayland's listening socket at the canonical X11
+     *     path. Asymmetric bind (libxcb hardcodes /tmp/.X11-unix for
+     *     `:N` $DISPLAY).
      *   - `--link2symlink`      — turn hardlink calls into symlink
      *     calls. Pacman occasionally hardlinks across mounts; proot
      *     can't always satisfy that on Android.
@@ -129,20 +131,24 @@ class ProotMethod(context: Context) : InstallationMethod {
     override fun startInside(rootfs: String, command: String?): Process {
         // Pre-create the bind targets and proot's scratch dir. proot
         // refuses to bind to a guest path that doesn't exist on disk,
-        // so we materialise `<rootfs>/data/data/<pkg>` (the wayland
+        // so we materialise `<rootfs>/usr/share/tawc` (the wayland
         // socket bind) and the libhybris bind mounts (see
         // [LIBHYBRIS_BIND_DIRS]) before invoking it.
         File(prootTmpDir).mkdirs()
         File(devShmDir).mkdirs()
-        File(rootfs, TAWC_DATA.removePrefix("/")).mkdirs()
+        File(rootfs, TawcrootMethod.GUEST_TAWC_SHARE_DIR.removePrefix("/")).mkdirs()
         for (dir in LIBHYBRIS_BIND_DIRS) {
             File(rootfs, dir.removePrefix("/")).mkdirs()
         }
-        // Source for the X11-socket fake bind. Compositor mkdirs this
-        // before launching Xwayland too; recreating here lets pre-
+        // Source for the X11-socket fake bind plus the wayland socket
+        // dir. Compositor mkdirs the X11-unix subdir before launching
+        // Xwayland too; recreating here is harmless and lets pre-
         // compositor entries (install steps, tests) bind it without
-        // relying on launch order.
-        File("$TAWC_DATA/xtmp/.X11-unix").mkdirs()
+        // relying on launch order. The bare /share dir is also mkdir'd
+        // so proot can satisfy the `-b` source-must-exist check on a
+        // fresh device before the compositor has run.
+        File(TAWC_SHARE).mkdirs()
+        File("$TAWC_SHARE/xtmp/.X11-unix").mkdirs()
 
         // We invoke proot through `/system/bin/sh -c …` rather than as
         // direct ProcessBuilder argv. Direct exec of the proot binary
@@ -366,16 +372,21 @@ class ProotMethod(context: Context) : InstallationMethod {
         for (dir in LIBHYBRIS_BIND_DIRS) {
             addAll(listOf("-b", dir))
         }
-        // Compositor's data dir is at the same absolute path inside
-        // the rootfs view so the wayland-0 socket path is valid in
-        // both worlds. (See ChrootMounter.mountScript for the chroot
-        // counterpart.) WAYLAND_DISPLAY is set to the absolute path
-        // by RootfsEnv — no /tmp/wayland-0 symlink is needed.
-        addAll(listOf("-b", "$TAWC_DATA:$TAWC_DATA"))
+        // Expose JUST the compositor's `share/` subdir at
+        // /usr/share/tawc inside the rootfs — wayland socket and
+        // Xwayland's xtmp dir live there. Deliberately not the whole
+        // <appData> tree (which would expose libhybris's asset
+        // extract, the proot scratch dir, and everything else under
+        // <filesDir> to in-rootfs writes — see notes/installation.md
+        // "/usr/share/tawc"). RootfsEnv sets WAYLAND_DISPLAY to the
+        // in-rootfs path; no /tmp/wayland-0 symlink needed.
+        addAll(listOf("-b", "$TAWC_SHARE:${TawcrootMethod.GUEST_TAWC_SHARE_DIR}"))
         // Surface Xwayland's listening socket at the canonical X11
         // path. Asymmetric bind, no in-rootfs symlink. Pre-created in
-        // [startInside] so proot accepts the source.
-        addAll(listOf("-b", "$TAWC_DATA/xtmp/.X11-unix:/tmp/.X11-unix"))
+        // [startInside] so proot accepts the source. libxcb hardcodes
+        // /tmp/.X11-unix/X<N> for the `:N` form of $DISPLAY, so we
+        // can't just expose it via /usr/share/tawc.
+        addAll(listOf("-b", "$TAWC_SHARE/xtmp/.X11-unix:/tmp/.X11-unix"))
     }
 
     /**
@@ -444,12 +455,14 @@ class ProotMethod(context: Context) : InstallationMethod {
     companion object {
         const val KEY = "proot"
         private const val TAG = "tawc-install"
-        private const val TAWC_DATA = "/data/data/me.phie.tawc"
+        /** Compositor's tawc-shared dir (wayland socket, Xwayland xtmp).
+         *  Same shape as [TawcrootMethod.GUEST_TAWC_SHARE_DIR] —
+         *  source kept identical between the two methods. */
+        private const val TAWC_SHARE = "/data/data/me.phie.tawc/share"
 
         /**
          * Android paths bound into the proot view so libhybris can
-         * dlopen bionic-side GPU libraries (see
-         * [LibhybrisLinker]). Mirrors the bind set in
+         * dlopen bionic-side GPU libraries. Mirrors the bind set in
          * [me.phie.tawc.install.ChrootMounter.mountScript] minus the
          * ones already covered by `-b /dev` (binderfs) and the chroot-
          * only `mount --rbind` recursion of /apex sub-mounts (proot
@@ -462,7 +475,8 @@ class ProotMethod(context: Context) : InstallationMethod {
          * weren't introduced until Android 11. The emulator has all
          * of these too, so the filter just guards against very old
          * device images, not against running on the emulator (where
-         * libhybris itself is ABI-gated out by [LibhybrisLinker]).
+         * libhybris itself is ABI-gated out — the libhybris asset
+         * isn't shipped for x86_64).
          */
         val LIBHYBRIS_BIND_DIRS: List<String> = listOf(
             "/apex",

@@ -2,10 +2,10 @@
 
 Chroot apps reach the GPU through the stock libhybris Wayland EGL plugin.
 Wayland apps set `HYBRIS_EGLPLATFORM=wayland`, libhybris's
-`libEGL.so` at `/usr/local/lib` is loaded by name, and buffer sharing
+`libEGL.so` at `/usr/lib/hybris` is loaded by name, and buffer sharing
 goes over the `android_wlegl` Wayland protocol. We carry no custom
 client-side EGL code — the only local changes are inside our libhybris
-fork. GL shim libraries in `/usr/local/lib/gl-shims/` sit in front of
+fork. GL shim libraries in `/usr/lib/hybris/gl-shims/` sit in front of
 distro libraries to prevent incompatible code paths:
 - `libGL.so`, `libGLESv2.so.2`: GLX stubs + GLES forwarding (see below)
 
@@ -15,37 +15,53 @@ Set by `RootfsEnv.kt` via a `/usr/bin/env -i KEY=VAL …` wrapper around
 the in-rootfs `bash -lc` on every entry — no on-disk profile.d state:
 
 ```
-WAYLAND_DISPLAY=/data/data/me.phie.tawc/wayland-0
+WAYLAND_DISPLAY=/usr/share/tawc/wayland-0
 XDG_RUNTIME_DIR=/tmp
-LD_LIBRARY_PATH=/usr/local/lib/gl-shims:/usr/local/lib
+LD_LIBRARY_PATH=/usr/lib/hybris/gl-shims:/usr/lib/hybris
 HYBRIS_EGLPLATFORM=wayland
 DISPLAY=:0
 SDL_VIDEODRIVER=wayland,x11
 GDK_GL=gles:always
 ```
 
-`/usr/local/lib/gl-shims` holds the GL shim libraries — populated by
-the chroot installer as a directory symlink to the APK-extracted
-libhybris tree (`/data/data/me.phie.tawc/files/libhybris/lib/gl-shims/`,
-generated host-side by `scripts/build-libhybris.sh`).
-`/usr/local/lib` is where libhybris's main `.so`s live as per-file
-symlinks pointing at the same APK-extracted tree (libEGL.so,
-libGLESv2.so, libGLESv1_CM.so, libvulkan.so.1, plus eglplatform_*.so
-and vulkanplatform_*.so plugins under `/usr/local/lib/libhybris/`,
-also a directory symlink). See `notes/installation.md`'s CONFIGURING
-stage for the exact wiring (`LibhybrisLinker.kt`).
+`/usr/lib/hybris/gl-shims` holds the GL shim libraries — copied into
+the rootfs at install time by `TawcInstaller` /
+`LibhybrisInstallProvider` from the APK-extracted tree
+(`<filesDir>/libhybris/gl-shims/`, generated host-side by
+`scripts/build-libhybris.sh`).
+`/usr/lib/hybris` is where libhybris's main `.so`s live as real files
+copied from the same APK-extracted tree (libEGL.so, libGLESv2.so,
+libGLESv1_CM.so, libvulkan.so.1, plus eglplatform_*.so and
+vulkanplatform_*.so plugins under `/usr/lib/hybris/libhybris/`).
+TawcInstaller runs again on every app start; an APK upgrade with a
+new libhybris bumps the `tawcStamp` and the rootfs's previous set
+gets wiped + re-copied. See `notes/installation.md`'s CONFIGURING
+stage and "Why copy, not bind" for the design call.
+
+No `HYBRIS_*_DIR` env-var overrides are needed:
+`scripts/build-libhybris.sh` runs `--prefix=/usr/lib/hybris
+--libdir=/usr/lib/hybris`, so the `PKGLIBDIR` (in
+`deps/libhybris/hybris/{egl,vulkan}/ws.c`) and `LINKER_PLUGIN_DIR`
+(in `deps/libhybris/hybris/common/hooks.c`) macros baked into the
+.so files at autotools build time already point at the right
+on-device dirs. libtool also stamps `DT_RUNPATH=/usr/lib/hybris`
+into every .so so DT_NEEDED resolution between libhybris's own libs
+works without a search-path env var. `LD_LIBRARY_PATH` is still
+needed for the by-name `dlopen("libEGL.so")` first-level lookup
+(libhybris's libEGL isn't on the default loader search path and
+we don't ship `--enable-glvnd`).
 
 We deliberately build libhybris **without** `--enable-glvnd` (see
 `scripts/build-libhybris.sh`): the glvnd path drags `libglvnd` in
 as a hard runtime dep, which in turn drags `libGLX_mesa.so` — that
 can't init without a DRI render node and breaks Firefox's startup
 probes. So libhybris installs as plain `libEGL.so`, and putting
-`/usr/local/lib` on `LD_LIBRARY_PATH` ahead of the system path picks
+`/usr/lib/hybris` on `LD_LIBRARY_PATH` ahead of the system path picks
 it up by name.
 
 ## Client flow
 
-1. App calls `eglGetDisplay(wl_display)` → loads `/usr/local/lib/libEGL.so`
+1. App calls `eglGetDisplay(wl_display)` → loads `/usr/lib/hybris/libEGL.so`
    (libhybris).
 2. libhybris loads `libhybris/eglplatform_wayland.so`, binds the
    compositor's `android_wlegl` global, and creates a gralloc-backed
@@ -81,8 +97,8 @@ libhybris's GLES (`libGLESv2_hybris.so`) so `dlsym(handle,
 "glBindTexture")` still resolves through the dependency chain. Built
 host-side by `scripts/build-libhybris.sh`; ship as part of the
 APK's `libhybris/<abi>.tar` asset, extracted at runtime, and exposed
-in the chroot at `/usr/local/lib/gl-shims/` (directory symlink to the
-extracted tree).
+in the rootfs at `/usr/lib/hybris/gl-shims/` (real file copy via
+`TawcInstaller`/`LibhybrisInstallProvider`).
 
 If we ever switch back on `--enable-glvnd` in libhybris and arrange
 for libglvnd to be present *without* Mesa (or with Mesa neutered),

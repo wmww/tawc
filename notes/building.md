@@ -152,12 +152,15 @@ bash scripts/build-libhybris.sh           # incremental
 bash scripts/build-libhybris.sh --clean   # distclean + rebuild
 ```
 
-Output: `build/libhybris-aarch64/install/usr/local/lib/`, mirroring the
-on-device install layout (`libhybris-common.so{,.1,.1.0.0}`,
+Output: `build/libhybris-aarch64/install/usr/local/lib/`, the
+autotools install layout (`libhybris-common.so{,.1,.1.0.0}`,
 `libEGL.so{,.1,.1.0.0}`, `libGLESv2.so{,.2,.2.0.0}`,
 `libGLESv1_CM.so{,.1,.1.0.1}`, `libvulkan.so{,.1,.1.2.183}`,
 `libsync.so{,.2,.2.0.0}`, plus the `libhybris/` plugin tree and
-`libhybris/linker/q.so` for the Android 10+ bionic linker).
+`libhybris/linker/q.so` for the Android 10+ bionic linker). On-device
+this lands at `/usr/lib/hybris/` instead — see "/usr/lib/hybris" in
+notes/installation.md and notes/wsi-layer.md for the env-var
+overrides that paper over the build-time `/usr/local/lib` baking.
 
 The build is in-tree (`builddir == sourcedir`) because some libhybris
 subdirs reference wayland-scanner-generated headers via `-I`s that
@@ -167,9 +170,9 @@ on the source tree.
 Bundled into the APK by the Gradle `packLibhybris` task as
 `app/src/main/assets/libhybris/arm64-v8a.tar`. Extracted at
 first compositor start by `CompositorService.ensureLibhybrisExtracted`,
-and symlinked into each rootfs at chroot install time by
-`LibhybrisLinker.kt`. End-to-end automatic — no manual steps after
-`./gradlew assembleDebug`.
+and copied into each rootfs by `TawcInstaller`/`LibhybrisInstallProvider`
+at install time and on first app start after an APK upgrade.
+End-to-end automatic — no manual steps after `./gradlew assembleDebug`.
 
 #### Why the cross-compile and not the NDK
 

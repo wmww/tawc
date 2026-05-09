@@ -15,7 +15,9 @@ tawcroot bring-up — it's not exposed to release users.
 libhybris-driven GPU acceleration works under proot too: `ProotMethod`
 binds `/apex /vendor /system /system_ext /linkerconfig` into the
 rootfs view (mirroring `ChrootMounter.mountScript`'s mount set),
-and `LibhybrisLinker.link` runs for both methods. EGL, GLES, and
+and `TawcInstaller`/`LibhybrisInstallProvider` copies the libhybris
+tree into both methods' rootfses (real files at `/usr/lib/hybris/`,
+not symlinks). EGL, GLES, and
 Vulkan all reach the Android driver under proot. Firefox works too,
 modulo two extra setup steps the proot path applies automatically
 (see "Firefox under proot" below).

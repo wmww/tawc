@@ -1,5 +1,6 @@
 package me.phie.tawc.install
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
@@ -32,6 +33,29 @@ data class Installation(
      * registry-resolved displayName so old installs still read sensibly.
      */
     val label: String? = null,
+    /**
+     * Stamp identifying the app version whose [tawcInstalls] entries
+     * are currently materialised in the rootfs. Compared against
+     * `CompositorService.currentExtractStamp(context)` by
+     * [TawcInstaller.installInto] — when they diverge, the old entries
+     * are wiped from the rootfs and replaced with a fresh install.
+     *
+     * Null on legacy records and on freshly-extracted rootfses that
+     * haven't gone through [TawcInstaller] yet (treated as "stale,
+     * needs install"). Empty installs (provider returned nothing —
+     * e.g. x86_64 emulator with no libhybris asset) record the stamp
+     * with an empty [tawcInstalls] list so the no-op fast path still
+     * fires on subsequent runs.
+     */
+    val tawcStamp: String? = null,
+    /**
+     * Manifest of files [TawcInstaller] has copied/linked into the
+     * rootfs from app-side sources, used to wipe the previous set
+     * before applying a new one when the app version changes. Empty
+     * on legacy records — first [TawcInstaller.installInto] populates
+     * it.
+     */
+    val tawcInstalls: List<TawcInstall> = emptyList(),
 ) {
     fun rootfsDir(store: InstallationStore): File = store.rootfsDir(id)
     fun metadataFile(store: InstallationStore): File = store.metadataFile(id)
@@ -48,6 +72,12 @@ data class Installation(
         put("state", state.name)
         if (failure != null) put("failure", failure)
         if (label != null) put("label", label)
+        if (tawcStamp != null) put("tawcStamp", tawcStamp)
+        if (tawcInstalls.isNotEmpty()) {
+            put("tawcInstalls", JSONArray().apply {
+                for (e in tawcInstalls) put(e.toJson())
+            })
+        }
     }.toString(2)
 
     /**
@@ -137,7 +167,48 @@ data class Installation(
                 schemaVersion = obj.optInt("schemaVersion", 1),
                 installedAtAppVersionCode = obj.optLong("installedAtAppVersionCode", 0L),
                 label = if (obj.has("label") && !obj.isNull("label")) obj.getString("label") else null,
+                tawcStamp = if (obj.has("tawcStamp") && !obj.isNull("tawcStamp"))
+                    obj.getString("tawcStamp") else null,
+                tawcInstalls = if (obj.has("tawcInstalls"))
+                    parseTawcInstalls(obj.getJSONArray("tawcInstalls"))
+                else emptyList(),
             )
         }
+
+        private fun parseTawcInstalls(arr: JSONArray): List<TawcInstall> = buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                add(TawcInstall(
+                    src = o.getString("src"),
+                    dest = o.getString("dest"),
+                    type = TawcInstall.Type.valueOf(o.getString("type")),
+                ))
+            }
+        }
+    }
+}
+
+/**
+ * One file (or symlink) [TawcInstaller] has materialised inside a
+ * rootfs from app-side sources. Persisted in [Installation.tawcInstalls]
+ * so the next install can wipe the previous set before laying down a
+ * fresh one.
+ *
+ * `src` is provider-defined (e.g. a host-side path like
+ * `/data/data/me.phie.tawc/files/libhybris/lib/libEGL.so.1`, or a
+ * synthetic identifier for content-generated files). `dest` is the
+ * absolute in-rootfs path (e.g. `/usr/lib/hybris/libEGL.so.1`).
+ */
+data class TawcInstall(
+    val src: String,
+    val dest: String,
+    val type: Type,
+) {
+    enum class Type { COPY, LINK }
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("src", src)
+        put("dest", dest)
+        put("type", type.name)
     }
 }

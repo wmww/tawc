@@ -7,6 +7,6 @@ cd "$(dirname "$0")"
 gcc -o eglx11-test eglx11-test.c \
     $(pkg-config --cflags --libs x11) \
     -lEGL -lGLESv2 \
-    -L/usr/local/lib -Wl,-rpath,/usr/local/lib \
+    -L/usr/lib/hybris -Wl,-rpath,/usr/lib/hybris \
     -ldl -Wall -Wextra
 echo "Built: eglx11-test"

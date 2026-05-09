@@ -15,13 +15,19 @@
 //! `Command::new("Xwayland")` and point `LD_LIBRARY_PATH` at
 //! nativeLibraryDir so the linker finds the bionic-built `.so` deps.
 //!
-//! The X11 socket lives at `/data/data/me.phie.tawc/xtmp/.X11-unix/X{N}`
-//! and the lockfile at `/data/data/me.phie.tawc/xtmp/.X{N}-lock`. Smithay
-//! reads `TAWC_XWL_RUNTIME_DIR` to override its `/tmp` defaults — see
-//! the `tawc-patches` branch on the smithay fork. The chroot side bind-
-//! mounts our xtmp dir so X clients inside the chroot find `:0` at the
-//! standard `/tmp/.X11-unix/X0` path (via a symlink set up by
-//! `ChrootMounter`).
+//! The X11 socket lives at `<appData>/share/xtmp/.X11-unix/X{N}` and
+//! the lockfile at `<appData>/share/xtmp/.X{N}-lock`. Living under
+//! `share/` (rather than directly under `<appData>/`) means it rides
+//! into each rootfs through the same `<appData>/share/ →
+//! /usr/share/tawc/` bind that exposes the wayland socket — we don't
+//! bind any other part of `<appData>/` into the rootfs view (see
+//! notes/installation.md "/usr/share/tawc"). Smithay reads
+//! `TAWC_XWL_RUNTIME_DIR` to override its `/tmp` defaults — see the
+//! `tawc-patches` branch on the smithay fork. Each install method
+//! still surfaces `<appData>/share/xtmp/.X11-unix` at the canonical
+//! `/tmp/.X11-unix` path inside the rootfs (asymmetric bind on
+//! tawcroot/proot, real bind-mount on chroot) because libxcb hardcodes
+//! `/tmp/.X11-unix/X<N>` for the `:N` form of `$DISPLAY`.
 
 use std::process::Stdio;
 
@@ -40,7 +46,7 @@ use crate::host::ActivityId;
 /// Where Xwayland's listening socket / lockfile live. Patched smithay
 /// reads `TAWC_XWL_RUNTIME_DIR` from env; cross-compiled libxcb /
 /// xtrans have this baked in (see `scripts/build-xwayland.sh`).
-pub const XWL_RUNTIME_DIR: &str = "/data/data/me.phie.tawc/xtmp";
+pub const XWL_RUNTIME_DIR: &str = "/data/data/me.phie.tawc/share/xtmp";
 
 /// Where the in-app extractor stages the Xwayland binary + libs.
 pub const XWL_INSTALL_DIR: &str = "/data/data/me.phie.tawc/files/xwayland";
@@ -53,10 +59,11 @@ pub fn start_xwayland(
     state: &TawcState,
 ) {
     let handle_for_wm = handle.clone();
-    // Make sure /data/data/me.phie.tawc/xtmp/.X11-unix/ exists. Patched
+    // Make sure <appData>/share/xtmp/.X11-unix/ exists. Patched
     // smithay drops the listening socket here; bionic-built libxcb /
-    // xtrans look up :0 here too (from the compositor side — chroot side
-    // is symlinked into here from /tmp/.X11-unix).
+    // xtrans look up :0 here too (from the compositor side — rootfs
+    // side gets it at /tmp/.X11-unix via each method's asymmetric bind,
+    // see notes/installation.md "/usr/share/tawc").
     if let Err(e) = std::fs::create_dir_all(format!("{}/.X11-unix", XWL_RUNTIME_DIR)) {
         warn!("xwayland: mkdir {}: {}", XWL_RUNTIME_DIR, e);
     }

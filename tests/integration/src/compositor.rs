@@ -153,7 +153,7 @@ pub fn assert_running() {
 /// process is listening, so the file alone would falsely indicate
 /// readiness on the very next test run.
 pub fn is_running() -> io::Result<bool> {
-    // The compositor binds its socket at /data/data/me.phie.tawc/wayland-0;
+    // The compositor binds its socket at <appData>/share/wayland-0;
     // pidof is shell-readable (process is in untrusted_app but `pidof`
     // just walks /proc, world-readable). The socket file lives in app
     // data, so probe it through the broker (runs as app uid).
@@ -163,7 +163,7 @@ pub fn is_running() -> io::Result<bool> {
     }
     let exists = adb::rootfs_host_exec(&[
         "/system/bin/sh", "-c",
-        "test -e /data/data/me.phie.tawc/wayland-0",
+        "test -e /data/data/me.phie.tawc/share/wayland-0",
     ])?;
     Ok(exists.status.success())
 }

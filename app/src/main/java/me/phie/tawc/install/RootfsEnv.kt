@@ -24,13 +24,28 @@ internal object RootfsEnv {
         put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         put("HOME", "/root")
         put("TMPDIR", "/tmp")
-        // Wayland socket lives at the host path, not a /tmp symlink:
-        // wayland clients honour absolute WAYLAND_DISPLAY directly, and
-        // dropping the symlink removes the only on-disk artefact the
-        // app version would otherwise rewrite each entry.
-        put("WAYLAND_DISPLAY", "/data/data/me.phie.tawc/wayland-0")
+        // Wayland socket is exposed inside the rootfs at /usr/share/tawc/
+        // via the per-method bind of the host's <appData>/share/ dir
+        // (the only thing we expose from the app data dir into rootfs
+        // view — see notes/installation.md "/usr/share/tawc"). Wayland
+        // clients honour absolute WAYLAND_DISPLAY directly, no /tmp
+        // symlink needed.
+        put("WAYLAND_DISPLAY", "/usr/share/tawc/wayland-0")
         put("XDG_RUNTIME_DIR", "/tmp")
-        put("LD_LIBRARY_PATH", "/usr/local/lib/gl-shims:/usr/local/lib")
+        // libhybris is laid down by [TawcInstaller] /
+        // [LibhybrisInstallProvider] as real files under /usr/lib/hybris/
+        // (a tawc-owned namespace — /usr/local/lib/ stays free for the
+        // user's own installs). gl-shims first so the libGL/libGLESv2
+        // wrappers shadow any distro-shipped libs.
+        put("LD_LIBRARY_PATH",
+            "${LibhybrisInstallProvider.GUEST_GL_SHIMS_DIR}:${LibhybrisInstallProvider.GUEST_LIB_DIR}")
+        // No HYBRIS_*_DIR overrides needed — `scripts/build-libhybris.sh`
+        // configures libhybris with `--prefix=/usr/lib/hybris
+        // --libdir=/usr/lib/hybris`, so the PKGLIBDIR + LINKER_PLUGIN_DIR
+        // macros baked into the .so files by the autotools build (see
+        // deps/libhybris/hybris/{egl/ws.c, vulkan/ws.c, common/hooks.c})
+        // already point at where [LibhybrisInstallProvider] copies the
+        // plugin tree. Build-time bake > per-entry env override.
         put("HYBRIS_EGLPLATFORM", "wayland")
         put("DISPLAY", ":0")
         // SDL2 prefers X11 when DISPLAY is set, but our Xwayland is

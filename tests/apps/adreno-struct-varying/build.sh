@@ -12,7 +12,7 @@ gcc -Wl,--no-as-needed -o adreno-struct-varying \
     adreno-struct-varying.c xdg-shell-protocol.c \
     -I. \
     $(pkg-config --cflags wayland-client wayland-egl) \
-    -L/usr/local/lib -Wl,-rpath,/usr/local/lib \
+    -L/usr/lib/hybris -Wl,-rpath,/usr/lib/hybris \
     -lwayland-egl -lwayland-client \
     -lEGL -lGLESv2 -ldl -Wall -Wextra
 echo "Built: adreno-struct-varying"

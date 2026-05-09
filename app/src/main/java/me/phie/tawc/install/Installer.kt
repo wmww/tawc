@@ -238,17 +238,16 @@ class Installer(
         // there's nothing to materialise on disk between calls.
         progress(InstallProgress(InstallStage.CONFIGURING, "Configuring chroot…"))
         distro.configure(method, rootfsPath, mirrorProxy, log)
-        // Symlink the APK-bundled libhybris tree into /usr/local/lib.
-        // Must follow distro.configure (which may create /usr/local
-        // structure) and precede package-manager bootstrap (so any
-        // package that touches /usr/local/lib sees a coherent state).
-        // Both methods get libhybris: chroot bind-mounts /apex +
-        // /vendor + /system + /linkerconfig in [ChrootMounter];
-        // [ProotMethod] adds the same paths via `-b` flags and
-        // pre-creates the in-rootfs targets. The libhybris asset itself
-        // is ABI-gated (no x86_64 emulator build), so [link] returns
-        // false on the emulator and the binds are harmless leftovers.
-        LibhybrisLinker.link(context, method, rootfsPath, log)
+        // Lay down everything the app ships per-rootfs (libhybris into
+        // /usr/lib/hybris, the glvnd vendor JSON, …) as real files via
+        // [TawcInstaller]. Must follow distro.configure (which may
+        // create the /usr tree we're writing into) and precede the
+        // package-manager bootstrap so any pacman scriptlet that
+        // touches our paths sees a coherent state. Idempotent: the
+        // (id, app-stamp) pair gets recorded so the same call from
+        // [me.phie.tawc.TawcApplication.onCreate] no-ops on subsequent
+        // app starts until an APK upgrade bumps the stamp.
+        TawcInstaller.installInto(context, store, id, log)
 
         checkCancel()
         // Stage 4: package-manager bootstrap. State stays INSTALLING

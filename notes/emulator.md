@@ -17,7 +17,9 @@ plugged in. GPU/AHB/libhybris work still has to run on a real device.
 ## Known limitations
 - libhybris won't run on the emulator. The APK ships libhybris only for
   `arm64-v8a`; on x86_64 emulator builds the asset is absent and
-  `LibhybrisLinker` no-ops. Anything that exercises the AHB import path
+  `LibhybrisInstallProvider` returns an empty manifest (TawcInstaller
+  records the empty list + stamp so subsequent app starts no-op).
+  Anything that exercises the AHB import path
   (most integration tests) will still fail; SHM-only paths
   (magenta-tinted) should work. The blocker is **not** missing GPU
   vendor blobs (the emulator does ship `libEGL_emulation.so`,

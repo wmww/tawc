@@ -1890,8 +1890,8 @@ A new `TawcrootMethod.kt` next to `ProotMethod.kt`. Same shape:
   `ProotMethod`.
 - No `/dev/shm` host bind — the SIGSYS handler emulates POSIX shm
   via `memfd_create` (`src/shm.c`). See §"Bootstrap & entry".
-- Apply the libhybris symlinks (`LibhybrisLinker.link` works
-  unchanged — the rootfs layout is the same).
+- Run `TawcInstaller.installInto` to copy libhybris (and the glvnd
+  vendor JSON) into the rootfs as real files at `/usr/lib/hybris/`.
 
 The Kotlin `InstallationMethod` enum already has an `extra` slot
 (`metadata.json`); we add `TAWCROOT` as a value and the radio in

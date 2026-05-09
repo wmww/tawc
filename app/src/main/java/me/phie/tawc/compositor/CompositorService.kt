@@ -80,11 +80,12 @@ class CompositorService : Service() {
         // it's a no-op on subsequent service restarts.
         ensureXkbDataExtracted()
 
-        // libhybris ships in the APK as a tarball asset (one tree per ABI)
-        // and is extracted into the app data dir. The chroot installer
-        // symlinks individual files in /usr/local/lib/ at install time —
-        // extracting before the chroot install means the symlinks always
-        // land on a complete tree. Idempotent on the same versionCode.
+        // libhybris ships in the APK as a tarball asset (one tree per
+        // ABI) and is extracted into the app data dir.
+        // [me.phie.tawc.install.TawcInstaller] / LibhybrisInstallProvider
+        // copies it into each rootfs at /usr/lib/hybris/ — extracting
+        // here before any rootfs entry means the copy always sees a
+        // complete tree. Idempotent on the same versionCode.
         ensureLibhybrisExtracted(this)
 
         // Xwayland's exec'ables and runtime libs ride in the APK as
@@ -256,7 +257,7 @@ class CompositorService : Service() {
          * libhybris / xkb without bumping `versionCode` silently run
          * against the previous build's binary.
          */
-        private fun currentExtractStamp(context: Context): String {
+        fun currentExtractStamp(context: Context): String {
             val info = try {
                 context.packageManager.getPackageInfo(context.packageName, 0)
             } catch (_: PackageManager.NameNotFoundException) {
@@ -323,11 +324,17 @@ class CompositorService : Service() {
          * via a `.version` stamp written last, so a partial extract is
          * indistinguishable from "never extracted" and gets retried.
          *
+         * The tar's contents are flat (libEGL.so, libhybris/, gl-shims/,
+         * … at the tar root) — see `app/build.gradle.kts` `packLibhybris`
+         * — so the extracted tree sits directly at `<filesDir>/libhybris/`,
+         * which is where [me.phie.tawc.install.LibhybrisInstallProvider]
+         * walks from to copy into each rootfs.
+         *
          * Called both from this Service's `onCreate` (compositor boot)
-         * and from [me.phie.tawc.install.LibhybrisLinker.link] during
-         * chroot install. On a fresh device with both happening at the
-         * same time we'd have two extractors racing the same staging
-         * dir — synchronize on a process-level lock so only one runs.
+         * and from [me.phie.tawc.install.TawcInstaller] during install /
+         * APK upgrade. On a fresh device with both happening at the same
+         * time we'd have two extractors racing the same staging dir —
+         * synchronize on a process-level lock so only one runs.
          *
          * Returns true if extracted (or was already up-to-date), false
          * if no asset is shipped for this ABI (e.g. emulator build).

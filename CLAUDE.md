@@ -36,6 +36,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [proot.md](notes/proot.md) -- rootless install method: vendored Termux/proot fork, why upstream proot doesn't work on Android, Android quirks worked around
 - [xwayland.md](notes/xwayland.md) -- bionic-build Xwayland for X11 client support; current dep build state and pending stages
 - [tawcroot.md](notes/tawcroot.md) -- design + implementation plan for the from-scratch C systrap-based proot replacement (lives in `tawcroot/`)
+- [tawcroot-readonly-binds.md](notes/tawcroot-readonly-binds.md) -- design notes for adding RO bind support to tawcroot (not implemented; recorded so we don't re-derive next time)
 - [distro-options.md](notes/distro-options.md) -- survey of viable glibc distros (Debian, Void, Manjaro ARM, …) and why musl/bionic alternatives don't fit
 - [cache-proxy.md](notes/cache-proxy.md) -- dev-time host nginx caching reverse proxy for distro mirrors (adb reverse + URL-passthrough format)
 - [rootfs-sessions.md](notes/rootfs-sessions.md) -- invariant: every entry into a rootfs must run in its own session, and where each launch path upholds it

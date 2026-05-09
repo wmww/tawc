@@ -42,7 +42,8 @@ object ChrootMounter {
      */
     fun mountScript(rootfs: String): String {
         val emulator = isEmulator
-        val tawcData = "/data/data/me.phie.tawc"
+        val tawcShare = "/data/data/me.phie.tawc/share"
+        val guestShare = TawcrootMethod.GUEST_TAWC_SHARE_DIR
 
         val sb = StringBuilder()
         sb.appendLine("ROOTFS='$rootfs'")
@@ -109,31 +110,37 @@ object ChrootMounter {
 
         sb.appendLine(
             """
-            # Mount the compositor's app data dir at the same path inside
-            # the chroot so /data/data/me.phie.tawc/wayland-0 (the Wayland
-            # socket) is reachable. RootfsEnv exports WAYLAND_DISPLAY as
-            # the absolute path — no /tmp/wayland-0 symlink needed.
-            #
-            # Yes, this creates a recursion (the rootfs contains itself
-            # via .../distros/<id>/rootfs/data/data/...). It's
-            # benign because no tool recursively walks through it.
-            if [ -d "$tawcData" ]; then
-                mkdir -p "${'$'}ROOTFS$tawcData"
-                mount_if_needed "$tawcData" "${'$'}ROOTFS$tawcData"
-            fi
+            # Expose JUST the compositor's `share/` subdir at
+            # /usr/share/tawc inside the chroot — the wayland socket
+            # and Xwayland's xtmp dir live there. Deliberately not the
+            # whole <appData> tree (which would expose libhybris's
+            # asset extract, the proot scratch dir, and everything
+            # else under <filesDir> to in-rootfs writes — see
+            # notes/installation.md "/usr/share/tawc"). RootfsEnv
+            # points WAYLAND_DISPLAY at the in-rootfs path; no
+            # /tmp/wayland-0 symlink needed. mkdir the source first
+            # so the bind succeeds even on a fresh device before the
+            # compositor has run.
+            mkdir -p "$tawcShare"
+            mkdir -p "${'$'}ROOTFS$guestShare"
+            mount_if_needed "$tawcShare" "${'$'}ROOTFS$guestShare"
             """.trimIndent()
         )
         sb.appendLine(
             """
-            # XWayland: the bionic-built Xwayland binary on the Android side
-            # opens its X11 listening socket at /data/data/me.phie.tawc/xtmp/.X11-unix/X<n>
-            # (because Android has no /tmp). Bind that into the chroot so X
-            # clients see it at the standard /tmp/.X11-unix path. mkdir
-            # the source before binding so the mount succeeds even before
-            # the compositor has launched Xwayland (install steps, tests).
-            mkdir -p "$tawcData/xtmp/.X11-unix"
+            # XWayland: the bionic-built Xwayland binary on the Android
+            # side opens its X11 listening socket at
+            # <appData>/share/xtmp/.X11-unix/X<n> (because Android has
+            # no /tmp). Bind that into the chroot so X clients see it
+            # at the standard /tmp/.X11-unix path. libxcb hardcodes
+            # /tmp/.X11-unix/X<N> for the `:N` form of DISPLAY, so
+            # we can't just expose it via /usr/share/tawc. mkdir the
+            # source before binding so the mount succeeds even before
+            # the compositor has launched Xwayland (install steps,
+            # tests).
+            mkdir -p "$tawcShare/xtmp/.X11-unix"
             mkdir -p "${'$'}ROOTFS/tmp/.X11-unix"
-            mount_if_needed "$tawcData/xtmp/.X11-unix" "${'$'}ROOTFS/tmp/.X11-unix"
+            mount_if_needed "$tawcShare/xtmp/.X11-unix" "${'$'}ROOTFS/tmp/.X11-unix"
             """.trimIndent()
         )
         return sb.toString()

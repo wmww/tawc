@@ -39,9 +39,14 @@ PC_DIR="$PREFIX/lib/pkgconfig"
 
 # Where the X11 / XIM / ICE / wayland sockets live in our world. Patches
 # substitute @TAWC_TMP_PREFIX@ → this; the compositor mkdirs it on
-# startup; chroot's /tmp/.X11-unix is a symlink into here so X clients
-# inside the chroot find :0 normally.
-TAWC_TMP_PREFIX="/data/data/me.phie.tawc/xtmp"
+# startup. Each install method's bind config surfaces this dir at
+# /tmp/.X11-unix inside the rootfs (asymmetric bind on tawcroot/proot,
+# real bind-mount on chroot) so X clients find `:0` at the standard
+# /tmp/.X11-unix/X0 path. Living under <appData>/share/ rather than
+# /data/data/me.phie.tawc directly means it rides into the rootfs
+# through the same /share→/usr/share/tawc bind that exposes the
+# wayland socket — see notes/installation.md "/usr/share/tawc".
+TAWC_TMP_PREFIX="/data/data/me.phie.tawc/share/xtmp"
 
 CLEAN=0
 ONLY=""

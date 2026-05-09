@@ -139,7 +139,7 @@ for _ in $(seq 1 150); do
     # Wayland socket lives in the app's private data dir; probe via
     # the broker (runs as the app uid).
     if adb shell 'pidof me.phie.tawc >/dev/null' 2>/dev/null && \
-       "$TAWC_EXEC_BIN" /system/bin/sh -c "test -e /data/data/me.phie.tawc/wayland-0" 2>/dev/null && \
+       "$TAWC_EXEC_BIN" /system/bin/sh -c "test -e /data/data/me.phie.tawc/share/wayland-0" 2>/dev/null && \
        adb logcat -d -s tawc-native 2>/dev/null | grep -q "Entering calloop event loop"; then
         COMPOSITOR_READY=1
         break

@@ -97,15 +97,19 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         // need to exist (it's purely a name-rewriting key). We still
         // mkdir each to match the proot path's habit, since some
         // workflows assume the dst path materializes on disk.
-        File(rootfs, TAWC_DATA.removePrefix("/")).mkdirs()
+        File(rootfs, GUEST_TAWC_SHARE_DIR.removePrefix("/")).mkdirs()
         for (dir in LIBHYBRIS_BIND_DIRS) {
             File(rootfs, dir.removePrefix("/")).mkdirs()
         }
-        // Source for the X11-socket fake bind. Compositor mkdirs this
-        // before launching Xwayland too; recreating here is harmless
-        // and lets pre-compositor entries (install steps, tests) bind
-        // it without relying on launch order.
-        File("$TAWC_DATA/xtmp/.X11-unix").mkdirs()
+        // Source for the X11-socket fake bind plus the wayland socket
+        // dir. Compositor mkdirs the X11-unix subdir before launching
+        // Xwayland too; recreating here is harmless and lets pre-
+        // compositor entries (install steps, tests) bind it without
+        // relying on launch order. The bare /share dir is also mkdir'd
+        // so tawcroot can open it as the bind src on a fresh device
+        // before the compositor has run.
+        File(TAWC_SHARE).mkdirs()
+        File("$TAWC_SHARE/xtmp/.X11-unix").mkdirs()
 
         val argv = buildList {
             add("/system/bin/setsid")
@@ -243,27 +247,43 @@ class TawcrootMethod(context: Context) : InstallationMethod {
 
     /** The full bind list, in declared order, as `(src, dst)` pairs.
      *
-     * Order: /dev → /proc → /sys → libhybris dirs → TAWC_DATA → X11.
+     * Order: /dev → /proc → /sys → libhybris dirs → tawc share → X11.
      * No `/dev/shm` bind: tawcroot's SIGSYS handler emulates POSIX
      * shm in-process via memfd_create (`tawcroot/src/shm.c`).
      *
-     * The X11 bind surfaces Xwayland's listening socket
-     * (`<TAWC_DATA>/xtmp/.X11-unix/X<n>`) at the canonical
-     * `/tmp/.X11-unix` path. Asymmetric (src ≠ dst) — tawcroot's
+     * The tawc share bind exposes JUST `<appData>/share/` (wayland
+     * socket, Xwayland's xtmp dir) at the in-rootfs canonical path
+     * `/usr/share/tawc/`. Deliberately not the whole `<appData>` —
+     * that would expose the libhybris asset extract, the proot
+     * scratch dir, and everything else under `<filesDir>` to
+     * in-rootfs writes. See notes/installation.md "/usr/share/tawc".
+     *
+     * The X11 bind also surfaces Xwayland's listening socket
+     * (`<appData>/share/xtmp/.X11-unix/X<n>`) at the canonical
+     * `/tmp/.X11-unix` path because libxcb hardcodes that path for
+     * the `:N` form of `$DISPLAY`. Asymmetric (src ≠ dst) — tawcroot's
      * path-rewriting bind handles that natively. */
     private fun bindSpecs(): List<Pair<String, String>> = buildList {
         add("/dev" to "/dev")
         add("/proc" to "/proc")
         add("/sys" to "/sys")
         for (dir in LIBHYBRIS_BIND_DIRS) add(dir to dir)
-        add(TAWC_DATA to TAWC_DATA)
-        add("$TAWC_DATA/xtmp/.X11-unix" to "/tmp/.X11-unix")
+        add(TAWC_SHARE to GUEST_TAWC_SHARE_DIR)
+        add("$TAWC_SHARE/xtmp/.X11-unix" to "/tmp/.X11-unix")
     }
 
     companion object {
         const val KEY = "tawcroot"
         private const val TAG = "tawc-install"
-        private const val TAWC_DATA = "/data/data/me.phie.tawc"
+        /** Host-side path to the tawc-shared subdir of app data.
+         *  The compositor drops the wayland socket and Xwayland's xtmp
+         *  here. Keep in sync with `WAYLAND_SOCKET_PATH` (compositor
+         *  /lib.rs) and `XWL_RUNTIME_DIR` (compositor /xwayland.rs). */
+        private const val TAWC_SHARE = "/data/data/me.phie.tawc/share"
+        /** In-rootfs path the share dir is exposed at. Single source
+         *  of truth — also referenced by [RootfsEnv] (WAYLAND_DISPLAY)
+         *  and the chroot/proot install methods. */
+        const val GUEST_TAWC_SHARE_DIR = "/usr/share/tawc"
 
         /** Same set as ProotMethod (kept in sync deliberately —
          * libhybris dlopen targets bionic GPU libraries via these). */

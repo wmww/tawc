@@ -103,8 +103,10 @@ Kotlin side (`app/src/main/java/me/phie/tawc/`):
 - `android_wlegl` (libhybris's standard GPU buffer sharing protocol; client-side
   allocation only — `get_server_buffer_handle` is rejected)
 
-**Socket path:** `/data/data/me.phie.tawc/wayland-0` -- app's own data dir ensures
-write access. Chroot clients access via root. Uses `ListeningSocket::bind_absolute()`.
+**Socket path:** `/data/data/me.phie.tawc/share/wayland-0` -- app's own data dir
+under the `share/` subdir, which each install method binds at
+`/usr/share/tawc` inside the rootfs (see notes/installation.md "/usr/share/tawc").
+Uses `ListeningSocket::bind_absolute()`.
 
 ## Smithay Integration
 

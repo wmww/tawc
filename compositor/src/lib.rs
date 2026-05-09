@@ -42,8 +42,15 @@ static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
 /// Cached global ref to NativeBridge class for reverse JNI callbacks.
 static NATIVE_BRIDGE_CLASS: OnceLock<GlobalRef> = OnceLock::new();
 
-/// Wayland socket path accessible from chroot.
-const WAYLAND_SOCKET_PATH: &str = "/data/data/me.phie.tawc/wayland-0";
+/// Wayland socket path accessible from rootfs.
+///
+/// Lives under `<appData>/share/` so it's exposed inside each rootfs at
+/// `/usr/share/tawc/wayland-0` via the per-method bind of just the
+/// `share/` subdir (we deliberately don't bind the whole appData tree
+/// — that would expose the libhybris asset extract, the proot scratch
+/// dir, and everything else under `<filesDir>` to in-rootfs writes).
+/// See notes/installation.md "/usr/share/tawc" for the rationale.
+const WAYLAND_SOCKET_PATH: &str = "/data/data/me.phie.tawc/share/wayland-0";
 
 /// Global sender for state query requests. Replaced each time the compositor restarts.
 static STATE_QUERY_SENDER: Mutex<Option<smithay::reexports::calloop::channel::Sender<()>>> = Mutex::new(None);

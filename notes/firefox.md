@@ -96,7 +96,7 @@ GL library requirements:
 - **GTK/libepoxy:** `dlsym(libGLESv2_handle, "glXGetCurrentContext")` -- probes for
   GLX to detect context type. Aborts if the probe produces an error (vs returning NULL).
 
-**Solution:** Shim libraries in `/usr/local/lib/gl-shims/` that re-export libhybris GLES symbols
+**Solution:** Shim libraries in `/usr/lib/hybris/gl-shims/` that re-export libhybris GLES symbols
 AND provide GLX stubs returning NULL (indicating "no GLX context, use EGL"):
 
 ```

@@ -4,6 +4,8 @@ import android.app.Application
 import android.util.Log
 import me.phie.tawc.dev.ExecBroker
 import me.phie.tawc.install.BootstrapCache
+import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.install.TawcInstaller
 import me.phie.tawc.ops.OperationsNotificationCenter
 import kotlin.concurrent.thread
 
@@ -36,6 +38,17 @@ class TawcApplication : Application() {
                 if (n > 0) Log.i(TAG, "Bootstrap cache: evicted $n stale entries")
             } catch (t: Throwable) {
                 Log.w(TAG, "Bootstrap cache sweep failed", t)
+            }
+            // Refresh tawc-installed files in every existing rootfs
+            // when the app version stamp has changed since the last
+            // install/refresh. No-op on cold app starts that follow a
+            // run with the same `versionCode + lastUpdateTime` pair
+            // (see CompositorService.currentExtractStamp). Per-rootfs
+            // failures are logged and swallowed inside [installAll].
+            try {
+                TawcInstaller.installAll(this, InstallationStore(this))
+            } catch (t: Throwable) {
+                Log.w(TAG, "TawcInstaller.installAll failed", t)
             }
         }
         // Dev-only exec broker. Started here (not from MainActivity)

@@ -451,7 +451,7 @@ fn test_xwayland_test_pattern_ahb_round_trip() {
         "compositor never logged `wlegl: create_buffer 512x512` after \
          enabling debug.tawc.xwl_test_pattern + restarting. Likely the \
          android_wlegl bind is missing on Xwayland's side, or libnativewindow \
-         dlopen failed (check /data/data/me.phie.tawc/xtmp/xwayland.log).\n\
+         dlopen failed (check /data/data/me.phie.tawc/share/xtmp/xwayland.log).\n\
          last logs:\n{}",
          &last_logs[last_logs.len().saturating_sub(4096)..],
     );
