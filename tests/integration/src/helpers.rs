@@ -81,6 +81,24 @@ pub fn start_text_input(env: &str) -> DebugApp {
     app
 }
 
+/// Like [start_text_input] but launches the `text-input-no-surrounding`
+/// subcommand: a bare GtkIMMulticontext attached to a drawing area, with
+/// no `gtk_im_context_set_surrounding` ever called. That mirrors the
+/// shape of clients like VTE-under-Wayland which enable text-input-v3
+/// for the soft keyboard but hold no editable buffer behind the surface
+/// — the compositor must NOT send `delete_surrounding_text` to them
+/// (the protocol's "current cursor index" is undefined and real-world
+/// clients close the connection on receipt).
+pub fn start_text_input_no_surrounding(env: &str) -> DebugApp {
+    let binary = ensure_gtk4_debug_app();
+    adb::logcat_clear().expect("Failed to clear logcat");
+    let app = DebugApp::start(&binary, "text-input-no-surrounding", env)
+        .expect("Failed to start debug app");
+    app.wait_ready().expect("Debug app did not become ready");
+    wait_for_keyboard_shown(TIMEOUT);
+    app
+}
+
 /// True if compositor logcat shows a libhybris android_wlegl AHB import.
 pub fn saw_ahb_import(logs: &str) -> bool {
     logs.contains("wlegl: imported ANativeWindowBuffer as texture")

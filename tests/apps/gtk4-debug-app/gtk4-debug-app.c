@@ -9,7 +9,8 @@
  * Usage: gtk4-debug-app <command>
  *
  * Commands:
- *   text-input   Open a text view for testing text input
+ *   text-input                  Open a text view for testing text input
+ *   text-input-no-surrounding   Bare IM context without set_surrounding (terminal-shaped)
  */
 
 #include <gtk/gtk.h>
@@ -175,6 +176,157 @@ static int cmd_text_input(int argc, char *argv[])
     return 0;
 }
 
+/* --- text-input-no-surrounding command ---------------------------------- */
+/*
+ * The text-input mode above puts a real GtkTextView on screen — its
+ * IM context unconditionally pushes set_surrounding_text on every cursor
+ * move and edit, so we exercise the "rich editor" shape of text-input-v3
+ * client. This mode covers the OTHER shape: a client that enables
+ * text-input-v3 (so the soft keyboard appears) but never calls
+ * gtk_im_context_set_surrounding, because it has no editable buffer
+ * behind whatever the user is looking at. VTE under Wayland is the
+ * motivating real-world example — terminals don't model an edit buffer
+ * behind the prompt.
+ *
+ * Implementation: a plain drawing area as the wl_surface, a manually
+ * managed GtkIMMulticontext attached and focus-in'd on map, signals
+ * piped to TAWC_DEBUG: lines. Crucially we never call
+ * gtk_im_context_set_surrounding — the bug under test is the compositor
+ * sending `delete_surrounding_text` to clients that haven't pushed
+ * surrounding (the Wayland protocol leaves the cursor index undefined
+ * in that case, and VTE responds by closing the connection). The
+ * compositor must instead synthesise a wl_keyboard Backspace.
+ *
+ * Asserts to make on top of this app:
+ *   - TAWC_DEBUG:DELETE_SURROUNDING:* must NEVER appear.
+ *   - On `am broadcast DELETE_SURROUNDING_TEXT before=N`, the harness
+ *     should see N TAWC_DEBUG:KEY:BackSpace events instead.
+ */
+
+static GtkIMContext *bare_im_context;
+
+static void on_im_commit(GtkIMContext *im, const char *str, gpointer user_data)
+{
+    (void)im;
+    (void)user_data;
+    debug_emit("COMMIT", str);
+}
+
+static void on_im_preedit_changed(GtkIMContext *im, gpointer user_data)
+{
+    (void)user_data;
+    char *preedit = NULL;
+    gtk_im_context_get_preedit_string(im, &preedit, NULL, NULL);
+    debug_emit("PREEDIT", preedit ? preedit : "");
+    g_free(preedit);
+}
+
+/* delete-surrounding fires when the IM module asks GTK to delete bytes
+ * around the cursor. Under our compositor's fix this signal must never
+ * reach a surrounding-less client — the test scenario watches for it
+ * to assert absence. We log and return TRUE so the IM module thinks we
+ * handled it (refusing keeps the app alive either way; this avoids GTK
+ * fallback behaviour confusing the trace). */
+static gboolean on_im_delete_surrounding(GtkIMContext *im, gint offset, gint n_chars,
+                                         gpointer user_data)
+{
+    (void)im;
+    (void)user_data;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%d:%d", offset, n_chars);
+    debug_emit("DELETE_SURROUNDING", buf);
+    return TRUE;
+}
+
+/* Refuse the retrieve-surrounding callback so the IM module knows we
+ * have no surrounding text. Returning FALSE is the documented "I don't
+ * support surrounding" answer; without this the IM module would assume
+ * an empty surrounding and start pushing set_surrounding("",...) under
+ * us, which defeats the purpose of this mode. */
+static gboolean on_im_retrieve_surrounding(GtkIMContext *im, gpointer user_data)
+{
+    (void)im;
+    (void)user_data;
+    return FALSE;
+}
+
+static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
+                               guint keycode, GdkModifierType state,
+                               gpointer user_data)
+{
+    (void)controller;
+    (void)keycode;
+    (void)state;
+    (void)user_data;
+    const char *name = gdk_keyval_name(keyval);
+    debug_emit("KEY", name ? name : "");
+    return GDK_EVENT_PROPAGATE;
+}
+
+static void on_bare_map(GtkWidget *window, gpointer user_data)
+{
+    GtkWidget *area = GTK_WIDGET(user_data);
+    /* Activate the IM context once the surface exists. Wayland's
+     * text-input-v3 enable+commit only goes out after the surface has
+     * keyboard focus, which itself depends on the surface being mapped. */
+    gtk_im_context_set_client_widget(bare_im_context, area);
+    gtk_im_context_focus_in(bare_im_context);
+
+    g_idle_add(emit_ready, window);
+}
+
+static int cmd_text_input_no_surrounding(int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+
+    gtk_init();
+
+    GtkWidget *window = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(window),
+                         "tawc debug: text-input-no-surrounding (gtk4)");
+    gtk_window_set_default_size(GTK_WINDOW(window), 600, 400);
+    g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), NULL);
+
+    /* Plain drawing area as the wl_surface — no editor widget, so GTK
+     * never installs a built-in IM context that would push surrounding. */
+    GtkWidget *area = gtk_drawing_area_new();
+    gtk_widget_set_focusable(area, TRUE);
+    gtk_window_set_child(GTK_WINDOW(window), area);
+
+    bare_im_context = gtk_im_multicontext_new();
+    g_signal_connect(bare_im_context, "commit",
+                     G_CALLBACK(on_im_commit), NULL);
+    g_signal_connect(bare_im_context, "preedit-changed",
+                     G_CALLBACK(on_im_preedit_changed), NULL);
+    g_signal_connect(bare_im_context, "delete-surrounding",
+                     G_CALLBACK(on_im_delete_surrounding), NULL);
+    g_signal_connect(bare_im_context, "retrieve-surrounding",
+                     G_CALLBACK(on_im_retrieve_surrounding), NULL);
+
+    /* Capture wl_keyboard key events directly so the test can assert
+     * deletion arrives as Backspace presses. The IM controller would
+     * normally swallow keys it considers part of input — set CAPTURE
+     * phase so we observe everything before any IM filtering. */
+    GtkEventController *key_ctrl = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(key_ctrl, GTK_PHASE_CAPTURE);
+    g_signal_connect(key_ctrl, "key-pressed", G_CALLBACK(on_key_pressed), NULL);
+    gtk_widget_add_controller(area, key_ctrl);
+
+    g_signal_connect(window, "map", G_CALLBACK(on_bare_map), area);
+
+    gtk_window_present(GTK_WINDOW(window));
+    gtk_widget_grab_focus(area);
+
+    main_loop = g_main_loop_new(NULL, FALSE);
+    g_main_loop_run(main_loop);
+    gtk_im_context_focus_out(bare_im_context);
+    g_clear_object(&bare_im_context);
+    g_main_loop_unref(main_loop);
+    main_loop = NULL;
+    return 0;
+}
+
 /* --- Command dispatch --------------------------------------------------- */
 
 typedef int (*command_fn)(int argc, char *argv[]);
@@ -187,6 +339,9 @@ struct command {
 
 static const struct command commands[] = {
     { "text-input", "Open a text view for testing text input", cmd_text_input },
+    { "text-input-no-surrounding",
+      "Bare IM context without set_surrounding (terminal-shaped)",
+      cmd_text_input_no_surrounding },
     { NULL, NULL, NULL },
 };
 

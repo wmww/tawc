@@ -322,6 +322,65 @@ impl DebugApp {
             .count()
     }
 
+    /// Count how many TAWC_DEBUG lines whose tag matches `tag` have been
+    /// received. Matches both bare `TAG` and `TAG:value` forms.
+    pub fn count_with_tag(&self, tag: &str) -> usize {
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| *l == tag || l.starts_with(&format!("{}:", tag)))
+            .count()
+    }
+
+    /// Wait until at least one TAWC_DEBUG line with the given tag and exact
+    /// payload (after the colon) has been observed. Use `""` to wait for the
+    /// bare-tag form. Returns the matched payload.
+    pub fn wait_for_tag_value(
+        &self,
+        tag: &str,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        let bare_match = expected.is_empty();
+        let prefix = format!("{}:", tag);
+        let deadline = Instant::now() + timeout;
+        loop {
+            {
+                let lines = self.lines.lock().unwrap();
+                for line in lines.iter() {
+                    if bare_match && line == tag {
+                        return Ok(String::new());
+                    }
+                    if let Some(payload) = line.strip_prefix(&prefix) {
+                        if payload == expected {
+                            return Ok(payload.to_string());
+                        }
+                    }
+                }
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    let received = self.lines.lock().unwrap().clone();
+                    format!(
+                        "Timeout waiting for {}:{} (received: {:?})",
+                        tag, expected, received
+                    )
+                })?;
+            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let received = self.lines.lock().unwrap().clone();
+                    return Err(format!(
+                        "Debug app exited waiting for {}:{} (received: {:?})",
+                        tag, expected, received
+                    ));
+                }
+            }
+        }
+    }
+
     /// Stop the debug app and all its children, verify it didn't crash.
     pub fn stop(&mut self) -> Result<(), String> {
         self.process.stop()

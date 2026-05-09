@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 
 use tawc_integration::adb;
 use tawc_integration::debug_app::DebugApp;
-use tawc_integration::helpers::{assert_compositor_clean, start_text_input, TIMEOUT};
+use tawc_integration::helpers::{
+    assert_compositor_clean, start_text_input, start_text_input_no_surrounding, TIMEOUT,
+};
 
 // Physical screen coordinates for tapping inside the text view.
 // Compositor uses 2x scale, so logical = physical / 2.
@@ -55,13 +57,16 @@ fn reset_buffer(app: &DebugApp) {
     // surrounding_text round-trip to land back at the debug app.
     thread::sleep(Duration::from_millis(250));
 
-    // Step 2: delete buffer contents. The compositor's
-    // `utf16_units_to_bytes` clamps before/after to the client's reported
-    // surrounding text, so passing a generous value (1000) safely wipes
-    // everything around the cursor regardless of where the cursor sits.
+    // Step 2: delete buffer contents. `input_delete_surrounding` translates
+    // to that-many Backspace + Forward-Delete key events on wl_keyboard, so
+    // bound the counts to the actual buffer length — flooding GTK with
+    // thousands of stray no-op keypresses kills the IM connection. The
+    // buffer length is a safe upper bound on how many key events we need
+    // regardless of where the cursor sits.
     let current = app.last_text().unwrap_or_default();
     if !current.is_empty() {
-        adb::input_delete_surrounding(1000, 1000).expect("reset: delete_surrounding");
+        let len = current.encode_utf16().count() as u32;
+        adb::input_delete_surrounding(len, len).expect("reset: delete_surrounding");
         let deadline = Instant::now() + TIMEOUT;
         while Instant::now() < deadline {
             if app.last_text().unwrap_or_default().is_empty() {
@@ -512,8 +517,9 @@ fn scene_full_compose_loop_with_click_in_middle(app: &DebugApp) {
 
 /// IC delta-computation: `<word><space><backspace>` then
 /// `setComposingRegion + commitText("<word> ")` must replace the marked
-/// region rather than appending. Without the fix the wire commit lacked a
-/// `delete_surrounding_text`, so the buffer ended up `hellohello `.
+/// region rather than appending. Without the IC's pre-commit Backspace
+/// emission the wire commit had nothing deleting the marked region, so
+/// the buffer ended up `hellohello `.
 fn scene_ic_space_backspace_space_no_duplicate(app: &DebugApp) {
     // 1. Compose "hello" via the IC.
     adb::ic_set_composing_text("hello").expect("ic setComposingText 'hello'");
@@ -548,7 +554,7 @@ fn scene_ic_space_backspace_space_no_duplicate(app: &DebugApp) {
     // 5. Second space: commitText("hello ", 1). With the fix, the IC
     //    computes (5, 0) deltas (region was set by setComposingRegion =
     //    committed text on the Wayland side), wire is
-    //    delete_surrounding_text(5) + commit_string("hello ").
+    //    Backspace×5 (wl_keyboard) + commit_string("hello ") (text-input).
     let change_count = app.text_changed_count();
     adb::ic_commit_text("hello ").expect("ic commitText 'hello ' over region");
     app.wait_for_text_change(change_count, TIMEOUT)
@@ -692,6 +698,63 @@ fn test_input_dispatch() {
 
     // 13. IC short-circuit: re-commit equal to marked region is a no-op.
     scene_ic_recommit_word_then_newline_no_h_prepend(&app);
+
+    app.stop().expect("debug app crashed or failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+/// A surrounding-less text-input client (the shape of VTE-under-Wayland
+/// and any terminal-like client that enables text-input-v3 for the soft
+/// keyboard but holds no editable buffer behind the surface) must:
+///   1. Receive `commit_string` for IME-committed text — text-input-v3
+///      `enable` + `commit_string` works without `set_surrounding_text`.
+///   2. Receive Backspace as a real `wl_keyboard` key event, NOT as a
+///      `delete_surrounding_text` protocol event. The protocol's "current
+///      cursor index" is undefined for surrounding-less clients; sending
+///      `delete_surrounding_text` to one (lxterminal/VTE was the original
+///      reproducer) closes the connection.
+///
+/// This test is the regression guard for the "lxterminal disappears on
+/// the first backspace" bug. The harness watches the bare GtkIMContext
+/// signals — `commit` for the space, `delete-surrounding` (which must
+/// never fire), and the `wl_keyboard` Backspace via GtkEventControllerKey.
+#[test]
+fn test_surroundingless_client_uses_keyboard_for_backspace() {
+    let mut app = start_text_input_no_surrounding(INPUT_ENV);
+
+    // Sanity: the IM context never asked us for surrounding text on its
+    // own and we never volunteered it — confirms we're exercising the
+    // surrounding-less path.
+    assert_eq!(
+        app.count_with_tag("DELETE_SURROUNDING"),
+        0,
+        "DELETE_SURROUNDING fired before we even sent input"
+    );
+
+    // 1. Space arrives as a commit_string. The compositor's commit_string
+    // path is independent of surrounding text, so this should just work.
+    adb::input_text(" ").expect("commit ' '");
+    app.wait_for_tag_value("COMMIT", " ", TIMEOUT)
+        .expect("commit_string ' ' did not reach the IM context");
+
+    // 2. Gboard-style backspace: deleteSurroundingText(1, 0). The IC
+    // translates this to a Backspace key event before crossing JNI; the
+    // compositor must therefore deliver Backspace via wl_keyboard, NOT
+    // a delete_surrounding_text protocol event.
+    adb::input_delete_surrounding(1, 0).expect("delete_surrounding(1, 0)");
+    app.wait_for_tag_value("KEY", "BackSpace", TIMEOUT)
+        .expect("Backspace key did not reach the client");
+
+    // 3. The whole point: no delete_surrounding_text on the wire ever.
+    // If this fires, the compositor is regressing back to the lxterminal
+    // crash path.
+    assert_eq!(
+        app.count_with_tag("DELETE_SURROUNDING"),
+        0,
+        "compositor sent delete_surrounding_text to a surrounding-less \
+         client — this would close real-world clients (lxterminal/VTE) \
+         on receipt"
+    );
 
     app.stop().expect("debug app crashed or failed to stop cleanly");
     assert_compositor_clean();
