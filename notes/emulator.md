@@ -191,6 +191,16 @@ trap; don't.
 Until somebody picks one up, libhybris stays aarch64-only and the
 emulator stays SHM-only for GPU.
 
+**(D) Skip libhybris on the emulator entirely.** If we don't insist
+on libhybris-in-chroot, the entire (A)/(B)/(C) tree is moot: forward
+GL/Vulkan command streams from the chroot to an Android-side service
+that uses the AVD's native EGL/Vulkan. See
+[gfxstream-bridge.md](gfxstream-bridge.md). Same architecture works
+on physical aarch64 devices too, so this isn't an emulator-only
+escape hatch — it's a possible replacement for libhybris across the
+board. Not implemented; documented for the day we want to spend the
+engineering on it.
+
 ## One-time setup
 
 ### 1. Android SDK + emulator + system image

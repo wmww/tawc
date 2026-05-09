@@ -20,6 +20,7 @@ The `notes/` directory contains architecture and implementation notes. Edit/crea
 - [architecture.md](notes/architecture.md) -- compositor module layout, design decisions, Smithay integration
 - [building.md](notes/building.md) -- build instructions and deployment
 - [gpu-strategy.md](notes/gpu-strategy.md) -- GPU driver strategy, libhybris, AHB buffer sharing
+- [gfxstream-bridge.md](notes/gfxstream-bridge.md) -- future alternative: GL/Vulkan command-stream forwarding to an Android-side service, no libhybris (not implemented)
 - [wsi-layer.md](notes/wsi-layer.md) -- client-side EGL WSI layer
 - [rendering.md](notes/rendering.md) -- window management, coordinate system, SHM buffers
 - [multi-activity.md](notes/multi-activity.md) -- plan for one Android task per window

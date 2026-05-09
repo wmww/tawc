@@ -57,6 +57,16 @@ compositor use the **stock Android GPU driver**:
 
 Same driver = buffer fds are natively compatible. No cross-driver import needed.
 
+### Alternative we haven't taken: gfxstream bridge
+
+Forward GL/Vulkan command streams *out* of the chroot to an Android-side service that
+holds the GPU context, instead of loading vendor blobs *into* the chroot. Same logical
+"one driver, two sides" guarantee, achieved by IPC instead of by shared address space.
+Avoids libhybris entirely — works identically on x86 and ARM, AVD and physical, with no
+TLS / linker / CFI patching. Cost is per-call IPC overhead (Vulkan amortizes it; GL is
+more painful). See [gfxstream-bridge.md](gfxstream-bridge.md) for the full design and
+the open questions to resolve before committing. Not implemented.
+
 ## libhybris
 
 [libhybris/libhybris](https://github.com/libhybris/libhybris) -- compatibility layer
