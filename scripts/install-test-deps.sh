@@ -196,7 +196,19 @@ build_test_app() {
 # Apps that integration tests actually consume — keep this list in sync
 # with `tests/integration/src/rootfs.rs::ensure_*`. `adreno-struct-varying`
 # under `tests/apps/` is debug-only and intentionally not built here.
-for app in gtk4-debug-app tawc-dri-test eglx11-test; do
+#
+# `tawc-dri-test` link-depends on `-lhybris-common`, which only exists
+# on aarch64 (libhybris isn't shipped for x86_64 — see notes/emulator.md).
+# Skip it on the emulator; the integration tests that consume it already
+# fail there (`tests/integration/tests/apps.rs:9`).
+HOST_ARCH=$("$TAWC_EXEC_BIN" /system/bin/uname -m | tr -d '\r\n')
+APPS=(gtk4-debug-app eglx11-test)
+if [ "$HOST_ARCH" = "aarch64" ]; then
+    APPS+=(tawc-dri-test)
+else
+    echo "=== Skipping tawc-dri-test on $HOST_ARCH (needs libhybris, aarch64-only) ==="
+fi
+for app in "${APPS[@]}"; do
     build_test_app "$app"
 done
 
