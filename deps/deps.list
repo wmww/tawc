@@ -26,7 +26,7 @@
 # a fresh download by construction.
 
 # name              repo                                                                  commit                                      ref-hint                       dest
-libhybris	https://github.com/wmww/libhybris.git	d358003e3f471f3cb6d9e85d199303abc7fe8523	master	deps/libhybris
+libhybris	https://github.com/wmww/libhybris.git	8cf52ed34b8193e75314c7b4e9a9089d3d788536	master	deps/libhybris
 android-headers	https://github.com/Halium/android-headers.git	2c6ac3dcc4f8db593dd69906b0ec22822abfed91	halium-11.0	deps/android-headers
 libxkbcommon	https://github.com/xkbcommon/libxkbcommon.git	7a31e3585edf78be281559377e26d15f8c4bc655	xkbcommon-1.7.0	deps/libxkbcommon
 proot	https://github.com/termux/proot.git	ab2e3464d04483b98a0614b470f3f8950d5a6468	master	deps/proot
