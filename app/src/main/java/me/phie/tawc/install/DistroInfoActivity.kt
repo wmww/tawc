@@ -169,8 +169,11 @@ class DistroInfoActivity : AppCompatActivity() {
         val pad = (16 * resources.displayMetrics.density).toInt()
         val input = EditText(this).apply {
             hint = "e.g. firefox"
+            // VISIBLE_PASSWORD is the load-bearing flag for "no autocorrect" —
+            // Gboard ignores TYPE_TEXT_FLAG_NO_SUGGESTIONS on a plain CLASS_TEXT
+            // field and still autocorrects.
             inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setSingleLine(false)
             maxLines = 6
