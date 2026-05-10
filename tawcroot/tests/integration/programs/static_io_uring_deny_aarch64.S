@@ -13,7 +13,11 @@ _start:
 	cmp     x0, #-38
 	b.ne    .Lfail_setup
 
-	mov     x0, #99999
+	/* 99999 = 0x1869F doesn't fit aarch64's 16-bit `mov` immediate
+	 * (and isn't a logical-bitmask pattern), so build it via
+	 * movz+movk: low half 0x869F, high half 0x0001. */
+	movz    x0, #0x869F
+	movk    x0, #0x1, lsl #16
 	mov     x1, #0
 	mov     x2, #0
 	mov     x3, #0
@@ -24,7 +28,8 @@ _start:
 	cmp     x0, #-38
 	b.ne    .Lfail_enter
 
-	mov     x0, #99999
+	movz    x0, #0x869F
+	movk    x0, #0x1, lsl #16
 	mov     x1, #0
 	mov     x2, #0
 	mov     x3, #0

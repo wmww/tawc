@@ -27,6 +27,29 @@ static int loader_prot_to_mmap(unsigned p)
 	return r;
 }
 
+/* Issue an mmap that the caller has already tagged with
+ * `MAP_FIXED_NOREPLACE` and verify the kernel actually placed the
+ * mapping at `addr`. Older kernels (Linux < 4.17, e.g. Pixel 4a's
+ * 4.14) silently ignore the flag — without `MAP_FIXED` the call
+ * degrades to a hint, so an occupied hint produces a successful
+ * placement at *some other* address. That's worse than failing: the
+ * caller would proceed at the wrong base. We detect this by
+ * comparing the returned address to the request and synthesise
+ * `-EEXIST` (with an undo munmap) when they disagree, restoring the
+ * modern-kernel error contract. */
+static uintptr_t mmap_fixed_noreplace_checked(
+	const struct tawc_loader_io *io, void *addr, size_t len,
+	int prot, int flags, int fd, uint64_t offset)
+{
+	uintptr_t rv = io->mmap(io->ctx, addr, len, prot, flags, fd, offset);
+	if (tawc_loader_mmap_is_err(rv)) return rv;
+	if (rv != (uintptr_t)addr) {
+		(void)io->munmap(io->ctx, (void *)rv, len);
+		return (uintptr_t)(intptr_t)TAWC_EEXIST;
+	}
+	return rv;
+}
+
 /* Compute AT_PHDR address for the synthesized auxv. The result is the
  * runtime address (already biased by `base` for ET_DYN). Strategy:
  *   - If PT_PHDR was present, use phdr_vaddr (image-relative) + base.
@@ -79,13 +102,16 @@ long tawc_loader_map(const struct tawc_loader_image *img,
 	 * MAP_FIXED_NOREPLACE handles overlap detection. */
 	if (is_dyn) {
 		int flags = TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_ANON;
-		void *hint = (void *)0;
+		uintptr_t rv;
 		if (requested_base != 0) {
-			flags |= TAWC_MM_MAP_FIXED_NOREPLACE;
-			hint = (void *)requested_base;
+			rv = mmap_fixed_noreplace_checked(
+				io, (void *)requested_base, span,
+				TAWC_MM_PROT_NONE,
+				flags | TAWC_MM_MAP_FIXED_NOREPLACE, -1, 0);
+		} else {
+			rv = io->mmap(io->ctx, (void *)0, span,
+			              TAWC_MM_PROT_NONE, flags, -1, 0);
 		}
-		uintptr_t rv = io->mmap(io->ctx, hint, span,
-		                        TAWC_MM_PROT_NONE, flags, -1, 0);
 		if (tawc_loader_mmap_is_err(rv))
 			return tawc_loader_mmap_errno(rv);
 		base = rv;
@@ -109,20 +135,23 @@ long tawc_loader_map(const struct tawc_loader_image *img,
 		/* (a) File-backed mapping. Skip if file_size == 0 (rare:
 		 * pure-BSS PT_LOAD). */
 		if (s->file_size > 0) {
-			int flags;
+			uintptr_t rv;
 			if (is_dyn) {
 				/* Replace part of the reservation. MAP_FIXED is
 				 * required because the kernel's MAP_FIXED_NOREPLACE
 				 * would refuse to overwrite our PROT_NONE
 				 * reservation. */
-				flags = TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_FIXED;
+				int flags = TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_FIXED;
+				rv = io->mmap(io->ctx, (void *)seg_va,
+				              s->file_size, load_prot, flags,
+				              fd, s->file_offset);
 			} else {
-				flags = TAWC_MM_MAP_PRIVATE |
-				        TAWC_MM_MAP_FIXED_NOREPLACE;
+				int flags = TAWC_MM_MAP_PRIVATE |
+				            TAWC_MM_MAP_FIXED_NOREPLACE;
+				rv = mmap_fixed_noreplace_checked(
+					io, (void *)seg_va, s->file_size,
+					load_prot, flags, fd, s->file_offset);
 			}
-			uintptr_t rv = io->mmap(io->ctx, (void *)seg_va,
-			                        s->file_size, load_prot, flags,
-			                        fd, s->file_offset);
 			if (tawc_loader_mmap_is_err(rv))
 				return tawc_loader_mmap_errno(rv);
 		}

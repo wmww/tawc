@@ -33,18 +33,49 @@ bool rh_mkdir_p(const char *path, mode_t mode)
 bool rh_copy_file(const char *src, const char *dst, mode_t mode)
 {
 	int s = open(src, O_RDONLY);
-	if (s < 0) return false;
+	if (s < 0) {
+		/* Loud about WHICH path is missing. Without this, every
+		 * caller's failure surfaces as a generic
+		 * `test_true(build_rootfs())` panic and the operator has
+		 * to diff fixture lists by hand to find the missing one.
+		 * Common cause on device: build-fixtures bailed mid-list
+		 * (e.g. an aarch64 .S that doesn't assemble), so a fixture
+		 * was never built / pushed. (See test_prod_features.c's
+		 * shared build_rootfs — one missing fixture takes out
+		 * every test in the file regardless of whether the test
+		 * itself uses it.) */
+		fprintf(stderr,
+		        "rh_copy_file: open src=\"%s\" failed: %s\n",
+		        src, strerror(errno));
+		return false;
+	}
 	int d = open(dst, O_WRONLY | O_CREAT | O_TRUNC, mode);
-	if (d < 0) { close(s); return false; }
+	if (d < 0) {
+		fprintf(stderr,
+		        "rh_copy_file: open dst=\"%s\" failed: %s\n",
+		        dst, strerror(errno));
+		close(s);
+		return false;
+	}
 	char buf[65536];
 	for (;;) {
 		ssize_t n = read(s, buf, sizeof buf);
 		if (n == 0) break;
-		if (n < 0) { close(s); close(d); return false; }
+		if (n < 0) {
+			fprintf(stderr,
+			        "rh_copy_file: read src=\"%s\" failed: %s\n",
+			        src, strerror(errno));
+			close(s); close(d); return false;
+		}
 		ssize_t off = 0;
 		while (off < n) {
 			ssize_t w = write(d, buf + off, n - off);
-			if (w <= 0) { close(s); close(d); return false; }
+			if (w <= 0) {
+				fprintf(stderr,
+				        "rh_copy_file: write dst=\"%s\" failed: %s\n",
+				        dst, w < 0 ? strerror(errno) : "short write");
+				close(s); close(d); return false;
+			}
 			off += w;
 		}
 	}

@@ -128,6 +128,33 @@ push_one "$LOCAL_BIN"   "$TR"
 push_one "$LOCAL_PROD"  "$PROD"
 push_one "$LOCAL_TESTS" "$TESTS"
 
+# Cross-check programs.list against locally-built binaries before
+# pushing. A missing fixture (typical cause: build-fixtures bailed
+# mid-list because of an aarch64 .S that doesn't assemble; less
+# common: a manual `rm`) otherwise surfaces as
+# `test_true(build_rootfs())` panicking inside an unrelated test —
+# test_prod_features.c shares one build_rootfs across every test
+# in the file, so one missing fixture takes out tests that don't
+# even reference it. Fail loudly with the actual list of missing
+# fixtures so the operator knows what to rebuild.
+PROGRAMS_LIST="$TAWCROOT_DIR/tests/integration/programs/programs.list"
+MISSING_FIXTURES=()
+while IFS= read -r name; do
+    [[ -z "$name" || "$name" =~ ^[[:space:]]*# ]] && continue
+    name="$(echo "$name" | tr -d '[:space:]')"
+    if [ ! -f "$LOCAL_FIXTURES_DIR/$name" ]; then
+        MISSING_FIXTURES+=("$name")
+    fi
+done < "$PROGRAMS_LIST"
+if [ "${#MISSING_FIXTURES[@]}" -gt 0 ]; then
+    {
+        echo "ERROR: ${#MISSING_FIXTURES[@]} fixture(s) missing from $LOCAL_FIXTURES_DIR/:"
+        for n in "${MISSING_FIXTURES[@]}"; do echo "  - $n"; done
+        echo "Rebuild with: bash tawcroot/build-fixtures $BUILD_ABI"
+    } >&2
+    exit 1
+fi
+
 for f in "$LOCAL_FIXTURES_DIR"/*; do
     [ -f "$f" ] || continue
     push_one "$f" "$FIXTURES/$(basename "$f")"
