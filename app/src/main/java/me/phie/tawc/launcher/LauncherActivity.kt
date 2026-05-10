@@ -39,7 +39,8 @@ import me.phie.tawc.ui.verticalLp
  *
  * UX is intentionally minimal: one search field, one scrolling list,
  * Enter launches the top match, tap launches that row. Pinning,
- * frecency, window-list integration are deferred (see plan.md).
+ * frecency, window-list integration are deferred (see notes/launcher.md
+ * "Future UX").
  *
  * Launches are fire-and-forget on the process-scoped [LAUNCH_SCOPE]
  * (Dispatchers.IO). `InstallationMethod.runInside` blocks until the

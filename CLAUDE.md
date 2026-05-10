@@ -1,8 +1,5 @@
 Hi Claude! This project is Tess's Android Wayland Compositor (tawc). It's an Android app and set of rootfs-build scripts to run desktop Linux programs on Android.
 
-## Plan
-[plan.md](plan.md) has the implementation roadmap.
-
 ## Building
 **[notes/building.md](notes/building.md) is the source of truth for build-time dependencies and the fresh-system build flow.** Consult it before building on a new machine, and **update it in the same change** whenever you add or change a build-time dep (host package, vendored repo, env var, toolchain version). The Quick Reference at the bottom of this file is a cheat sheet for already-set-up systems — building.md is the doc to follow when setting up.
 
