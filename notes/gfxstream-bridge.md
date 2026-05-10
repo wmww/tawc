@@ -137,9 +137,14 @@ Gain:
 2. **Does an Android-targeting gfxstream host backend exist?**
    **Yes — answered, see "Host backend research" below.**
 3. **GL performance under IPC.** Vulkan is fine, GL might not be.
-   Worth a microbenchmark before committing if any priority client
-   is GL-heavy. (Most modern toolkits — GTK4, Qt6, browsers — are
-   moving toward Vulkan anyway, which softens this.)
+   **Largely answered: route GL via Zink-on-gfxstream-vk rather than
+   native gfxstream-GL — see "GL/GLES path: Zink, not native
+   gfxstream-GL" below.** Zink rebuilds the per-call GL pattern into
+   batched Vulkan command-buffer submits *before* the IPC boundary,
+   which directly mitigates the per-call cost. A microbenchmark is
+   still worthwhile before committing if any priority client is
+   GL-heavy on legacy compat-profile features Zink doesn't cover
+   gracefully.
 4. **Does the `linux-dmabuf-v1` / AHB import path stay zero-copy
    when both sides go through gfxstream?** **Yes — answered, see
    "Zero-copy buffer sharing" below.**
@@ -426,6 +431,338 @@ coordinating with gfxstream's internal reference counting. Disadvantage:
 Option A is the right starting point. Option B is worth pursuing only
 if buffer lifecycle coordination proves painful.
 
+## Distro Mesa is half the story (May 2026)
+
+We checked what Arch and Debian actually ship: **the gfxstream-vk
+driver is there, but built without the kumquat backend.**
+
+- **Arch / Arch ARM:** `vulkan-gfxstream` is a Mesa subpackage that
+  ships `libvulkan_gfxstream.so` + the ICD JSON. `vulkan-drivers=...,
+  gfxstream,...` is set. `virtgpu_kumquat` does not appear in the
+  PKGBUILD ([Arch ARM
+  PKGBUILD](https://github.com/archlinuxarm/PKGBUILDs/blob/master/extra/mesa/PKGBUILD),
+  [Arch
+  PKGBUILD](https://gitlab.archlinux.org/archlinux/packaging/packages/mesa/-/blob/main/PKGBUILD)).
+- **Debian unstable:** `-Dgfxstream` enabled on 64-bit-with-LLVM
+  archs. Same omission — no `-Dvirtgpu_kumquat` ([Debian
+  rules](https://salsa.debian.org/xorg-team/lib/mesa/-/raw/debian-unstable/debian/rules)).
+
+Without `-Dvirtgpu_kumquat=true` at Mesa build time the kumquat
+backend isn't compiled in — `VIRTGPU_KUMQUAT=1` at runtime is a
+no-op and gfxstream-vk falls through to the DRM/`/dev/dri/cardN`
+path, which we don't have.
+
+**Implication for Phase 1:** we don't rebuild Mesa wholesale. The
+minimal thing is **ship our own `libvulkan_gfxstream.so`** (built
+once, host-side, with `-Dvulkan-drivers=gfxstream
+-Dvirtgpu_kumquat=true`) plus an ICD JSON in
+`/usr/local/share/vulkan/icd.d/` pointing at it. Vulkan's loader
+picks it up via `VK_ICD_FILENAMES`; the rest of Mesa stays the
+distro's. Same shape as the existing `LibhybrisInstallProvider`
+asset overlay (APK asset → real-file copy at install time, host
+kept clean).
+
+Rust toolchain still required at build time (for
+`virtgpu_kumquat_ffi`) — host-side, not in the rootfs. Add the
+Mesa source and build options to `deps/deps.list` like every other
+pinned dep.
+
+### Faking `/dev/dri/cardN` in tawcroot was considered and rejected
+
+Tempting, since tawcroot already does syscall interception. Doesn't
+pencil out:
+
+- DRM's UAPI is large (full virtio-gpu ioctl surface plus generic
+  DRM bits — `RESOURCE_CREATE`, `EXECBUFFER`, `TRANSFER_*`, `MAP`,
+  `WAIT`, `GET_CAPS`, `CONTEXT_INIT`, `PRIME_HANDLE_TO_FD`, …) and
+  version-sensitive.
+- `mmap(drm_fd, offset)` semantics are the killer — virtgpu blob
+  resources are accessed by the kernel mapping host-shared pages.
+  Faking that in userspace needs userfaultfd or hand-rolled
+  AHB-dmabuf remapping with full lifecycle tracking. Massive
+  scope-creep for tawcroot.
+- Both wire formats (virtio-gpu DRM, kumquat) terminate at the same
+  `stream_renderer_*` API on the Android side — host-side server
+  work is identical either way. The only thing tawcroot-fake-DRM
+  saves is a one-time cross-build of `libvulkan_gfxstream.so`.
+- It only covers tawcroot installs (1/3 of methods); chroot/proot
+  installs still need the .so.
+- It fights gfxstream-vk's design — kumquat exists for exactly
+  this "no kernel virtio-gpu available" case.
+
+## GL/GLES path: Zink, not native gfxstream-GL
+
+GL/GLES is covered by **Zink** (Mesa's GL→Vulkan translator), not by
+shipping a separate gfxstream guest GL driver. The path becomes:
+
+```
+GL app → Zink → Vulkan calls → gfxstream-vk encoder → kumquat
+       → Android-side bridge → Android Vulkan → vendor blob
+```
+
+Why Zink over native gfxstream-GL:
+
+- **One driver, one transport, one host integration.** No second
+  guest driver to build and pin, no second protocol surface in the
+  bridge.
+- **Mitigates the GL-over-IPC problem** (open question #3). GL is
+  designed for per-call dispatch; Zink rebuilds that into Vulkan
+  command-buffer submits, which is exactly the access pattern
+  gfxstream's protocol amortizes well. So Zink isn't just GL
+  fallback — it's the right answer to the IPC-cost question.
+- **Already in our notes.** `notes/desktop-gl-dispatch.md` is the
+  libhybris-side version of the same idea (Zink-on-libhybris-vulkan
+  for desktop GL). Bridge inherits it for free.
+- **Distros already ship Zink** as part of Mesa, no extra packaging.
+
+Caveats: Zink's GL compat profile is good in 2026 but not 100% —
+ancient fixed-function paths occasionally surprise. GLES2/3.x is
+clean. GTK4, Qt6, Firefox, Chromium, modern games: fine. Truly old
+X clients via Xwayland: usually fine, occasionally ugly. If a
+priority workload exposes a Zink gap, gfxstream-GL stays available
+as a fallback to revisit then — not as a default to maintain now.
+
+Toggle in the rootfs is just `MESA_LOADER_DRIVER_OVERRIDE=zink` +
+`__GLX_VENDOR_LIBRARY_NAME=mesa` in `RootfsEnv.kt`'s bridge
+branch.
+
+## Coexistence with libhybris
+
+We are NOT dropping libhybris. The bridge ships alongside it and
+the user picks per-launch which backend the chroot uses. Selection
+is runtime, not install-time — the only thing that actually differs
+between the two backends is which `.so` gets loaded, controlled by
+env vars; reinstalling a multi-GB rootfs to flip it would be
+overkill.
+
+### Granularity
+
+1. **Both backends ship in every install.** Build-time gating
+   mirroring `-PtawcMethods=...` lets a release APK drop one for
+   size if needed, but the default ships both.
+2. **Global default via app setting** → drives env vars at every
+   chroot entry. v0 UI: a radio selector on the home page (Hybris
+   / Bridge), persisted via Android `SharedPreferences` (no
+   datastore in the app today — first user-facing pref). Read by
+   `RootfsEnv.build` on each entry.
+3. **Per-app override (future, optional).** Power-user feature:
+   `.desktop` `Exec=env TAWC_GPU=bridge firefox`. Cheap to add
+   later once (2) exists; don't block v1 on it.
+
+### Defaults
+
+- **aarch64 physical:** `hybris` (proven, lower latency, our
+  investment).
+- **x86_64 emulator:** `bridge` (libhybris doesn't work on AVD —
+  see notes/emulator.md "libhybris on x86_64". This is the
+  whole reason we're building the bridge.)
+- **Eventually flip the physical default to `bridge`** once it's
+  shipped on by default for a release on AVD and proven stable.
+
+### Where the env toggle lives
+
+`app/src/main/java/me/phie/tawc/install/RootfsEnv.kt`. Every method
+(tawcroot/proot/chroot) funnels through `RootfsEnv.envArgv`, which
+is applied via `/usr/bin/env -i KEY=VAL …` on the in-rootfs `bash
+-lc`. Single source of truth, no on-disk profile.d state,
+consistently applied across all entry paths.
+
+(Old plan referenced `/etc/profile.d/01-tawc.sh`; that file no
+longer exists — see `notes/installation.md` "Nothing under
+/etc/profile.d/". Don't reintroduce it.)
+
+Branch in `RootfsEnv.build` on a new enum read from the
+SharedPreferences-backed setting:
+
+```kotlin
+enum class GpuBackend { HYBRIS, BRIDGE }
+
+// inside build():
+when (gpu) {
+    GpuBackend.HYBRIS -> {
+        put("LD_LIBRARY_PATH",
+            "${LibhybrisInstallProvider.GUEST_GL_SHIMS_DIR}:${LibhybrisInstallProvider.GUEST_LIB_DIR}")
+        put("HYBRIS_EGLPLATFORM", "wayland")
+        put("HYBRIS_VULKANPLATFORM", "wayland")
+        put("GDK_GL", "gles:always")
+    }
+    GpuBackend.BRIDGE -> {
+        put("VK_ICD_FILENAMES", BridgeInstallProvider.GUEST_ICD_PATH)
+        put("VIRTGPU_KUMQUAT", "1")
+        put("MESA_LOADER_DRIVER_OVERRIDE", "zink")
+        put("__GLX_VENDOR_LIBRARY_NAME", "mesa")
+        // no LD_LIBRARY_PATH override — distro Mesa is the GL/EGL stack
+    }
+}
+```
+
+Both backends' assets live alongside each other in the rootfs:
+
+- libhybris: `/usr/lib/hybris/` + `/usr/local/lib/gl-shims/` (laid
+  down by `TawcInstaller` / `LibhybrisInstallProvider`, untouched
+  by this work).
+- bridge: `/usr/local/lib/libvulkan_gfxstream.so` +
+  `/usr/local/share/vulkan/icd.d/gfxstream_vk_kumquat.json` (new
+  `BridgeInstallProvider`, same shape as `LibhybrisInstallProvider`).
+
+The compositor's kumquat server thread is cheap to leave always-on
+(or start lazily on first connection); it doesn't conflict with
+`android_wlegl` since each Wayland client picks at most one of "use
+android_wlegl" (libhybris path) or "use kumquat for buffers"
+(bridge path) by virtue of which Vulkan/EGL library it loaded.
+
+### What this changes in the implementation order
+
+The "Phase 1 — guest side off-the-shelf" step in the plan below
+is now: **build only `libvulkan_gfxstream.so` (kumquat-enabled)
+host-side, ship as APK asset, lay down via a new
+`BridgeInstallProvider`, plus a one-line ICD JSON.** Not "rebuild
+Mesa for the chroot." The rest of Mesa is the distro's.
+
+The "Phase 7 — retire libhybris" step is dropped. We ship both
+indefinitely; the radio selector is the user's choice.
+
+## Implementation plan
+
+### Phase 0 — de-risk the unknowns
+0.1 **Build gfxstream host renderer with the NDK (no Soong).** The
+single biggest unknown. Try the in-tree CMake first; expect to fix
+Android-target gaps. Output: `libgfxstream_backend.so` in
+`build/gfxstream-host/`, calling `stream_renderer_init(USE_EGL|
+USE_GLES|USE_VK)` against system `libEGL/libvulkan`. Smoke test
+inside a tiny APK.
+
+0.2 **Audit the kumquat server side.** Either lift Google's server
+out of AVF/crosvm or write a small one over `rutabaga_gfx` that
+proxies kumquat → `stream_renderer_*`. Pick before committing —
+that picks build pipeline (Rust + crosvm vs C++/Rust hybrid). Add
+to `deps/deps.list` if vendored.
+
+0.3 **GL perf microbench (Q3) using Zink.** Once 0.1+0.2 stand up,
+run a real Zink-on-gfxstream-vk test (`glmark2`, gtk4-debug-app)
+through a stub kumquat link. Validate that Zink's command-buffer
+batching does in fact tame the per-call cost. If not, scope down
+to "Vulkan via bridge, GL stays libhybris" and replan.
+
+### Phase 1 — guest side, ICD overlay
+1.1 **Cross-build only `libvulkan_gfxstream.so` from Mesa** with
+`-Dvulkan-drivers=gfxstream -Dvirtgpu_kumquat=true`. New
+`scripts/build-mesa-gfxstream.sh`, vendored Mesa pinned in
+`deps/deps.list`. Adds Rust toolchain to `notes/building.md`.
+Output: a single .so + a one-line `gfxstream_vk_kumquat.json` ICD
+manifest pointing at our install path.
+
+1.2 **`BridgeInstallProvider`** mirroring `LibhybrisInstallProvider`:
+APK asset → real-file copy under
+`/usr/local/lib/libvulkan_gfxstream.so` + ICD JSON at install time.
+Symlinks under `/usr/local/lib` per existing convention.
+
+1.3 **Wire env into `RootfsEnv`.** New `GpuBackend` enum, branch
+in `RootfsEnv.build`. Default reads from SharedPreferences via the
+home-page radio (see Phase 2 below). Default value: `HYBRIS` on
+aarch64 physical, `BRIDGE` on x86_64 emulator.
+
+1.4 **Validate guest stack alone** with `vulkaninfo` / `vkcube`
+against a stub host — confirm Mesa loads our ICD, gfxstream-vk
+picks kumquat, socket connects.
+
+### Phase 2 — UI: GPU backend radio on the home page
+Two-option radio (Hybris / Bridge) above or alongside the
+"Install new distro" CTA on `MainActivity`. Persisted via
+`SharedPreferences` (first user-facing pref in the app).
+`RootfsEnv.build` reads on each chroot entry; selection takes
+effect on the next process the user launches in the rootfs (not
+mid-process).
+
+### Phase 3 — Android-side bridge daemon, in-process
+3.1 **Spawn a kumquat-listening thread from
+`CompositorService.onCreate`.** Owns one EGL/Vulkan context per
+kumquat client. SELinux-wise it inherits the app domain — should
+just work, unlike libhybris-in-chroot.
+
+3.2 **Pump kumquat → `stream_renderer_*`.** Resource create/destroy,
+transfer, command submit, fences (eventfd). Capability negotiation.
+Snapshot/restore stubbed.
+
+3.3 **Headless first.** Run gfxstream host renderer headless (no
+`ANativeWindow*`); we never use its DisplayVk. End-to-end smoke:
+chroot `vkcube` → bridge → Adreno → no frames yet, but command
+stream completes.
+
+### Phase 4 — zero-copy buffer handoff (Option A in §"Zero-copy buffer sharing")
+4.1 **Intercept post.** Hook `PostWorker::post()` completion (or
+`stream_renderer` post callback) so we don't drive `DisplayVk`. On
+swap, call `exportColorBufferMemory(colorBufferHandle)` →
+`AHardwareBuffer*`.
+
+4.2 **Map kumquat client → wl_surface.** Bridge needs to know which
+compositor surface this AHB is for. Easiest: bridge runs alongside
+a tiny per-client wl_display connection that owns a `wl_surface`
+and feeds AHBs via the existing `android_wlegl` import path the
+compositor already speaks. Reuses everything from the libhybris
+path on the compositor side.
+
+4.3 **Triple-buffering / lifecycle.** gfxstream owns the buffer
+pool; release callbacks drive its internal refcount. If this gets
+painful, fall through to Option B (~50 LOC patch in
+`allocExternalMemory()` mirroring `QnxScreenBuffer`).
+
+4.4 **First real frame:** chroot `vkcube` → AHB → compositor
+texture → on screen.
+
+### Phase 5 — Vulkan WSI for real apps
+5.1 **`VK_KHR_wayland_surface` in the guest.** gfxstream-vk's WSI
+is Android-shaped; remap to Wayland either guest-side (mirroring
+libhybris's trick) or via a tiny implicit layer. Bridge resolves
+the `wl_surface` to a kumquat-side ColorBuffer.
+
+5.2 **Format negotiation** matching what the compositor's gralloc
+importer accepts (same constraints as today's libhybris path;
+mostly inherits).
+
+5.3 **Suite:** `vulkaninfo`, `vkcube`, Firefox WebGPU, glmark2-vulkan.
+
+### Phase 6 — Zink wired up for GL/GLES
+Mostly env-only at this point — the rootfs already has Mesa with
+Zink from the distro. Validate:
+
+6.1 `glxgears`, `glmark2` (desktop GL via Zink → bridge).
+
+6.2 `weston-simple-egl`, gtk4-debug-app (GLES2/3 → Zink → bridge).
+
+6.3 Firefox accelerated rendering with `MOZ_X11_EGL=1` /
+`gfx.canvas.accelerated=true`.
+
+6.4 Decide whether the `desktop-gl-dispatch.md` design (API-aware
+libEGL routing) is still needed at all under the bridge path —
+plain `MESA_LOADER_DRIVER_OVERRIDE=zink` may be enough.
+
+### Phase 7 — AVD / x86_64 parity
+The whole point. Repeat 1.1–6.3 with `--abi=x86_64`. No thunk
+patcher, no bionic-slot whack-a-mole. Default `GpuBackend` flips
+to `BRIDGE` on x86_64 emulator targets (already wired in 1.3).
+
+### Cross-cutting
+- **Integration tests:** extend `tests/integration/` with bridge
+  variants of existing GPU tests; gate on `TAWC_GPU=bridge|hybris`
+  (env-var override, separate from the persisted SharedPreferences
+  default — same shape as `TAWC_TARGET`) so we run both backends in
+  CI.
+- **`deps/deps.list`** entries for Mesa (gfxstream-only build),
+  gfxstream host renderer, kumquat server (or rutabaga), pinned by
+  commit. Don't skip — silent drift here would be brutal.
+- **`notes/building.md`** updated per change (Rust toolchain for
+  Mesa, NDK/CMake quirks for gfxstream host, any new host pkgs).
+- **`notes/gpu-strategy.md`** flip the "Alternative we haven't
+  taken" wording to "Both backends ship; user-selectable" once
+  Phase 2 lands.
+- **`notes/wsi-layer.md`** add a "Bridge backend" subsection once
+  Phase 5 is real; libhybris-WSI section stays.
+
+Riskiest milestones: 0.1 (NDK build of gfxstream host), 0.2
+(kumquat server source), 0.3 (Zink GL perf). Land those before
+committing to phases 1–6.
+
 ## Relation to existing notes
 
 - `notes/gpu-strategy.md` — current libhybris-based strategy. The
@@ -440,5 +777,18 @@ if buffer lifecycle coordination proves painful.
   there.
 - `notes/wsi-layer.md` — the chroot's GL/Vulkan WSI today. Under the
   bridge, the chroot's WSI becomes "Mesa with `gfxstream-vk`",
-  i.e., upstream off-the-shelf, and our libhybris-fork-side WSI
-  patches stop being needed.
+  i.e., upstream off-the-shelf. Libhybris-fork-side WSI patches
+  stay needed for users on the `hybris` backend (which we ship
+  indefinitely alongside the bridge — see "Coexistence with
+  libhybris" above).
+- `notes/desktop-gl-dispatch.md` — design for routing desktop-GL
+  apps through Zink-on-Vulkan. Originally framed against
+  libhybris-vulkan; under the bridge backend the same routing maps
+  onto Zink-on-gfxstream-vk and is in fact the *primary* GL path
+  for that backend (not just a desktop-GL fallback). May be
+  obsoletable on the bridge side by `MESA_LOADER_DRIVER_OVERRIDE=zink`
+  alone; revisit during Phase 6.
+- `notes/installation.md` — "Nothing under `/etc/profile.d/`" policy
+  is what makes the runtime GPU-backend toggle clean: env lives in
+  `RootfsEnv.kt`, applied via `env -i` on every entry, no on-disk
+  drift between method-specific entry paths.
