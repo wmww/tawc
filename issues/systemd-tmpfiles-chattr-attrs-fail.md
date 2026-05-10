@@ -21,9 +21,34 @@ correctly` in pacman because tmpfiles exits non-zero overall.
 
 Search for `Cannot set file attributes for '/var/log/journal'`.
 
+## Don't lie success
+
+The temptation is `handle_ioctl(FS_IOC_SETFLAGS) → return 0`. Don't.
+The flag genuinely isn't set on disk afterward; lying about it would
+hide a real failure from systemd and from the user. NOCOW on ext4
+(and on the Android app data partition specifically) isn't supported
+— that's the truth, and `EOPNOTSUPP` is the correct kernel response.
+Suppressing it would only be correct if tawcroot actually implemented
+the flag (we can't — it's a kernel-level fs feature), or the flag
+were irrelevant (it isn't — journald pre-allocates `/var/log/journal`
+specifically expecting NOCOW for journal-rotation perf).
+
+## What's actually wrong
+
+The pacman-level `error: command failed to execute correctly` is
+the real noise — systemd-tmpfiles itself is being graceful (it says
+`ignoring`). pacman is catching tmpfiles' non-zero exit. That's a
+package-side issue, not a tawcroot one.
+
+## Possible fixes (none in tawcroot)
+
+- Filter the `+C` rule out of the journald tmpfile config in our
+  default rootfs profile (override `/usr/lib/tmpfiles.d/journal-nocow.conf`
+  with an empty `/etc/tmpfiles.d/journal-nocow.conf` at install time).
+  Cleanest fix; lives in the Kotlin install profile, not in tawcroot.
+- Live with the warning; users learn to ignore it.
+
 ## Severity
 
-Low. The journal directory is created and writable; only the COW
-hint is missing. Possible fixes: stub `FS_IOC_SETFLAGS` in tawcroot
-to return 0 (lying), or filter the `+C` rule out of the journald
-tmpfile config in our default rootfs profile.
+Low. Journal directory is created and writable; only the COW hint
+is missing, which costs a small amount of journal-rotation perf.

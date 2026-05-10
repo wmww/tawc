@@ -280,9 +280,9 @@ external displays, we move to one wl_output per OutputHost.
   Activity gains focus (`onWindowFocusChanged(true)`), the compositor sets
   keyboard focus to that host's foreground toplevel and marks the host
   `foreground = true`; `onWindowFocusChanged(false)` clears it. The
-  compositor only ever has one focused host at a time. This naturally fixes
-  [issues/touch-focus-single-window-only.md](../issues/touch-focus-single-window-only.md)
-  (delete the issue file once phase 6 lands).
+  compositor only ever has one focused host at a time. This naturally
+  fixes the "touch focus stuck on the single foreground window" gap that
+  existed before the multi-Activity rework.
 - IME show/hide (`onShowKeyboard` / `onHideKeyboard` reverse JNI) needs to
   target the focused Activity's view, not a global `inputViewRef`. The
   call signature gains an `activityId`; the Service-side singleton looks
@@ -530,8 +530,7 @@ Each phase is independently testable; nothing assumes a future phase exists.
    Activity per non-child toplevel. Verify: open two GTK apps → two
    recents cards. Open Firefox + a dialog → still one card.
 6. **Per-host input/focus.** Touch goes to the host that owns the
-   SurfaceView; keyboard focus follows Android focus. Delete
-   `issues/touch-focus-single-window-only.md`.
+   SurfaceView; keyboard focus follows Android focus.
 7. **Lifecycle + suspend round-trip.** Swipe away → close. Activity
    destroyed → toplevel close. Activity backgrounded → host → Background,
    `Suspended` configure sent, frame callbacks stop, buffer imports

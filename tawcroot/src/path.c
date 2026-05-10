@@ -252,9 +252,8 @@ long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
 	 * `..` / trailing slash, giving us the bytes /proc/self/fd will
 	 * later return for any dirfd opened *through* this bind. That match
 	 * is what lets dirfd_to_guest_abs reverse-translate bind-src
-	 * dirfds and clamp fd-relative `..` at the bind-dst boundary
-	 * (issues/tawcroot-fd-relative-dotdot-escapes-bind-src.md). The
-	 * canonical form is also re-openable, so it's still safe to ferry
+	 * dirfds and clamp fd-relative `..` at the bind-dst boundary.
+	 * The canonical form is also re-openable, so it's still safe to ferry
 	 * through to --exec-child. Fallback to the raw user-supplied path
 	 * if /proc/self/fd is unavailable: the ferry still works, the
 	 * reverse-translate just won't fire for symlink-traversed srcs. */

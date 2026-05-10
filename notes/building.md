@@ -181,9 +181,8 @@ libhybris is loaded by glibc Wayland clients in the chroot. Its
 `pthread_attr_setstackaddr`, `valloc`) for the bionic vendor blobs
 it loads via its embedded Android linker (`libhybris/linker/q.so`).
 Building with the NDK produces a bionic-linked binary that no glibc
-client can `dlopen`. The NDK spike (which uncovered this) is recorded
-in `issues/ship-libhybris-in-apk.md` and is not redoable — use the
-glibc cross-toolchain.
+client can `dlopen` — the spike that uncovered this is not worth
+redoing; use the glibc cross-toolchain.
 
 #### Why a `-idirafter` hack appears in the build script
 

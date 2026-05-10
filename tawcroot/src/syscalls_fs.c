@@ -1842,6 +1842,25 @@ static long handle_rename_legacy(const tawcroot_syscall_args *args,
 			   (const char *)(uintptr_t)args->b, 0);
 }
 
+/* Legacy x86_64 open(path, flags, mode). Glibc on Android always
+ * uses openat (NR 257) because Android's stacked filter RET_TRAPs
+ * NR 2 and glibc has fallback logic, but a static binary or non-
+ * glibc libc that issues raw NR 2 directly would otherwise bypass
+ * tawcroot's path translation (kernel sees the literal guest path
+ * against the host fs). Route through handle_openat with
+ * dirfd = AT_FDCWD so legacy callers get the same translation as
+ * modern openat callers. */
+static long handle_open_legacy(const tawcroot_syscall_args *args,
+			       ucontext_t *uc)
+{
+	tawcroot_syscall_args shifted = *args;
+	shifted.a = (long)AT_FDCWD;  /* dirfd  */
+	shifted.b = args->a;         /* path   */
+	shifted.c = args->b;         /* flags  */
+	shifted.d = args->c;         /* mode   */
+	return handle_openat(&shifted, uc);
+}
+
 /* Legacy x86_64 mknod(path, mode, dev). aarch64 has no mknod — only
  * mknodat — so this is x86_64-only. Routes to the modern mknodat
  * with our base_fd / suffix. */
@@ -2034,6 +2053,7 @@ void tawcroot_fs_register(void)
 #if defined(__x86_64__)
 	/* Legacy x86_64 syscalls — the lp64-`access`-on-x86_64 set that
 	 * Android's untrusted_app filter RET_ERRNOs but our TRAP wins. */
+	tawcroot_dispatch_install(TAWC_SYS_open,        handle_open_legacy);
 	tawcroot_dispatch_install(TAWC_SYS_stat,        handle_stat);
 	tawcroot_dispatch_install(TAWC_SYS_lstat,       handle_lstat);
 	tawcroot_dispatch_install(TAWC_SYS_access,      handle_access);

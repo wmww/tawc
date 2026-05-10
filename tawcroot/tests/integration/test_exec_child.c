@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 #include "exec_state.h"
+#include "rootfs_helpers.h"
 
 #ifndef TAWCROOT_PROD_BIN
 # error "TAWCROOT_PROD_BIN must be defined"
@@ -359,12 +360,7 @@ test(exec_child_runs_guest_when_orphaned_to_init)
 	 * load. With the bug, the marker never appears (tawcroot exits 0
 	 * via exit_if_orphan before reaching the loader); with the fix,
 	 * the fixture runs and creates it. */
-	int found = 0;
-	for (int i = 0; i < 200; i++) { /* 200 × 50ms = 10s */
-		if (access(marker, F_OK) == 0) { found = 1; break; }
-		struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000000 };
-		nanosleep(&ts, NULL);
-	}
+	bool found = rh_poll_for_path(marker, 200);  /* 10 s budget */
 	if (!found) {
 		/* Drain the diagnostic pipe so the failure log shows where
 		 * we stopped. The most recent tag is the most informative.
@@ -398,9 +394,8 @@ test(exec_child_runs_guest_when_orphaned_to_init)
  * The kernel's `forget_original_parent` walk during intermediate's
  * `do_exit` (kernel/exit.c) checks each child's pdeath_signal and
  * sends the signal — so the grandchild gets SIGKILL'd mid-execution.
- * In production this fires during a 150-pkg pacman -Sw on roughly
- * 1 % of gpg verifies, surfacing as "missing required signature";
- * see issues/tawcroot-arch-pacman-intermittent-sig-fail.md.
+ * In production this fired during a 150-pkg pacman -Sw on roughly
+ * 1 % of gpg verifies, surfacing as "missing required signature".
  *
  * Test sequence:
  *   1. parent forks intermediate
@@ -489,12 +484,7 @@ test(exec_child_survives_pdeathsig_after_intermediate_exit)
 	 * fix. Budget 5 s for slow Android cores + startup overhead. With
 	 * the bug, the fixture is SIGKILL'd at t=~100 ms (when intermediate
 	 * exits) and the marker never appears. */
-	int found = 0;
-	for (int i = 0; i < 100; i++) { /* 100 × 50 ms = 5 s */
-		if (access(marker, F_OK) == 0) { found = 1; break; }
-		struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000000 };
-		nanosleep(&ts, NULL);
-	}
+	bool found = rh_poll_for_path(marker, 100);  /* 5 s budget */
 	if (!found) {
 		char tags[64] = {0};
 		ssize_t n = read(diag[0], tags, sizeof tags - 1);

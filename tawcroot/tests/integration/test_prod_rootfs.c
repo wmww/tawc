@@ -30,6 +30,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "rootfs_helpers.h"
+
 #ifndef PATH_MAX
 # define PATH_MAX 4096
 #endif
@@ -54,51 +56,6 @@
 #define FAKE_ROOTFS  TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-prod"
 #define FAKE_BINDSRC TAWCROOT_TEST_TMPDIR "/tawcroot-test-rootfs-prod-bindsrc"
 
-static void rmrf(const char *path)
-{
-	char cmd[PATH_MAX + 32];
-	snprintf(cmd, sizeof cmd, "rm -rf '%s'", path);
-	(void)!system(cmd);
-}
-
-static bool mkdir_p(const char *path, mode_t mode)
-{
-	return mkdir(path, mode) == 0 || errno == EEXIST;
-}
-
-static bool copy_file(const char *src, const char *dst, mode_t mode)
-{
-	int s = open(src, O_RDONLY);
-	if (s < 0) return false;
-	int d = open(dst, O_WRONLY | O_CREAT | O_TRUNC, mode);
-	if (d < 0) { close(s); return false; }
-	char buf[65536];
-	for (;;) {
-		ssize_t n = read(s, buf, sizeof buf);
-		if (n == 0) break;
-		if (n < 0) { close(s); close(d); return false; }
-		ssize_t off = 0;
-		while (off < n) {
-			ssize_t w = write(d, buf + off, n - off);
-			if (w <= 0) { close(s); close(d); return false; }
-			off += w;
-		}
-	}
-	close(s); close(d);
-	(void)chmod(dst, mode);
-	return true;
-}
-
-static bool write_text(const char *path, const char *contents)
-{
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (fd < 0) return false;
-	size_t n = strlen(contents);
-	bool ok = (write(fd, contents, n) == (ssize_t)n);
-	close(fd);
-	return ok;
-}
-
 /* Build a minimal fake rootfs:
  *   <root>/bin/static_exit42        copy of the static fixture
  *   <root>/bin/static_argc_random   copy of the argv-checking fixture
@@ -108,33 +65,33 @@ static bool build_rootfs(void)
 {
 	char p[PATH_MAX];
 
-	if (!mkdir_p(FAKE_ROOTFS, 0755)) return false;
+	if (!rh_mkdir_p(FAKE_ROOTFS, 0755)) return false;
 	snprintf(p, sizeof p, "%s/bin", FAKE_ROOTFS);
-	if (!mkdir_p(p, 0755)) return false;
+	if (!rh_mkdir_p(p, 0755)) return false;
 	snprintf(p, sizeof p, "%s/etc", FAKE_ROOTFS);
-	if (!mkdir_p(p, 0755)) return false;
+	if (!rh_mkdir_p(p, 0755)) return false;
 
 	snprintf(p, sizeof p, "%s/bin/static_exit42", FAKE_ROOTFS);
-	if (!copy_file(TAWCROOT_STATIC_EXIT42_BIN, p, 0755)) return false;
+	if (!rh_copy_file(TAWCROOT_STATIC_EXIT42_BIN, p, 0755)) return false;
 
 	snprintf(p, sizeof p, "%s/bin/static_argc_random", FAKE_ROOTFS);
-	if (!copy_file(TAWCROOT_STATIC_ARGC_RANDOM_BIN, p, 0755)) return false;
+	if (!rh_copy_file(TAWCROOT_STATIC_ARGC_RANDOM_BIN, p, 0755)) return false;
 
 	snprintf(p, sizeof p, "%s/bin/static_execve_exit42", FAKE_ROOTFS);
-	if (!copy_file(TAWCROOT_STATIC_EXECVE_EXIT42_BIN, p, 0755)) return false;
+	if (!rh_copy_file(TAWCROOT_STATIC_EXECVE_EXIT42_BIN, p, 0755)) return false;
 
 	snprintf(p, sizeof p, "%s/etc/probe", FAKE_ROOTFS);
-	if (!write_text(p, "from-rootfs\n")) return false;
+	if (!rh_write_text(p, "from-rootfs\n")) return false;
 
 	return true;
 }
 
 static bool build_bindsrc(void)
 {
-	if (!mkdir_p(FAKE_BINDSRC, 0755)) return false;
+	if (!rh_mkdir_p(FAKE_BINDSRC, 0755)) return false;
 	char p[PATH_MAX];
 	snprintf(p, sizeof p, "%s/static_exit42", FAKE_BINDSRC);
-	return copy_file(TAWCROOT_STATIC_EXIT42_BIN, p, 0755);
+	return rh_copy_file(TAWCROOT_STATIC_EXIT42_BIN, p, 0755);
 }
 
 /* Run TAWCROOT_PROD_BIN with the supplied argv and return the exit
@@ -158,7 +115,7 @@ static int run_with(const char *const *extra_args)
 
 test(prod_rootfs_static_exit42)
 {
-	rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_ROOTFS);
 	test_true(build_rootfs());
 
 	const char *args[] = {
@@ -166,13 +123,13 @@ test(prod_rootfs_static_exit42)
 	};
 	test_int_eq(run_with(args), 42);
 
-	rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_ROOTFS);
 }
 
 test(prod_rootfs_bind_overrides_rootfs)
 {
-	rmrf(FAKE_ROOTFS);
-	rmrf(FAKE_BINDSRC);
+	rh_rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_BINDSRC);
 	test_true(build_rootfs());
 	test_true(build_bindsrc());
 
@@ -186,8 +143,8 @@ test(prod_rootfs_bind_overrides_rootfs)
 	};
 	test_int_eq(run_with(args), 42);
 
-	rmrf(FAKE_ROOTFS);
-	rmrf(FAKE_BINDSRC);
+	rh_rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_BINDSRC);
 }
 
 test(prod_rootfs_no_args_prints_usage)
@@ -228,7 +185,7 @@ test(prod_rootfs_relative_rootfs_is_usage)
 
 test(prod_rootfs_nonexistent_guest_returns_loader_code)
 {
-	rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_ROOTFS);
 	test_true(build_rootfs());
 
 	const char *args[] = {
@@ -237,7 +194,7 @@ test(prod_rootfs_nonexistent_guest_returns_loader_code)
 	/* loader_exec.h: 60 = open guest failed. */
 	test_int_eq(run_with(args), 60);
 
-	rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_ROOTFS);
 }
 
 /* Phase 2g: a guest does execve() and the new process runs.
@@ -262,7 +219,7 @@ test(prod_rootfs_nonexistent_guest_returns_loader_code)
  */
 test(prod_rootfs_guest_does_execve)
 {
-	rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_ROOTFS);
 	test_true(build_rootfs());
 
 	const char *args[] = {
@@ -270,12 +227,12 @@ test(prod_rootfs_guest_does_execve)
 	};
 	test_int_eq(run_with(args), 42);
 
-	rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_ROOTFS);
 }
 
 test(prod_rootfs_dotdot_clamps_at_root)
 {
-	rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_ROOTFS);
 	test_true(build_rootfs());
 
 	/* /../../../bin/static_exit42 must clamp at the rootfs root and
@@ -289,5 +246,5 @@ test(prod_rootfs_dotdot_clamps_at_root)
 	};
 	test_int_eq(run_with(args), 42);
 
-	rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_ROOTFS);
 }

@@ -81,6 +81,8 @@
 # define TAWC_SYS_gettid           178
 # define TAWC_SYS_pread64           67
 # define TAWC_SYS_io_uring_setup   425
+# define TAWC_SYS_io_uring_enter   426
+# define TAWC_SYS_io_uring_register 427
 # define TAWC_SYS_getresuid       148
 # define TAWC_SYS_getresgid       150
 # define TAWC_SYS_clone3          435
@@ -89,8 +91,9 @@
 # define TAWC_SYS_connect         203
 # define TAWC_SYS_accept          202
 # define TAWC_SYS_accept4         242
-/* Defense-in-depth denials — never honoured, always trap to -EPERM. See
- * issues/tawcroot-phase3-syscall-gaps.md §1. */
+/* chroot has its own handler in src/chroot.c that swaps the rootfs
+ * view bookkeeping. The other five trap to -EPERM (defense-in-depth;
+ * see fake_eperm in src/syscalls_control.c). */
 # define TAWC_SYS_chroot           51
 # define TAWC_SYS_pivot_root       41
 # define TAWC_SYS_mount            40
@@ -170,6 +173,7 @@
 /* Legacy syscalls Android's untrusted_app filter RET_TRAPs on x86_64 —
  * we route them through *at variants in the handler. They don't exist
  * on aarch64 (separate numbers / not allocated). */
+# define TAWC_SYS_open            2
 # define TAWC_SYS_stat            4
 # define TAWC_SYS_lstat           6
 # define TAWC_SYS_access         21
@@ -188,6 +192,8 @@
 # define TAWC_SYS_gettid           186
 # define TAWC_SYS_pread64           17
 # define TAWC_SYS_io_uring_setup   425
+# define TAWC_SYS_io_uring_enter   426
+# define TAWC_SYS_io_uring_register 427
 # define TAWC_SYS_getresuid       118
 # define TAWC_SYS_getresgid       120
 # define TAWC_SYS_clone3          435
@@ -204,8 +210,9 @@
 # define TAWC_SYS_ppoll           271
 # define TAWC_SYS_epoll_wait      232
 # define TAWC_SYS_epoll_pwait     281
-/* Defense-in-depth denials — never honoured, always trap to -EPERM. See
- * issues/tawcroot-phase3-syscall-gaps.md §1. */
+/* chroot has its own handler in src/chroot.c that swaps the rootfs
+ * view bookkeeping. The other five trap to -EPERM (defense-in-depth;
+ * see fake_eperm in src/syscalls_control.c). */
 # define TAWC_SYS_chroot          161
 # define TAWC_SYS_pivot_root      155
 # define TAWC_SYS_mount           165

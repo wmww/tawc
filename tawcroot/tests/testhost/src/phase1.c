@@ -2193,7 +2193,6 @@ static int test_rt_sigaction_b2_sizing(void)
 }
 
 /* Multi-thread SIGSYS-blocked shadow, end-to-end through the handler.
- * Closes issues/tawcroot-signal-shadow-multithread-e2e-test.md.
  *
  * The unit suite exercises the lock-free primitives directly (16-thread
  * blocked isolation, 4×4 writer/reader seqlock, tombstone probe-chain

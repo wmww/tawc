@@ -17,6 +17,13 @@ static_argc_random
 static_execve_exit42
 static_open_creat_argv1
 static_sleep_open_creat_argv1
+static_fork_open_argv1
+static_fork_exec_argv1
+static_fork_closefrom_exec_argv1
+static_unix_bind_argv1
+static_check_proc_self_fd
+static_check_proc_exe_argv0
+static_io_uring_deny
 dynamic_exit42
 dynamic_argv_check
 dynamic_big_stack

@@ -12,8 +12,7 @@ and Manjaro ARM (141.0.3). The
 passes on the OnePlus 9 against all three distros. The earlier "Firefox closed unexpectedly while
 starting" recovery-dialog symptom and the tawcroot-side parent-process
 SEGV (Mozilla's `shm_open(3)` against an unbacked `/dev/shm`) are both
-fixed; details in `issues/tawcroot-firefox-segfault.md` (kept as
-resolution archaeology).
+fixed by the in-handler `/dev/shm` memfd emulation in `tawcroot/src/shm.c`.
 
 ## Launching
 

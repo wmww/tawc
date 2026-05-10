@@ -92,11 +92,10 @@ static int streq(const char *a, const char *b)
  *     gets queued and the grand-child dies mid-startup. gpg dies
  *     before writing GOODSIG to its status pipe; gpgme reports
  *     `verify_result->signatures == NULL`; libalpm reports "missing
- *     required signature". The 10 ms nanosleep workaround attempted
- *     in the issue file widened the bootstrap delay so TRIGGER won
- *     more reliably — symptom mitigation, not root-cause fix. The
- *     actual fix is to not arm PDEATHSIG on this entry shape. (See
- *     issues/tawcroot-arch-pacman-intermittent-sig-fail.md history.)
+ *     required signature". A 10 ms nanosleep workaround widened the
+ *     bootstrap delay so TRIGGER won more reliably — symptom
+ *     mitigation, not root-cause fix. The actual fix is to not arm
+ *     PDEATHSIG on this entry shape.
  *
  * Cleanup story for `--exec-child` workers without their own
  * PDEATHSIG: the production caller is the in-app exec broker (see

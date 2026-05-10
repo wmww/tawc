@@ -2369,10 +2369,40 @@ coverage.
      `prod_rootfs_guest_does_execve` validates the full chain:
      filter trap → handler dispatch → memfd write with extras →
      execveat self → `--exec-child` re-init → manual-load target
-     inside rootfs → exit 42. fork+exec for dynamic guests, and
-     `bash -c 'ls'` style flows, are follow-ups (need either a
-     glibc-on-rootfs test fixture or a dynamic guest that calls
-     fork+execve from libc).
+     inside rootfs → exit 42. `tawcroot/tests/integration/test_prod_fork.c`
+     extends the surface to cover a guest **forking** (clone(SIGCHLD),
+     separate-VM child) before doing the trapping syscall:
+       * `prod_fork_child_opens_marker_in_rootfs` — child openat
+         exercises path translation against a different PID/tid than
+         the parent, regression-guarding the cached-tid bug
+         (usercopy.c:14-22; "More phase-5b bugs" below).
+       * `prod_fork_then_execve_in_child` (+ `..._with_bind`) — the
+         bash-style fork+execve chain, exercising exec_handler from a
+         fork-child PID and the bind-table re-export.
+       * `prod_fork_closefrom_then_execve_in_child`
+         (+ `..._with_bind`) — gpgme/closefrom shape: child
+         close(1000..1003) + close_range(0, ~0u, 0) before execve,
+         catching reserved-fd-survival regressions ("Phase 5c — full
+         integration suite" below).
+       * `prod_fork_exec_proc_self_exe_correct_in_child` — Firefox
+         libxul.so regression: descendant's /proc/self/exe must
+         resolve to its own path, not the original guest binary
+         (exec_handler.c:91-101; "Phase 5c").
+     `tawcroot/tests/integration/test_prod_features.c` covers
+     production-binary feature paths that used to live only at the
+     phase-1 testhost handler layer:
+       * `prod_unix_bind_translates_sun_path` — AF_UNIX bind() sun_path
+         translation (gpg-agent regression). Was untested anywhere
+         before this.
+       * `prod_proc_self_fd_hides_reserved` — getdents64 dirent filter
+         hides reserved fd 1000 (gpgme closefrom death-spiral).
+       * `prod_inherited_sigsys_block_unblocked_by_init` — orchestrator
+         blocks SIGSYS, forks tawcroot; supervisor_init's SIG_SETMASK
+         reset is what keeps the guest's first trapping syscall alive
+         (JVM-spawned-shell regression, "Phase 4" fix).
+     fork+exec for *dynamic* guests, and `bash -c 'ls'` style flows,
+     still need a glibc-on-rootfs fixture but the static surface that
+     past regressions actually fired through is now covered.
 
    Exit gate (was "dynamically linked `/bin/true` and
    `/bin/sh -c "ls /"` run from inside a fake rootfs"): partially
@@ -2740,9 +2770,9 @@ coverage.
    pacman package install and the wider chroot-test surface come
    online. **12 of 12 integration tests pass** through tawcroot
    on the OnePlus 9 with no `MOZ_DISABLE_*_SANDBOX` workaround env
-   vars. Firefox-side fixes landed: app-writable `/dev/shm` bind
-   so Mozilla's `shm_open(3)` doesn't hard-assert (was tracked
-   in `issues/tawcroot-firefox-segfault.md`); `seccomp(2)` /
+   vars. Firefox-side fixes landed: in-handler `/dev/shm` memfd
+   emulation (`tawcroot/src/shm.c`) so Mozilla's `shm_open(3)`
+   doesn't hard-assert; `seccomp(2)` /
    `prctl(PR_SET_SECCOMP)` lie about successful filter install
    so Mozilla's content-sandbox teardown path doesn't trip the
    bionic-Q linker's `unregister_tls_module` CHECK in libhybris;
@@ -3167,17 +3197,18 @@ here so we don't ship MVP and discover them at runtime.
 2. **Small-thread-stack overflow risk.** A path-bearing TRAP from
    a thread with a tiny stack (Go runtime M threads, Firefox
    sandbox children, glib worker pools) runs our handler on that
-   stack. The handler's ~4 KB `PATH_MAX` buffer plus a couple
-   frames is 5–6 KB; on an 8 KB worker stack with frames already
-   used, this can overflow. We're shipping without `sigaltstack`
-   (it's per-thread, doesn't inherit across `clone`, and would
-   need per-thread-creation interception). Realistic risk is low
-   — programs with tiny worker stacks tend not to issue
-   path-bearing syscalls from those threads — but if a real
-   workload trips this, the right fix is *not* sigaltstack: it's
-   shrink the on-stack path buffer to 512 bytes and fall back to
-   an init-allocated arena for longer paths. Document the escape
-   route; don't pre-emptively design around it.
+   stack. `gcc -Wstack-usage` measurement: handler chain peaks at
+   30–50 KB on path-translation paths (handle_renameat alone is
+   16 KB, plus 8–12 KB through the path_orchestrate / path_resolve
+   chain). We're shipping without `sigaltstack` (it's per-thread,
+   doesn't inherit across `clone`, and would need per-thread-creation
+   interception). Realistic risk is low — programs with tiny
+   worker stacks tend not to issue path-bearing syscalls from those
+   threads — but if a real workload trips this, the right fix is
+   *not* sigaltstack: shrink the on-stack path buffer to 512 bytes
+   and fall back to an init-allocated arena for longer paths. See
+   `issues/tawcroot-handler-stack-usage-too-deep.md` for the current
+   per-frame numbers.
 
 3. **More `/proc` reverse-translation paths.** `/proc/self/maps` and
    `/proc/<our-pid>/maps` are done — `handle_openat` detects the path
@@ -3198,11 +3229,16 @@ here so we don't ship MVP and discover them at runtime.
    `dlopen`'d libpci.so.3 (Mozilla's `glxtest` probe → WebRender
    disable cascade — see `notes/firefox.md` "libpci probe").
    Same shape would extend to `/proc/<pid>/cmdline`, `/proc/<pid>/auxv`,
-   `/proc/<pid>/task/<tid>/maps`, and the fd-relative form
-   (`openat(proc_dir_fd, "self/maps", ...)`) when a workload needs
-   them. The fd-relative gap also affects `/proc/self/exe` synthesis
-   in `handle_readlinkat` — fix together once fd-provenance lands
-   (see `issues/tawcroot-fd-provenance-not-tracked.md`).
+   `/proc/<pid>/task/<tid>/maps` when a workload needs them.
+
+   The fd-relative form (`openat(proc_dir_fd, "self/maps", ...)`) is
+   already handled — `compose_fd_relative` in `syscalls_fs.c` does
+   one extra `readlinkat("/proc/self/fd/<dirfd>")` to recover the
+   absolute path before the proc-shadow / proc-self-exe checks fire.
+   Same dance covers `readlinkat(proc_dir_fd, "exe", ...)`. The cost
+   is one extra syscall per fd-relative proc op; replacing it with a
+   process-wide fd-provenance table is filed under "Possible perf
+   improvements" #1 below.
 
 4. **`PR_SET_SYSCALL_USER_DISPATCH` (kernel 5.11+).** This kernel
    mechanism defines a contiguous code address range from which
@@ -3229,9 +3265,56 @@ here so we don't ship MVP and discover them at runtime.
 
 Items that are pure throughput wins — no correctness impact, no
 workload we ship today is blocked. Listed here so we don't forget
-about them when a profile or a new target makes one relevant.
+about them when a profile or a new target makes one relevant. Not
+all of them are equal; the first three are real wins, the rest are
+situational.
 
-1. **fd-provenance table.** Today path-relative ops (`fchdir(fd)`,
+The shape of the cost: every trapped syscall pays a SIGSYS
+round-trip (~10–20 µs on aarch64) plus whatever syscalls our handler
+issues. Anything that cuts a handler-issued syscall on a hot path
+shows up. Anything that cuts BPF instructions or shaves
+microseconds off the dispatch slow path is pedantic and not worth
+chasing without a profile.
+
+1. **Skip the manual symlink resolver on kernel 5.6+.** The biggest
+   single win. On every path-bearing handler call we run
+   `tawcroot_path_resolve_symlinks`, which `readlinkat`s every
+   non-final-component prefix to ask "is this a symlink?". For a
+   typical `/usr/lib/foo.so` open that's three readlinkats per
+   handler call — none of which find a symlink, all of which we
+   pay anyway. On kernel 5.6+ the final `openat2(base_fd, suffix,
+   RESOLVE_IN_ROOT)` does the symlink resolution itself; running
+   our resolver first is pure waste. Trade: the resolver does
+   per-splice rebind-routing through the bind table, and openat2
+   only knows about `base_fd`'s subtree. Workloads with cross-bind
+   symlinks (rare in practice — well-known `/lib`/`/lib64` are
+   handled by the memo before the resolver, not by it) would
+   regress. The cleanest shape is to skip the resolver only when
+   `tawcroot_openat2_works` *and* the bind table has no entries
+   that could be hit by a symlink target; fall back to the resolver
+   otherwise. Our primary device (kernel 5.4) doesn't see this;
+   becomes meaningful the moment we target Android 12+/kernel 5.10+
+   devices. Estimate: 30–50 % handler-latency reduction on
+   dlopen-heavy paths once the manual resolver is bypassed.
+
+2. **Path-component negative cache.** Cheaper than #1 and works on
+   every kernel. Cache `(rootfs_relative_component → is_symlink)`
+   for a small bounded number of recently-walked prefixes; the
+   resolver consults the cache before the readlinkat. dlopen
+   chains, `find`-style walks, and pacman's package-database
+   sweeps repeat the same prefix components hundreds of times in a
+   row. Negative-only entries (only "X is not a symlink") sidesteps
+   the invalidation question — pacman creates new symlinks but
+   never converts an existing non-symlink path into one mid-flight.
+   Invalidate on `chroot` (rootfs view changes) and explicit
+   `symlinkat` of a path whose prefix component might be in the
+   cache; bounded fixed-size table (256 entries, FIFO eviction).
+   Probably 20–40 % handler-latency reduction on hot dlopen /
+   build-system paths *without* needing kernel 5.6+. Worth
+   profiling first to confirm the readlinkat-per-component
+   distribution on real workloads.
+
+3. **fd-provenance table.** Today path-relative ops (`fchdir(fd)`,
    `openat(fd, "...", ...)`) resolve `fd` via `/proc/self/fd/<n>`
    at handler time — one extra syscall round-trip per call.
    Correct, but unnecessary. A process-wide `fd → provenance`
@@ -3242,13 +3325,43 @@ about them when a profile or a new target makes one relevant.
    snapshot-on-update discipline as the bind table for
    vfork/multithread safety; cross-process inheritance rides on
    the exec_state re-exec dance that already ferries the fd map.
-   Becomes relevant for workloads with many path-relative ops
-   (some build systems, certain language runtimes) or when we add
-   per-thread state for the SIGSYS path. Also unblocks the
-   fd-relative `/proc/self/{exe,maps}` synthesis gap noted in
-   "Open questions" #3.
+   Same table would absorb the per-call readlinkat in
+   `compose_fd_relative` for fd-relative `/proc/self/{exe,maps}`
+   synthesis. Honest sizing: saves one syscall (~1–2 µs) per
+   fd-relative path op. Most production workloads use absolute
+   paths or `AT_FDCWD`, so the win is concentrated in build
+   systems, gpg homedir-relative ops, and tools that `fchdir` +
+   `openat`. ~5–15 % on those workloads, ~2 % overall. Real but
+   moderate, worth doing alongside #2 since both share the
+   "cache facts about fds and paths" infrastructure.
 
-2. **io_uring SQE rewriter.** `io_uring_setup` currently returns
+4. **`getuid`/`geteuid`/`getgid`/`getegid` → BPF `RET_ERRNO|0`.**
+   These currently trap into `fake_zero` in `identity.c`, which
+   just returns 0. Each call pays a full SIGSYS round-trip to
+   produce a constant. Glibc calls `geteuid` from many security
+   checks (every `O_TMPFILE`, every `setuid`-bit probe, pthread
+   teardown). Returning `SECCOMP_RET_ERRNO | 0` from the BPF
+   filter directly skips the SIGSYS dispatch. ~10 lines in
+   `filter_build.c` plus dropping the four dispatch entries.
+   Estimate: 5–10 % of all SIGSYS traps are these on
+   identity-probing workloads (gpg, glibc init); cuts the handler
+   round-trip on each. `getresuid`/`getresgid` can't go this route
+   because they take user-space out-pointers we have to
+   `process_vm_writev` to. Watch out for guest filters layering
+   below ours that might want to see `getuid` (bionic's allowlist
+   does allow it; Android stacked filter would already be at the
+   most-restrictive RET_ALLOW); RET_ERRNO|0 wins precedence
+   regardless.
+
+5. **`PR_SET_SYSCALL_USER_DISPATCH` (kernel 5.11+).** See "Open
+   questions" #4. Replaces seccomp BPF entirely on supported
+   kernels. Eliminates per-syscall BPF evaluation overhead, dodges
+   the stacked-filter precedence problem (would allow PIE +
+   ASLR), and offers a per-thread selector byte that means the
+   handler can re-enter without the IP-based exemption dance. Big
+   future win, gated on a kernel we don't currently target.
+
+6. **io_uring SQE rewriter.** `io_uring_setup` currently returns
    `-ENOSYS` (deny-and-fall-back); the full SQE-rewriting design
    in "Open questions" #1 is the perf upgrade. Guests that probe
    for io_uring (bash, pacman, Firefox, libhybris) fall back
@@ -3256,6 +3369,12 @@ about them when a profile or a new target makes one relevant.
    lines when a target actually wants io_uring throughput —
    `fio`-style benchmarks, modern databases inside the chroot,
    newer container runtimes.
+
+Anything not on this list — BPF JEQ chain → bitmap, gettid
+caching, smaller PATH_MAX scratch buffers (a stack-pressure fix,
+not perf), reducing handler frame count for cache reasons — is
+pedantic and below the noise floor without a profile that
+fingers it.
 
 ## Confirmed environment
 

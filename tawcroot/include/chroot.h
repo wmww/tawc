@@ -12,9 +12,7 @@
  * even when the handle root is "/". On a Manjaro install every
  * post-install scriptlet and post-transaction hook fails (≈80 errors
  * per `pacman -Syu`); the rootfs is left with un-generated icon
- * caches, GSettings schemas, etc. (See the issue file in
- * `issues/tawcroot-rejects-chroot-breaks-pacman-scriptlets.md`,
- * deleted alongside this implementation.) Faking success without
+ * caches, GSettings schemas, etc. Faking success without
  * doing the bookkeeping would be just as broken: the next path
  * translation would resolve against the wrong root (or worse, leak
  * outside the rootfs).

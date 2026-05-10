@@ -317,6 +317,63 @@ $(OUT)/programs/static_sleep_open_creat_argv1: $(SRC_TS)/integration/programs/st
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
 
+# static_fork_open_argv1: clone(SIGCHLD), child opens+creates argv[1],
+# parent waits and forwards the child's exit code. Used by the new
+# guest-fork integration tests to exercise process_vm_readv against a
+# fork-child PID — catches the cached-tid class of bug from
+# notes/tawcroot.md ("More phase-5b bugs"; usercopy.c:14-22).
+$(OUT)/programs/static_fork_open_argv1: $(SRC_TS)/integration/programs/static_fork_open_argv1_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
+
+# static_fork_exec_argv1: clone(SIGCHLD), child execve(argv[1]), parent
+# waits and forwards. Exercises the full bash-style fork+execve chain
+# through the SIGSYS handler, --exec-child handoff, and per-process
+# rootfs re-establishment.
+$(OUT)/programs/static_fork_exec_argv1: $(SRC_TS)/integration/programs/static_fork_exec_argv1_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
+
+# static_fork_closefrom_exec_argv1: gpgme/glibc-shape pre-exec hygiene
+# regression test — clone(SIGCHLD), child close(1000..1003) +
+# close_range(0, ~0u, 0), then execve(argv[1]). Catches reserved-fd
+# survival regressions: handle_close lying success, handle_close_range
+# trimming `last` to RESERVED_FD_BASE-1, exec_handler bind-table
+# re-export from `bind.src[256]`.
+$(OUT)/programs/static_fork_closefrom_exec_argv1: $(SRC_TS)/integration/programs/static_fork_closefrom_exec_argv1_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
+
+# static_unix_bind_argv1: socket(AF_UNIX) + bind(sun_path=argv[1]).
+# Validates syscalls_socket.c sun_path translation — the gpg-agent
+# regression where an in-rootfs path was opened on the host fs.
+$(OUT)/programs/static_unix_bind_argv1: $(SRC_TS)/integration/programs/static_unix_bind_argv1_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
+
+# static_check_proc_self_fd: enumerate /proc/self/fd via getdents64
+# and check no d_name == "1000" appears. Validates handle_getdents64's
+# dirent_filter against the closefrom death-spiral regression.
+$(OUT)/programs/static_check_proc_self_fd: $(SRC_TS)/integration/programs/static_check_proc_self_fd_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
+
+# static_check_proc_exe_argv0: readlink(/proc/self/exe) and compare
+# with argv[0]. Run as the exec target of static_fork_exec_argv1 to
+# validate the AT_EXECFN/proc-self-exe fix in exec_handler.c — the
+# Firefox libxul.so regression.
+$(OUT)/programs/static_check_proc_exe_argv0: $(SRC_TS)/integration/programs/static_check_proc_exe_argv0_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
+
+# static_io_uring_deny: probe io_uring_setup, io_uring_enter, and
+# io_uring_register; expect -ENOSYS from each. Validates the
+# defense-in-depth deny that closes the inheritance edge case in
+# issues/tawcroot-io-uring-not-fully-intercepted.md.
+$(OUT)/programs/static_io_uring_deny: $(SRC_TS)/integration/programs/static_io_uring_deny_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -no-pie -O2 -Wl,--build-id=none $< -o $@
+
 # androidfilter/wrap: host glibc binary that installs a synthesized
 # Android-`untrusted_app`-shape seccomp BPF filter and execs its argv
 # tail. Exists so test_androidfilter.c can run the existing handler

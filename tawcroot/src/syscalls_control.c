@@ -130,9 +130,17 @@ static long fake_eperm(const tawcroot_syscall_args *args, ucontext_t *uc)
  * kernel reads SQEs from app-shared memory, sees host-relative paths,
  * and silently opens host files — bypassing every translation rule.
  * Programs that probe with -ENOSYS fall back to non-uring paths
- * cleanly. (Review finding D4.) */
-static long handle_io_uring_setup(const tawcroot_syscall_args *args,
-				  ucontext_t *uc)
+ * cleanly. (Review finding D4.)
+ *
+ * io_uring_register and io_uring_enter trap with the same -ENOSYS for
+ * defense-in-depth: with io_uring_setup denied the guest can't create
+ * a ring fd, but a ring fd inherited from a non-tawcroot parent across
+ * exec would otherwise sail past us untranslated. Trapping the post-
+ * setup syscalls makes "no io_uring traffic ever escapes" enforceable
+ * independently of the stacked Android filter. See
+ * `issues/tawcroot-io-uring-not-fully-intercepted.md`. */
+static long handle_io_uring_deny(const tawcroot_syscall_args *args,
+				 ucontext_t *uc)
 {
 	(void)args;
 	(void)uc;
@@ -336,7 +344,9 @@ void tawcroot_control_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_prctl,           handle_prctl);
 	tawcroot_dispatch_install(TAWC_SYS_rt_sigaction,    handle_rt_sigaction);
 	tawcroot_dispatch_install(TAWC_SYS_rt_sigprocmask,  handle_rt_sigprocmask);
-	tawcroot_dispatch_install(TAWC_SYS_io_uring_setup,  handle_io_uring_setup);
+	tawcroot_dispatch_install(TAWC_SYS_io_uring_setup,    handle_io_uring_deny);
+	tawcroot_dispatch_install(TAWC_SYS_io_uring_enter,    handle_io_uring_deny);
+	tawcroot_dispatch_install(TAWC_SYS_io_uring_register, handle_io_uring_deny);
 	tawcroot_dispatch_install(TAWC_SYS_clone3,          handle_clone3);
 	tawcroot_dispatch_install(TAWC_SYS_exit,            handle_exit);
 	tawcroot_dispatch_install(TAWC_SYS_pivot_root,      fake_eperm);

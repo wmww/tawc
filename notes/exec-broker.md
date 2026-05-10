@@ -18,9 +18,7 @@ app's environment:
    `system_file:execmod` on `runas_app` we worked around for libhybris;
    see `notes/proot.md`). PDEATHSIG also doesn't fire across the
    `shell → runas_app` transition, so killing the host script orphans
-   any guest processes (was tracked in
-   `issues/tawcroot-exec-child-orphans-on-parent-death.md` until this
-   broker fixed it).
+   any guest processes — fixed by routing through this broker.
 
 2. `adb shell su -c <cmd>` — works on rooted devices, runs as root
    (uid 0, domain `su`). Even further from production.
