@@ -63,10 +63,10 @@ enum class GraphicsBackend(val key: String, val displayName: String, val tagline
      * gfxstream renderer over a kumquat AF_UNIX socket. No vendor
      * blob inside the chroot — slightly slower per-call, but much
      * more robust to vendor / Android-version drift. The kumquat
-     * server runs as a thread of the compositor app (always on),
-     * so there's no daemon to start; only the chroot-side
-     * libvulkan_gfxstream.so + ICD JSON need to be staged into the
-     * rootfs (today: `bash scripts/bridge-setup.sh`).
+     * server runs as a thread of the compositor app (always on);
+     * the chroot-side `libvulkan_gfxstream.so` + ICD JSON ride in
+     * the APK and are laid into each rootfs by
+     * [me.phie.tawc.install.BridgeInstallProvider] at install time.
      */
     GFXSTREAM("gfxstream", "gfxstream", "fast, reliable");
 

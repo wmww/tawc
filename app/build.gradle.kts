@@ -393,6 +393,49 @@ if ("arm64-v8a" in tawcAbis) {
         dependsOn(packLibhybrisTask)
     }
 
+    // Cross-build Mesa's chroot-side gfxstream Vulkan ICD
+    // (libvulkan_gfxstream.so + the matching JSON manifest) and ship
+    // both as APK assets. Extracted at runtime by
+    // CompositorService.ensureMesaGfxstreamExtracted into the app's
+    // filesDir; [BridgeInstallProvider] copies them into each rootfs
+    // at install time under /usr/local/lib + /usr/local/share/vulkan/
+    // icd.d. Selected at runtime via the GraphicsBackend pref
+    // (RootfsEnv pins VK_ICD_FILENAMES at the install path).
+    //
+    // Aarch64-only — the bridge isn't supported on x86_64 yet (the
+    // host-side renderer + kumquat dep are aarch64-only too).
+    val mesaGfxstreamInstallDir = "$tawcRoot/build/mesa-aarch64/install/usr/local"
+    val mesaGfxstreamLib = "$mesaGfxstreamInstallDir/lib/libvulkan_gfxstream.so"
+    val mesaGfxstreamIcd = "$mesaGfxstreamInstallDir/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json"
+    val mesaGfxstreamAssetDir = "src/main/assets/mesa-gfxstream"
+
+    val buildMesaGfxstreamTask = tasks.register<Exec>("buildMesaGfxstream") {
+        workingDir = tawcRoot
+        commandLine("bash", "scripts/build-mesa-gfxstream.sh")
+        // Same incremental-input contract as buildLibhybris:
+        //   - the build script
+        //   - the patches dir (a patch edit must rebuild)
+        //   - dep manifest + helper (a Mesa pin bump must rebuild)
+        inputs.file("$tawcRoot/scripts/build-mesa-gfxstream.sh")
+        inputs.dir("$tawcRoot/deps/mesa-patches")
+        inputs.file("$tawcRoot/deps/deps.list")
+        inputs.file("$tawcRoot/scripts/lib/deps.sh")
+        outputs.files(mesaGfxstreamLib, mesaGfxstreamIcd)
+    }
+
+    val packMesaGfxstreamTask = tasks.register<Copy>("packMesaGfxstream") {
+        dependsOn(buildMesaGfxstreamTask)
+        // Two raw assets — no symlinks, so no tar wrapper needed (unlike
+        // libhybris). The runtime extractor opens each by name.
+        into("${project.projectDir}/$mesaGfxstreamAssetDir")
+        from(mesaGfxstreamLib)
+        from(mesaGfxstreamIcd)
+    }
+
+    tasks.named("preBuild") {
+        dependsOn(packMesaGfxstreamTask)
+    }
+
     // Cross-compile Xwayland (and its bionic-ported X11 / font / pixman
     // dep tree) and stage the result for the APK. Binaries + DT_NEEDED
     // libs ride in `jniLibs/<abi>/lib*.so` (so they land in

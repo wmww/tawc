@@ -241,6 +241,8 @@ class CompositorService : Service() {
         private val LIBHYBRIS_EXTRACT_LOCK = Any()
         /** Lock for [ensureXwaylandExtracted] — see method KDoc. */
         private val XWAYLAND_EXTRACT_LOCK = Any()
+        /** Lock for [ensureMesaGfxstreamExtracted] — see method KDoc. */
+        private val MESA_GFXSTREAM_EXTRACT_LOCK = Any()
 
         /**
          * Stamp value written to `<destDir>/.version` to gate
@@ -406,6 +408,59 @@ class CompositorService : Service() {
             atomicReplaceDir(stagingDir, destDir)
             File(destDir, ".version").writeText(currentStamp)
             Log.i(TAG, "Extracted libhybris ($abi) to $destDir")
+            return true
+        }
+
+        /**
+         * Names of the two raw assets shipped under
+         * `assets/mesa-gfxstream/` by Gradle's `packMesaGfxstream`. Listed
+         * here so [ensureMesaGfxstreamExtracted] and
+         * [me.phie.tawc.install.BridgeInstallProvider] agree on what to
+         * stage / install — change once, both sides follow.
+         */
+        const val MESA_GFXSTREAM_LIB_ASSET = "libvulkan_gfxstream.so"
+        const val MESA_GFXSTREAM_ICD_ASSET = "gfxstream_vk_icd.aarch64.json"
+
+        /**
+         * Extract `assets/mesa-gfxstream/{libvulkan_gfxstream.so,
+         * gfxstream_vk_icd.aarch64.json}` into `<filesDir>/mesa-gfxstream/`.
+         * Same versioned-stamp + atomic-rename pattern as
+         * [ensureLibhybrisExtracted], minus the tar walk — these are two
+         * raw asset files with no symlink topology to preserve.
+         *
+         * Returns true if extracted (or already up to date), false if the
+         * asset isn't shipped (e.g. x86_64 emulator build — the bridge is
+         * aarch64-only today).
+         */
+        fun ensureMesaGfxstreamExtracted(context: Context): Boolean = synchronized(MESA_GFXSTREAM_EXTRACT_LOCK) {
+            val available = try {
+                context.assets.open("mesa-gfxstream/$MESA_GFXSTREAM_LIB_ASSET").close()
+                true
+            } catch (_: java.io.IOException) {
+                false
+            }
+            if (!available) {
+                Log.i(TAG, "No mesa-gfxstream asset shipped; gfxstream backend unavailable")
+                return false
+            }
+
+            val destDir = File(context.filesDir, "mesa-gfxstream")
+            val currentStamp = currentExtractStamp(context)
+            if (!isStampStale("mesa-gfxstream", destDir, currentStamp)) {
+                return true
+            }
+
+            val stagingDir = File(context.filesDir, "mesa-gfxstream.new")
+            stagingDir.deleteRecursively()
+            stagingDir.mkdirs()
+            for (name in listOf(MESA_GFXSTREAM_LIB_ASSET, MESA_GFXSTREAM_ICD_ASSET)) {
+                context.assets.open("mesa-gfxstream/$name").use { input ->
+                    File(stagingDir, name).outputStream().use { out -> input.copyTo(out) }
+                }
+            }
+            atomicReplaceDir(stagingDir, destDir)
+            File(destDir, ".version").writeText(currentStamp)
+            Log.i(TAG, "Extracted mesa-gfxstream to $destDir")
             return true
         }
 

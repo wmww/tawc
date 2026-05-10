@@ -81,8 +81,7 @@ internal object RootfsEnv {
                 // the compositor-process kumquat thread at the path the
                 // host-side share bind exposes — `/usr/share/tawc/...`,
                 // not `/tmp/...`. See notes/gfxstream-bridge.md.
-                put("VK_ICD_FILENAMES",
-                    "/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json")
+                put("VK_ICD_FILENAMES", BridgeInstallProvider.GUEST_ICD_PATH)
                 put("VIRTGPU_KUMQUAT", "1")
                 put("VIRTGPU_KUMQUAT_GPU_SOCKET", "/usr/share/tawc/kumquat-gpu-0")
             }

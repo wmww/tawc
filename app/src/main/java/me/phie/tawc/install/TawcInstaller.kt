@@ -44,6 +44,7 @@ internal object TawcInstaller {
      *  for correctness — but keep it stable so logs read consistently. */
     private val providers: List<TawcInstallProvider> = listOf(
         LibhybrisInstallProvider,
+        BridgeInstallProvider,
     )
 
     /**

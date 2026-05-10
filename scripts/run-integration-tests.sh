@@ -33,11 +33,11 @@
 #   bash scripts/run-integration-tests.sh --graphics gfxstream  # flip the in-app graphics-driver
 #                                                                 pref before running (default: libhybris).
 #                                                                 The kumquat server runs in the
-#                                                                 compositor process, so nothing else
-#                                                                 needs starting; only the chroot-side
-#                                                                 libvulkan_gfxstream.so + ICD JSON
-#                                                                 need to be staged into the rootfs
-#                                                                 (the runner does that automatically).
+#                                                                 compositor process and the chroot-side
+#                                                                 libvulkan_gfxstream.so + ICD JSON ride
+#                                                                 in the APK and are laid into each rootfs
+#                                                                 by [BridgeInstallProvider] at install
+#                                                                 time, so there's nothing extra to stage.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -190,18 +190,6 @@ fi
 # VIRTGPU_KUMQUAT for gfxstream).
 echo "=== Setting graphics backend: $GRAPHICS ==="
 "$TAWC_EXEC_BIN" --action set-graphics-backend --arg "value=$GRAPHICS"
-if [ "$GRAPHICS" = "gfxstream" ]; then
-    # The kumquat server runs in the compositor process — already up
-    # since `am start MainActivity` above. The only chroot-side state
-    # is `libvulkan_gfxstream.so` + the ICD JSON under `/usr/local/`;
-    # bridge-setup.sh stages them via the broker (same uid as rootfs).
-    # Idempotent — `cp` overwrite is fine if they're already there.
-    if ! "$TAWC_EXEC_BIN" --in-rootfs "$INSTALL_ID" -- \
-            sh -c 'test -f /usr/local/lib/libvulkan_gfxstream.so' >/dev/null 2>&1; then
-        echo "=== Staging gfxstream chroot bits ==="
-        bash "$ROOT_DIR/scripts/bridge-setup.sh"
-    fi
-fi
 
 LIBTEST_ARGS=(--nocapture --test-threads=1)
 if [ -n "$TEST_FILTER" ]; then
