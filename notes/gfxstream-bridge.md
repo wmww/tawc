@@ -33,9 +33,10 @@ the host machine. Both halves are open source:
   driver). Builds for x86_64 and aarch64. Talks Vulkan/GL to a
   transport, normally virtio-gpu but pluggable.
 - **Host side** is a renderer that decodes the protocol and runs the
-  calls against a local GL/Vulkan implementation. Today the targets
-  are desktop GL/Vulkan; we'd need to retarget it at Android `libEGL`
-  / `libvulkan`. This is the bulk of the new Android-side work.
+  calls against a local GL/Vulkan implementation. An Android host
+  backend already exists upstream — ships in AOSP's `com.android.virt`
+  APEX for AVF (crosvm-on-Android). Uses EGL-on-EGL and
+  `VK_USE_PLATFORM_ANDROID_KHR`. See "Host backend research" below.
 
 **rutabaga / cross-domain context** (crosvm) is the other shape — same
 goal, more general protocol, designed for the Sommelier model. Worth
@@ -50,14 +51,11 @@ target.
 userspace. So we don't get to use Mesa's stock virtio-gpu Gallium
 driver against a `/dev/dri/cardN` of our own making. The transport has
 to be the gfxstream protocol over a Unix socket (or a memfd ring
-buffer), not virtio-gpu kernel queues. gfxstream supports non-virtio
-transports already — the AVD's "ranchu pipe" is one — but verifying
-this still works in 2026 Mesa is task #1 before committing.
+buffer), not virtio-gpu kernel queues.
 
-If it doesn't, the fallback is heavier: ship a tiny VM (Firecracker,
-crosvm) inside Android purely to host a real virtio-gpu device for
-the chroot. Probably untenable for a phone target, but worth knowing
-the option exists.
+**Resolved:** Mesa's kumquat backend does exactly this — pure
+userspace, Unix socket, no kernel driver. See "Transport research"
+below for full details.
 
 ## Android-side bridge daemon
 
@@ -68,11 +66,13 @@ protocol on a Unix socket exposed into the chroot via the existing
 broker mechanism (next to the Wayland socket), holds one EGL/Vulkan
 context per chroot client, and translates command streams.
 
-Process lifecycle ties to compositor lifecycle. It can run inside the
-compositor app process (separate thread holding the GL context) or as
-a sibling Service — Service is cleaner for crash isolation, in-process
-saves an IPC hop on the buffer-handoff path. Pick at implementation
-time.
+**Runs in-process** (compositor app, separate thread holding the GL
+context). The vendor driver is the same one Android uses for every app
+— if it's unstable enough to crash, the compositor experience is
+degraded regardless. In-process avoids an IPC hop on buffer handoff
+(exported AHB stays in the same address space) and simplifies
+lifecycle. Can split to a sibling Service later if stability proves
+to be a real problem.
 
 SELinux: should be fine as long as the bridge runs as the compositor
 app's uid in our app's domain (where EGL/Vulkan already work). No new
@@ -133,27 +133,298 @@ Gain:
 ## Open questions to resolve before committing
 
 1. **Does Mesa's `gfxstream-vk` still support a non-virtio transport
-   in 2026?** Read the Mesa source. If yes, scope is small. If no,
-   we're either modifying Mesa (tractable, gfxstream guest is
-   contained) or falling back to a real VM (probably out of scope).
-2. **Does an Android-targeting gfxstream host backend exist?** Check
-   gfxstream's tree; it's plausible an Android-as-host renderer
-   exists internally at Google for nested-AVD scenarios but isn't
-   upstream. If it doesn't exist, retargeting is the bulk of the
-   work — not crazy (the host renderer is fundamentally a
-   GL/Vulkan call dispatcher), but real engineering.
+   in 2026?** **Yes — answered, see "Transport research" below.**
+2. **Does an Android-targeting gfxstream host backend exist?**
+   **Yes — answered, see "Host backend research" below.**
 3. **GL performance under IPC.** Vulkan is fine, GL might not be.
    Worth a microbenchmark before committing if any priority client
    is GL-heavy. (Most modern toolkits — GTK4, Qt6, browsers — are
    moving toward Vulkan anyway, which softens this.)
 4. **Does the `linux-dmabuf-v1` / AHB import path stay zero-copy
-   when both sides go through gfxstream?** Specifically, does the
-   bridge's renderer write directly into the AHB (zero-copy) or does
-   it copy out of an internal target into the AHB (one-copy)? The
-   answer depends on how the host renderer handles framebuffer
-   targets — a surface backed by an externally-allocated AHB needs
-   to be wired through to the underlying EGL/Vulkan as a foreign
-   image, not as gfxstream's own backing store.
+   when both sides go through gfxstream?** **Yes — answered, see
+   "Zero-copy buffer sharing" below.**
+
+## Transport research (May 2026)
+
+**Answer to open question #1: yes, Mesa's gfxstream-vk has a
+fully-supported, actively-maintained non-virtio transport called
+"kumquat". It communicates over a Unix domain socket (SEQPACKET) and
+is exactly the shape we need.**
+
+### Architecture (two layers)
+
+Mesa's gfxstream guest has a clean **platform abstraction**
+(`src/gfxstream/guest/platform/`) with four backends:
+
+| Backend | Path | Transport |
+|---------|------|-----------|
+| `drm` | `platform/drm/` | DRM ioctls on `/dev/dri/renderD*` (real virtio-gpu) |
+| `kumquat` | `platform/kumquat/` | Unix socket (`AF_UNIX SEQPACKET`) |
+| `fuchsia` | `platform/fuchsia/` | Fuchsia syscalls |
+| `windows` | `platform/windows/` | Windows named pipes |
+
+Selection: `createPlatformVirtGpuDevice()` in `platform/VirtGpu.cpp`
+checks the env var **`VIRTGPU_KUMQUAT`**. If set (any value), it
+calls `kumquatCreateVirtGpuDevice()`. Otherwise it calls
+`osCreateVirtGpuDevice()` (the DRM path on Linux).
+
+Build-time: `-Dvirtgpu_kumquat=true` in Mesa's meson options. This
+pulls in a Rust library (`src/virtio/virtgpu_kumquat/`) compiled via
+meson's Rust support, plus a C FFI wrapper
+(`src/virtio/virtgpu_kumquat_ffi/`).
+
+### Kumquat transport details
+
+1. **Socket path:** `VirtGpuKumquatDevice` constructor (C++) builds
+   the path `/tmp/kumquat-gpu-<descriptor>` (default
+   `/tmp/kumquat-gpu-0`), then calls `virtgpu_kumquat_init()`.
+
+2. **Rust core:** `VirtGpuKumquat::new(gpu_socket)` (in
+   `virtgpu_kumquat.rs`) creates a `Tube` connected to that path.
+   `Tube` (`src/util/rust/sys/linux/tube.rs`) is a thin wrapper
+   around `AF_UNIX SEQPACKET` with `SCM_RIGHTS` fd-passing.
+
+3. **Wire protocol:** `kumquat_gpu_protocol` — a custom
+   request/response protocol (defined in
+   `src/virtio/protocols/protocols/kumquat_gpu_protocol.rs`). Not
+   virtio wire format, not vtest — purpose-built for kumquat. Messages
+   are fixed-size structs; fds (for buffer handles, fences) travel via
+   `SCM_RIGHTS` ancillary data. Commands include context create/destroy,
+   resource create (3d + blob), transfer to/from host, command submit,
+   capset queries, and snapshot save/restore.
+
+4. **Buffer sharing:** resources created via kumquat come back with an
+   fd (the `MesaHandle`) that can be mapped via `mmap`. For blob
+   resources, the host allocates and sends the fd back; the guest maps
+   it directly (shared memory). Fences are `eventfd`-based.
+
+5. **No kernel driver needed.** The whole point of kumquat is to work
+   without `/dev/dri/cardN`. The guest Mesa library talks directly to
+   the kumquat server over the socket — pure userspace.
+
+### What we'd need
+
+1. **A kumquat server (host side).** The server must speak the
+   `kumquat_gpu_protocol`, create a gfxstream rendering context (or
+   rutabaga context), and dispatch commands to the real GPU. Google has
+   a server implementation — it's used for testing and for
+   non-virtio-gpu deployments — but it's not clearly upstreamed as a
+   standalone binary. We'd need to either find/extract it, or write
+   our own using `rutabaga_gfx` as the backend. The server is
+   conceptually simple: accept socket, read kumquat commands, forward
+   to rutabaga/gfxstream host renderer, send responses + fds back.
+
+2. **Socket path customization.** The default `/tmp/kumquat-gpu-0`
+   works fine for our use case — we just need to bind-mount or
+   symlink the socket into the chroot. Or: trivially patch to read
+   from an env var (one line in `VirtGpuKumquatDevice`).
+
+3. **Build Mesa with `-Dvulkan-drivers=gfxstream
+   -Dvirtgpu_kumquat=true`** for the chroot's aarch64 rootfs. The
+   Rust toolchain is needed at Mesa build time.
+
+4. **Set `VIRTGPU_KUMQUAT=1`** in the chroot environment. That's the
+   only runtime config needed on the guest side.
+
+### Connection to the AOSP gfxstream guest (what changed)
+
+The AOSP gfxstream repo (`platform/hardware/google/gfxstream`) has
+an older transport model with four `HostConnectionType` values
+(`QEMU_PIPE`, `ADDRESS_SPACE`, `VIRTIO_GPU_PIPE`,
+`VIRTIO_GPU_ADDRESS_SPACE`), selected via the Android property
+`ro.boot.hardwares.gltransport` or `GFXSTREAM_TRANSPORT` env var.
+None of these are Unix sockets — they all go through kernel devices
+(goldfish pipe at `/dev/goldfish_pipe`, or virtio-gpu DRM).
+
+Mesa's gfxstream-vk is a **separate, refactored codebase** that
+shares protocol encoders with AOSP but has its own platform layer.
+The kumquat backend exists only in Mesa, not in the AOSP guest tree.
+This is fine — we'd build Mesa for the chroot anyway.
+
+### Viability assessment
+
+**This is viable with moderate effort.** The guest side is
+off-the-shelf: build Mesa with the kumquat option, set one env var.
+The server side is the real work, but the protocol is well-defined
+and the rendering backend (rutabaga → gfxstream host renderer) is
+proven. The Unix socket transport with fd-passing gives us zero-copy
+buffer sharing for free (the host allocates an fd-backed buffer,
+sends the fd to the guest, guest maps it — same physical pages).
+
+## Host backend research (May 2026)
+
+**Answer to open question #2: an Android host backend already exists
+upstream, is production quality, and ships in AOSP as part of the
+Android Virtualization Framework (AVF).** The "retargeting" work
+originally described as "the bulk of the new Android-side work" is
+already done.
+
+### Where it lives
+
+The gfxstream host renderer builds for Android via `host/Android.bp`.
+The root `Android.bp` defines `gfxstream_host_cc_defaults` with
+`-DVK_USE_PLATFORM_ANDROID_KHR` for Android targets. The comment in
+that file is explicit:
+
+> "host" in the name means the environment where VMM runs. For the
+> Android Virtualization Framework case, this is Android.
+
+`rutabaga_gfx` (in crosvm) links `libgfxstream_backend` and ships
+inside the `com.android.virt` APEX. crosvm on Android uses this to
+give VMs GPU acceleration — the exact architecture we want, minus the VM.
+
+### GL backend: EGL-on-EGL
+
+`host/gl/glestranslator/egl/egl_global_info.cpp` unconditionally
+sets `sEgl2Egl = true` on Android. The EGL-on-EGL backend
+(`egl_os_api_egl.cpp`) `dlopen`s the system's `libEGL.so` and
+`libGLESv2.so`. No GLX, no WGL — it calls Android EGL natively.
+
+### Vulkan backend: plain dlopen
+
+`host/vulkan/vulkan_dispatch.cpp` loads `libvulkan.so` via
+`SharedLibrary::open()` (which calls `dlopen`). On Android this
+finds `/system/lib64/libvulkan.so`. The Android.bp enables
+`VK_USE_PLATFORM_ANDROID_KHR` for proper surface handling.
+
+### Native window
+
+`host/native_sub_window_android.cpp` implements the display
+abstraction using `ANativeWindow_acquire/setBuffersGeometry/release`.
+We'd either pass a real Surface from our app or run headless and
+extract frames via AHB export (Option A below).
+
+### Init flags
+
+`stream_renderer_init()` accepts a flags bitmask:
+`STREAM_RENDERER_FLAGS_USE_EGL_BIT | USE_GLES_BIT | USE_VK_BIT`
+gives a fully functional GL+Vulkan renderer calling Android's native
+drivers.
+
+### What's left
+
+The host renderer already works on Android. The remaining work is:
+
+1. **Transport**: wire the kumquat Unix-socket protocol into the
+   `stream_renderer_*` API (which is transport-agnostic — rutabaga
+   provides the transport layer in AVF).
+2. **Build outside AOSP**: the host builds with Soong (`Android.bp`).
+   We'd need to either port to CMake/NDK or use a Soong-based build
+   step. The repo also has CMake support, but Android-target config
+   may need work.
+3. **Surface plumbing**: decide between passing a real `ANativeWindow*`
+   or running headless with AHB export (see zero-copy section below).
+
+## Zero-copy buffer sharing: what the code says (May 2026 research)
+
+**Short answer: zero-copy is feasible, but gfxstream's host renderer
+owns its buffers. Our daemon would need to either (a) export
+gfxstream's internally-allocated AHBs to the compositor, or (b) add an
+`AndroidAHB` external-memory import path so gfxstream renders into
+compositor-allocated AHBs. Option (a) works today with no gfxstream
+modifications; (b) would require moderate patching but has a template
+in the QNX code path.**
+
+### Buffer ownership model
+
+gfxstream's host-side `VkEmulation` always allocates its own buffers.
+`createVkColorBuffer()` creates a `VkImage`, calls
+`allocExternalMemory()` to get a `VkDeviceMemory`, and binds them.
+There is **no API to create a ColorBuffer backed by an
+externally-provided VkImage or AHB**. The guest tells the host "I need
+a color buffer with these dimensions and format", the host allocates
+it, and hands back a handle.
+
+### External memory export (the "gfxstream allocates, we import" path)
+
+On Android, `allocExternalMemory()` sets `ExternalMemory::Mode::AndroidAHB`:
+- `VkExportMemoryAllocateInfo` with
+  `VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID`
+  goes into the `VkMemoryAllocateInfo` pNext chain.
+- After allocation, `vkGetMemoryAndroidHardwareBufferANDROID()` exports
+  the `VkDeviceMemory` as an `AHardwareBuffer*`.
+- `exportColorBufferMemory()` dups and returns that AHB handle.
+- `VkExternalMemoryImageCreateInfo` with the AHB handle type is always
+  appended to `VkImageCreateInfo::pNext` when external memory is
+  supported (either import or export).
+
+**This means gfxstream-allocated ColorBuffers are already backed by
+real AHBs on Android.** Our daemon could call `exportColorBufferMemory()`
+after a guest `eglSwapBuffers` and hand the resulting AHB to the
+compositor for zero-copy sampling.
+
+### How the emulator displays rendered frames
+
+The emulator's `PostWorker` borrows a ColorBuffer via
+`borrowForComposition()`/`borrowForDisplay()`, which returns a
+`BorrowedImageInfoVk` containing the raw `VkImage`, `VkImageView`,
+layout state, and queue family ownership. `DisplayVk::post()` blits
+this image into its own swapchain. The host owns the buffer
+throughout; the guest never provides one.
+
+### External buffer import (the "we allocate, gfxstream renders into
+it" path)
+
+There is **no built-in Android path** for importing an externally-
+allocated AHB as the backing store of a gfxstream ColorBuffer. However,
+the QNX port (`ExternalMemory::Mode::QnxScreenBuffer`) demonstrates
+exactly this pattern:
+
+1. `allocExternalMemory()` allocates a QNX screen buffer externally
+2. Queries its Vulkan memory properties via
+   `vkGetScreenBufferPropertiesQNX()`
+3. Validates size and memory-type compatibility with the VkImage
+4. Appends `VkImportScreenBufferInfoQNX` to the allocate chain
+5. `vkAllocateMemory()` imports (not allocates) the external buffer
+
+An `AndroidAHB` equivalent would:
+1. Call `AHardwareBuffer_allocate()` with the right format/usage
+2. Query via `vkGetAndroidHardwareBufferPropertiesANDROID()`
+3. Validate size/memory-type compat
+4. Append `VkImportAndroidHardwareBufferInfoANDROID` to the chain
+5. `vkAllocateMemory()` imports the AHB
+
+This is ~50 lines of new code in `allocExternalMemory()`, following the
+QNX template line by line.
+
+### Vulkan path: VK_ANDROID_external_memory_android_hardware_buffer
+
+Fully supported. The `external_memory.cpp` `calculateMode()` function
+selects `AndroidAHB` mode on `__ANDROID__` builds. The handle-type
+transform functions in `vk_common_operations.cpp` map guest
+`VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID`
+to the host's AHB handle type (identity transform on Android). All the
+Vulkan extension plumbing is already wired.
+
+### Post/present interception
+
+`PostWorker::post()` takes a `ColorBuffer*` and a completion callback.
+`PostWorker::composeImpl()` borrows source and target ColorBuffers,
+runs composition, and signals a future. The completion callback is a
+natural interception point: instead of posting to a swapchain, our
+daemon would signal the compositor that the AHB-backed ColorBuffer is
+ready to sample.
+
+### Recommended approach
+
+**Option A (no gfxstream modifications):** Let gfxstream allocate
+ColorBuffers normally (which produces AHBs on Android). After the
+guest swaps, our daemon calls `exportColorBufferMemory()` to get the
+AHB, then passes it to the compositor via the existing AHB import
+path. The compositor imports it as a GL texture via
+`EGL_ANDROID_image_native_buffer`. This is zero-copy: the guest
+rendered directly into the AHB that the compositor samples.
+
+**Option B (moderate gfxstream patch):** Our daemon pre-allocates AHBs
+via `AHardwareBuffer_allocate()` and tells gfxstream to use them as
+ColorBuffer backing. Requires adding an `AndroidAHB` case in
+`allocExternalMemory()` following the QNX template. Advantage: the
+compositor owns the buffer lifecycle and can triple-buffer without
+coordinating with gfxstream's internal reference counting. Disadvantage:
+~50-100 lines of gfxstream patching to maintain.
+
+Option A is the right starting point. Option B is worth pursuing only
+if buffer lifecycle coordination proves painful.
 
 ## Relation to existing notes
 
