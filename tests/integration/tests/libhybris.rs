@@ -106,4 +106,12 @@ fn test_libhybris_tls_dlclose_does_not_abort() {
          line -- did execution end before the value-correctness assert ran?\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
+    assert!(
+        stderr.contains("guard checks OK"),
+        "libhybris-tls-repro exited 0 but the loud-error guards on dlsym(TLS) \
+         and weak TLSDESC didn't pass. A regression here means the linker has \
+         dropped the DL_ERR guards in do_dlsym (TLS) or R_GENERIC_TLSDESC \
+         (unresolved weak), restoring silent corruption / wild pointers.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
 }

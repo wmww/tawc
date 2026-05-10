@@ -199,13 +199,21 @@ build_test_app() {
 
 # NDK cross-build the bionic side of libhybris-tls-repro. The matching
 # glibc binary is compiled inside the rootfs by build_test_app below;
-# this step produces the Android-ABI .so that the test asks libhybris
-# to dlopen+dlclose. Drops the .so directly into the rootfs (overlapping
-# build_test_app's path) so it lands alongside the compiled `repro` exe.
+# this step produces the Android-ABI .sos that the test asks libhybris
+# to dlopen. Drops them directly into the rootfs (overlapping
+# build_test_app's path) so they land alongside the compiled `repro` exe.
+#
+# Two .sos:
+#   tls_lib.so   — normal __thread vars; round-tripped through
+#                  hybris_dlopen+dlclose by the main test.
+#   weak_lib.so  — has an unresolved weak __thread reference, so the
+#                  static linker emits R_AARCH64_TLSDESC against an
+#                  undefined weak symbol. After the loud-error fix the
+#                  repro expects hybris_dlopen("./weak_lib.so") to fail.
 build_libhybris_tls_repro_helper() {
-    local src="$ROOT_DIR/tests/apps/libhybris-tls-repro/tls_lib.c"
-    local rootfs_path="/tmp/libhybris-tls-repro/tls_lib.so"
-    local fs_path="$TAWC_DISTROS_DIR/rootfs$rootfs_path"
+    local src_dir="$ROOT_DIR/tests/apps/libhybris-tls-repro"
+    local rootfs_dir="/tmp/libhybris-tls-repro"
+    local fs_dir="$TAWC_DISTROS_DIR/rootfs$rootfs_dir"
     local ndk_root="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-${ANDROID_HOME:-$HOME/Android/Sdk}/ndk}}"
     local ndk_clang
     # ANDROID_NDK_ROOT may already point at a versioned NDK; otherwise
@@ -223,14 +231,16 @@ build_libhybris_tls_repro_helper() {
         fi
         ndk_clang="$ndk_versioned/aarch64-linux-android29-clang"
     fi
-    echo "=== Cross-building libhybris-tls-repro/tls_lib.so ==="
-    local tmp_so
-    tmp_so=$(mktemp -t tawc-tls-lib.XXXXXX.so)
-    "$ndk_clang" -fPIC -shared -o "$tmp_so" "$src"
-    adb push "$tmp_so" "$TAWC_SCRATCH/libhybris-tls-repro-tls_lib.so" >/dev/null
-    rm -f "$tmp_so"
-    "$TAWC_EXEC_BIN" /system/bin/sh -c \
-        "mkdir -p $(dirname $fs_path) && cp $TAWC_SCRATCH/libhybris-tls-repro-tls_lib.so $fs_path && chmod a+rx $fs_path"
+    for name in tls_lib weak_lib; do
+        echo "=== Cross-building libhybris-tls-repro/${name}.so ==="
+        local tmp_so
+        tmp_so=$(mktemp -t "tawc-${name}.XXXXXX.so")
+        "$ndk_clang" -fPIC -shared -o "$tmp_so" "$src_dir/${name}.c"
+        adb push "$tmp_so" "$TAWC_SCRATCH/libhybris-tls-repro-${name}.so" >/dev/null
+        rm -f "$tmp_so"
+        "$TAWC_EXEC_BIN" /system/bin/sh -c \
+            "mkdir -p $fs_dir && cp $TAWC_SCRATCH/libhybris-tls-repro-${name}.so $fs_dir/${name}.so && chmod a+rx $fs_dir/${name}.so"
+    done
 }
 
 # Apps that integration tests actually consume — keep this list in sync

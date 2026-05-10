@@ -47,6 +47,15 @@
 //     into another, and the replay registry must remain valid after the
 //     original .so has been dlclose'd.
 //
+//  5. Loud-error guards on the dlsym(TLS) and unresolved-weak TLSDESC
+//     paths. Both used to silently route through code that read raw
+//     tpidr_el0 (glibc's TP) instead of the patched bionic TP, yielding
+//     a glibc-TLS-relative pointer and a non-NULL "weak" address
+//     respectively. Both now refuse at the relevant entry point with a
+//     dlerror message naming the symbol; assertions check that
+//     hybris_dlsym(g_tls_var) returns NULL and hybris_dlopen(weak_lib.so)
+//     returns NULL, with the symbol name appearing in dlerror.
+//
 // Pass: clean exit 0 with all asserts surviving and final get_tls
 // returning 42.
 // Fail: stderr line indicating which assert tripped, then exit 1
@@ -54,6 +63,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 extern void* hybris_dlopen(const char* filename, int flag);
 extern void* hybris_dlsym(void* handle, const char* symbol);
@@ -245,6 +255,47 @@ static int run_post_dlclose_replay_check(void) {
     return 0;
 }
 
+/* Regression test for the loud-error guard at linker.cpp:do_dlsym
+ * (was: silent return of a glibc-TP-relative pointer; *p was random
+ *  glibc TLS data — a memory-corruption hazard that masqueraded as
+ *  "dlsym worked, value is just wrong"). hybris_dlsym of a __thread
+ * symbol must now return NULL.
+ *
+ * The diagnostic itself goes to stderr via DL_ERR's fprintf. The
+ * libhybris fork's DL_ERR doesn't populate linker_get_error_buffer
+ * (and hasn't for all DL_ERR sites), so hybris_dlerror() being empty
+ * is a pre-existing fork quirk, not a regression of this guard. */
+static int assert_dlsym_tls_refused(void* h) {
+    fprintf(stderr, "[probe1] hybris_dlsym(g_tls_var) ...\n");
+    void* p = hybris_dlsym(h, "g_tls_var");
+    if (p != NULL) {
+        fprintf(stderr, "[probe1] FAIL: hybris_dlsym returned %p, expected NULL\n", p);
+        fprintf(stderr, "[probe1]   The do_dlsym TLS guard in linker.cpp has regressed.\n");
+        return 1;
+    }
+    fprintf(stderr, "[probe1] OK: dlsym(TLS) refused\n");
+    return 0;
+}
+
+/* Regression test for the loud-error guard at linker.cpp's
+ * R_GENERIC_TLSDESC handler (was: silent install of
+ *  tlsdesc_resolver_unresolved_weak, which read raw tpidr_el0 / glibc
+ *  TP — yielded a non-NULL wild pointer where ELF demands NULL).
+ * hybris_dlopen of a .so with an unresolved-weak __thread reference
+ * must now fail outright. */
+static int assert_weak_tlsdesc_refused(const char* weak_so_path) {
+    fprintf(stderr, "[probe2] hybris_dlopen(%s) ...\n", weak_so_path);
+    void* h = hybris_dlopen(weak_so_path, 2 /* RTLD_NOW */);
+    if (h != NULL) {
+        fprintf(stderr, "[probe2] FAIL: hybris_dlopen returned %p, expected NULL\n", h);
+        fprintf(stderr, "[probe2]   The R_GENERIC_TLSDESC unresolved-weak guard has regressed.\n");
+        hybris_dlclose(h);
+        return 1;
+    }
+    fprintf(stderr, "[probe2] OK: weak TLSDESC dlopen refused\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <path-to-bionic-tls-lib.so>\n", argv[0]);
@@ -307,6 +358,15 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[repro]   tls_static_tls + linker_tls.cpp::promote_tls_module_to_static.\n");
         return 1;
     }
+
+    // Loud-error guards previously documented in
+    // issues/libhybris-tls-dlsym-and-weak-tlsdesc.md. Running this here
+    // (with tls_lib.so still open) keeps repro self-contained: weak_lib.so
+    // sits beside tls_lib.so in the same /tmp/libhybris-tls-repro/ dir.
+    fprintf(stderr, "[repro] === loud-error guard checks ===\n");
+    if (assert_dlsym_tls_refused(h)) return 1;
+    if (assert_weak_tlsdesc_refused("./weak_lib.so")) return 1;
+    fprintf(stderr, "[repro] === guard checks OK ===\n");
 
     fprintf(stderr, "[repro] hybris_dlclose...\n");
     int r = hybris_dlclose(h);

@@ -23,6 +23,7 @@ __thread char g_tls_pad[32];
  * tripping. */
 __thread char g_tbss_block[256];
 
+
 int get_tls(void) { return g_tls_var; }
 void set_tls(int v) { g_tls_var = v; }
 int get_zero_tls(void) { return g_tls_zero; }
