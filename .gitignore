@@ -16,6 +16,9 @@ app/src/main/assets/libhybris/
 # Xwayland asset (built by the buildXwayland Gradle task)
 app/src/main/assets/xwayland/
 
+# mesa-gfxstream asset (built by the buildMesaGfxstream Gradle task)
+app/src/main/assets/mesa-gfxstream/
+
 # IDE
 .idea/
 *.iml
