@@ -15,7 +15,7 @@ import me.phie.tawc.Settings
  *
  * | Action | Args | Effect |
  * |--------|------|--------|
- * | `set-graphics-backend` | `value` ∈ {"libhybris","gfxstream"} | `Settings.graphicsBackend = …` |
+ * | `set-graphics-backend` | `value` ∈ {"libhybris","gfxstream","cpu"} | `Settings.graphicsBackend = …` |
  * | `get-graphics-backend` | — | prints current backend key on stdout |
  */
 internal object SettingsActions {

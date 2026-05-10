@@ -68,7 +68,19 @@ enum class GraphicsBackend(val key: String, val displayName: String, val tagline
      * the APK and are laid into each rootfs by
      * [me.phie.tawc.install.BridgeInstallProvider] at install time.
      */
-    GFXSTREAM("gfxstream", "gfxstream", "fast, reliable");
+    GFXSTREAM("gfxstream", "gfxstream", "fast, reliable"),
+
+    /**
+     * Pure software rendering. No vendor blob, no command-stream
+     * forwarding — Mesa's `llvmpipe` (GL/GLES) and `lavapipe` (Vulkan,
+     * if the distro ships `vulkan-swrast`) handle every draw on the
+     * CPU. Slow and AHB-less (every client falls back to `wl_shm`,
+     * which the compositor tints magenta), but useful when the GPU
+     * paths are broken or unavailable. No libhybris or gfxstream env
+     * is set; the distro's own Mesa picks llvmpipe via
+     * `LIBGL_ALWAYS_SOFTWARE=1` + `GALLIUM_DRIVER=llvmpipe`.
+     */
+    CPU("cpu", "CPU", "software-only");
 
     companion object {
         val DEFAULT = LIBHYBRIS

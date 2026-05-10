@@ -26,7 +26,9 @@ import me.phie.tawc.Settings
  * Mesa's gfxstream Vulkan ICD via `VK_ICD_FILENAMES` and selects the
  * kumquat transport via `VIRTGPU_KUMQUAT=1`, and it deliberately keeps
  * libhybris off `LD_LIBRARY_PATH` so libhybris's `libvulkan.so.1`
- * doesn't shadow the distro vulkan-icd-loader.
+ * doesn't shadow the distro vulkan-icd-loader. CPU forces software
+ * rendering via `LIBGL_ALWAYS_SOFTWARE=1` + `GALLIUM_DRIVER=llvmpipe`
+ * and leaves the Vulkan loader to pick up lavapipe on its own.
  */
 internal object RootfsEnv {
     enum class Method { TAWCROOT, PROOT, CHROOT }
@@ -69,6 +71,18 @@ internal object RootfsEnv {
                 // under gfxstream we don't have a working GL path yet, so
                 // GDK auto-pick / software fallback is the right behaviour.
                 put("GDK_GL", "gles:always")
+            }
+            GraphicsBackend.CPU -> {
+                // Software-only path: don't put libhybris on
+                // LD_LIBRARY_PATH (so the distro Mesa loads), don't
+                // pin a Vulkan ICD (so the distro vulkan-icd-loader
+                // auto-picks lavapipe from /usr/share/vulkan/icd.d/
+                // if vulkan-swrast is installed). Force Mesa onto
+                // llvmpipe regardless of any DRI device that might
+                // otherwise be probed. No GDK_GL override — let GTK
+                // fall through to its default renderer on llvmpipe.
+                put("LIBGL_ALWAYS_SOFTWARE", "1")
+                put("GALLIUM_DRIVER", "llvmpipe")
             }
             GraphicsBackend.GFXSTREAM -> {
                 // gfxstream path: distro vulkan-icd-loader is the loader

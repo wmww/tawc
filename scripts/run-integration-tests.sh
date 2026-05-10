@@ -30,6 +30,7 @@
 #   bash scripts/run-integration-tests.sh <filter>              # libtest substring filter,
 #                                                                 e.g. `<module>::` or `<module>::test_foo`
 #   bash scripts/run-integration-tests.sh --no-build [filter]   # skip rebuild/redeploy
+#   bash scripts/run-integration-tests.sh --graphics cpu        # software-only (llvmpipe/lavapipe)
 #   bash scripts/run-integration-tests.sh --graphics gfxstream  # flip the in-app graphics-driver
 #                                                                 pref before running (default: libhybris).
 #                                                                 The kumquat server runs in the
@@ -80,12 +81,12 @@ for arg in "$@"; do
     esac
 done
 if [ "$expect_graphics" -eq 1 ]; then
-    echo "ERROR: --graphics requires a value (libhybris|gfxstream)" >&2
+    echo "ERROR: --graphics requires a value (libhybris|gfxstream|cpu)" >&2
     exit 2
 fi
 case "$GRAPHICS" in
-    libhybris|gfxstream) ;;
-    *) echo "ERROR: --graphics must be libhybris or gfxstream (got '$GRAPHICS')" >&2; exit 2 ;;
+    libhybris|gfxstream|cpu) ;;
+    *) echo "ERROR: --graphics must be libhybris, gfxstream, or cpu (got '$GRAPHICS')" >&2; exit 2 ;;
 esac
 
 # shellcheck source=../scripts/lib/select-device.sh
