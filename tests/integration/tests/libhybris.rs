@@ -29,14 +29,19 @@ use tawc_integration::{adb, rootfs};
 ///    to offset_thread_pointer() (=16 on aarch64), and calling back
 ///    from promote_tls_module_to_static into hooks.c to memcpy .tdata
 ///    into the calling thread's tls_static_tls.
+/// 4. Per-thread isolation and post-dlclose replay. A child thread must
+///    see fresh initial TLS values, writes must not leak between threads,
+///    and a new thread must be able to replay promoted-TLS initializers
+///    after the original .so has been dlclose'd.
 ///
 /// Repro binary at tests/apps/libhybris-tls-repro/. The bionic-side
 /// tls_lib.so (a tiny .so with `__thread int g_tls_var = 42;`) is
 /// NDK-cross-built on the host by scripts/install-test-deps.sh; the
 /// glibc-side `repro` executable is built inside the rootfs and links
 /// `-lhybris-common`. Drives a full hybris_dlopen + hybris_dlsym +
-/// hybris_dlclose round-trip plus a stress loop and an assert that
-/// get_tls() returns the declared initialiser.
+/// hybris_dlclose round-trip plus thread isolation, post-dlclose replay,
+/// a stress loop, and an assert that get_tls() returns the declared
+/// initialiser.
 ///
 /// Failure modes:
 ///   - SIGABRT (exit 134) inside hybris_dlclose — regression of #1
@@ -46,6 +51,9 @@ use tawc_integration::{adb, rootfs};
 ///     — regression of #2
 ///   - exit 1 with `get_tls() = 0 (expected 42)` and a libhybris
 ///     pointer to the broken code path — regression of #3
+///   - exit 1 or SIGSEGV around `post-dlclose replay check` — the
+///     promoted-TLS registry kept a pointer into an unloaded .so instead
+///     of owning the initializer bytes
 #[test]
 fn test_libhybris_tls_dlclose_does_not_abort() {
     let bin = rootfs::ensure_libhybris_tls_repro().expect("libhybris-tls-repro build");
@@ -89,6 +97,16 @@ fn test_libhybris_tls_dlclose_does_not_abort() {
         stderr.contains("hybris_dlclose -> 0"),
         "libhybris-tls-repro exited 0 but never printed `hybris_dlclose -> 0` -- \
          did dlopen actually succeed?\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("thread isolation check OK"),
+        "libhybris-tls-repro exited 0 but never completed the per-thread TLS \
+         isolation check.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("post-dlclose replay check OK"),
+        "libhybris-tls-repro exited 0 but never completed the post-dlclose \
+         promoted-TLS replay check.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         stderr.contains("survived; no abort, value correct"),

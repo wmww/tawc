@@ -9,5 +9,5 @@ set -e
 cd "$(dirname "$0")"
 gcc -O0 -g repro.c -o libhybris-tls-repro \
     -L/usr/lib/hybris -lhybris-common -Wl,-rpath,/usr/lib/hybris \
-    -Wall -Wextra
+    -Wall -Wextra -pthread
 echo "Built: libhybris-tls-repro"

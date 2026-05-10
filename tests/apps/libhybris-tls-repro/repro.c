@@ -27,8 +27,8 @@
 //     repro doesn't, which is why the OnePlus tests passed and the
 //     Pixel ones blew up).
 //
-//     We force the slow path the way the simple repro doesn't: dlopen
-//     a single TLS-using .so 200 times, recycling slots by dlclosing
+//     We try to force the slow path the way the simple repro doesn't:
+//     repeatedly dlopen a TLS-using .so, recycling slots by dlclosing
 //     between iterations. Each register/unregister bumps
 //     __libc_shared_globals()->tls_modules.generation; eventually it
 //     overtakes the host glibc DTV gen the resolver compares against,
@@ -44,16 +44,24 @@
 //     bionic_tcb reservation that shifts static_offset off the patched
 //     access.
 //
-// Pass: clean exit 0 with all asserts surviving and the second-handle
-// get_tls returning 42.
+//  4. Per-thread isolation and replay. A promoted module's .tdata must
+//     be applied to every thread, writes on one thread must not bleed
+//     into another, and the replay registry must remain valid after the
+//     original .so has been dlclose'd.
+//
+// Pass: clean exit 0 with all asserts surviving and final get_tls
+// returning 42.
 // Fail: stderr line indicating which assert tripped, then exit 1
 // (assertion-style) or exit 134 (libhybris CHECK abort still wins).
+#include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 
 extern void* hybris_dlopen(const char* filename, int flag);
 extern void* hybris_dlsym(void* handle, const char* symbol);
 extern int   hybris_dlclose(void* handle);
 extern char* hybris_dlerror(void);
+extern void* _hybris_hook___get_tls_hooks(void);
 
 #define EXPECTED_TLS_VALUE 42
 // Each register/unregister cycle bumps libhybris's bionic
@@ -77,12 +85,193 @@ extern char* hybris_dlerror(void);
 // the stress is just opportunistic extra coverage for the abort path.
 #define STRESS_ITERATIONS 10
 
+typedef int (*get_int_fn)(void);
+typedef void (*set_int_fn)(int);
+
+struct tls_api {
+    get_int_fn get_tls;
+    set_int_fn set_tls;
+    get_int_fn get_zero_tls;
+    set_int_fn set_zero_tls;
+    get_int_fn get_pad_sum;
+    set_int_fn set_pad_first;
+};
+
+static int expect_int(const char* what, int got, int expected) {
+    fprintf(stderr, "[repro] %s = %d (expected %d)\n", what, got, expected);
+    if (got != expected) {
+        fprintf(stderr, "[repro] FAIL: %s mismatch\n", what);
+        return 1;
+    }
+    return 0;
+}
+
+static int resolve_api(void* h, struct tls_api* api, const char* label) {
+    api->get_tls = (get_int_fn)hybris_dlsym(h, "get_tls");
+    api->set_tls = (set_int_fn)hybris_dlsym(h, "set_tls");
+    api->get_zero_tls = (get_int_fn)hybris_dlsym(h, "get_zero_tls");
+    api->set_zero_tls = (set_int_fn)hybris_dlsym(h, "set_zero_tls");
+    api->get_pad_sum = (get_int_fn)hybris_dlsym(h, "get_pad_sum");
+    api->set_pad_first = (set_int_fn)hybris_dlsym(h, "set_pad_first");
+
+    if (!api->get_tls || !api->set_tls || !api->get_zero_tls ||
+        !api->set_zero_tls || !api->get_pad_sum || !api->set_pad_first) {
+        fprintf(stderr, "[repro] %s: hybris_dlsym failed: %s\n", label, hybris_dlerror());
+        return 1;
+    }
+    return 0;
+}
+
+static int check_initial_tls(const struct tls_api* api, const char* label) {
+    if (expect_int(label, api->get_tls(), EXPECTED_TLS_VALUE)) return 1;
+    if (expect_int("get_zero_tls()", api->get_zero_tls(), 0)) return 1;
+    if (expect_int("get_pad_sum()", api->get_pad_sum(), 0)) return 1;
+    return 0;
+}
+
+struct thread_check_args {
+    struct tls_api api;
+    int initial_value;
+    int write_value;
+    int zero_write_value;
+    int pad_write_value;
+};
+
+static void* tls_thread_check(void* opaque) {
+    struct thread_check_args* args = (struct thread_check_args*)opaque;
+
+    // Force per-thread bionic TLS setup and registry catch-up before
+    // calling into the bionic .so. This is the documented entry path for
+    // glibc-created threads that later touch libhybris-mapped code.
+    _hybris_hook___get_tls_hooks();
+
+    if (expect_int("thread get_tls()", args->api.get_tls(), args->initial_value)) {
+        return (void*)(intptr_t)1;
+    }
+    if (expect_int("thread get_zero_tls()", args->api.get_zero_tls(), 0)) {
+        return (void*)(intptr_t)1;
+    }
+    if (expect_int("thread get_pad_sum()", args->api.get_pad_sum(), 0)) {
+        return (void*)(intptr_t)1;
+    }
+
+    args->api.set_tls(args->write_value);
+    args->api.set_zero_tls(args->zero_write_value);
+    args->api.set_pad_first(args->pad_write_value);
+
+    if (expect_int("thread get_tls() after set", args->api.get_tls(), args->write_value)) {
+        return (void*)(intptr_t)1;
+    }
+    if (expect_int("thread get_zero_tls() after set",
+                   args->api.get_zero_tls(), args->zero_write_value)) {
+        return (void*)(intptr_t)1;
+    }
+    if (expect_int("thread get_pad_sum() after set",
+                   args->api.get_pad_sum(), args->pad_write_value)) {
+        return (void*)(intptr_t)1;
+    }
+    return NULL;
+}
+
+static int run_thread_isolation_check(const struct tls_api* api) {
+    fprintf(stderr, "[repro] thread isolation check...\n");
+    api->set_tls(7);
+    api->set_zero_tls(11);
+    api->set_pad_first(13);
+
+    struct thread_check_args args = {
+        .api = *api,
+        .initial_value = EXPECTED_TLS_VALUE,
+        .write_value = 99,
+        .zero_write_value = 123,
+        .pad_write_value = 17,
+    };
+
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, tls_thread_check, &args) != 0) {
+        fprintf(stderr, "[repro] FAIL: pthread_create failed\n");
+        return 1;
+    }
+
+    void* thread_result = NULL;
+    if (pthread_join(thread, &thread_result) != 0) {
+        fprintf(stderr, "[repro] FAIL: pthread_join failed\n");
+        return 1;
+    }
+    if (thread_result != NULL) {
+        fprintf(stderr, "[repro] FAIL: thread TLS check failed\n");
+        return 1;
+    }
+
+    if (expect_int("main get_tls() after child set", api->get_tls(), 7)) return 1;
+    if (expect_int("main get_zero_tls() after child set", api->get_zero_tls(), 11)) return 1;
+    if (expect_int("main get_pad_sum() after child set", api->get_pad_sum(), 13)) return 1;
+    fprintf(stderr, "[repro] thread isolation check OK\n");
+    return 0;
+}
+
+static void* replay_after_dlclose_thread(void* opaque) {
+    (void)opaque;
+    fprintf(stderr, "[repro] post-dlclose replay thread: _hybris_hook___get_tls_hooks()\n");
+    _hybris_hook___get_tls_hooks();
+    fprintf(stderr, "[repro] post-dlclose replay thread: replay OK\n");
+    return NULL;
+}
+
+static int run_post_dlclose_replay_check(void) {
+    fprintf(stderr, "[repro] post-dlclose replay check...\n");
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, replay_after_dlclose_thread, NULL) != 0) {
+        fprintf(stderr, "[repro] FAIL: pthread_create for replay check failed\n");
+        return 1;
+    }
+    void* thread_result = NULL;
+    if (pthread_join(thread, &thread_result) != 0) {
+        fprintf(stderr, "[repro] FAIL: pthread_join for replay check failed\n");
+        return 1;
+    }
+    if (thread_result != NULL) {
+        fprintf(stderr, "[repro] FAIL: post-dlclose replay thread failed\n");
+        return 1;
+    }
+    fprintf(stderr, "[repro] post-dlclose replay check OK\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <path-to-bionic-tls-lib.so>\n", argv[0]);
         return 2;
     }
     const char* path = argv[1];
+
+    // ---- Failure modes #3 + #4: value correctness, .tbss zeroing,
+    // and per-thread isolation while the library is still loaded.
+    fprintf(stderr, "[repro] initial hybris_dlopen(%s)\n", path);
+    void* initial = hybris_dlopen(path, 2 /* RTLD_NOW */);
+    if (!initial) {
+        fprintf(stderr, "[repro] initial hybris_dlopen failed: %s\n", hybris_dlerror());
+        return 1;
+    }
+    fprintf(stderr, "[repro] initial handle=%p\n", initial);
+
+    struct tls_api initial_api;
+    if (resolve_api(initial, &initial_api, "initial")) return 1;
+    if (check_initial_tls(&initial_api, "get_tls()")) return 1;
+    if (run_thread_isolation_check(&initial_api)) return 1;
+
+    fprintf(stderr, "[repro] initial hybris_dlclose...\n");
+    int initial_close = hybris_dlclose(initial);
+    fprintf(stderr, "[repro] initial hybris_dlclose -> %d\n", initial_close);
+    if (initial_close != 0) {
+        fprintf(stderr, "[repro] FAIL: initial hybris_dlclose returned non-zero\n");
+        return 1;
+    }
+
+    // The new thread has never touched libhybris TLS. If the promoted-
+    // TLS registry kept a raw .tdata pointer into the now-unloaded .so,
+    // this catch-up replay can read unmapped memory and crash.
+    if (run_post_dlclose_replay_check()) return 1;
 
     // ---- Failure mode #2: stress register/unregister to force the
     // TLSDESC dynamic-resolver fallback path. If the static-promote on
@@ -97,17 +286,15 @@ int main(int argc, char** argv) {
                     i, hybris_dlerror());
             return 1;
         }
-        int (*get_tls)(void) = (int(*)(void))hybris_dlsym(h, "get_tls");
-        if (!get_tls) {
-            fprintf(stderr, "[repro] stress: hybris_dlsym(get_tls) failed at iter %d: %s\n",
-                    i, hybris_dlerror());
-            return 1;
-        }
+        struct tls_api api;
+        if (resolve_api(h, &api, "stress")) return 1;
         // The TLS access itself is what trips the dynamic-resolver bug
         // -- fetching a value, not opening, is what runs through the
-        // patched MRS + TLSDESC resolver. Discard the result here; the
-        // value-correctness check happens in the post-loop dlopen.
-        (void)get_tls();
+        // patched MRS + TLSDESC resolver. Also assert the initialiser so
+        // every iteration checks both TLSDESC and .tdata replay.
+        if (expect_int("stress get_tls()", api.get_tls(), EXPECTED_TLS_VALUE)) {
+            return 1;
+        }
         if (hybris_dlclose(h) != 0) {
             fprintf(stderr, "[repro] stress: hybris_dlclose failed at iter %d\n", i);
             return 1;
@@ -130,12 +317,9 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "[repro] handle=%p\n", h);
 
-    int (*get_tls)(void) = (int(*)(void))hybris_dlsym(h, "get_tls");
-    if (!get_tls) {
-        fprintf(stderr, "[repro] hybris_dlsym(get_tls) failed: %s\n", hybris_dlerror());
-        return 1;
-    }
-    int v = get_tls();
+    struct tls_api api;
+    if (resolve_api(h, &api, "final")) return 1;
+    int v = api.get_tls();
     fprintf(stderr, "[repro] get_tls() = %d (expected %d)\n", v, EXPECTED_TLS_VALUE);
     if (v != EXPECTED_TLS_VALUE) {
         fprintf(stderr, "[repro] FAIL: __thread initialiser not honoured by libhybris\n");
@@ -150,6 +334,10 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[repro] hybris_dlclose...\n");
     int r = hybris_dlclose(h);
     fprintf(stderr, "[repro] hybris_dlclose -> %d\n", r);
+    if (r != 0) {
+        fprintf(stderr, "[repro] FAIL: final hybris_dlclose returned non-zero\n");
+        return 1;
+    }
     fprintf(stderr, "[repro] survived; no abort, value correct\n");
     return 0;
 }

@@ -14,9 +14,21 @@
 #include <stdio.h>
 
 __thread int g_tls_var = 42;
+__thread int g_tls_zero;
+__thread char g_tls_pad[32];
 
 int get_tls(void) { return g_tls_var; }
 void set_tls(int v) { g_tls_var = v; }
+int get_zero_tls(void) { return g_tls_zero; }
+void set_zero_tls(int v) { g_tls_zero = v; }
+int get_pad_sum(void) {
+    int sum = 0;
+    for (size_t i = 0; i < sizeof(g_tls_pad); i++) {
+        sum += g_tls_pad[i];
+    }
+    return sum;
+}
+void set_pad_first(int v) { g_tls_pad[0] = (char)v; }
 
 __attribute__((constructor))
 static void on_load(void) {
