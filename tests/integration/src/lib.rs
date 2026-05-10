@@ -44,6 +44,27 @@ pub fn graphics_backend() -> String {
         .unwrap_or_else(|| "libhybris".to_string())
 }
 
+/// Skip-guard for tests that fundamentally exercise a libhybris-only
+/// path (the chroot's `LD_LIBRARY_PATH` points at libhybris, EGL-via-
+/// libhybris is the only working GL driver, etc.). Returns `true` when
+/// the test should bail out cleanly under `--graphics gfxstream`; the
+/// caller prints a `SKIP:` line explaining the gap and `return`s.
+///
+/// `reason` should be a short human-readable explanation that points at
+/// the relevant phase in `notes/gfxstream-bridge.md` so a future reader
+/// knows what would unblock the test. Examples:
+///   - `"GL via Zink-on-bridge (phase 6) not implemented yet"`
+///   - `"Vulkan WSI (phases 4-5) not implemented yet"`
+///   - `"libhybris-only — no analogue under bridge"`
+pub fn skip_if_gfxstream(reason: &str) -> bool {
+    if graphics_backend() == "gfxstream" {
+        eprintln!("SKIP: {reason}");
+        true
+    } else {
+        false
+    }
+}
+
 fn resolve_install_id() -> String {
     if let Ok(v) = std::env::var("TAWC_INSTALL_ID") {
         if !v.is_empty() {

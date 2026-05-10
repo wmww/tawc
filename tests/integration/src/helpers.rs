@@ -169,6 +169,57 @@ pub fn assert_compositor_clean() {
 }
 
 /// Spawn a long-running graphical app via RootfsProcess and wait until the
+/// compositor reports at least one mapped toplevel **with a buffer
+/// attached** (i.e. the client has committed its first frame, whatever
+/// buffer type it picked). Doesn't care which path — the `apps::` tests
+/// use this to verify a program launches and gets to first paint; buffer-
+/// type assertions belong in `graphics::` (or `xwayland::`/`hybris::`).
+///
+/// Waiting for first-frame-attached (not just "toplevel mapped") matters
+/// for tests that drive the client immediately after launch — e.g.
+/// `lxterminal` needs the shell + IM ready before injected text reaches
+/// the PTY, and that only happens once the first frame has gone through.
+///
+/// Panics if the app crashes or doesn't reach first paint within `timeout`.
+pub fn launch_and_wait_for_toplevel(cmd: &str, name: &str, timeout: Duration) -> RootfsProcess {
+    require_compositor();
+
+    let mut proc = RootfsProcess::spawn(cmd).unwrap_or_else(|e| panic!("Failed to spawn {name}: {e}"));
+    proc.ensure_pgid();
+
+    let deadline = Instant::now() + timeout;
+    let mut painted = false;
+    while Instant::now() < deadline {
+        if !proc.is_running() {
+            proc.stop().ok();
+            panic!("{name} crashed/exited before first paint");
+        }
+        if let Ok(state) = compositor::query_state(TIMEOUT) {
+            if state.toplevels >= 1
+                && (state.surfaces_wlegl + state.surfaces_shm) >= 1
+            {
+                painted = true;
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    // Let the app finish opening before the caller acts. Same grace
+    // period as `launch_and_wait_for_ahb` so tests that drive input
+    // immediately after launch (e.g. `lxterminal`) get the IM-enable +
+    // shell-readiness window they used to get from the AHB-import wait.
+    thread::sleep(Duration::from_millis(1000));
+
+    assert!(
+        painted,
+        "{name} did not reach first paint within {:?}",
+        timeout
+    );
+    proc
+}
+
+/// Spawn a long-running graphical app via RootfsProcess and wait until the
 /// compositor sees an AHB buffer import (= the app has rendered its first
 /// hardware-buffered frame). Panics if the app crashes or doesn't render
 /// within `timeout`.

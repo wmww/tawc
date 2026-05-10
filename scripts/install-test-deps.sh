@@ -71,10 +71,10 @@ case "$DISTRO_KEY" in
             gtk3 gtk3-demos gtk4-demos firefox supertuxkart
             # graphics:: tests
             mesa-utils weston vulkan-tools
-            # apps::test_xwayland_xclock_renders_via_shm — pure-X11 client
+            # xwayland::test_xwayland_xclock_renders_via_shm — pure-X11 client
             # exercising our bionic-built Xwayland (see notes/xwayland.md).
             xorg-xclock
-            # apps::test_es2gears_x11_renders_via_ahb — real-app GLES-on-X11
+            # xwayland::test_es2gears_x11_renders_via_ahb — real-app GLES-on-X11
             # client driving the libhybris X11 EGL platform plugin.
             mesa-demos
             # `lxterminal` for apps::test_lxterminal_input_and_exit is

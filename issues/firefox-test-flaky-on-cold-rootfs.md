@@ -1,4 +1,4 @@
-# `apps::test_firefox_launches_with_hardware_buffers` flakes on the very first run after a fresh install
+# `graphics::test_firefox_uses_hardware_buffers` flakes on the very first run after a fresh install
 
 **Likely fixed as of 2026-05-02.** The test's steady-state
 assertion was rewritten from "saw a `wlegl: imported` log line in
@@ -27,7 +27,7 @@ TAWC_TARGET=physical bash scripts/uninstall-distro.sh arch
 TAWC_TARGET=physical bash scripts/install-distro.sh arch proot
 TAWC_TARGET=physical bash scripts/install-test-deps.sh
 TAWC_TARGET=physical bash scripts/run-integration-tests.sh --no-build
-# -> apps::test_firefox_launches_with_hardware_buffers FAILS
+# -> graphics::test_firefox_uses_hardware_buffers FAILS
 
 TAWC_TARGET=physical bash scripts/run-integration-tests.sh --no-build
 # -> ALL PASS, including the firefox test
@@ -64,5 +64,5 @@ red herring.
 
 ## References
 
-- `tests/integration/tests/apps.rs::test_firefox_launches_with_hardware_buffers`
+- `tests/integration/tests/graphics.rs::test_firefox_uses_hardware_buffers`
 - `scripts/install-test-deps.sh` (where a pre-warm step would land)

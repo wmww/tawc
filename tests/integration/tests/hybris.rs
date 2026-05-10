@@ -1,7 +1,10 @@
-//! libhybris regression tests. Bug-for-bug repros of historical aborts
-//! that don't fit cleanly into apps:: or graphics:: — those drive real
-//! desktop/GPU stacks and only catch libhybris bugs incidentally; these
-//! drive the suspect libhybris call directly.
+//! libhybris-specific tests. Everything here is *logically* about
+//! libhybris itself — the bionic linker, TLS handling, dlopen, etc. —
+//! rather than behaviour you'd observe through any Wayland compositor.
+//! Bug-for-bug repros of historical aborts live here; broader buffer-path
+//! or app-launch coverage that happens to exercise libhybris in the
+//! libhybris-backend configuration belongs in `graphics::` / `apps::` /
+//! `xwayland::` instead.
 //!
 //! libhybris is aarch64-only in tawc, so these fail on the emulator.
 
@@ -53,6 +56,13 @@ use tawc_integration::{adb, rootfs};
 ///     of owning the initializer bytes
 #[test]
 fn test_libhybris_tls_dlclose_does_not_abort() {
+    if tawc_integration::skip_if_gfxstream(
+        "libhybris-tls-repro tests bionic-linker TLS handling inside libhybris; \
+         libhybris isn't on LD_LIBRARY_PATH under gfxstream and the regression \
+         class doesn't apply to the bridge path",
+    ) {
+        return;
+    }
     let bin = rootfs::ensure_libhybris_tls_repro().expect("libhybris-tls-repro build");
 
     // Run from inside the install dir so the relative `./tls_lib.so`

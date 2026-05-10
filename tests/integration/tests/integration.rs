@@ -1,5 +1,6 @@
 mod apps;
 mod graphics;
+mod hybris;
 mod input;
-mod libhybris;
 mod tawcroot;
+mod xwayland;

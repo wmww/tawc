@@ -19,10 +19,23 @@ scripts/
 ```
 
 Each test module's own docstring documents what it covers and what its
-prerequisites are. As of writing the modules are `apps` (real desktop
-clients — Firefox/STK/GTK demos/vulkaninfo, exercises the rendering /
-GPU stack) and `input` (gtk4-debug-app driven through compositor input
-dispatch).
+prerequisites are. As of writing the modules are:
+
+| Module      | Scope |
+|-------------|-------|
+| `apps`      | App-level smoke: program launches, maps a toplevel, and (optionally) does something simple. **No buffer-type assertions.** Pair tests here with a deeper one in `graphics::`/`xwayland::` when a buffer-path regression is worth catching separately. |
+| `graphics`  | Buffer-path coverage. **Every test asserts** which path the client uses (`wl_shm`, AHB-via-`android_wlegl`, or Vulkan). Covers minimal weston demos and the real toolkits (GTK3/4, Firefox, supertuxkart), plus `vulkaninfo`/`eglinfo` sanity. |
+| `xwayland`  | Anything that drives the bionic-built Xwayland binary — pure-X11 clients, `-tawc-test-pattern`, TAWC-DRI AHB round-trips, libhybris's X11 EGL plugin. Buffer-type assertions inside these stay here rather than moving to `graphics::`. |
+| `hybris`    | Logically libhybris-specific tests (bionic linker, TLS, dlopen). Broader buffer-path coverage that happens to use libhybris in the default backend lives in `graphics::`/`xwayland::` instead. |
+| `input`     | gtk4-debug-app driven through compositor input dispatch (text-input-v3, wl_keyboard, touch). |
+| `tawcroot`  | tawcroot device-side smokes. |
+
+**Where does this app go?** Apps that need both a launch smoke and a
+buffer-path assertion get two tests — one in `apps::` (just maps a
+window) and one in the matching deeper module (`graphics::` for native
+Wayland clients, `xwayland::` if the path goes through Xwayland). Apps
+where buffer type is irrelevant (e.g. `lxterminal` driving text input)
+get a single `apps::` entry.
 
 ## Debug App (`gtk4-debug-app`)
 
@@ -176,7 +189,9 @@ Host (cargo test)                    Phone
   is launched by `run-integration-tests.sh` before `cargo test` runs — the
   Rust harness never starts it, only asserts it's there.
 - **`helpers.rs`**: Shared test helpers (`require_compositor`, `start_text_input`,
-  `assert_compositor_clean`, `launch_and_wait_for_ahb`, `saw_ahb_import`,
+  `assert_compositor_clean`, `launch_and_wait_for_toplevel` (for
+  `apps::`, no buffer-path assertion), `launch_and_wait_for_ahb` (for
+  `graphics::`/`xwayland::`, asserts AHB import), `saw_ahb_import`,
   `saw_shm_import`). `require_compositor` panics with a clear message if the
   compositor isn't running, telling the developer to use the run script
   instead of invoking `cargo test` directly. The OnceLock state means

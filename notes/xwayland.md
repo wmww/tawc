@@ -19,7 +19,7 @@ of the box.
   no-op ack), registered via `mi/miinitext.c`. The Xwayland binary
   still builds and runs identically; the new extension is advertised
   on the wire and dispatches requests. Verification:
-  `apps::test_tawc_dri_extension_round_trip` exercises
+  `xwayland::test_tawc_dri_extension_round_trip` exercises
   `QueryExtension` + `QueryVersion` + `PresentBuffer` from a chroot
   xcb client (`tests/apps/tawc-dri-test/`).
 - **Phase 2 step 2 — done (2026-04-29).** Server-side AHB
@@ -37,7 +37,7 @@ of the box.
   DT_NEEDS libui.so, and the libhybris stub libui ahead of
   `/system/lib64` collapses the load with
   `library libc.so.6 not found`. Verification:
-  `apps::test_xwayland_test_pattern_ahb_round_trip` enables the
+  `xwayland::test_xwayland_test_pattern_ahb_round_trip` enables the
   `debug.tawc.xwl_test_pattern` prop, restarts the compositor, and
   asserts the standalone test pattern path round-trips a 512x512
   AHB through `android_wlegl`.
@@ -70,11 +70,11 @@ of the box.
   the gradient renders on the compositor's TURQUOISE background,
   going AHB → TAWC-DRI → X server → android_wlegl → compositor
   gralloc1 import → GL texture; no SHM, no GLAMOR, no magenta.
-  Verification: `apps::test_tawc_dri_ahb_present_round_trip` asserts
+  Verification: `xwayland::test_tawc_dri_ahb_present_round_trip` asserts
   compositor logcat shows `wlegl: create_buffer 320x240 ... fmt=1`
   (AHB, not SHM) AND `wlegl: imported ANativeWindowBuffer as texture
   320x240` (full GL bind). Stress verified by
-  `apps::test_tawc_dri_ahb_present_animated_loop`: a double-buffered
+  `xwayland::test_tawc_dri_ahb_present_animated_loop`: a double-buffered
   60fps loop (alternating between two AHBs, repainting each frame
   with a swept gradient phase) runs 120 frames in 2.0s, the
   compositor imports all 120 AHBs cleanly, and the client sustains
@@ -112,7 +112,7 @@ of the box.
   `libX11-xcb.so.1` (chroot supplies real impls at runtime, same
   pattern as the existing wayland-client/server stubs) and synthesises
   pkg-config files pointing at the host's plain-C X11/xcb headers.
-  Verification: `apps::test_eglx11_renders_via_ahb` runs a
+  Verification: `xwayland::test_eglx11_renders_via_ahb` runs a
   chroot-side EGL-on-X11 client (`tests/apps/eglx11-test/`) for 30
   frames; the test asserts `eglGetPlatformDisplay(EGL_PLATFORM_X11_KHR)`
   succeeds, GL_VENDOR=Qualcomm, and the compositor logs both
@@ -162,7 +162,7 @@ of the box.
     direct wl_surface attach. There is no flip-vs-copy choice
     because there is no Present in the path; "direct attach" is
     strictly faster and zero-copy by construction. Verification:
-    `apps::test_es2gears_x11_renders_via_ahb` runs es2gears for 4s
+    `xwayland::test_es2gears_x11_renders_via_ahb` runs es2gears for 4s
     and asserts ≥100 AHB imports, zero `createFromHandle` failures,
     no `Xwayland disconnected: Protocol error`. mesa-demos added to
     `scripts/install-test-deps.sh`.
@@ -237,7 +237,7 @@ so X clients can find the socket.
 **End-to-end verified on device:** xclock connects to `:0`, maps a
 window, renders into a wl_shm buffer (magenta-tinted per the SHM
 fallback policy) on top of the compositor's gradient background.
-Covered by `apps::test_xwayland_xclock_renders_via_shm`.
+Covered by `xwayland::test_xwayland_xclock_renders_via_shm`.
 
 Build script: `scripts/build-xwayland.sh`. Pinned upstream tags
 cloned into `./deps/xwayland-src/<lib>/`, patches in
@@ -344,7 +344,7 @@ other for correctness, and a third we may never do.
   anything that pixman-renders works, and the diagnostic that "this
   came from the CPU" is preserved.
 
-End-to-end verified on device: `apps::test_xwayland_xclock_renders_via_shm`.
+End-to-end verified on device: `xwayland::test_xwayland_xclock_renders_via_shm`.
 
 ### Phase 2 (next big chunk). EGL-on-X11 client GL through libhybris.
 
@@ -435,7 +435,7 @@ overload is still a stub for step 3 to wire into the pixmap router).
 Added `-tawc-test-pattern` argv (and `TAWC_XWL_TEST_PATTERN=1` env
 fallback, since smithay's `XWayland::spawn` doesn't take argv
 extras), exposed to compositor via `debug.tawc.xwl_test_pattern`
-prop. **Verification (passing):** `apps::test_xwayland_test_pattern_ahb_round_trip`
+prop. **Verification (passing):** `xwayland::test_xwayland_test_pattern_ahb_round_trip`
 sets the prop, restarts the compositor, and checks for `wlegl:
 create_buffer 512x512 stride=... fmt=1 usage=0x...` in compositor
 logcat. The on-screen attach (and the `present_check_flip()`
@@ -454,7 +454,7 @@ on the same window won't see the AHB (no XGetImage / XCopyArea
 integration), which is fine for pure-GL clients (Phase 4); mixed-
 rendering clients would need the pixmap-router path
 (`xwl_tawc_pixmap_get_wl_buffer`) revived if/when a real workload
-needs it. **Verification:** `apps::test_tawc_dri_ahb_present_round_trip`
+needs it. **Verification:** `xwayland::test_tawc_dri_ahb_present_round_trip`
 shows a chroot-side gradient AHB on the compositor; logs prove the
 AHB went through android_wlegl and was bound as a GL texture. **At
 this point everything except the libhybris EGL plugin is done and proven.**
@@ -476,7 +476,7 @@ on the server side — small enough not to be worth pulling in xcbproto.
 Build wired via `--enable-x11`, `EGL_PLATFORM_X11_KHR` dispatch in
 `hybris/egl/egl.c`, X11/xcb stub `.so`s + synth pkg-config in
 `scripts/build-libhybris.sh`. **Verification:**
-`apps::test_eglx11_renders_via_ahb` runs a chroot-side EGL-on-X11
+`xwayland::test_eglx11_renders_via_ahb` runs a chroot-side EGL-on-X11
 test program (`tests/apps/eglx11-test/`) for 30 frames and asserts the
 compositor logged `wlegl: create_buffer ... fmt=1` AND
 `wlegl: imported ANativeWindowBuffer as texture` for that surface
@@ -490,7 +490,7 @@ pick flip mode" check is folded into step 5's real-app shakedown.
 **5. Real-app shakedown.** `glmark2-x11`, then a Wine GL game
 (picks up X subwindows / `XGetImage` edge cases). Land integration
 tests for the GL-X11 path: an analog of
-`apps::test_xwayland_xclock_renders_via_shm` that asserts an EGL-X11
+`xwayland::test_xwayland_xclock_renders_via_shm` that asserts an EGL-X11
 client renders via AHB (not SHM, not magenta-tinted).
 
 Why this order:
@@ -1036,7 +1036,7 @@ patcher script alongside the existing four.
   Xwayland-24.1.11 binary cross-compiled cleanly. Shipped to phone,
   hooked into compositor via `xwayland.rs` + smithay tawc-patches
   additions; xclock rendered end-to-end via SHM (verified with
-  `apps::test_xwayland_xclock_renders_via_shm`).
+  `xwayland::test_xwayland_xclock_renders_via_shm`).
 - **2026-04-28** — V2 (bionic + Mesa-Zink) built but never shipped
   (dmabuf import gap). Source stayed in tree behind unflipped flags.
 - **2026-04-28** — V4 baseline: switched the cross toolchain from NDK
@@ -1077,7 +1077,7 @@ patcher script alongside the existing four.
 - **2026-04-29** — Phase 2 step 2 landed: server-side
   libnativewindow dlopen, AHB allocation, native-handle ship via
   `android_wlegl`, end-to-end round-trip verified by
-  `apps::test_xwayland_test_pattern_ahb_round_trip`. Caught one
+  `xwayland::test_xwayland_test_pattern_ahb_round_trip`. Caught one
   load-order trap on first device run: `libnativewindow.so`
   DT_NEEDS `libui.so`, and libhybris's chroot-side `libui.so.1.0.0`
   stub was on the X server's `LD_LIBRARY_PATH`, so the bionic linker
@@ -1120,7 +1120,7 @@ patcher script alongside the existing four.
   in `configure.ac`, `EGL_PLATFORM_X11_KHR` dispatch in
   `hybris/egl/egl.c`, X11/xcb stub libs and synth pkg-config in
   `scripts/build-libhybris.sh`. Verification:
-  `apps::test_eglx11_renders_via_ahb` runs the new chroot client
+  `xwayland::test_eglx11_renders_via_ahb` runs the new chroot client
   (`tests/apps/eglx11-test/`) for 30 frames, asserts EGL_VENDOR=Android
   + GL_RENDERER=Adreno, and confirms the compositor logged the
   AHB import + GL bind for the surface. No source-code regressions
@@ -1157,6 +1157,6 @@ patcher script alongside the existing four.
   lines over the full es2gears run, confirming the libhybris
   EGL-X11 pipe never enters the Present extension by design — it
   shortcuts directly via TAWCDRIPresentBuffer → wl_surface attach.
-  Verification: `apps::test_es2gears_x11_renders_via_ahb`
+  Verification: `xwayland::test_es2gears_x11_renders_via_ahb`
   asserts ≥100 AHB imports + 0 createFromHandle failures + 0
   Xwayland protocol-error disconnects over a 4s run.
