@@ -1,0 +1,148 @@
+From: tawc
+Origin: own
+
+Add Cargo.toml files for Mesa's internal Rust crates so we can build
+them with cargo (which handles cross-compile + proc-macros cleanly)
+instead of via meson subprojects (which hard-code `native: true` on
+crate libs in a way that breaks cross-builds — see the second patch).
+
+Drops in:
+  src/util/rust/Cargo.toml          (mesa3d_util)
+  src/virtio/protocols/Cargo.toml   (mesa3d_protocols)
+  src/virtio/virtgpu_kumquat/Cargo.toml
+  src/virtio/virtgpu_kumquat_ffi/Cargo.toml
+  Cargo.toml                        (workspace)
+
+Templates copied from the matching crates in magma-gpu/rutabaga_gfx
+(`third_party/mesa3d/src/...`), which Cargo-build the same source.
+Differences from rutabaga's templates:
+  - thiserror 2.0 (Mesa expects >=2.0.11; rutabaga ships 1.0).
+  - zerocopy 0.8.13 (matches Mesa's meson floor).
+  - virtgpu_kumquat_ffi has no rutabaga equivalent — written from
+    its lib.rs imports + meson.build link_with list.
+
+The workspace Cargo.toml lives at the Mesa repo root rather than in
+a build dir so cargo can resolve `path = "src/..."` deps directly.
+This means an unpatched Mesa with no Cargo.toml at the root + cargo
+poking around won't notice — `mesa-patches/mesa/` only applies to
+our own checkout. (The Mesa tree has no upstream Cargo.toml, so this
+file is purely additive.)
+
+diff --git a/Cargo.toml b/Cargo.toml
+new file mode 100644
+index 0000000..67082cc
+--- /dev/null
++++ b/Cargo.toml
+@@ -0,0 +1,15 @@
++# Workspace for Mesa's internal Rust crates, built externally to feed
++# `dep_virtgpu_kumquat_ffi` to gfxstream-vk via pkg-config when meson
++# is invoked with `-Dvirtgpu_kumquat_external_ffi=true`. See
++# scripts/build-mesa-gfxstream.sh and tawc-patch 02-*.
++#
++# Not consumed by upstream Mesa — added by deps/mesa-patches/mesa/.
++
++[workspace]
++resolver = "2"
++members = [
++    "src/util/rust",
++    "src/virtio/protocols",
++    "src/virtio/virtgpu_kumquat",
++    "src/virtio/virtgpu_kumquat_ffi",
++]
+diff --git a/src/util/rust/Cargo.toml b/src/util/rust/Cargo.toml
+new file mode 100644
+index 0000000..66821ed
+--- /dev/null
++++ b/src/util/rust/Cargo.toml
+@@ -0,0 +1,22 @@
++[package]
++name = "mesa3d_util"
++version = "0.1.76"
++authors = ["Mesa3D authors"]
++edition = "2021"
++description = "Utility crate part of Mesa3D project"
++license = "MIT"
++
++[lib]
++name = "mesa3d_util"
++path = "lib.rs"
++
++[dependencies]
++cfg-if = "1.0.0"
++libc = "0.2"
++remain = "0.2"
++thiserror = "2.0"
++zerocopy = { version = "0.8.13", features = ["derive"] }
++log = "0.4"
++
++[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
++rustix = { version = "1.0", features = ["event", "fs", "mm", "net", "param", "pipe", "thread", "use-libc", "use-libc-auxv", "libc_errno"] }
+diff --git a/src/virtio/protocols/Cargo.toml b/src/virtio/protocols/Cargo.toml
+new file mode 100644
+index 0000000..937ab09
+--- /dev/null
++++ b/src/virtio/protocols/Cargo.toml
+@@ -0,0 +1,15 @@
++[package]
++name = "mesa3d_protocols"
++version = "0.1.76"
++authors = ["Mesa3D authors"]
++edition = "2021"
++description = "Rust protocols from Mesa3D project"
++license = "MIT"
++
++[lib]
++name = "mesa3d_protocols"
++path = "lib.rs"
++
++[dependencies]
++mesa3d_util = { path = "../../util/rust", version = "0.1.76" }
++zerocopy = { version = "0.8.13", features = ["derive"] }
+diff --git a/src/virtio/virtgpu_kumquat/Cargo.toml b/src/virtio/virtgpu_kumquat/Cargo.toml
+new file mode 100644
+index 0000000..b2929e6
+--- /dev/null
++++ b/src/virtio/virtgpu_kumquat/Cargo.toml
+@@ -0,0 +1,18 @@
++[package]
++name = "virtgpu_kumquat"
++version = "0.1.76"
++authors = ["Mesa3D authors"]
++edition = "2021"
++description = "kumquat (Unix-socket) backend of Mesa virtgpu"
++license = "MIT"
++
++[lib]
++name = "virtgpu_kumquat"
++path = "lib.rs"
++
++[dependencies]
++mesa3d_util = { path = "../../util/rust", version = "0.1.76" }
++mesa3d_protocols = { path = "../protocols", version = "0.1.76" }
++log = "0.4"
++remain = "0.2"
++thiserror = "2.0"
+diff --git a/src/virtio/virtgpu_kumquat_ffi/Cargo.toml b/src/virtio/virtgpu_kumquat_ffi/Cargo.toml
+new file mode 100644
+index 0000000..81b4b07
+--- /dev/null
++++ b/src/virtio/virtgpu_kumquat_ffi/Cargo.toml
+@@ -0,0 +1,18 @@
++[package]
++name = "virtgpu_kumquat_ffi"
++version = "0.1.76"
++authors = ["Mesa3D authors"]
++edition = "2021"
++description = "C ABI wrapper around virtgpu_kumquat for gfxstream-vk"
++license = "MIT"
++
++[lib]
++name = "virtgpu_kumquat_ffi"
++path = "lib.rs"
++crate-type = ["staticlib"]
++
++[dependencies]
++libc = "0.2"
++log = "0.4"
++mesa3d_util = { path = "../../util/rust", version = "0.1.76" }
++virtgpu_kumquat = { path = "../virtgpu_kumquat", version = "0.1.76" }

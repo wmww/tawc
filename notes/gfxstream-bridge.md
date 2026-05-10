@@ -622,6 +622,59 @@ Mesa for the chroot." The rest of Mesa is the distro's.
 The "Phase 7 — retire libhybris" step is dropped. We ship both
 indefinitely; the radio selector is the user's choice.
 
+## Build status (May 2026)
+
+Phase 0.1 + 1.1 complete: the chroot-side guest driver builds with kumquat
+enabled, loads on the device, and dials `/tmp/kumquat-gpu-0` as expected.
+The remaining work is the host-side bridge daemon (Phase 3 + Phase 0.2).
+
+### What works
+
+- **gfxstream host renderer builds on x86_64 Linux** (`meson setup -Dgfxstream-build=host` on `deps/gfxstream`). 221 ninja targets link cleanly into a single `libgfxstream_backend.a`. NDK-cross deferred but no source-level blockers found — the X11 dep on Linux is just `native_sub_window_x11.cpp` which we replace with `native_sub_window_android.cpp` (already in tree). Phase 0.1 risk class dropped from "huge unknown" to "build-system pain only".
+- **`libvulkan_gfxstream.so` + `libvirtgpu_kumquat_ffi.a` cross-build for aarch64 glibc**, 6.9MB shared lib (was 2.9MB before kumquat went in), advertises `VK_KHR_wayland_surface`, loads cleanly under the chroot's stock vulkan-icd-loader. End-to-end verified on the physical device: with `VK_ICD_FILENAMES=…/gfxstream_vk_icd.aarch64.json VIRTGPU_KUMQUAT=1` (no libhybris in scope) the driver loads and logs `MESA: info: Failed to init virtgpu kumquat` — i.e. it's now trying to dial `/tmp/kumquat-gpu-0` and giving up cleanly because no server is listening yet. That's exactly the expected gap — Phase 0.2 (kumquat server on Android side) closes it.
+- **Build script: `scripts/build-mesa-gfxstream.sh`.** Mirrors the `build-libhybris.sh` "stub .so + synthetic .pc + cross gcc, no sysroot" pattern. Copies real aarch64 `libwayland-{client,server}.so.0` and `libdrm.so.2` from `build/aarch64-sysroot/` (extracted from the device's installed rootfs) because empty stubs lose the `wl_*_interface` / `drmIoctl` symbols that wayland-scanner-generated protocol files and gfxstream's DRM platform code reference at link time. Pure stubs are fine for libudev / libffi (only DT_NEEDED matters).
+- **Mesa patches at `deps/mesa-patches/mesa/`** (xwayland-patches style — sentinel-based idempotent re-apply on patch hash change). Two patches:
+  - `01-add-cargo-toml.patch`: drops `Cargo.toml` files into the four Mesa-internal Rust crates (`mesa3d_util`, `mesa3d_protocols`, `virtgpu_kumquat`, `virtgpu_kumquat_ffi`) plus a workspace `Cargo.toml`, so cargo can build them directly. Templates copied from the matching crates in magma-gpu/rutabaga_gfx (which Cargo-builds the same source). Differences: thiserror 2.0 (Mesa floor; rutabaga ships 1.0), zerocopy 0.8.13.
+  - `02-meson-external-kumquat-ffi.patch`: adds a meson option `virtgpu_kumquat_external_ffi=true` that, when set, skips the four `subdir(...)` calls that build the Rust pieces via meson and instead resolves `dep_virtgpu_kumquat_ffi` via plain pkg-config. Also gates the `add_languages('rust')` block on the same condition, so meson never spins up the Rust subproject machinery at all.
+- **The cargo + meson-external split** is what unblocked kumquat. Mesa's `subprojects/packagefiles/*/meson.build` hard-code `native: true` on every Rust crate's `static_library()`. The proc-macro chain (cfg-if/syn/quote/proc-macro2/unicode-ident) and the regular host-machine crates (cfg-if as `mesa3d_util` dep) can't both satisfy meson in a cross-build context — see git history for the dead-end attempts. Cargo handles cross-builds + proc-macros transparently and produces a static lib that's just linked in like any other dep.
+- **`deps/deps.list` pins:** `mesa` (mesa-25.3.6), `gfxstream` (current main), `rutabaga_gfx` (magma-gpu fork — the kumquat server source for Phase 0.2).
+- **Cross-build sysroot pull:** the script reads `build/aarch64-sysroot/usr/lib`, which the operator pre-populates with `tar -C /data/data/me.phie.tawc/distros/<id>/rootfs -czf - usr/include usr/lib/pkgconfig usr/lib/libwayland-* usr/lib/libdrm* usr/lib/libudev* …` over `tawc-exec`. **Not yet automated** — TODO is to either bake this into the script (pull from device on demand) or vendor the relevant aarch64 .so files alongside the libhybris assets so it's reproducible without a connected device.
+
+### Confirmed not-blockers
+
+- **gfxstream's host-side Android backend is real and present in the tree.** Confirmed `host/gl/glestranslator/egl/egl_global_info.cpp` unconditionally sets `sEgl2Egl = true` on Android (EGL-on-EGL via dlopen of system libEGL); `host/vulkan/vulkan_dispatch.cpp` dlopens `libvulkan.so`; `host/native_sub_window_android.cpp` wraps `ANativeWindow_*`. The earlier "host backend research (May 2026)" section claimed this from code reading — the host build above confirms it compiles and links.
+- **Real-aarch64-`.so`-from-device sysroot pattern works.** No surprises with ABI mismatches; the aarch64 Arch ARM `libwayland-client.so.0` we pulled satisfies link without complaint.
+- **`VK_ICD_FILENAMES` cleanly overrides the loader's search path** when libhybris is removed from `LD_LIBRARY_PATH`. We confirmed the chroot's vulkan-icd-loader picks up our ICD JSON exclusively when env is sanitised — no surprise interactions with the libhybris-installed `libvulkan.so.1` (which intercepts at a different layer).
+
+### Remaining work to "tests passing on the phone"
+
+In rough order of how blocking each one is:
+
+1. **Cross-build `libgfxstream_backend.so` for Android NDK.** The host build worked on Linux; Android needs CMake/meson to pick `native_sub_window_android.cpp`, set `VK_USE_PLATFORM_ANDROID_KHR`, and switch from X11 EGL backend to EGL-on-EGL (already conditional on Android in the source). Likely a CMake patch + cross file. Probably belongs in `deps/gfxstream-patches/`.
+2. **Build kumquat server for Android NDK.** Rust + `--target=aarch64-linux-android`, plus the `gfxstream` feature linking against (1). The server is `deps/rutabaga_gfx/kumquat/server/` — already builds for x86_64 Linux without features.
+3. **`BridgeInstallProvider` Kotlin.** Mirrors `LibhybrisInstallProvider`. APK asset → real-file copy under `/usr/local/lib/libvulkan_gfxstream.so` + `/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json` at install time.
+4. **`GpuBackend` enum + `RootfsEnv` branch.** Per the design above; SharedPreferences-backed.
+5. **In-process kumquat server thread in `CompositorService`.** JNI to invoke the Rust server's library API, or run it as a subprocess of the compositor uid. Needs to handle the `/tmp/kumquat-gpu-0` socket path (or env override).
+6. **Vulkan WSI Wayland↔kumquat plumbing.** gfxstream-vk's WSI is Android-shaped; need to remap `VK_KHR_wayland_surface` calls to allocate AHB-backed ColorBuffers via the bridge.
+7. **AHB buffer handoff.** After `vkQueuePresentKHR`, our daemon calls `exportColorBufferMemory()` and feeds the AHB to the existing compositor import path. Option A in the "Zero-copy buffer sharing" section above — no gfxstream patches needed.
+8. **Bridge variants of integration tests.** New `tests/integration/tests/graphics_bridge.rs` that asserts the gfxstream ICD signatures (different from libhybris's — no `Android META-EGL`, no Qualcomm `DRIVER_ID_*`; instead, instance loaded our ICD path, vkEnumeratePhysicalDevices succeeds with a `gfxstream` device). Toggle backend via the `TAWC_GPU=bridge|hybris` env override.
+
+### Sysroot pull (one-time, until automated)
+
+```bash
+mkdir -p build/aarch64-sysroot && cd build/aarch64-sysroot
+. ../../scripts/lib/select-device.sh
+. ../../scripts/lib/tawc-exec.sh
+"$TAWC_EXEC_BIN" -- /system/bin/sh -c "cd /data/data/me.phie.tawc/distros/arch/rootfs && tar -czf - \
+  usr/include usr/lib/pkgconfig usr/share/pkgconfig \
+  usr/lib/libwayland-* usr/lib/libdrm* usr/lib/libudev* usr/lib/libffi* \
+  usr/lib/libstdc++.so.6 usr/lib/libgcc_s.so.1 \
+  usr/lib/libdisplay-info* usr/lib/libvulkan.so.1 usr/lib/libxkbcommon* \
+  2>/dev/null" | tar -xzf -
+```
+
+`build/aarch64-sysroot/` is gitignored (under `build/`); regenerate any time the rootfs's library set changes.
+
 ## Implementation plan
 
 ### Phase 0 — de-risk the unknowns
@@ -632,13 +685,17 @@ Android-target gaps. Output: `libgfxstream_backend.so` in
 USE_GLES|USE_VK)` against system `libEGL/libvulkan`. Smoke test
 inside a tiny APK.
 
+**Update (May 2026):** the meson `host` build works fine on x86_64 Linux
+(see "Build status" above). Risk class dropped to build-system pain
+only — no source-level blockers. NDK cross still TODO.
+
 0.2 **Audit the kumquat server side.** Either lift Google's server
 out of AVF/crosvm or write a small one over `rutabaga_gfx` that
 proxies kumquat → `stream_renderer_*`. Pick before committing —
 that picks build pipeline (Rust + crosvm vs C++/Rust hybrid). Add
 to `deps/deps.list` if vendored.
 
-0.3 **GL perf microbench (Q3) using Zink.** Once 0.1+0.2 stand up,
+0.3 **GL perf microbench using Zink.** Once 0.1+0.2 stand up,
 run a real Zink-on-gfxstream-vk test (`glmark2`, gtk4-debug-app)
 through a stub kumquat link. Validate that Zink's command-buffer
 batching does in fact tame the per-call cost. If not, scope down
@@ -651,6 +708,18 @@ to "Vulkan via bridge, GL stays libhybris" and replan.
 `deps/deps.list`. Adds Rust toolchain to `notes/building.md`.
 Output: a single .so + a one-line `gfxstream_vk_kumquat.json` ICD
 manifest pointing at our install path.
+
+**Update (May 2026):** done. `scripts/build-mesa-gfxstream.sh`
+ships, the .so cross-builds (6.9MB, kumquat enabled), the ICD JSON
+drops in. Mesa's meson Rust-subproject mess (a clash between proc-
+macro and host-machine consumers of the same crate; see "Build
+status" above) is sidestepped by cargo-building `virtgpu_kumquat_ffi`
+separately and feeding the static lib + header to gfxstream-vk via
+pkg-config. Patches in `deps/mesa-patches/mesa/`. End-to-end on
+device: ICD loads, `VIRTGPU_KUMQUAT=1` is recognised, driver tries
+to dial `/tmp/kumquat-gpu-0` and logs `MESA: info: Failed to init
+virtgpu kumquat` because no server is listening — exactly the gap
+Phase 0.2 closes.
 
 1.2 **`BridgeInstallProvider`** mirroring `LibhybrisInstallProvider`:
 APK asset → real-file copy under

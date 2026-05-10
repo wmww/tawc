@@ -38,6 +38,8 @@ and launch as documented in CLAUDE.md's Quick Reference.
 | JDK 21    | `jdk21-openjdk`                                        | `openjdk-21-jdk`                                     |
 | Rust      | `rustup` (then `rustup default stable`)                | `rustup` (via rustup.rs)                             |
 | Rust Android targets (`error[E0463]: can't find crate for \`core\`` if missing) | `rustup target add aarch64-linux-android` (add `x86_64-linux-android` for emulator builds) | same |
+| Rust aarch64 glibc target (`build-mesa-gfxstream.sh` cross-builds Mesa's gfxstream-vk Rust pieces) | `rustup target add aarch64-unknown-linux-gnu` | same |
+| `bindgen` (Mesa's gfxstream-vk meson Rust bindings) | `cargo install bindgen-cli` | same |
 | Cargo NDK (cargo subcommand — `cargo build` will fail with `error: no such command: ndk` if missing) | `cargo install cargo-ndk` | same |
 | Android SDK + NDK | install Android Studio, or use `sdkmanager` directly. NDK version pinned in `app/build.gradle.kts` (currently 27.2.12479018). | same |
 | Build basics | `base-devel`                                        | `build-essential pkg-config`                         |
@@ -207,6 +209,41 @@ load `q` at runtime. The legacy `mm` plugin doesn't compile clean
 under gcc 15 (a `format string` mismatch the upstream code never
 fixed); skipping it avoids the build break in code we don't ship.
 The build script invokes `make` per-subdir to control this.
+
+### libvulkan_gfxstream.so (Mesa gfxstream-vk → ships in APK as asset, gfxstream-bridge GPU path)
+
+Cross-built once with the same `aarch64-linux-gnu` toolchain as
+libhybris. Builds with `-Dvirtgpu_kumquat=true` enabled — Mesa
+patches in `deps/mesa-patches/mesa/` add a meson option that
+sidesteps the in-tree Rust subproject build (which doesn't
+cross-compile cleanly) by linking to a separately-cargo-built
+`libvirtgpu_kumquat_ffi.a` via pkg-config. Output .so is ~7MB.
+
+Pre-req: extract a sysroot from the device's installed rootfs into
+`build/aarch64-sysroot/` (one-time; manual until automated).
+
+```bash
+# Sysroot extraction (run once after the rootfs is installed)
+mkdir -p build/aarch64-sysroot && cd build/aarch64-sysroot
+. ../../scripts/lib/select-device.sh
+. ../../scripts/lib/tawc-exec.sh
+"$TAWC_EXEC_BIN" -- /system/bin/sh -c "cd /data/data/me.phie.tawc/distros/arch/rootfs && \
+  tar -czf - usr/include usr/lib/pkgconfig usr/share/pkgconfig \
+  usr/lib/libwayland-* usr/lib/libdrm* usr/lib/libudev* usr/lib/libffi* \
+  usr/lib/libstdc++.so.6 usr/lib/libgcc_s.so.1 \
+  usr/lib/libdisplay-info* usr/lib/libvulkan.so.1 usr/lib/libxkbcommon* 2>/dev/null" | tar -xzf -
+cd ../..
+
+# Build (incremental)
+bash scripts/build-mesa-gfxstream.sh
+bash scripts/build-mesa-gfxstream.sh --clean   # wipe builddir
+```
+
+Output: `build/mesa-aarch64/install/usr/local/lib/libvulkan_gfxstream.so`
++ `…/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json`. Not yet
+bundled in the APK or laid down in the rootfs — that's the
+`BridgeInstallProvider` work tracked under Phase 1.2 of the
+gfxstream-bridge plan.
 
 ### Xwayland (binary + libs → ships in APK as asset)
 

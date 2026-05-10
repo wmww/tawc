@@ -1,0 +1,80 @@
+From: tawc
+Origin: own
+
+Add a meson option `virtgpu_kumquat_external_ffi=true|false`. When
+true:
+  - skip the four `subdir(...)` calls that build mesa3d_util,
+    mesa3d_protocols, virtgpu_kumquat, virtgpu_kumquat_ffi via meson
+    Rust subprojects;
+  - resolve `dep_virtgpu_kumquat_ffi` via plain `dependency()`
+    (pkg-config), so a prebuilt static lib + header gets linked into
+    libvulkan_gfxstream.so;
+  - skip Mesa's whole `add_languages('rust')` block — no rustc, no
+    bindgen, no Rust subprojects pulled in. This is what dodges the
+    cross-build conflict where Mesa's per-crate meson wrappers
+    hard-code `native: true` on the proc-macro chain (cfg-if, syn,
+    quote, proc-macro2, unicode-ident) AND on the regular crates
+    (rustix, libc, errno, bitflags), which can't simultaneously
+    satisfy a build-machine proc-macro consumer and a host-machine
+    library consumer in the same dependency graph.
+    The kumquat backend still gets built — just from cargo, where
+    proc-macros are first-class.
+
+The replacement `dep_virtgpu_kumquat_ffi` we hand back from the
+external path needs to keep the same shape Mesa's gfxstream-vk
+expects: an include path for `<virtgpu_kumquat_ffi.h>` and a link to
+`libvirtgpu_kumquat_ffi.a`. Both are baked into the .pc file
+scripts/build-mesa-gfxstream.sh writes.
+
+--- a/meson.options
++++ b/meson.options
+@@ -847,6 +847,13 @@
+ )
+ 
+ option(
++  'virtgpu_kumquat_external_ffi',
++  type : 'boolean',
++  value : false,
++  description : 'Resolve virtgpu_kumquat_ffi as an external pkg-config dependency instead of building Mesa\'s in-tree Rust subprojects. Sidesteps a meson cross-build clash between proc-macro and host-machine Rust deps. See deps/mesa-patches/mesa/02-meson-external-kumquat-ffi.patch.'
++)
++
++option(
+   'spirv-tools',
+   type : 'feature',
+   description : 'Use SPIRV-Tools for dumping SPIR-V for debugging purposes (required by CLC)'
+--- a/meson.build
++++ b/meson.build
+@@ -754,7 +754,8 @@
+ endif
+ 
+ with_virtgpu_kumquat = get_option('virtgpu_kumquat') and with_gfxstream_vk
+-if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or with_virtgpu_kumquat
++_kumquat_needs_internal_rust = with_virtgpu_kumquat and not get_option('virtgpu_kumquat_external_ffi')
++if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or _kumquat_needs_internal_rust
+   # rust.bindgen() does not pass `--rust-target` to bindgen until 1.7.0.
+   if meson.version().version_compare('< 1.7.0')
+     error('Mesa Rust support requires Meson 1.7.0 or newer')
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -101,10 +101,17 @@
+ if with_gfxstream_vk
+   dep_virtgpu_kumquat_ffi = null_dep
+   if with_virtgpu_kumquat
+-    subdir('util/rust')
+-    subdir('virtio/protocols')
+-    subdir('virtio/virtgpu_kumquat')
+-    subdir('virtio/virtgpu_kumquat_ffi')
++    if get_option('virtgpu_kumquat_external_ffi')
++      # Static lib + header come from a separate cargo build — see
++      # deps/mesa-patches/mesa/02-meson-external-kumquat-ffi.patch and
++      # scripts/build-mesa-gfxstream.sh.
++      dep_virtgpu_kumquat_ffi = dependency('virtgpu_kumquat_ffi')
++    else
++      subdir('util/rust')
++      subdir('virtio/protocols')
++      subdir('virtio/virtgpu_kumquat')
++      subdir('virtio/virtgpu_kumquat_ffi')
++    endif
+   endif
+   subdir('gfxstream')
+ endif

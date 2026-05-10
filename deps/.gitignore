@@ -7,4 +7,8 @@
 !.gitignore
 !deps.list
 !libhybris-shims/
+!libhybris-shims/**
 !xwayland-patches/
+!xwayland-patches/**
+!mesa-patches/
+!mesa-patches/**
