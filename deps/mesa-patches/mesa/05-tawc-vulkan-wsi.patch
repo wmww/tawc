@@ -9,15 +9,26 @@ AHardwareBuffer* through the companion gfxstream patch and imports it
 through the existing AHB path. Swapchain images do not use dmabuf fds
 on the Wayland wire.
 
-Per-image alloc drives a kumquat `RESOURCE_CREATE_BLOB` with
-`VIRGL_BIND_RENDER_TARGET` so the host gfxstream renderer allocates
-an AHB-backed ColorBuffer, then imports the resulting handle into a
-VkDeviceMemory via the gfxstream-internal `VkImportColorBufferGOOGLE`
-extension (not part of Vulkan's external memory framework). The
-chroot-side VkImage stays plain. The kumquat VirtGpuResourcePtr is
-retained for the swapchain image's lifetime — dropping it sends
-RESOURCE_UNREF, which would close the host ColorBuffer the compositor
-is about to look up.
+Per-image alloc:
+  1. Plain VkImage tagged with `VkExternalMemoryImageCreateInfo{AHB}`
+     so the host's gfxstream-vk emulator and the underlying Adreno
+     driver know the image is bindable to AHB-backed memory. Without
+     this, the GPU writes land in a tiled scratch that's never synced
+     to the AHB and the screen stays black.
+  2. Kumquat `RESOURCE_CREATE_BLOB` with `VIRGL_BIND_RENDER_TARGET`
+     so the host gfxstream renderer allocates an AHB-backed
+     ColorBuffer.
+  3. `vkAllocateMemory` with `VkImportColorBufferGOOGLE` +
+     `VkMemoryDedicatedAllocateInfo{image=...}` chained on `pNext`.
+     `VkImportColorBufferGOOGLE` is gfxstream's internal "bind this
+     VkDeviceMemory to host ColorBuffer N" extension — not part of
+     Vulkan's external memory framework. Dedicated allocation is
+     required by the AHB external-memory spec.
+  4. `vkBindImageMemory`.
+
+The kumquat `VirtGpuResourcePtr` is retained for the swapchain
+image's lifetime — dropping it sends RESOURCE_UNREF, which would
+close the host ColorBuffer the compositor is about to look up.
 
 `vkQueuePresentKHR` requests a `wl_surface.frame()` callback in
 FIFO mode and dispatches our private event queue until it fires
@@ -29,12 +40,22 @@ Surface formats are R8G8B8A8 only — Android's AHardwareBuffer has
 no BGRA8888 format, so advertising VK_FORMAT_B8G8R8A8 here causes
 the host AHB allocator to fail.
 
+ResourceTracker side: the encoder normally constructs its own
+`VkImportColorBufferGOOGLE` only inside the `exportAhb` /
+`exportDmabuf` synthesis paths (the former needs gralloc and isn't
+built in our LINUX_GUEST_BUILD; the latter targets in-VM Wayland
+sharing and trips a host-side hang in our deployment — see commit
+history). Add a small forwarder so a caller-provided
+`VkImportColorBufferGOOGLE` survives the `vk_make_orphan_copy` and
+reaches the host. `VkMemoryDedicatedAllocateInfo` is already
+forwarded by the existing path.
+
 diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_tawc_wsi.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_tawc_wsi.cpp
 new file mode 100644
-index 0000000..9b62421
+index 0000000..ea0e740
 --- /dev/null
 +++ b/src/gfxstream/guest/vulkan/gfxstream_vk_tawc_wsi.cpp
-@@ -0,0 +1,810 @@
+@@ -0,0 +1,825 @@
 +/*
 + * Copyright (c) tawc authors.
 + * SPDX-License-Identifier: MIT
@@ -350,9 +371,19 @@ index 0000000..9b62421
 +    const VkPhysicalDevice phys_handle =
 +        gfxstream_vk_physical_device_to_handle(device->physical_device);
 +
-+    // 1. Plain VkImage.
++    // 1. VkImage tagged with VkExternalMemoryImageCreateInfo{AHB}. The
++    //    host's gfxstream-vk emulator binds our memory by importing the
++    //    underlying AHardwareBuffer; without this hint the Adreno driver
++    //    sets the image up for normal memory binding and the GPU writes
++    //    land in a tiled scratch that's never synced to the AHB — vkcube
++    //    appears to "render" but the screen stays black.
++    VkExternalMemoryImageCreateInfo extImageInfo = {};
++    extImageInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
++    extImageInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
++
 +    VkImageCreateInfo imageInfo = {};
 +    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
++    imageInfo.pNext = &extImageInfo;
 +    imageInfo.imageType = VK_IMAGE_TYPE_2D;
 +    imageInfo.format = createInfo->imageFormat;
 +    imageInfo.extent.width = createInfo->imageExtent.width;
@@ -459,10 +490,15 @@ index 0000000..9b62421
 +
 +    // 4. vkAllocateMemory with VkImportColorBufferGOOGLE chained. The host
 +    //    interceptor binds the resulting VkDeviceMemory to the AHB
-+    //    underlying our ColorBuffer.
++    //    underlying our ColorBuffer. Per the AHB spec, AHB-backed image
++    //    bindings must be dedicated allocations.
++    VkMemoryDedicatedAllocateInfo dedInfo = {};
++    dedInfo.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
++    dedInfo.image = out->image;
++
 +    VkImportColorBufferGOOGLE importCb = {};
 +    importCb.sType = VK_STRUCTURE_TYPE_IMPORT_COLOR_BUFFER_GOOGLE;
-+    importCb.pNext = nullptr;
++    importCb.pNext = &dedInfo;
 +    importCb.colorBuffer = out->colorbuffer_id;
 +
 +    VkMemoryAllocateInfo allocInfo = {};
@@ -931,3 +967,33 @@ index 0000000..29ccc78
 +  </interface>
 +
 +</protocol>
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 4702897..b27a516 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -3422,6 +3422,25 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
+         VK_STRUCTURE_TYPE_IMPORT_BUFFER_GOOGLE,
+         0,
+     };
++
++    // tawc-fork: pick up a caller-provided VkImportColorBufferGOOGLE and
++    // forward it through to the host. The encoder normally only emits
++    // this struct itself when going through the exportAhb / exportDmabuf
++    // synthesis paths (which need gralloc and aren't built in our
++    // LINUX_GUEST_BUILD). The tawc gfxstream-bridge custom Vulkan WSI
++    // drives the kumquat RESOURCE_CREATE_BLOB itself and chains its own
++    // VkImportColorBufferGOOGLE on the alloc info; vk_make_orphan_copy
++    // strips it, so re-append it explicitly here. (IMPORT_COLOR_BUFFER_GOOGLE
++    // has no _cast macro entry — it's a gfxstream-internal sType — so use
++    // the underlying __vk_find_struct directly.)
++    const VkImportColorBufferGOOGLE* userImportCbInfoPtr =
++        static_cast<const VkImportColorBufferGOOGLE*>(__vk_find_struct(
++            const_cast<void*>(static_cast<const void*>(pAllocateInfo->pNext)),
++            VK_STRUCTURE_TYPE_IMPORT_COLOR_BUFFER_GOOGLE));
++    if (userImportCbInfoPtr) {
++        importCbInfo.colorBuffer = userImportCbInfoPtr->colorBuffer;
++        vk_append_struct(&structChainIter, &importCbInfo);
++    }
+     // VkImportPhysicalAddressGOOGLE importPhysAddrInfo = {
+     //     VK_STRUCTURE_TYPE_IMPORT_PHYSICAL_ADDRESS_GOOGLE, 0,
+     // };

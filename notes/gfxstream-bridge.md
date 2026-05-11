@@ -935,8 +935,26 @@ GL/EGL apps.
          part of Vulkan's external-memory framework.
       4. `vkBindImageMemory`.
 
-    Three sharp edges that bit during the build-up:
+    Sharp edges that bit during the build-up:
 
+    - **`VkExternalMemoryImageCreateInfo{AHB}` on the swapchain
+      VkImage.** Without this the chroot's plain VkImage gets bound
+      to AHB-backed memory but the Adreno driver sets the image up
+      for normal binding — GPU writes land in a tiled scratch
+      that's never synced to the AHB. Surface looks like the
+      swapchain works (no crashes, proper present cadence,
+      compositor sees and imports the AHB) but the screen stays
+      black because the AHB never receives any pixels.
+    - **Forward user-provided `VkImportColorBufferGOOGLE` through
+      the encoder.** `vk_make_orphan_copy(*pAllocateInfo)` strips
+      the user's pNext chain. The encoder normally synthesises its
+      own import struct only inside the `exportAhb` path (which
+      needs gralloc and isn't built in our LINUX_GUEST_BUILD) or
+      the `exportDmabuf` path (in-VM Wayland sharing, hangs in our
+      deployment). Patch in `ResourceTracker.cpp` adds a small
+      forwarder for caller-provided import. `VkMemoryDedicatedAllocateInfo`
+      is already forwarded by the existing path — needed because
+      AHB external-memory bindings must be dedicated.
     - **Retain the `VirtGpuResourcePtr` for the image's lifetime.**
       Dropping the shared_ptr at function return sends
       `RESOURCE_UNREF` to the kumquat server, which destroys the
