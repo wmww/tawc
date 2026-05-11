@@ -2,36 +2,23 @@ From: tawc
 Origin: own
 
 Add a tawc-namespaced C entry point inside libgfxstream_backend.so
-that maps a gfxstream ColorBuffer handle to the underlying
-AHardwareBuffer*.
+that maps a gfxstream ColorBuffer handle to its AHardwareBuffer*.
 
-Used by the tawc compositor's tawc_gfxstream Wayland protocol
-handler: when a chroot client posts a swapchain image via that
-protocol, the compositor needs to recover the AHB so it can import
-it as a GLES texture (same path the libhybris/android_wlegl backend
-uses). The chroot allocates the ColorBuffer through the kumquat
-RESOURCE_CREATE_BLOB path, and gfxstream's host-side FrameBuffer
-binds it to a real AHB via the AndroidAHB external-memory branch in
-allocExternalMemory(). Both halves run in-process inside the
-compositor, so once we have the handle a single C call into the
-shared library is enough -- no IPC, no fd round trip.
+The compositor uses this from the `tawc_gfxstream` Wayland handler:
+the chroot presents only a ColorBuffer id, and the compositor imports
+the resolved AHB through the existing android_wlegl texture path.
 
-Living inside frame_buffer.cpp (rather than a separate C++ shim in
-the compositor crate) means the call has direct access to gfxstream's
-private types and avoids forcing the Rust crate's build to ingest
-gfxstream's full include tree (host/, host/include/, host/common/include/,
-common/base/include/). The ABI surface is one symbol returning void*.
-
-The returned AHB has its refcount bumped (gfxstream's
-vkGetMemoryAndroidHardwareBufferANDROID does that internally).
-The caller must AHardwareBuffer_release it when done.
+The symbol lives in frame_buffer.cpp so it can use gfxstream's private
+types without dragging the full gfxstream include tree into the Rust
+crate. The returned AHB has a bumped refcount; the caller must release
+it.
 
 See notes/gfxstream-bridge.md "WSI plan: custom Vulkan WSI" for
 the surrounding design.
 
 --- a/host/frame_buffer.cpp
 +++ b/host/frame_buffer.cpp
-@@ -16,6 +16,10 @@
+@@ -16,6 +16,9 @@
  
  #include "frame_buffer.h"
  
@@ -42,22 +29,14 @@ the surrounding design.
  #include <stdio.h>
  #include <string.h>
  #include <time.h>
-@@ -5666,3 +5670,30 @@
+@@ -5666,3 +5670,21 @@
  
  }  // namespace host
  }  // namespace gfxstream
 +
 +#if defined(__ANDROID__)
-+// tawc-fork: extern "C" entry point for the tawc compositor's
-+// tawc_gfxstream WSI protocol handler. Returns the AHardwareBuffer*
-+// backing a given color-buffer handle, with refcount bumped (caller
-+// must AHardwareBuffer_release). Returns NULL if the handle is
-+// unknown or the color buffer isn't AHB-backed.
-+//
-+// Implementation: FrameBuffer::exportColorBuffer -> ColorBuffer::exportBlob
-+// -> VkEmulation::exportColorBufferMemory -> vkGetMemoryAndroidHardwareBufferANDROID.
-+// The last call returns an AHB with refcount += 1, which we hand to
-+// the caller untouched — there is no intermediate owner.
++// tawc-fork: resolve a gfxstream ColorBuffer handle to its AHB.
++// The returned AHB has refcount += 1; caller must release it.
 +extern "C" AHardwareBuffer* tawc_gfxstream_lookup_ahb(uint32_t handle) {
 +    auto* fb = gfxstream::host::FrameBuffer::getFB();
 +    if (!fb) {

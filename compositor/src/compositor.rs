@@ -398,14 +398,8 @@ pub struct HostAssignment {
 
 impl BufferHandler for TawcState {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {
-        // Both backends (libhybris/android_wlegl and gfxstream-bridge/
-        // tawc_gfxstream) attach `WleglBufferData` to the wl_buffer's
-        // user-data slot, which Smithay drops automatically when the
-        // resource dies — including the AHardwareBuffer ref the
-        // userdata holds. SHM buffers don't carry compositor-side
-        // state outside `surface_shm`, which is keyed by `WlSurface`
-        // and cleaned up at surface destruction time. So nothing to
-        // do here.
+        // Smithay drops wl_buffer userdata, including any WleglBufferData
+        // AHB ref. SHM state is keyed by surface and cleaned up elsewhere.
     }
 }
 
@@ -446,12 +440,8 @@ impl CompositorHandler for TawcState {
         // last commit. Helper scans all x11_surfaces internally — it
         // doesn't need the committed wl_surface to do its work.
         crate::xwayland::associate_pending_x11_surfaces(self);
-        // Track the attached android_wlegl (AHB) buffer so the renderer can
-        // find its texture. Smithay's `SurfaceAttributes::merge_into` already
-        // sent `wl_buffer.release` for the old buffer before this handler runs
-        // (see deps/smithay/src/wayland/compositor/handlers.rs:125), so the client
-        // has been told the old buffer is free exactly once. We just mirror
-        // the current attachment into `surface_wlegl` for the renderer.
+        // Mirror the current AHB-backed attachment for the renderer.
+        // Smithay has already sent release for the previous buffer.
         use smithay::wayland::compositor::{with_states, SurfaceAttributes};
         use smithay::wayland::compositor::BufferAssignment;
 
@@ -465,10 +455,8 @@ impl CompositorHandler for TawcState {
             commit_buffer_scale = attrs.buffer_scale.max(1);
             match &attrs.buffer {
                 Some(BufferAssignment::NewBuffer(buf)) => {
-                    // Both AHB-backed paths (libhybris/android_wlegl
-                    // and gfxstream-bridge/tawc_gfxstream) attach
-                    // `WleglBufferData` to the wl_buffer's user-data
-                    // slot, so a single lookup covers both.
+                    // android_wlegl and tawc_gfxstream both use
+                    // WleglBufferData userdata.
                     if let Some(data) = wlegl::wlegl_buffer_data(buf) {
                         new_buf_info = Some((buf.clone(), data.width, data.height));
                     }

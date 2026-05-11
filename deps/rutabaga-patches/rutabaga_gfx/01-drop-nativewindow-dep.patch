@@ -1,12 +1,11 @@
 From: tawc
 Origin: own
 
-Replace the AOSP-only `nativewindow` Rust crate path in
-src/gfxstream.rs's PLATFORM_AHB export branch with an embedder-
-installed callback hook. The nativewindow crate is the Rust binding
-to libnativewindow.so vendor APIs (specifically
-AHardwareBuffer_getNativeHandle), only published inside AOSP, so
-rutabaga doesn't build outside AOSP with the gfxstream feature.
+Replace the AOSP-only `nativewindow` Rust crate in
+src/gfxstream.rs's PLATFORM_AHB export branch with an embedder hook.
+The crate wraps libnativewindow.so APIs and is only published inside
+AOSP, so rutabaga does not build outside AOSP with the gfxstream
+feature enabled.
 
 The hook is what lets the tawc compositor satisfy kumquat's
 RESOURCE_CREATE_BLOB protocol contract (the response is *required*
@@ -17,14 +16,10 @@ walks the handle, dups out the AHB's backing dmabuf fd, and
 returns it. The wrapper here boxes that into a MesaHandle of type
 MEM_DMABUF so the kumquat layer can ship it via SCM_RIGHTS unchanged.
 
-For host-visible Vulkan memory the chroot mmaps the fd to read/
-write into the host VkBuffer. For DEVICE_LOCAL allocations
-(swapchain images, depth buffers) the chroot ignores the fd; the
-swapchain image is named separately by colorbuffer_id over the
-custom `tawc_gfxstream` Wayland protocol (see
-notes/gfxstream-bridge.md "WSI plan: custom Vulkan WSI"). Either
-way the contract on this branch is identical — fd shipped, kind
-of fd determined by what the AHB happens to back.
+For host-visible Vulkan memory the chroot mmaps the fd to access the
+host allocation. Swapchain images are displayed through the separate
+`tawc_gfxstream` ColorBuffer-id path; this hook only satisfies the
+kumquat blob response's fd contract.
 
 With no callback set, the branch falls back to InvalidResourceId --
 that's the right answer for the bin'd `kumquat` binary, which has
@@ -50,7 +45,7 @@ index 65612a1..5f07d3c 100644
  use serde::Deserialize;
  use serde::Serialize;
  
-@@ -68,6 +70,37 @@ use crate::snapshot::RutabagaSnapshotReader;
+@@ -68,6 +70,31 @@ use crate::snapshot::RutabagaSnapshotReader;
  #[cfg(gfxstream_unstable)]
  use crate::snapshot::RutabagaSnapshotWriter;
  
@@ -63,13 +58,10 @@ index 65612a1..5f07d3c 100644
 +/// resource must take their own ref via `AHardwareBuffer_acquire`).
 +///
 +/// Return is a raw fd that the rutabaga server will ship to the kumquat
-+/// client via SCM_RIGHTS. The wrapper around the return wraps it in a
-+/// `MesaHandle` of type `MEM_DMABUF` so Mesa's stock guest WSI ships it
-+/// through `zwp_linux_dmabuf_v1` unchanged. The expected callback shape
-+/// mirrors what AOSP's rutabaga does via the `nativewindow` crate: dig
-+/// the AHB's backing dmabuf fd out of its `native_handle_t` (see
-+/// `notes/gfxstream-bridge.md` "WSI plan: real dmabuf fds via dlsym
-+/// getNativeHandle" for the design and constraints) and return it.
++/// client via SCM_RIGHTS. The wrapper turns it into a `MesaHandle` of
++/// type `MEM_DMABUF`. The expected callback shape mirrors AOSP's
++/// `nativewindow` path: pull the AHB's backing dmabuf fd out of its
++/// `native_handle_t` and return a dup owned by rutabaga.
 +///
 +/// `Err(())` becomes `RutabagaError::InvalidResourceId` to the caller —
 +/// matches the upstream "we have an AHB we can't ship over IPC" failure
@@ -88,7 +80,7 @@ index 65612a1..5f07d3c 100644
  // See `virtgpu-gfxstream-renderer.h` for definitions
  const STREAM_RENDERER_PARAM_USER_DATA: u64 = 1;
  const STREAM_RENDERER_PARAM_RENDERER_FLAGS: u64 = 2;
-@@ -530,45 +563,30 @@ impl Gfxstream {
+@@ -530,40 +563,24 @@ impl Gfxstream {
          ret_to_res(ret)?;
  
          if stream_handle.handle_type == RUTABAGA_HANDLE_TYPE_PLATFORM_AHB {
@@ -131,14 +123,8 @@ index 65612a1..5f07d3c 100644
 -            {
 -                Err(RutabagaError::InvalidResourceId)
 -            }
-+            // tawc-fork: route through the AHB-export hook installed
-+            // by the embedder. Original code used the AOSP-internal
-+            // `nativewindow` crate to unwrap an AHardwareBuffer* into a
-+            // native_handle_t fd list (vendor-only API; that crate isn't
-+            // published outside AOSP). With no hook installed we return
-+            // InvalidResourceId, which matches the upstream non-Android
-+            // failure mode. See `set_ahb_export_callback` docs above and
-+            // notes/gfxstream-bridge.md "WSI plan: custom Vulkan WSI".
++            // tawc-fork: route AHB export through an embedder hook
++            // instead of AOSP's private `nativewindow` crate.
 +            let cb = AHB_EXPORT_CB
 +                .get()
 +                .ok_or(RutabagaError::InvalidResourceId)?;
@@ -162,7 +148,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 index 991b766..06267c5 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -32,6 +32,14 @@ pub use mesa3d_util::RawDescriptor as RutabagaRawDescriptor;
+@@ -32,6 +32,13 @@ pub use mesa3d_util::RawDescriptor as RutabagaRawDescriptor;
  pub use mesa3d_util::MESA_HANDLE_TYPE_MEM_DMABUF as RUTABAGA_HANDLE_TYPE_MEM_DMABUF;
  pub use mesa3d_util::MESA_HANDLE_TYPE_MEM_OPAQUE_FD as RUTABAGA_HANDLE_TYPE_MEM_OPAQUE_FD;
  

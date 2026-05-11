@@ -85,16 +85,9 @@ internal object RootfsEnv {
                 put("GALLIUM_DRIVER", "llvmpipe")
             }
             GraphicsBackend.GFXSTREAM -> {
-                // gfxstream path: distro vulkan-icd-loader is the loader
-                // (no libhybris libvulkan.so.1 shadowing it), pinned to
-                // Mesa's gfxstream-vk ICD. VIRTGPU_KUMQUAT=1 makes Mesa's
-                // gfxstream-vk select the userspace kumquat socket
-                // transport instead of /dev/dri/cardN, and our Mesa patch
-                // (deps/mesa-patches/mesa/03-kumquat-socket-env-override.patch)
-                // honours VIRTGPU_KUMQUAT_GPU_SOCKET so the client dials
-                // the compositor-process kumquat thread at the path the
-                // host-side share bind exposes — `/usr/share/tawc/...`,
-                // not `/tmp/...`. See notes/gfxstream-bridge.md.
+                // gfxstream path: use the distro Vulkan loader, pin it
+                // to our kumquat-enabled ICD, and dial the compositor's
+                // kumquat socket exposed through /usr/share/tawc/.
                 put("VK_ICD_FILENAMES", BridgeInstallProvider.GUEST_ICD_PATH)
                 put("VIRTGPU_KUMQUAT", "1")
                 put("VIRTGPU_KUMQUAT_GPU_SOCKET", "/usr/share/tawc/kumquat-gpu-0")

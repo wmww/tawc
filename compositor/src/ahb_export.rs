@@ -1,37 +1,10 @@
-//! AHB → dmabuf-fd export hook for host-visible Vulkan memory.
+//! AHB to dmabuf-fd export hook for kumquat blob responses.
 //!
-//! Background (full story in `notes/gfxstream-bridge.md`): the chroot's
-//! gfxstream-vk allocates host-visible Vulkan memory via the kumquat
-//! protocol's `RESOURCE_CREATE_BLOB`. Gfxstream's host renderer wraps
-//! each such allocation in an `AHardwareBuffer`. The kumquat protocol
-//! is *required* to ship one fd back via `SCM_RIGHTS` for every
-//! `RESOURCE_CREATE_BLOB` response (see
-//! `RespResourceCreate(resp, handle)` in
-//! `deps/rutabaga_gfx/kumquat/server/src/kumquat_gpu_connection.rs`),
-//! so we have to give it one.
-//!
-//! For host-visible memory the chroot needs an mmap-able fd: it
-//! literally maps the returned fd to read/write into the host VkBuffer.
-//! For DEVICE_LOCAL allocations (swapchain images, depth buffers) the
-//! chroot never touches the fd — but the kumquat protocol still wants
-//! one, so we ship the same kind regardless.
-//!
-//! The fd we ship is the AHB's underlying gralloc dmabuf — `data[0]`
-//! of its `native_handle_t` — extracted via dlsym'd
-//! `AHardwareBuffer_getNativeHandle` from `libnativewindow.so`. This is
-//! the same approach upstream rutabaga's `nativewindow` Rust crate
-//! takes, except (a) the Rust crate isn't published outside AOSP and
-//! (b) we constrain the result to a single fd because the kumquat
-//! protocol's `MesaHandle::os_handle` is one fd-shaped slot. (Multi-fd
-//! gralloc handles do exist on some vendors — we only ever need
-//! `data[0]`, which is the backing memory; the others are gralloc
-//! refcount / metadata channel bookkeeping the chroot can't use.)
-//!
-//! Used to also stash a `(dev, ino) → AhbEntry` registry on every
-//! image-shaped AHB for later lookup by a `zwp_linux_dmabuf_v1`-driven
-//! WSI path; that path is gone (replaced by `tawc_gfxstream` per
-//! `gfxstream_present.rs`), so the registry is too. The hook is a thin
-//! "give me a dmabuf fd for this AHB" function now.
+//! Host-visible gfxstream allocations arrive as AHBs. The kumquat
+//! protocol must return one fd with each `RESOURCE_CREATE_BLOB`, and
+//! the chroot mmaps that fd for CPU-visible Vulkan memory. We dlsym
+//! `AHardwareBuffer_getNativeHandle` from `libnativewindow.so`, dup
+//! `native_handle_t.data[0]`, and hand the dup to rutabaga.
 
 use std::ffi::CStr;
 

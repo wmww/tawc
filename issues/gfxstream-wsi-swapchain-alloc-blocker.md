@@ -19,8 +19,8 @@ present. Concretely:
    with `VIRGL_BIND_RENDER_TARGET` and image-shaped `width / height /
    format` fields. The host gfxstream renderer's blob handler sees
    the bind flag, recognizes this as a ColorBuffer request, and
-   allocates an AHB-backed ColorBuffer via Adreno's standard
-   AHB-Vulkan path. Returns a u32 resource handle (== gfxstream
+   allocates an AHB-backed ColorBuffer through gfxstream's Android
+   external-memory path. Returns a u32 resource handle (== gfxstream
    `m_colorbuffers` key == `tawc_gfxstream` wire `colorbuffer_id`).
 2. Create a plain VkImage matching the requested swapchain extent /
    format / usage. **No `VkExternalMemoryImageCreateInfo`** -- the
@@ -50,8 +50,7 @@ Earlier attempts (May 2026) tried a different shape: pass
 with a dedicated image to standard `vkAllocateMemory`. That triggers
 gfxstream-vk's `LINUX_GUEST_BUILD` `exportDmabuf` code path, which
 *does* drive a kumquat `RESOURCE_CREATE_BLOB` as a side effect. So
-it looked like a vending-machine trick to get the host AHB allocation
-we wanted.
+it looked like a shortcut to get the host AHB allocation we wanted.
 
 But that path was written for an entirely different use case:
 **guest-app-to-guest-compositor cross-process buffer sharing inside a
@@ -77,8 +76,8 @@ That has nothing to do with what we want. Specifically:
     (the AHB's actual layout determines the size).
 
 So the bug isn't an upstream bug to file or a vendor-driver quirk to
-work around. It's that we were misappropriating an existing path
-designed for a different purpose, then tripping over the consequences.
+work around. It's that we were using an existing path designed for a
+different purpose, then tripping over the consequences.
 **The fix is to stop using that path and explicitly drive the
 allocation in the right order, using the gfxstream-internal
 `VkImportColorBufferGOOGLE` machinery that already exists for exactly
@@ -87,8 +86,7 @@ this kind of "guest VkDeviceMemory backed by host ColorBuffer" case.**
 ## Implementation pointers
 
   * `deps/mesa/src/gfxstream/guest/vulkan/gfxstream_vk_tawc_wsi.cpp`:
-    `allocate_swapchain_image()` is the function to fill in. The
-    STATUS comment at the top of that file mirrors this doc.
+    `allocate_swapchain_image()` is the function to fill in.
   * `deps/mesa/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp`
     around `on_vkAllocateMemory`'s `LINUX_GUEST_BUILD` `exportDmabuf`
     path (line ~3899) shows the existing pattern for driving
@@ -102,9 +100,8 @@ this kind of "guest VkDeviceMemory backed by host ColorBuffer" case.**
   * `VirtGpuDevice::getInstance()` is how the singleton is reached;
     it's currently used by `ResourceTracker`, which means we may
     need a small accessor exposing it (or the encoder) to the
-    `vulkan/` directory. Check whether it's already linkable from
-    `gfxstream_vk_tawc_wsi.cpp` -- the `vulkan/` and `vulkan_enc/`
-    TUs are linked into the same .so so it likely Just Works.
+    `vulkan/` directory. Check the symbols rather than assuming the
+    `vulkan/` and `vulkan_enc/` objects can see each other.
   * `VkImportColorBufferGOOGLE` lives in
     `deps/mesa/src/gfxstream/codegen/vulkan/vulkan-headers/include/vulkan/vulkan_gfxstream.h`
     (or wherever the gfxstream Vulkan extension headers live in the

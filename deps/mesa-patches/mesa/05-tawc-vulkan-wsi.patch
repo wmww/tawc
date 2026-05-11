@@ -1,112 +1,40 @@
 From: tawc
 Origin: own
 
-Custom Vulkan WSI for the gfxstream-bridge GPU path -- chroot side.
+Custom Vulkan WSI for the gfxstream-bridge chroot side.
 
-Replaces Mesa's wsi_common-driven swapchain path for our gfxstream-vk
-ICD with a layer that ships a u32 colorbuffer_id over a custom
-`tawc_gfxstream` Wayland protocol on each present. The compositor
-(in-process with the host gfxstream renderer) resolves the id back to
-the AHardwareBuffer* via `tawc_gfxstream_lookup_ahb` (gfxstream patch
-02-tawc-lookup-ahb.patch) and binds it as a wl_buffer using its
-existing AHB-import path.
+The WSI presents a gfxstream ColorBuffer id over the `tawc_gfxstream`
+Wayland protocol. The compositor resolves that id to an
+AHardwareBuffer* through the companion gfxstream patch and imports it
+through the existing AHB path. Swapchain images do not use dmabuf fds
+on the Wayland wire.
 
-No Vulkan external-memory machinery is involved on the wire. No
-dmabufs anywhere. The chroot never holds an fd for swapchain images;
-the AHB lives entirely in the compositor process and is named by an
-opaque u32. See `notes/gfxstream-bridge.md` "WSI plan: custom Vulkan
-WSI" for the full design.
-
-What this patch ships:
-
-  * `src/gfxstream/guest/vulkan/tawc_gfxstream.xml` -- protocol mirror
-    of the compositor's copy. Lives in-tree so the Mesa build is
-    self-contained.
-  * `src/gfxstream/guest/vulkan/gfxstream_vk_tawc_wsi.cpp` -- strong
-    `gfxstream_vk_*` overrides for vkCreateWaylandSurfaceKHR,
-    vkDestroySurfaceKHR, every surface caps query,
-    vkCreateSwapchainKHR / vkDestroySwapchainKHR /
-    vkGetSwapchainImagesKHR, vkAcquireNextImage(2)KHR,
-    vkQueuePresentKHR. The strong symbols win over the weak entries
-    in `gfxstream_vk_entrypoints.{h,c}` (vk_entrypoints_gen --weak)
-    via the device dispatch-table merge in
-    `gfxstream_vk_create_device` (gfxstream first, wsi second with
-    `overwrite=false`).
-  * `src/gfxstream/guest/vulkan/meson.build` -- runs `mod_wl.scan_xml`
-    on the protocol XML, links libvulkan_gfxstream against
-    libwayland-client, includes the new TU.
-
-STATUS (May 2026):
-
-The dispatch wiring, surface entrypoints, swapchain shell, Wayland
-binding, and present loop are all implemented. The one remaining
-piece is `allocate_swapchain_image()` -- it currently returns
-VK_ERROR_INITIALIZATION_FAILED rather than implementing the
-"kumquat RESOURCE_CREATE_BLOB then VkImportColorBufferGOOGLE"
-sequence the design needs. See the STATUS comment at the top of
-`gfxstream_vk_tawc_wsi.cpp` and
-`issues/gfxstream-wsi-swapchain-alloc-blocker.md` for the
-function-by-function plan and the rationale for why earlier
-attempts (using VkExportMemoryAllocateInfo with a Linux DMA_BUF
-handle type) were a misappropriation of an unrelated upstream
-buffer-sharing path.
-
-Until that lands, vkCreateSwapchainKHR returns a clean error
-rather than hanging. vulkaninfo and other non-swapchain Vulkan
-workloads keep working through the existing gfxstream-vk
-machinery.
+This patch wires the surface, swapchain, acquire, and present
+entrypoints. `allocate_swapchain_image()` is still the missing piece;
+it intentionally returns `VK_ERROR_INITIALIZATION_FAILED` until the
+kumquat `RESOURCE_CREATE_BLOB` + `VkImportColorBufferGOOGLE` path is
+implemented. See `issues/gfxstream-wsi-swapchain-alloc-blocker.md`.
 
 diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_tawc_wsi.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_tawc_wsi.cpp
 new file mode 100644
 index 0000000..922ed23
 --- /dev/null
 +++ b/src/gfxstream/guest/vulkan/gfxstream_vk_tawc_wsi.cpp
-@@ -0,0 +1,582 @@
+@@ -0,0 +1,472 @@
 +/*
 + * Copyright (c) tawc authors.
 + * SPDX-License-Identifier: MIT
 + *
-+ * Custom Vulkan WSI for the tawc gfxstream bridge -- chroot side.
++ * Custom Vulkan WSI for the tawc gfxstream bridge.
 + *
-+ * Replaces Mesa's wsi_common-driven swapchain path for our gfxstream-vk
-+ * ICD with a layer that ships a u32 colorbuffer_id over a custom
-+ * `tawc_gfxstream` Wayland protocol on each present. The compositor
-+ * (in-process with the host gfxstream renderer) resolves the id back to
-+ * the AHardwareBuffer* via `tawc_gfxstream_lookup_ahb` (gfxstream patch
-+ * 02-tawc-lookup-ahb.patch) and binds it as a wl_buffer using its
-+ * existing AHB-import path.
++ * Presents gfxstream ColorBuffer ids over the `tawc_gfxstream`
++ * Wayland protocol. The compositor resolves each id to an AHB in the
++ * in-process gfxstream host renderer.
 + *
-+ * No Vulkan external-memory machinery is involved on the wire. No
-+ * dmabufs. The chroot never holds an fd for swapchain images -- the AHB
-+ * lives entirely in the compositor process and is named by an opaque
-+ * u32. See `notes/gfxstream-bridge.md` "WSI plan: custom Vulkan WSI"
-+ * for the full design.
-+ *
-+ * --------------------------------------------------------------------
-+ * STATUS (May 2026):
-+ *
-+ * Surface entrypoints, dispatch wiring, swapchain shell, Wayland
-+ * registry binding, present loop -- all implemented.
-+ *
-+ * The one missing piece is `allocate_swapchain_image()`. It needs to:
-+ *   1. Drive a kumquat `RESOURCE_CREATE_BLOB` directly (with
-+ *      `VIRGL_BIND_RENDER_TARGET`) so the host gfxstream renderer
-+ *      allocates an AHB-backed ColorBuffer and returns a u32.
-+ *   2. Create a plain VkImage (no `VkExternalMemoryImageCreateInfo`).
-+ *   3. Allocate VkDeviceMemory with `VkImportColorBufferGOOGLE`
-+ *      (gfxstream-internal extension; not part of Vulkan's external
-+ *      memory framework) chained on the alloc info, naming the
-+ *      colorbuffer from step 1.
-+ *   4. `vkBindImageMemory` to bind the image to that memory.
-+ *
-+ * See `issues/gfxstream-wsi-swapchain-alloc-blocker.md` for why this
-+ * specific shape (and why the `VkExportMemoryAllocateInfo` /
-+ * `VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT` shape from earlier
-+ * attempts was a misappropriation of an unrelated upstream code path).
-+ *
-+ * Until step (1)-(4) lands, `vkCreateSwapchainKHR` returns
-+ * VK_ERROR_INITIALIZATION_FAILED at the first image alloc. vulkaninfo
-+ * and other non-swapchain Vulkan workloads keep working.
++ * `allocate_swapchain_image()` is still a stub. It must create a
++ * kumquat render-target blob, import it into VkDeviceMemory with
++ * `VkImportColorBufferGOOGLE`, and bind that memory to the swapchain
++ * VkImage. See issues/gfxstream-wsi-swapchain-alloc-blocker.md.
 + */
 +
 +#include <pthread.h>
@@ -320,11 +248,8 @@ index 0000000..922ed23
 +    VkImageUsageFlags usage = 0;
 +    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
 +
-+    // Wayland connection state. We share the app's wl_display (one
-+    // socket per process is the canonical pattern) but keep a dedicated
-+    // wl_event_queue for our registry, tawc_gfxstream proxy, and
-+    // wl_buffer proxies -- so dispatching releases doesn't steal frame
-+    // callbacks from the app's default queue.
++    // Share the app's wl_display, but keep WSI proxies on a private
++    // event queue so release handling does not consume app events.
 +    struct wl_display* display = nullptr;          // shared with the app -- borrowed
 +    struct wl_surface* surface = nullptr;          // ditto
 +    struct wl_event_queue* queue = nullptr;        // owned
@@ -342,9 +267,8 @@ index 0000000..922ed23
 +
 +namespace {
 +
-+// Per-swapchain-image alloc primitive. NOT IMPLEMENTED -- see the
-+// STATUS comment at the top of this file. Returns failure rather than
-+// hanging so vkCreateSwapchainKHR gives a clean error to the app.
++// TODO: allocate a render-target ColorBuffer and import it with
++// VkImportColorBufferGOOGLE. Fail fast until that path exists.
 +VkResult allocate_swapchain_image(gfxstream_vk_device* /*device*/,
 +                                  const VkSwapchainCreateInfoKHR* /*createInfo*/,
 +                                  gfxstream_vk_swapchain_image* out) {
@@ -353,8 +277,7 @@ index 0000000..922ed23
 +    out->colorbuffer_id = 0;
 +    mesa_loge(
 +        "tawc_wsi: allocate_swapchain_image() is not implemented yet -- see "
-+        "issues/gfxstream-wsi-swapchain-alloc-blocker.md and the STATUS "
-+        "comment at the top of gfxstream_vk_tawc_wsi.cpp.");
++        "issues/gfxstream-wsi-swapchain-alloc-blocker.md.");
 +    return VK_ERROR_INITIALIZATION_FAILED;
 +}
 +
@@ -383,11 +306,13 @@ index 0000000..922ed23
 +    VK_FROM_HANDLE(gfxstream_vk_device, device, _device);
 +    gfxstream_vk_surface* surface = (gfxstream_vk_surface*)(uintptr_t)pCreateInfo->surface;
 +
-+    gfxstream_vk_swapchain* sc = (gfxstream_vk_swapchain*)vk_object_zalloc(
-+        &device->vk, pAllocator, sizeof(*sc), VK_OBJECT_TYPE_SWAPCHAIN_KHR);
++    gfxstream_vk_swapchain* sc = (gfxstream_vk_swapchain*)vk_zalloc2(
++        &device->vk.alloc, pAllocator, sizeof(*sc), 8,
++        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 +    if (!sc) return VK_ERROR_OUT_OF_HOST_MEMORY;
 +
 +    new (sc) gfxstream_vk_swapchain();
++    vk_object_base_init(&device->vk, &sc->base, VK_OBJECT_TYPE_SWAPCHAIN_KHR);
 +    sc->device = device;
 +    sc->alloc = pAllocator ? *pAllocator : device->vk.alloc;
 +    sc->extent = pCreateInfo->imageExtent;
@@ -603,6 +528,10 @@ index 0000000..922ed23
 +        VkResult res = gfxstream_vk_QueueSubmit(_queue, 1, &submit, VK_NULL_HANDLE);
 +        if (res != VK_SUCCESS) return res;
 +    }
++    // The Wayland protocol carries no GPU fence, so don't let the
++    // compositor sample the AHB until gfxstream has finished the queue work.
++    VkResult wait_res = gfxstream_vk_QueueWaitIdle(_queue);
++    if (wait_res != VK_SUCCESS) return wait_res;
 +
 +    VkResult overall = VK_SUCCESS;
 +    for (uint32_t i = 0; i < pPresentInfo->swapchainCount; i++) {
@@ -648,14 +577,12 @@ diff --git a/src/gfxstream/guest/vulkan/meson.build b/src/gfxstream/guest/vulkan
 index b00d5e3..ad49086 100644
 --- a/src/gfxstream/guest/vulkan/meson.build
 +++ b/src/gfxstream/guest/vulkan/meson.build
-@@ -9,6 +9,20 @@ files_lib_vulkan_gfxstream = files(
+@@ -9,6 +9,17 @@ files_lib_vulkan_gfxstream = files(
    'gfxstream_vk_wsi.cpp'
  )
  
-+# tawc-fork: client-side bindings for the custom Vulkan WSI's
-+# `tawc_gfxstream` Wayland protocol. Generates `tawc-gfxstream-client-protocol.h`
-+# + `tawc-gfxstream-protocol.c` from the in-tree XML and adds the
-+# WSI implementation TU.
++# tawc-fork: client bindings for the custom `tawc_gfxstream`
++# Wayland protocol and the WSI implementation TU.
 +gfxstream_vk_tawc_wsi_files = []
 +gfxstream_vk_tawc_wsi_deps = []
 +if with_platform_wayland
@@ -669,7 +596,7 @@ index b00d5e3..ad49086 100644
  gfxstream_vk_wsi_args = []
  if with_platform_x11
     gfxstream_vk_wsi_args += '-DGFXSTREAM_VK_X11'
-@@ -20,7 +34,7 @@ endif
+@@ -20,7 +31,7 @@ endif
  
  gfxstream_deps = [dep_libdrm, idep_vulkan_wsi_headers,
                    idep_vulkan_lite_runtime, idep_vulkan_util_headers,
@@ -678,7 +605,7 @@ index b00d5e3..ad49086 100644
  
  if with_perfetto
    gfxstream_deps += dep_perfetto
-@@ -29,7 +43,8 @@ endif
+@@ -29,7 +40,8 @@ endif
  lib_vulkan_gfxstream = shared_library(
     'vulkan_gfxstream',
     files_lib_vulkan_gfxstream + files_lib_vulkan_enc + gfxstream_vk_entrypoints +
@@ -693,7 +620,7 @@ new file mode 100644
 index 0000000..29ccc78
 --- /dev/null
 +++ b/src/gfxstream/guest/vulkan/tawc_gfxstream.xml
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,30 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<protocol name="tawc_gfxstream">
 +
