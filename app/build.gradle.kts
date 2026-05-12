@@ -23,6 +23,29 @@ run {
     }
 }
 
+// Per-build enabled graphics backends. Default: all four. Override with
+// `-PtawcGraphics=libhybris,libhybris-zink,gfxstream,cpu`. The
+// libhybris-zink backend is the only one whose build artefacts are
+// gated on this flag — disabling it skips the Mesa-Zink cross-build
+// (saves ~3-5 min on a cold `assembleDebug`) and drops the ~22 MB
+// `assets/mesa-zink/<abi>/mesa-zink.tar` from the APK. The other three
+// backends always build in (their cost is negligible); the flag just
+// controls whether they appear in the in-app Settings picker. See
+// `me.phie.tawc.install.EnabledGraphicsBackends`.
+val explicitTawcGraphics: Set<String>? = (project.findProperty("tawcGraphics") as String?)
+    ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
+val enabledGraphics: Set<String> = explicitTawcGraphics
+    ?: setOf("libhybris", "libhybris-zink", "gfxstream", "cpu")
+val knownGraphics = setOf("libhybris", "libhybris-zink", "gfxstream", "cpu")
+run {
+    val unknown = enabledGraphics - knownGraphics
+    require(unknown.isEmpty()) { "Unknown tawcGraphics: $unknown (allowed: $knownGraphics)" }
+    require(enabledGraphics.isNotEmpty()) {
+        "tawcGraphics must enable at least one backend (got empty set)"
+    }
+}
+val libhybrisZinkEnabled: Boolean = "libhybris-zink" in enabledGraphics
+
 android {
     namespace = "me.phie.tawc"
     compileSdk = 34
@@ -41,6 +64,10 @@ android {
             buildConfigField("boolean", "METHOD_TAWCROOT_ENABLED", "${"tawcroot" in debugMethods}")
             buildConfigField("boolean", "METHOD_PROOT_ENABLED",    "${"proot" in debugMethods}")
             buildConfigField("boolean", "METHOD_CHROOT_ENABLED",   "${"chroot" in debugMethods}")
+            buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ENABLED",      "${"libhybris" in enabledGraphics}")
+            buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ZINK_ENABLED", "${"libhybris-zink" in enabledGraphics}")
+            buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
+            buildConfigField("boolean", "GRAPHICS_CPU_ENABLED",            "${"cpu" in enabledGraphics}")
         }
         getByName("release") {
             isMinifyEnabled = false
@@ -52,6 +79,10 @@ android {
             buildConfigField("boolean", "METHOD_TAWCROOT_ENABLED", "${"tawcroot" in releaseMethods}")
             buildConfigField("boolean", "METHOD_PROOT_ENABLED",    "${"proot" in releaseMethods}")
             buildConfigField("boolean", "METHOD_CHROOT_ENABLED",   "${"chroot" in releaseMethods}")
+            buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ENABLED",      "${"libhybris" in enabledGraphics}")
+            buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ZINK_ENABLED", "${"libhybris-zink" in enabledGraphics}")
+            buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
+            buildConfigField("boolean", "GRAPHICS_CPU_ENABLED",            "${"cpu" in enabledGraphics}")
         }
     }
 
@@ -426,9 +457,10 @@ if ("arm64-v8a" in tawcAbis) {
 // `assets/mesa-gfxstream/<abi>/`. Extracted at runtime by
 // CompositorService.ensureMesaGfxstreamExtracted into the app's
 // filesDir; [BridgeInstallProvider] copies them into each rootfs at
-// install time under /usr/local/lib + /usr/local/share/vulkan/icd.d.
-// Selected at runtime via the GraphicsBackend pref (RootfsEnv pins
-// VK_ICD_FILENAMES at the install path).
+// install time under /usr/lib/gfxstream/ (a tawc-owned namespace,
+// matching /usr/lib/hybris/). Selected at runtime via the
+// GraphicsBackend pref (RootfsEnv pins VK_ICD_FILENAMES at the
+// install path).
 //
 // The Mesa source emits the ICD JSON with an arch-suffixed name
 // (`gfxstream_vk_icd.aarch64.json` / `gfxstream_vk_icd.x86_64.json`).
@@ -442,14 +474,25 @@ tawcAbis.forEach { abi ->
     val tawcRoot = rootProject.projectDir
     val (scriptAbi, mesonCpu) = mesaGfxstreamAbiToScriptArg[abi] ?: error("Unsupported ABI: $abi")
     val capAbi = abi.replaceFirstChar { it.uppercase() }
-    val mesaGfxstreamInstallDir = "$tawcRoot/build/mesa-$scriptAbi/install/usr/local"
-    val mesaGfxstreamLib = "$mesaGfxstreamInstallDir/lib/libvulkan_gfxstream.so"
-    val mesaGfxstreamIcd = "$mesaGfxstreamInstallDir/share/vulkan/icd.d/gfxstream_vk_icd.$mesonCpu.json"
+    val mesaInstallRoot = "$tawcRoot/build/mesa-$scriptAbi/install/usr/lib"
+    val mesaGfxstreamLib = "$mesaInstallRoot/gfxstream/libvulkan_gfxstream.so"
+    val mesaGfxstreamIcd = "$mesaInstallRoot/gfxstream/gfxstream_vk_icd.$mesonCpu.json"
     val mesaGfxstreamAssetDir = "src/main/assets/mesa-gfxstream/$abi"
+    // Mesa-Zink tarball (libEGL_mesa.so.0 + libgallium-X.Y.Z.so + libgbm.so.1 +
+    // soname symlinks) — see scripts/build-mesa-gfxstream.sh "Mesa-Zink".
+    // Consumed by the LIBHYBRIS_ZINK graphics backend; see
+    // notes/libhybris-zink.md.
+    val mesaZinkTar = "$mesaInstallRoot/mesa-zink-$mesonCpu.tar"
+    val mesaZinkAssetDir = "src/main/assets/mesa-zink/$abi"
 
     val buildMesaGfxstreamTask = tasks.register<Exec>("buildMesaGfxstream$capAbi") {
         workingDir = tawcRoot
-        commandLine("bash", "scripts/build-mesa-gfxstream.sh", "--abi=$scriptAbi")
+        // `--no-zink` flag skips the Mesa-Zink (libEGL_mesa + Gallium-Zink)
+        // configure when libhybris-zink isn't in tawcGraphics — saves the
+        // bulk of the Mesa cross-build. gfxstream-vk still builds either way.
+        val args = mutableListOf("bash", "scripts/build-mesa-gfxstream.sh", "--abi=$scriptAbi")
+        if (!libhybrisZinkEnabled) args += "--no-zink"
+        commandLine(args)
         // Same incremental-input contract as buildLibhybris:
         //   - the build script
         //   - the patches dir (a patch edit must rebuild)
@@ -458,7 +501,10 @@ tawcAbis.forEach { abi ->
         inputs.dir("$tawcRoot/deps/mesa-patches")
         inputs.file("$tawcRoot/deps/deps.list")
         inputs.file("$tawcRoot/scripts/lib/deps.sh")
-        outputs.files(mesaGfxstreamLib, mesaGfxstreamIcd)
+        inputs.property("libhybrisZinkEnabled", libhybrisZinkEnabled)
+        val out = mutableListOf<Any>(mesaGfxstreamLib, mesaGfxstreamIcd)
+        if (libhybrisZinkEnabled) out += mesaZinkTar
+        outputs.files(out)
     }
 
     val packMesaGfxstreamTask = tasks.register<Copy>("packMesaGfxstream$capAbi") {
@@ -474,8 +520,28 @@ tawcAbis.forEach { abi ->
         }
     }
 
+    // Skip when libhybris-zink is disabled — no Mesa-Zink build runs, no
+    // tar to pack, nothing to ship. Wipe any stale asset from a previous
+    // enabled build so the APK doesn't smuggle 22 MB of dead weight.
+    val packMesaZinkTask = if (libhybrisZinkEnabled) {
+        tasks.register<Copy>("packMesaZink$capAbi") {
+            dependsOn(buildMesaGfxstreamTask)
+            // Tarball with symlinks (libEGL_mesa.so → libEGL_mesa.so.0 → …).
+            // Same shape as the libhybris asset; runtime extractor mirrors.
+            into("${project.projectDir}/$mesaZinkAssetDir")
+            from(mesaZinkTar) {
+                rename { "mesa-zink.tar" }
+            }
+        }
+    } else {
+        tasks.register<Delete>("packMesaZink$capAbi") {
+            delete("${project.projectDir}/$mesaZinkAssetDir")
+        }
+    }
+
     tasks.named("preBuild") {
         dependsOn(packMesaGfxstreamTask)
+        dependsOn(packMesaZinkTask)
     }
 }
 

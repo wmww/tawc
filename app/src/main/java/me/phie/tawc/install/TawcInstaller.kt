@@ -45,6 +45,7 @@ internal object TawcInstaller {
     private val providers: List<TawcInstallProvider> = listOf(
         LibhybrisInstallProvider,
         BridgeInstallProvider,
+        MesaZinkInstallProvider,
     )
 
     /**

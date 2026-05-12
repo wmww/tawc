@@ -1,9 +1,18 @@
 #!/bin/bash
-# Cross-compile Mesa's libvulkan_gfxstream.so + libvirtgpu_kumquat_ffi.a
-# for aarch64 or x86_64 glibc.
+# Cross-compile Mesa's chroot-side bits for aarch64 or x86_64 glibc:
+#   - libvulkan_gfxstream.so + libvirtgpu_kumquat_ffi.a + ICD JSON
+#     (gfxstream-bridge backend's chroot-side guest Vulkan driver)
+#   - libEGL_mesa.so.0 + libgallium-*.so + zink_dri.so + libGLESv2.so
+#     (LIBHYBRIS_ZINK backend's desktop-GL → SPIR-V → libhybris-vulkan
+#     translator — see notes/libhybris-zink.md)
 #
-# This is the chroot-side guest Vulkan driver for the gfxstream-bridge
-# GPU path. See notes/gfxstream-bridge.md.
+# Two separate meson configs against the same Mesa source tree:
+#   - build-<abi>-gfxstream/  → -Dvulkan-drivers=gfxstream -Dgallium-drivers=
+#                              installed to install/usr/lib/gfxstream/
+#   - build-<abi>-mesa-zink/  → -Dgallium-drivers=zink -Degl=enabled
+#                              installed to install/usr/lib/mesa-zink/
+# The shared setup work (cargo virtgpu_kumquat_ffi, .so stubs,
+# pkg-config files, cross.txt) is done once per ABI.
 #
 # Bridge architecture:
 #   chroot: vulkan app -> libvulkan.so.1 -> libvulkan_gfxstream.so (this)
@@ -30,8 +39,15 @@
 # cargo build instead. See deps/mesa-patches/mesa/.
 #
 # Output (per --abi):
-#   build/mesa-<arch>/install/usr/local/lib/libvulkan_gfxstream.so
-#   build/mesa-<arch>/install/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.<arch>.json
+#   build/mesa-<arch>/install/usr/lib/gfxstream/
+#     libvulkan_gfxstream.so
+#     gfxstream_vk_icd.<arch>.json
+#   build/mesa-<arch>/install/usr/lib/mesa-zink/
+#     libEGL_mesa.so.0
+#     libgallium-<version>.so
+#     libGLESv2_mesa.so.0
+#     dri/zink_dri.so   (= libdril_dri.so + symlinks)
+#     plus supporting Mesa-Zink runtime libs
 #
 # Usage:
 #   bash scripts/build-mesa-gfxstream.sh                 # default --abi=aarch64
@@ -50,9 +66,11 @@ PATCH_DIR="$REPO_DIR/deps/mesa-patches/mesa"
 
 CLEAN=0
 ABIS=""
+WITH_ZINK=1
 for arg in "$@"; do
     case "$arg" in
         --clean) CLEAN=1 ;;
+        --no-zink) WITH_ZINK=0 ;;
         --abi=aarch64) ABIS="aarch64" ;;
         --abi=x86_64)  ABIS="x86_64" ;;
         --abi=both)    ABIS="aarch64 x86_64" ;;
@@ -140,12 +158,12 @@ build_one() {
     local PREFIX="$OUT_DIR/install"
     local PC_DIR="$OUT_DIR/pkgconfig"
     local STUB_DIR="$OUT_DIR/stubs"
-    local BUILD_DIR="$MESA_DIR/build-$abi"
     local CARGO_DIR="$OUT_DIR/cargo"
 
     if [ "$CLEAN" = "1" ]; then
-        echo "==> [$abi] wiping $OUT_DIR and $BUILD_DIR"
-        rm -rf "$OUT_DIR" "$BUILD_DIR"
+        echo "==> [$abi] wiping $OUT_DIR and Mesa build-$abi-* trees"
+        rm -rf "$OUT_DIR" "$MESA_DIR/build-$abi" \
+               "$MESA_DIR/build-$abi-gfxstream" "$MESA_DIR/build-$abi-mesa-zink"
     fi
 
     mkdir -p "$OUT_DIR" "$PREFIX" "$PC_DIR" "$STUB_DIR" "$CARGO_DIR"
@@ -229,6 +247,15 @@ EOF
     }
 
     write_pc wayland-client "-I$HOST_WAYLAND_INC" "-L$STUB_DIR -lwayland-client" "1.25.0"
+    # libglvnd is headers-only at Mesa build time (Mesa-Zink's libEGL_mesa.so.0
+    # is a glvnd vendor lib, registered via runtime libEGL.so.1 from the
+    # distro). The host's headers in /usr/include/glvnd/ are ABI-portable.
+    write_pc libglvnd "-I/usr/include" "" "$(pkg-config --modversion libglvnd 2>/dev/null || echo 1.7.0)"
+    # wayland-egl-backend: headers-only API used by Mesa to plug its libEGL
+    # into wl_egl_window. Host pkg-config wayland-egl-backend is the
+    # natural source; no runtime lib needed at build time.
+    write_pc wayland-egl-backend "-I$HOST_WAYLAND_INC" "" \
+        "$(pkg-config --modversion wayland-egl-backend 2>/dev/null || echo 3)"
     write_pc wayland-server "-I$HOST_WAYLAND_INC" "-L$STUB_DIR -lwayland-server" "1.25.0"
     write_pc libdrm "-I/usr/include -I/usr/include/libdrm" "-L$STUB_DIR -ldrm" "$(pkg-config --modversion libdrm)"
     write_pc libudev "-I/usr/include" "-L$STUB_DIR -ludev" "$(pkg-config --modversion libudev)"
@@ -293,12 +320,13 @@ cpu = '$MESON_CPU'
 endian = 'little'
 EOF
 
-    # ── Configure + build ──
+    # ── Configure + build: gfxstream-vk ──
     # `-Dvirtgpu_kumquat=true -Dvirtgpu_kumquat_external_ffi=true` enables
     # kumquat without pulling Mesa's Rust subprojects into the meson graph.
     # Required by patch deps/mesa-patches/mesa/02-meson-external-kumquat-ffi.patch.
-    if [ ! -f "$BUILD_DIR/build.ninja" ]; then
-        PKG_CONFIG_LIBDIR="$PC_DIR" meson setup "$BUILD_DIR" "$MESA_DIR" \
+    local BUILD_DIR_GFXSTREAM="$MESA_DIR/build-$abi-gfxstream"
+    if [ ! -f "$BUILD_DIR_GFXSTREAM/build.ninja" ]; then
+        PKG_CONFIG_LIBDIR="$PC_DIR" meson setup "$BUILD_DIR_GFXSTREAM" "$MESA_DIR" \
             --cross-file "$OUT_DIR/cross.txt" \
             -Dvulkan-drivers=gfxstream \
             -Dgallium-drivers= \
@@ -310,25 +338,103 @@ EOF
             -Dlmsensors=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
             -Dshared-glapi=disabled -Dllvm=disabled -Dxmlconfig=disabled \
             -Ddisplay-info=disabled \
-            --buildtype release -Ddefault_library=shared --prefix /usr/local
+            --buildtype release -Ddefault_library=shared \
+            --prefix /usr --libdir lib/gfxstream
     fi
-    ninja -C "$BUILD_DIR"
+    ninja -C "$BUILD_DIR_GFXSTREAM"
 
-    # ── Stage outputs ──
+    # ── Stage gfxstream-vk outputs ──
     # Mesa names the ICD JSON `gfxstream_vk_icd.<cpu>.json` based on
     # host_machine.cpu in the cross file — so `aarch64` → `.aarch64.json`,
     # `x86_64` → `.x86_64.json`. Stage with the same name; the Gradle
     # packMesaGfxstream task picks it back up by glob.
-    mkdir -p "$PREFIX/usr/local/lib" "$PREFIX/usr/local/share/vulkan/icd.d"
-    cp "$BUILD_DIR/src/gfxstream/guest/vulkan/libvulkan_gfxstream.so" \
-       "$PREFIX/usr/local/lib/"
-    cp "$BUILD_DIR/src/gfxstream/guest/vulkan/gfxstream_vk_icd.${MESON_CPU}.json" \
-       "$PREFIX/usr/local/share/vulkan/icd.d/"
+    # `--prefix=/usr --libdir=lib/gfxstream` → Mesa bakes the ICD JSON's
+    # `library_path` as `/usr/lib/gfxstream/libvulkan_gfxstream.so`,
+    # which is where [BridgeInstallProvider] copies it into the rootfs.
+    # We co-locate the JSON in the same dir (the runtime picks it up via
+    # an explicit `VK_ICD_FILENAMES=…`, not via /usr/share scan, so the
+    # FHS-y `/usr/share/vulkan/icd.d/` location buys us nothing here).
+    mkdir -p "$PREFIX/usr/lib/gfxstream"
+    cp "$BUILD_DIR_GFXSTREAM/src/gfxstream/guest/vulkan/libvulkan_gfxstream.so" \
+       "$PREFIX/usr/lib/gfxstream/"
+    cp "$BUILD_DIR_GFXSTREAM/src/gfxstream/guest/vulkan/gfxstream_vk_icd.${MESON_CPU}.json" \
+       "$PREFIX/usr/lib/gfxstream/"
 
     echo "==> [$abi] built libvulkan_gfxstream.so:"
-    ls -la "$PREFIX/usr/local/lib/libvulkan_gfxstream.so"
-    echo "==> [$abi] ICD JSON:"
-    cat "$PREFIX/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.${MESON_CPU}.json"
+    ls -la "$PREFIX/usr/lib/gfxstream/libvulkan_gfxstream.so"
+    echo "==> [$abi] gfxstream ICD JSON:"
+    cat "$PREFIX/usr/lib/gfxstream/gfxstream_vk_icd.${MESON_CPU}.json"
+
+    # ── Configure + build: Mesa-Zink (LIBHYBRIS_ZINK backend) ──
+    # Gated by --no-zink so APK builds that disable the libhybris-zink
+    # backend (via `-PtawcGraphics=libhybris,gfxstream,cpu`) skip this
+    # configure entirely — it's the bulk of the Mesa cross-build. The
+    # gfxstream-vk pieces above still build either way.
+    if [ "$WITH_ZINK" = "0" ]; then
+        echo "==> [$abi] Mesa-Zink skipped (--no-zink)"
+        # Sweep any stale outputs from a previous WITH_ZINK=1 build so
+        # `outputs.files(mesaZinkTar)` doesn't see a leftover tar.
+        rm -f "$PREFIX/usr/lib/mesa-zink-$MESON_CPU.tar"
+        rm -rf "$PREFIX/usr/lib/mesa-zink"
+        return 0
+    fi
+    # Desktop GL/EGL stack with Zink as the only Gallium driver and Vulkan
+    # disabled (libhybris's libvulkan is what Zink dlopens at runtime, via
+    # the `LD_LIBRARY_PATH=/usr/lib/hybris-vulkan-only:...` shadow set by
+    # `RootfsEnv`). No llvmpipe → no LLVM dep at build time; no DRI/GLX
+    # → no libxcb/libX11 deps. Installs to `/usr/lib/mesa-zink/`; the
+    # libEGL_mesa.so.0 in there carries our `06-tawc-zink-nokms.patch`
+    # to fall through to Zink+Kopper when DRM isn't available.
+    #
+    # `-Dgles2=enabled -Dopengl=true -Degl=enabled` produces libEGL_mesa.so.0
+    # + libGLESv2_mesa.so.0 + libgallium-<ver>.so. `-Dshared-glapi=enabled`
+    # is required by libEGL_mesa. `-Dglvnd=true` makes the EGL/GLES libs
+    # build as glvnd vendor libs (libfoo_mesa.so.0) which is what the distro
+    # libglvnd dispatch expects.
+    local BUILD_DIR_ZINK="$MESA_DIR/build-$abi-mesa-zink"
+    if [ ! -f "$BUILD_DIR_ZINK/build.ninja" ]; then
+        PKG_CONFIG_LIBDIR="$PC_DIR" meson setup "$BUILD_DIR_ZINK" "$MESA_DIR" \
+            --cross-file "$OUT_DIR/cross.txt" \
+            -Dvulkan-drivers= \
+            -Dgallium-drivers=zink \
+            -Dgles1=disabled -Dgles2=enabled -Dopengl=true -Degl=enabled \
+            -Dglx=disabled -Dvideo-codecs= \
+            -Dvirtgpu_kumquat=false \
+            -Dplatforms=wayland \
+            -Dlmsensors=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
+            -Dshared-glapi=enabled -Dllvm=disabled -Dxmlconfig=disabled \
+            -Ddisplay-info=disabled \
+            -Dglvnd=true \
+            --buildtype release -Ddefault_library=shared \
+            --prefix /usr --libdir lib/mesa-zink
+    fi
+    ninja -C "$BUILD_DIR_ZINK"
+    # Run Mesa's own install logic: it handles soname symlinks + dri/
+    # subdir + glvnd egl_vendor.d JSON layout for us. DESTDIR isolates
+    # to our stage dir so /usr/lib/mesa-zink/ is the only thing populated.
+    DESTDIR="$PREFIX" ninja -C "$BUILD_DIR_ZINK" install >/dev/null
+
+    # Trim subproject leftovers (zlib, expat) and pkgconfig dirs we don't
+    # ship — distro Mesa's libz.so.1 / libexpat.so.1 are what libgallium
+    # NEEDs at runtime, and our copies would only shadow those if anyone
+    # put /usr/lib/mesa-zink/ on the load path before /usr/lib/. The dri
+    # GBM backend (`gbm/dri_gbm.so`) doesn't get exercised on this path
+    # either — Kopper-Zink doesn't go through GBM. Keeping only the
+    # files actually needed at runtime keeps the APK + install footprint
+    # down to ~20 MB instead of ~25 MB.
+    local ZINK_INSTALL="$PREFIX/usr/lib/mesa-zink"
+    rm -rf "$ZINK_INSTALL"/libexpat.so* \
+           "$ZINK_INSTALL"/libz.so* \
+           "$ZINK_INSTALL"/pkgconfig \
+           "$ZINK_INSTALL"/gbm
+    # Tar the dir so symlinks survive the APK asset roundtrip. Matches
+    # the libhybris asset pattern; CompositorService extracts at runtime.
+    # `-C` so entries are relative (no leading `mesa-zink/`), so the
+    # runtime extractor lands them straight at <filesDir>/mesa-zink/.
+    local ZINK_TAR="$PREFIX/usr/lib/mesa-zink-$MESON_CPU.tar"
+    tar -C "$ZINK_INSTALL" -cf "$ZINK_TAR" .
+    echo "==> [$abi] Mesa-Zink staged:"
+    tar tf "$ZINK_TAR" | sort
 }
 
 for abi in $ABIS; do

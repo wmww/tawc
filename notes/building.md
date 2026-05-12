@@ -99,6 +99,18 @@ This whole arrangement is fragile (see
 [../issues/sysroot-pull-from-live-device.md](../issues/sysroot-pull-from-live-device.md));
 keep using it for now.
 
+**Symptom when missing:** the gradle build reports
+`buildMesaGfxstreamArm64-v8a` failing with what looks like a malformed
+patch error (`patch: **** malformed patch at line 598`). It isn't —
+that's a downstream Mesa link step failing with
+`undefined reference to wl_buffer_interface` /
+`wl_surface_interface` / `wl_output_interface`, surfaced through the
+patch-applying task chain. Fix is always `bash scripts/pull-sysroot.sh`
+followed by a rebuild — the empty stub `libwayland-client.so.0`
+`build-mesa-gfxstream.sh` falls back to when the sysroot is absent
+doesn't carry those wayland-scanner interface symbols, so Mesa's WSI
+.c files can't take their address.
+
 ## Environment variables
 
 ```bash
@@ -265,11 +277,11 @@ bash scripts/build-mesa-gfxstream.sh
 bash scripts/build-mesa-gfxstream.sh --clean   # wipe builddir
 ```
 
-Output: `build/mesa-aarch64/install/usr/local/lib/libvulkan_gfxstream.so`
-+ `…/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json`. Not yet
-bundled in the APK or laid down in the rootfs — that's the
-`BridgeInstallProvider` work tracked under Phase 1.2 of the
-gfxstream-bridge plan.
+Output: `build/mesa-aarch64/install/usr/lib/gfxstream/libvulkan_gfxstream.so`
++ `…/gfxstream_vk_icd.aarch64.json` (co-located, no separate
+`share/vulkan/icd.d/` — `VK_ICD_FILENAMES` points at it explicitly).
+Bundled into the APK by Gradle's `packMesaGfxstream` and laid into
+every rootfs by `BridgeInstallProvider`.
 
 ### Xwayland (binary + libs → ships in APK as asset)
 

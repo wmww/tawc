@@ -526,7 +526,7 @@ path, which we don't have.
 minimal thing is **ship our own `libvulkan_gfxstream.so`** (built
 once, host-side, with `-Dvulkan-drivers=gfxstream
 -Dvirtgpu_kumquat=true`) plus an ICD JSON in
-`/usr/local/share/vulkan/icd.d/` pointing at it. Vulkan's loader
+`/usr/lib/gfxstream/` pointing at it. Vulkan's loader
 picks it up via `VK_ICD_FILENAMES`; the rest of Mesa stays the
 distro's. Same shape as the existing `LibhybrisInstallProvider`
 asset overlay (APK asset → real-file copy at install time, host
@@ -668,11 +668,10 @@ when (gpu) {
 
 Both backends' assets live alongside each other in the rootfs:
 
-- libhybris: `/usr/lib/hybris/` + `/usr/local/lib/gl-shims/` (laid
-  down by `TawcInstaller` / `LibhybrisInstallProvider`, untouched
-  by this work).
-- bridge: `/usr/local/lib/libvulkan_gfxstream.so` +
-  `/usr/local/share/vulkan/icd.d/gfxstream_vk_kumquat.json` (new
+- libhybris: `/usr/lib/hybris/` (laid down by `TawcInstaller` /
+  `LibhybrisInstallProvider`, untouched by this work).
+- bridge: `/usr/lib/gfxstream/libvulkan_gfxstream.so` +
+  `/usr/lib/gfxstream/gfxstream_vk_icd.<arch>.json` (new
   `BridgeInstallProvider`, same shape as `LibhybrisInstallProvider`).
 
 The compositor's kumquat server thread is cheap to leave always-on
@@ -789,7 +788,7 @@ required), so they can run unattended on the emulator too.
 - **gfxstream host renderer cross-builds for Android NDK** (`scripts/build-gfxstream-backend.sh`) — 8.7MB libgfxstream_backend.so, ELF aarch64, dynamically linked against `libdl/libnativewindow/libandroid/liblog/libc++_shared`. Patches in `deps/gfxstream-patches/gfxstream/01-android-host-build.patch` add `host_machine.system() == 'android'` cases to the ~6 meson.build files that switch on platform, fix two case-insensitive include typos (`GlesCompat.h` → `gles_compat.h`), swap one VNDK header for its NDK equivalent (`<vndk/hardware_buffer.h>` → `<android/hardware_buffer.h>`), and add `-DANDROID=1` (NDK clang defines `__ANDROID__` but not bare `ANDROID`, which several files check). The full GLES+Vulkan+Composer surface is built — it was less work than patching for vulkan-only because frame_buffer.cpp / color_buffer.cpp use a lot of unguarded GL constants.
 - **kumquat runs as a thread of the compositor process** (`compositor/src/bridge.rs`), bound at `/data/data/me.phie.tawc/share/kumquat-gpu-0` which the existing share bind exposes to every rootfs at `/usr/share/tawc/kumquat-gpu-0`. The chroot client picks up that path through our Mesa patch's `VIRTGPU_KUMQUAT_GPU_SOCKET` env var (`RootfsEnv` sets it on the gfxstream branch). The compositor crate pulls in `kumquat_virtio` from the rutabaga_gfx workspace with the `gfxstream` feature, so cargo cross-compiles the server into `libcompositor.so` and emits a `DT_NEEDED` for `libgfxstream_backend.so`. Four rutabaga patches support this: AHB fd export hook, keep-server-alive fixes, server-as-library packaging, and the `GfxStreamVulkanMapper` bypass.
 - **`libgfxstream_backend.so` + `libc++_shared.so` ride along as jniLibs.** `scripts/build-gfxstream-backend.sh` cross-builds the gfxstream host renderer with the NDK and stages both into `app/src/main/jniLibs/arm64-v8a/`. PackageManager extracts them to `nativeLibraryDir` (with the `apk_data_file` SELinux label that's also where `libcompositor.so` lands), so the dynamic linker resolves the `DT_NEEDED` chain at app startup with no extra plumbing. Same trick the libhybris path uses for its private dirs.
-- **End-to-end Vulkan works on the device.** `libvulkan_gfxstream.so` + ICD JSON ride in the APK as `assets/mesa-gfxstream/`, and `BridgeInstallProvider` (sibling of `LibhybrisInstallProvider` in `TawcInstaller.providers`) lays them into every rootfs at `/usr/local/lib/` + `/usr/local/share/vulkan/icd.d/` at install time. With the gfxstream backend selected, `vulkaninfo --summary` from the chroot reports `Virtio-GPU GFXStream (Adreno (TM) 660), driverID=DRIVER_ID_QUALCOMM_PROPRIETARY`. No daemon spawn, no pidfile, no broker action lifecycle.
+- **End-to-end Vulkan works on the device.** `libvulkan_gfxstream.so` + ICD JSON ride in the APK as `assets/mesa-gfxstream/`, and `BridgeInstallProvider` (sibling of `LibhybrisInstallProvider` in `TawcInstaller.providers`) lays them into every rootfs at `/usr/lib/gfxstream/` (a tawc-owned namespace, matching `/usr/lib/hybris/`) at install time. With the gfxstream backend selected, `vulkaninfo --summary` from the chroot reports `Virtio-GPU GFXStream (Adreno (TM) 660), driverID=DRIVER_ID_QUALCOMM_PROPRIETARY`. No daemon spawn, no pidfile, no broker action lifecycle.
 - **gfxstream host renderer also builds on x86_64 Linux** (`meson setup -Dgfxstream-build=host` on `deps/gfxstream`) — the original validation milestone, now superseded by the NDK cross.
 - **`libvulkan_gfxstream.so` + `libvirtgpu_kumquat_ffi.a` cross-build for glibc**, advertise `VK_KHR_wayland_surface`, and load under the chroot's stock vulkan-icd-loader for both supported ABIs.
 - **Build script: `scripts/build-mesa-gfxstream.sh`.** Mirrors the `build-libhybris.sh` "stub .so + synthetic .pc + cross gcc, no sysroot" pattern. Copies real aarch64 `libwayland-{client,server}.so.0` and `libdrm.so.2` from `build/aarch64-sysroot/` (extracted from the device's installed rootfs) because empty stubs lose the `wl_*_interface` / `drmIoctl` symbols that wayland-scanner-generated protocol files and gfxstream's DRM platform code reference at link time. Pure stubs are fine for libudev / libffi (only DT_NEEDED matters).
@@ -862,7 +861,7 @@ GL/EGL apps.
 
 **Done:**
 
-1. **~~`BridgeInstallProvider` Kotlin.~~** Done — `app/src/main/java/me/phie/tawc/install/BridgeInstallProvider.kt` is a sibling of `LibhybrisInstallProvider` in `TawcInstaller.providers`. Gradle's `buildMesaGfxstream` + `packMesaGfxstream` ship the .so + ICD JSON as raw assets under `assets/mesa-gfxstream/`; `CompositorService.ensureMesaGfxstreamExtracted` stages them into `<filesDir>/mesa-gfxstream/` on the same versioned-stamp pattern as libhybris; the provider returns two `TawcInstall.COPY` entries that land at `/usr/local/lib/libvulkan_gfxstream.so` + `/usr/local/share/vulkan/icd.d/gfxstream_vk_icd.aarch64.json`.
+1. **~~`BridgeInstallProvider` Kotlin.~~** Done — `app/src/main/java/me/phie/tawc/install/BridgeInstallProvider.kt` is a sibling of `LibhybrisInstallProvider` in `TawcInstaller.providers`. Gradle's `buildMesaGfxstream` + `packMesaGfxstream` ship the .so + ICD JSON as raw assets under `assets/mesa-gfxstream/`; `CompositorService.ensureMesaGfxstreamExtracted` stages them into `<filesDir>/mesa-gfxstream/` on the same versioned-stamp pattern as libhybris; the provider returns two `TawcInstall.COPY` entries that land at `/usr/lib/gfxstream/libvulkan_gfxstream.so` + `/usr/lib/gfxstream/gfxstream_vk_icd.aarch64.json`.
 2. **~~`GpuBackend` enum + `RootfsEnv` branch.~~** Done — `GraphicsBackend` enum lives in `app/src/main/java/me/phie/tawc/Settings.kt`, exposed in the in-app Settings screen, read by `RootfsEnv.build(method)` on each rootfs spawn. Tests pin via the broker `GRAPHICS` header.
 3. **~~Kumquat in the compositor process.~~** Done — `compositor/src/bridge.rs` spawns the kumquat server on a sibling thread. Same SELinux domain → SCM_RIGHTS works.
 4. **~~Host-visible memory CPU access.~~** Done — `01-drop-nativewindow-dep.patch` reinstates upstream's AHB-export logic via an embedder hook; `compositor/src/ahb_export.rs::ahb_export_callback` dlsym's `AHardwareBuffer_getNativeHandle` from `libnativewindow.so` and ships the AHB's underlying dmabuf fd to the chroot. The chroot mmaps it to get a CPU view aliasing the host pages. `vulkaninfo --summary` and the first ~3 BLOB allocations vkcube does all work via this path.

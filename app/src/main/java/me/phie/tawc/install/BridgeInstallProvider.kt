@@ -32,10 +32,15 @@ internal object BridgeInstallProvider : TawcInstallProvider {
 
     /** Where Mesa's gfxstream-vk lands inside the rootfs. The
      *  matching `VK_ICD_FILENAMES` value lives in [RootfsEnv]; keep
-     *  these two strings in sync. `/usr/local/` because the user's
-     *  distro Mesa already owns `/usr/lib/`. */
-    const val GUEST_LIB_PATH = "/usr/local/lib/${CompositorService.MESA_GFXSTREAM_LIB_ASSET}"
-    const val GUEST_ICD_PATH = "/usr/local/share/vulkan/icd.d/${CompositorService.MESA_GFXSTREAM_ICD_ASSET}"
+     *  these two strings in sync. `/usr/lib/gfxstream/` is a tawc-owned
+     *  namespace, matching `/usr/lib/hybris/` — see
+     *  notes/installation.md "Install paths in the rootfs". The .so
+     *  and the ICD JSON co-locate; the ICD JSON's internal
+     *  `library_path` is baked at Mesa build time by
+     *  `--prefix=/usr --libdir=lib/gfxstream` (see
+     *  scripts/build-mesa-gfxstream.sh). */
+    const val GUEST_LIB_PATH = "/usr/lib/gfxstream/${CompositorService.MESA_GFXSTREAM_LIB_ASSET}"
+    const val GUEST_ICD_PATH = "/usr/lib/gfxstream/${CompositorService.MESA_GFXSTREAM_ICD_ASSET}"
 
     override fun entries(context: Context): List<TawcInstall> {
         if (!CompositorService.ensureMesaGfxstreamExtracted(context)) return emptyList()

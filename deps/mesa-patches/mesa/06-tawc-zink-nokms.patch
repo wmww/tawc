@@ -1,0 +1,57 @@
+From: tawc
+Origin: own
+
+EGL Wayland: fall through to the swrast init's Kopper-Zink branch when
+the DRM init fails and MESA_LOADER_DRIVER_OVERRIDE=zink is set.
+
+On tawc-on-Android we have no `/dev/dri/...` exposed to the app uid —
+Android won't allow it through SELinux — so `dri2_initialize_wayland_drm`
+always fails (the DMA-BUF/wl_drm-driven device fd never resolves).
+Mesa's existing fallback then sends us into `dri2_initialize_wayland_swrast`
+with `Options.Zink=false`, which means `driver_name="swrast"` →
+llvmpipe-via-swrast. We want `driver_name="zink"` → Kopper, which is
+already a supported configuration in this same function (line ~3210:
+`disp->Options.Zink ? "zink" : "swrast"`), it's just unreachable
+because eglapi.c's retry logic resets `Options.Zink=false` before the
+last-resort swrast call.
+
+The Vulkan side of this path already works on device: native Vulkan
+apps (vkcube, etc.) talk to libhybris's libvulkan directly via the
+LIBHYBRIS_ZINK backend's `LD_LIBRARY_PATH` shadow, and libhybris's
+WSI presents through `native_window_queueBuffer` →
+`wl_surface.attach` with android_wlegl buffers. With this patch,
+Zink rides the same Vulkan + WSI to translate GL → SPIR-V → AHB
+presentation without ever touching `/dev/dri/` or dmabufs.
+
+See notes/libhybris-zink.md for the surrounding design + why dmabufs
+aren't viable on Android.
+
+diff --git a/src/egl/drivers/dri2/platform_wayland.c b/src/egl/drivers/dri2/platform_wayland.c
+index 59cfa753290..185d7424e8f 100644
+--- a/src/egl/drivers/dri2/platform_wayland.c
++++ b/src/egl/drivers/dri2/platform_wayland.c
+@@ -3253,8 +3253,22 @@ dri2_initialize_wayland(_EGLDisplay *disp)
+ {
+    if (disp->Options.ForceSoftware)
+       return dri2_initialize_wayland_swrast(disp);
+-   else
+-      return dri2_initialize_wayland_drm(disp);
++   if (dri2_initialize_wayland_drm(disp))
++      return EGL_TRUE;
++   /* tawc-fork: with MESA_LOADER_DRIVER_OVERRIDE=zink, the DRM init
++    * may have failed simply because there is no /dev/dri/ on this
++    * system (tawc-on-Android). The swrast init already handles
++    * driver_name="zink" + Kopper for the no-KMS case; fall through
++    * to it instead of letting eglapi.c's retry reset Options.Zink.
++    * Force fd_render_gpu=-1 so dri2_create_screen passes -1 to
++    * driCreateNewScreen3 (Kopper takes the no-DRM path with -1; with
++    * the calloc default of 0 it would do DRM ioctls on stdin). Same
++    * trick `surfaceless_probe_device_sw` uses upstream. */
++   if (disp->Options.Zink) {
++      dri2_egl_display(disp)->fd_render_gpu = -1;
++      return dri2_initialize_wayland_swrast(disp);
++   }
++   return EGL_FALSE;
+ }
+
+ void

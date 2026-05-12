@@ -9,6 +9,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import me.phie.tawc.install.EnabledGraphicsBackends
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.verticalLp
@@ -38,14 +39,6 @@ class SettingsActivity : AppCompatActivity() {
                 textSize = 16f
                 setTypeface(typeface, Typeface.BOLD)
             },
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 4),
-        )
-        scaffold.content.addView(
-            TextView(this).apply {
-                text = "Affects new app launches; running apps keep their existing driver until restart."
-                textSize = 13f
-                alpha = 0.7f
-            },
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2),
         )
 
@@ -56,14 +49,14 @@ class SettingsActivity : AppCompatActivity() {
         }
         val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
         val current = Settings.graphicsBackend
-        for (backend in GraphicsBackend.entries) {
+        for (backend in EnabledGraphicsBackends.enabled) {
             group.addView(
                 RadioButton(this).apply {
                     // ordinal+1 — RadioGroup uses 0 to mean "nothing checked"
                     // in onCheckedChange callbacks, and View.NO_ID is -1, so
                     // any positive int that round-trips back to the enum is fine.
                     id = backend.ordinal + 1
-                    text = "${backend.displayName} (${backend.tagline})"
+                    text = backend.displayName
                     textSize = 15f
                     isChecked = backend == current
                     // Vertical breathing room between options without a
@@ -75,7 +68,7 @@ class SettingsActivity : AppCompatActivity() {
             )
         }
         group.setOnCheckedChangeListener { _, checkedId ->
-            val picked = GraphicsBackend.entries.firstOrNull { it.ordinal + 1 == checkedId }
+            val picked = EnabledGraphicsBackends.enabled.firstOrNull { it.ordinal + 1 == checkedId }
             if (picked != null) Settings.graphicsBackend = picked
         }
         cardColumn.addView(group, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))

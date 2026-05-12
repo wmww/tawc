@@ -271,7 +271,9 @@ reported as `InstallProgress` to the UI and per-line logged to logcat
      consumer today is `LibhybrisInstallProvider`. Files land at
      `/usr/lib/hybris/{*.so,gl-shims/,libhybris/}` (a tawc-owned
      namespace; `/usr/local/lib/` stays free for the user's own
-     installs) plus `/usr/share/glvnd/egl_vendor.d/00_libhybris.json`.
+     installs — same pattern for `/usr/lib/gfxstream/` shipped by
+     [BridgeInstallProvider] and `/usr/lib/mesa-zink/` shipped by
+     [MesaZinkInstallProvider]) plus `/usr/share/glvnd/egl_vendor.d/00_libhybris.json`.
      `LD_LIBRARY_PATH` (set by [RootfsEnv]) is
      `/usr/lib/hybris/gl-shims:/usr/lib/hybris`. The source tree at
      `<filesDir>/libhybris/lib/` is extracted from

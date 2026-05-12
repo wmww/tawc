@@ -31,7 +31,7 @@ fn main() -> ExitCode {
             eprintln!("tawc-exec: {e}");
             eprintln!("usage: tawc-exec [--cwd DIR] [--env K=V ...] [--op-title TITLE] -- ARGV0 [ARG ...]");
             eprintln!("       tawc-exec --action NAME [--arg K=V ...]");
-            eprintln!("       tawc-exec --in-rootfs ID [--graphics libhybris|gfxstream|cpu] [--op-title TITLE] [-- CMD ...]");
+            eprintln!("       tawc-exec --in-rootfs ID [--graphics libhybris|gfxstream|cpu|libhybris-zink] [--op-title TITLE] [-- CMD ...]");
             return ExitCode::from(2);
         }
     };
@@ -68,7 +68,7 @@ enum Parsed {
     /// to the install's [InstallationMethod.startInside]. `cmd` empty =
     /// interactive `bash -l`. `graphics` non-empty overrides the
     /// in-rootfs `GraphicsBackend` for this spawn (libhybris / gfxstream
-    /// / cpu) without touching the user's persisted Settings pick;
+    /// / cpu / libhybris-zink) without touching the user's persisted Settings pick;
     /// empty means "use Settings". Tests use this to run a single
     /// client under a specific backend.
     RunInside {
@@ -291,7 +291,7 @@ fn write_header(s: &mut TcpStream, p: &Parsed) -> io::Result<()> {
                 h.push_str("CMD "); h.push_str(&encode_value(cmd)); h.push('\n');
             }
             // GRAPHICS key is a programmatic identifier (libhybris /
-            // gfxstream / cpu); no encoding needed.
+            // gfxstream / cpu / libhybris-zink); no encoding needed.
             if let Some(g) = graphics { h.push_str("GRAPHICS "); h.push_str(g); h.push('\n'); }
             if let Some(t) = op_title { h.push_str("OP_TITLE "); h.push_str(&encode_value(t)); h.push('\n'); }
         }

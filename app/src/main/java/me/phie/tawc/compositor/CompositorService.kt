@@ -243,6 +243,8 @@ class CompositorService : Service() {
         private val XWAYLAND_EXTRACT_LOCK = Any()
         /** Lock for [ensureMesaGfxstreamExtracted] — see method KDoc. */
         private val MESA_GFXSTREAM_EXTRACT_LOCK = Any()
+        /** Lock for [ensureMesaZinkExtracted] — see method KDoc. */
+        private val MESA_ZINK_EXTRACT_LOCK = Any()
 
         /**
          * Stamp value written to `<destDir>/.version` to gate
@@ -468,6 +470,79 @@ class CompositorService : Service() {
             atomicReplaceDir(stagingDir, destDir)
             File(destDir, ".version").writeText(currentStamp)
             Log.i(TAG, "Extracted mesa-gfxstream ($abi) to $destDir")
+            return true
+        }
+
+        /**
+         * Extract `assets/mesa-zink/<abi>/mesa-zink.tar` into
+         * `<filesDir>/mesa-zink/`, preserving symlinks. Same shape as
+         * [ensureLibhybrisExtracted] — tar entries are flat (libEGL_mesa.so,
+         * libgallium-*.so, libgbm.so.1, plus soname symlinks) so the
+         * extracted tree lands directly at `<filesDir>/mesa-zink/`, which
+         * is where [me.phie.tawc.install.MesaZinkInstallProvider] walks
+         * from to ship the files into each rootfs.
+         *
+         * Consumed only by the [me.phie.tawc.GraphicsBackend.LIBHYBRIS_ZINK]
+         * backend — see notes/libhybris-zink.md for the Mesa patch
+         * (`06-tawc-zink-nokms.patch`) that makes Zink usable without
+         * `/dev/dri/`. Other backends never load these libs.
+         *
+         * Returns true on success or if no asset is shipped for this ABI.
+         */
+        fun ensureMesaZinkExtracted(context: Context): Boolean = synchronized(MESA_ZINK_EXTRACT_LOCK) {
+            val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: return false
+            val assetPath = "mesa-zink/$abi/mesa-zink.tar"
+            val available = try {
+                context.assets.open(assetPath).close()
+                true
+            } catch (_: java.io.IOException) {
+                false
+            }
+            if (!available) {
+                Log.i(TAG, "No mesa-zink asset shipped for ABI $abi; LIBHYBRIS_ZINK backend unavailable")
+                return false
+            }
+
+            val destDir = File(context.filesDir, "mesa-zink")
+            val currentStamp = currentExtractStamp(context)
+            if (!isStampStale("mesa-zink", destDir, currentStamp)) {
+                return true
+            }
+
+            val stagingDir = File(context.filesDir, "mesa-zink.new")
+            stagingDir.deleteRecursively()
+            stagingDir.mkdirs()
+            val stagingReal = stagingDir.canonicalFile
+            val stagingPrefix = stagingReal.absolutePath + File.separator
+            context.assets.open(assetPath).use { raw ->
+                TarArchiveInputStream(raw).use { tar ->
+                    while (true) {
+                        val entry = tar.nextEntry ?: break
+                        val outFile = File(stagingDir, entry.name).canonicalFile
+                        val abs = outFile.absolutePath
+                        if (abs != stagingReal.absolutePath && !abs.startsWith(stagingPrefix)) {
+                            throw java.io.IOException("mesa-zink tar entry escapes staging: ${entry.name}")
+                        }
+                        when {
+                            entry.isDirectory -> outFile.mkdirs()
+                            entry.isSymbolicLink -> {
+                                outFile.parentFile?.mkdirs()
+                                Os.symlink(entry.linkName, outFile.absolutePath)
+                            }
+                            else -> {
+                                outFile.parentFile?.mkdirs()
+                                outFile.outputStream().use { out -> tar.copyTo(out) }
+                                if ((entry.mode and 0b001_001_001) != 0) {
+                                    outFile.setExecutable(true, false)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            atomicReplaceDir(stagingDir, destDir)
+            File(destDir, ".version").writeText(currentStamp)
+            Log.i(TAG, "Extracted mesa-zink ($abi) to $destDir")
             return true
         }
 

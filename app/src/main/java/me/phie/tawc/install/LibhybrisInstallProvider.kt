@@ -57,6 +57,19 @@ internal object LibhybrisInstallProvider : TawcInstallProvider {
      *  libGL/libGLESv2 wrappers shadow any distro-shipped libs. */
     const val GUEST_GL_SHIMS_DIR = "$GUEST_LIB_DIR/gl-shims"
 
+    /** Vulkan-only LD_LIBRARY_PATH dir for the LibhybrisZink backend.
+     *  Holds a single `libvulkan.so.1` symlink into [GUEST_LIB_DIR];
+     *  `RootfsEnv` puts this dir (not [GUEST_LIB_DIR] itself) on
+     *  `LD_LIBRARY_PATH` so libhybris's libvulkan shadows the distro
+     *  Vulkan loader without also shadowing libhybris's libEGL /
+     *  libGLESv2 — those would dethrone distro Mesa (and therefore
+     *  Zink) on the libGL/libEGL/libGLES path that's the whole point
+     *  of this backend. libhybris's libvulkan finds its siblings via
+     *  the `RUNPATH=/usr/lib/hybris` libtool bakes in
+     *  (`scripts/build-libhybris.sh`), so the rest of the libhybris
+     *  tree being off the linker path doesn't matter. */
+    const val GUEST_VULKAN_ONLY_DIR = "/usr/lib/hybris-vulkan-only"
+
     /** Where glvnd's EGL dispatcher scans for `*.json` vendor files. */
     private const val GUEST_GLVND_DIR = "/usr/share/glvnd/egl_vendor.d"
 
@@ -102,6 +115,15 @@ internal object LibhybrisInstallProvider : TawcInstallProvider {
             src = glvndSrc.absolutePath,
             dest = "$GUEST_GLVND_DIR/00_libhybris.json",
             type = TawcInstall.Type.COPY,
+        )
+
+        // LibhybrisZink LD_LIBRARY_PATH shim: a Vulkan-only dir
+        // containing one symlink to libhybris's libvulkan.so.1. See
+        // [GUEST_VULKAN_ONLY_DIR] kdoc.
+        entries += TawcInstall(
+            src = "$GUEST_LIB_DIR/libvulkan.so.1",
+            dest = "$GUEST_VULKAN_ONLY_DIR/libvulkan.so.1",
+            type = TawcInstall.Type.LINK,
         )
         return entries
     }

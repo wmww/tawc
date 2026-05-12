@@ -51,13 +51,26 @@ object Settings {
  * future bridges, …) can be added without breaking already-saved
  * preferences.
  */
-enum class GraphicsBackend(val key: String, val displayName: String, val tagline: String) {
+enum class GraphicsBackend(val key: String, val displayName: String) {
     /**
      * Today's default: load the Android vendor GPU blob into the
      * chroot via libhybris. Lowest overhead (no IPC), but tied to
      * the libhybris stack's per-vendor quirks.
      */
-    LIBHYBRIS("libhybris", "libhybris", "fastest"),
+    LIBHYBRIS("libhybris", "libhybris"),
+
+    /**
+     * Distro Mesa + Zink (Gallium driver translating GL/GLES to
+     * Vulkan), with libhybris's Vulkan as the only ICD. Same vendor
+     * blob path as [LIBHYBRIS], but routed through Mesa+Zink so
+     * desktop-GL apps (kitty, alacritty, anything with `#version 140`
+     * shaders) work — the [LIBHYBRIS] backend is GLES-only via the
+     * `gl-shims/` wrappers, which can't run desktop-GL shaders. Cost:
+     * GLES now goes Zink → SPIR-V → Vulkan instead of straight
+     * libhybris GLES (single-digit % overhead on most workloads). See
+     * [notes/libhybris-zink.md](../../../../../../../notes/libhybris-zink.md).
+     */
+    LIBHYBRIS_ZINK("libhybris-zink", "libhybris+zink"),
 
     /**
      * Forward GL/Vulkan command streams to an in-compositor-process
@@ -69,7 +82,7 @@ enum class GraphicsBackend(val key: String, val displayName: String, val tagline
      * the APK and are laid into each rootfs by
      * [me.phie.tawc.install.BridgeInstallProvider] at install time.
      */
-    GFXSTREAM("gfxstream", "gfxstream", "fast, reliable"),
+    GFXSTREAM("gfxstream", "gfxstream"),
 
     /**
      * Pure software rendering. No vendor blob, no command-stream
@@ -81,7 +94,7 @@ enum class GraphicsBackend(val key: String, val displayName: String, val tagline
      * is set; the distro's own Mesa picks llvmpipe via
      * `LIBGL_ALWAYS_SOFTWARE=1` + `GALLIUM_DRIVER=llvmpipe`.
      */
-    CPU("cpu", "CPU", "software-only");
+    CPU("cpu", "CPU");
 
     companion object {
         /**
@@ -100,7 +113,14 @@ enum class GraphicsBackend(val key: String, val displayName: String, val tagline
             else -> LIBHYBRIS
         }
 
-        fun fromKeyOrDefault(key: String?): GraphicsBackend =
-            entries.firstOrNull { it.key == key } ?: DEFAULT
+        fun fromKeyOrDefault(key: String?): GraphicsBackend {
+            val match = entries.firstOrNull { it.key == key } ?: return DEFAULT
+            // Defensive: an APK that turns off a backend (via -PtawcGraphics
+            // or a downgrade) shouldn't keep returning the disabled enum
+            // for its persisted prefs. Fall back to the build default —
+            // which is itself guaranteed-enabled (validated at build time
+            // in `app/build.gradle.kts`).
+            return if (me.phie.tawc.install.EnabledGraphicsBackends.isEnabled(match)) match else DEFAULT
+        }
     }
 }

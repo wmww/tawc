@@ -29,6 +29,12 @@ import me.phie.tawc.Settings
  * doesn't shadow the distro vulkan-icd-loader. CPU forces software
  * rendering via `LIBGL_ALWAYS_SOFTWARE=1` + `GALLIUM_DRIVER=llvmpipe`
  * and leaves the Vulkan loader to pick up lavapipe on its own.
+ * LibhybrisZink uses the distro Mesa for GL/GLES (Gallium driver pinned
+ * to Zink) and puts libhybris's lib dir on `LD_LIBRARY_PATH` so
+ * `dlopen("libvulkan.so.1")` lands on libhybris's libvulkan directly,
+ * bypassing the distro Vulkan loader — libhybris isn't a loader-ABI
+ * compliant ICD. See
+ * [notes/libhybris-zink.md](../../../../../../../notes/libhybris-zink.md).
  */
 internal object RootfsEnv {
     enum class Method { TAWCROOT, PROOT, CHROOT }
@@ -91,6 +97,43 @@ internal object RootfsEnv {
                 put("VK_ICD_FILENAMES", BridgeInstallProvider.GUEST_ICD_PATH)
                 put("VIRTGPU_KUMQUAT", "1")
                 put("VIRTGPU_KUMQUAT_GPU_SOCKET", "/usr/share/tawc/kumquat-gpu-0")
+            }
+            GraphicsBackend.LIBHYBRIS_ZINK -> {
+                // Two prefix dirs on LD_LIBRARY_PATH (order matters,
+                // earlier wins):
+                //   1. /usr/lib/mesa-zink/      — our patched libEGL_mesa.so.0
+                //      + libgallium-*.so + libgbm.so.1, shipped by
+                //      [MesaZinkInstallProvider]. Our libEGL_mesa carries
+                //      `06-tawc-zink-nokms.patch` to fall through to
+                //      Zink+Kopper when no DRM device is available; the
+                //      distro's libEGL_mesa lacks the patch and would
+                //      silently go to llvmpipe. Libglvnd's libEGL.so.1
+                //      reads the mesa vendor JSON (we keep its lex-order
+                //      precedence via `__EGL_VENDOR_LIBRARY_FILENAMES`
+                //      below) and dlopen's libEGL_mesa.so.0 — putting our
+                //      dir first makes dlopen pick ours.
+                //   2. /usr/lib/hybris-vulkan-only/  — symlink dir holding
+                //      only `libvulkan.so.1` → libhybris's libvulkan. Zink
+                //      dlopens libvulkan.so.1 to drive its Vulkan backend;
+                //      this shadow points it at libhybris (the same path
+                //      the LIBHYBRIS backend uses for native Vulkan apps).
+                //      Using the vulkan-only shim rather than
+                //      /usr/lib/hybris itself avoids shadowing libhybris's
+                //      libEGL.so.1 / libGLESv2.so.2 — those would
+                //      out-rank Mesa on the GL/GLES path and defeat the
+                //      whole point of this backend.
+                put("LD_LIBRARY_PATH",
+                    "${MesaZinkInstallProvider.GUEST_LIB_DIR}:${LibhybrisInstallProvider.GUEST_VULKAN_ONLY_DIR}")
+                // Force Gallium to pick Zink even when the distro Mesa has
+                // hardware drivers compiled in. Without this Mesa probes
+                // /dev/dri/* first and falls back to llvmpipe when nothing
+                // matches — never reaching Zink.
+                put("MESA_LOADER_DRIVER_OVERRIDE", "zink")
+                // Libglvnd's libEGL otherwise hits libhybris's vendor JSON
+                // (00_libhybris.json) before Mesa's (50_mesa.json) and
+                // dispatches EGL straight to libhybris's GLES-only libEGL,
+                // bypassing Zink. Pin the vendor list to Mesa's entry.
+                put("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/50_mesa.json")
             }
         }
         put("DISPLAY", ":0")
