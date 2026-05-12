@@ -1304,8 +1304,8 @@ Vulkan WSI" above).
 
 ## Next implementation work
 
-Phase 4 is done; vkcube renders via AHB end-to-end. The remaining
-work is:
+Phase 4 is done; vkcube renders via AHB end-to-end on the physical
+Adreno 660. The remaining work is:
 
 1. Investigate the GL path (Phase 6). Plain
    `MESA_LOADER_DRIVER_OVERRIDE=zink` is not enough while Mesa's EGL
@@ -1313,11 +1313,55 @@ work is:
    EGL ride Vulkan WSI or write a small EGL shim. Until this lands,
    the rest of the `gfxstream::` integration suite (gtk*/firefox/
    supertuxkart/weston-simple-egl/eglinfo) stays red.
-2. Validate the same path on x86_64 AVD (Phase 7). The aarch64
-   build target is symmetric with x86_64; the gating piece is
-   `build/x86_64-sysroot/` (run `scripts/pull-sysroot.sh` against a
-   live AVD with the rootfs installed) — see
-   [issues/sysroot-pull-from-live-device.md](../issues/sysroot-pull-from-live-device.md).
+2. Validate the same path on the x86_64 AVD (Phase 7). Build
+   pipeline is symmetric with aarch64 and compiles cleanly; the
+   chroot connects, vulkaninfo enumerates the device. **Two
+   distinct AVD-only bugs were observed in a brief poke (2026-05-11)
+   and not pursued — see "AVD blockers" below.** Don't expect this
+   to land soon.
+
+## AVD blockers (2026-05-11)
+
+Two separate failures on the x86_64 AVD, both happen *upstream* of
+our code in the chained chain
+`vulkan.ranchu.so → AVD-host gfxstream → AMD radv`. Recording the
+symptoms so we don't re-derive them.
+
+1. **Host-visible `vkAllocateMemory` rejected.** Default kumquat
+   config enables `ExternalBlob`, which makes our gfxstream-backend
+   tag every host-visible alloc with `VkExportMemoryAllocateInfo
+   {handleTypes=AHB}` and hand it to vulkan.ranchu. vulkan.ranchu
+   returns `VK_ERROR_OUT_OF_HOST_MEMORY`. (Confirmed by adding a
+   diag log around `vk->vkAllocateMemory` in
+   `vk_decoder_global_state.cpp::on_vkAllocateMemory`; vulkan.ranchu
+   advertises `VK_ANDROID_external_memory_android_hardware_buffer`
+   but not `VK_KHR_external_memory_fd` or `VK_EXT_external_memory_dma_buf`,
+   per `cmd gpu vkjson`.) Adreno tolerates the same request; AVD
+   doesn't. Plausible workaround: `KumquatBuilder::set_renderer_features
+   ("SystemBlob:enabled")`, which switches to `VK_EXT_external_memory_host`
+   memfd-import instead. Was not committed because (a) it puts physical
+   Adreno on an untested code path the gfxstream maintainers
+   explicitly warn about (`vk_common_operations.cpp:150` "tested only
+   on Windows"), and (b) blocker #2 still applies.
+
+2. **Compositor's EGL_NATIVE_BUFFER_ANDROID texture samples as
+   `(0,0,0,0)`.** Even when the allocation path is unblocked (via
+   `SystemBlob:enabled`) so vkcube reaches its render loop and
+   presents frames via our custom WSI, the AHB content doesn't
+   round-trip: the compositor's `gfxstream_present.rs` binds the
+   colorbuffer, `gl_import.rs` builds an `EXTERNAL_OES` texture,
+   `screencap` shows the SurfaceView dirty and `frame=N`-bumping
+   — but a cyan-on-zero shader probe shows every pixel of the
+   imported texture is zero. Where the writes are lost in the
+   chained chain wasn't pinned down; would need visibility into
+   vulkan.ranchu / the AVD-host gfxstream.
+
+The build/install/connect/enumerate half of Phase 7 is done. The
+remaining work is non-trivial and probably needs either
+gfxstream-internal changes or a workaround that bypasses the
+chained chain (e.g. CPU readback via gfxstream's `readColorBuffer`,
+which would also avoid `VkImportColorBufferGOOGLE`'s memory
+aliasing). Not blocking the libhybris-native physical path.
 
 ## Relation to existing notes
 
