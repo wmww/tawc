@@ -18,12 +18,16 @@ _lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 _repo_dir=$(cd "$_lib_dir/../.." && pwd)
 TAWC_EXEC="${TAWC_EXEC:-$_repo_dir/scripts/tawc-exec.sh}"
 
-_probe='for d in '"$_distros"'/*/metadata.json; do test -f "$d" && basename "$(dirname "$d")"; done'
+_probe='for d in '"$_distros"'/*/metadata.json; do test -f "$d" && basename "$(dirname "$d")"; done; true'
 _ids=$("$TAWC_EXEC" /system/bin/sh -c "$_probe" 2>/dev/null \
        | tr -d '\r' \
        | awk 'NF' \
        | sort -u)
-_count=$(printf '%s' "$_ids" | grep -c '^')
+if [ -n "$_ids" ]; then
+    _count=$(printf '%s\n' "$_ids" | wc -l | tr -d '[:space:]')
+else
+    _count=0
+fi
 
 case "$_count" in
     1)

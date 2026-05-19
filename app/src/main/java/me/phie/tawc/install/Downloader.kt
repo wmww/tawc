@@ -62,7 +62,7 @@ object Downloader {
 
         val conn = (URL(resolvedUrl).openConnection() as HttpURLConnection).apply {
             connectTimeout = 30_000
-            readTimeout = 60_000
+            readTimeout = 300_000
             instanceFollowRedirects = true
         }
 
