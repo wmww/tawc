@@ -118,8 +118,8 @@ When adding new app features (settings, app launcher, …), put them in
 their own packages under `me.phie.tawc.*` rather than mixing them into
 the compositor or install packages.
 
-## Audio (Out of Scope)
+## Audio
 
-Linux desktop apps typically expect PulseAudio or PipeWire. Audio forwarding from the
-chroot to Android is not addressed yet. Options include running PulseAudio over a Unix
-socket (Termux already packages `pulseaudio`) or bridging PipeWire to Android's audio HAL.
+Audio forwarding from the rootfs to Android is not implemented yet. The current
+plan is a PipeWire-first rootfs stack bridged through app-owned endpoints under
+`/usr/share/tawc/`; see [audio.md](audio.md).

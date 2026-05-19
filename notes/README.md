@@ -17,6 +17,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 - [exec-broker.md](exec-broker.md) - debug broker protocol, host helper, action model, security.
 - [rendering.md](rendering.md) - window management, coordinates, SHM/AHB rendering behavior.
 - [rootfs-sessions.md](rootfs-sessions.md) - session invariant for rootfs entry paths.
+- [audio.md](audio.md) - planned PipeWire/PulseAudio bridge to Android audio.
 - [log-screen.md](log-screen.md) - shared operation/log-screen UI abstraction.
 - [launcher.md](launcher.md) - distro launcher and `.desktop` scanner.
 - [multi-activity.md](multi-activity.md) - planned one-Android-task-per-window design.
