@@ -80,6 +80,7 @@
 #include "fdtab.h"
 #include "io.h"
 #include "path.h"
+#include "path_scratch.h"
 #include "raw_sys.h"
 #include "syscalls_control.h"
 #include "sysnr.h"
@@ -87,21 +88,21 @@
 #include "tawc_uapi.h"
 #include "usercopy.h"
 
-#define TAWC_PATH_MAX 4096
-
 /* Translate the guest's chroot target to (base_fd, suffix) and open
  * an O_PATH dirfd for it. On success returns >=0 (the new fd, not yet
  * reserved); on failure returns -errno. */
 static long open_chroot_target(const char *guest_path)
 {
-	char path_buf[TAWC_PATH_MAX];
-	long n = tawc_copy_string_from_guest(path_buf, sizeof path_buf,
-	                                     guest_path);
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	long n = tawc_copy_string_from_guest(
+		path_buf, TAWCROOT_PATH_SCRATCH_SIZE, guest_path);
 	if (n < 0) return n;
 
-	char suffix[TAWC_PATH_MAX];
+	char *suffix = scratch->buf[1];
 	tawcroot_path_result r = tawcroot_path_translate(
-		path_buf, suffix, sizeof suffix, TAWCROOT_PATH_FOLLOW);
+		path_buf, suffix, TAWCROOT_PATH_SCRATCH_SIZE,
+		TAWCROOT_PATH_FOLLOW);
 	if (r.err) return r.err;
 
 	/* tawcroot_path_translate writes "" into suffix when the request
@@ -131,9 +132,10 @@ static long handle_chroot(const tawcroot_syscall_args *args, ucontext_t *uc)
 	}
 	int new_root_fd = (int)resv;
 
-	char new_host[sizeof tawcroot_rootfs_host_path];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *new_host = scratch->buf[0];
 	long hp = tawcroot_proc_fd_to_host_path(new_root_fd, new_host,
-	                                        sizeof new_host);
+	                                        TAWCROOT_PATH_SCRATCH_SIZE);
 	if (hp < 0) {
 		/* Can't recover the host path — abort. The reserved fd
 		 * stays in tawcroot_reserved_fds, leaking until process

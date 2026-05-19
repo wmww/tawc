@@ -173,6 +173,7 @@ SRC_C_PROD=(
     "$TAWCROOT_DIR/src/handler.c"
     "$TAWCROOT_DIR/src/dispatch.c"
     "$TAWCROOT_DIR/src/path.c"
+    "$TAWCROOT_DIR/src/path_scratch.c"
     "$TAWCROOT_DIR/src/path_fold.c"
     "$TAWCROOT_DIR/src/path_orchestrate.c"
     "$TAWCROOT_DIR/src/path_resolve.c"

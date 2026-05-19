@@ -3201,21 +3201,20 @@ here so we don't ship MVP and discover them at runtime.
    the buffer-lifetime tracking right deserves dedicated focus
    rather than being mixed into MVP work.
 
-2. **Small-thread-stack overflow risk.** A path-bearing TRAP from
-   a thread with a tiny stack (Go runtime M threads, Firefox
-   sandbox children, glib worker pools) runs our handler on that
-   stack. `gcc -Wstack-usage` measurement: handler chain peaks at
-   30–50 KB on path-translation paths (handle_renameat alone is
-   16 KB, plus 8–12 KB through the path_orchestrate / path_resolve
-   chain). We're shipping without `sigaltstack` (it's per-thread,
-   doesn't inherit across `clone`, and would need per-thread-creation
-   interception). Realistic risk is low — programs with tiny
-   worker stacks tend not to issue path-bearing syscalls from those
-   threads — but if a real workload trips this, the right fix is
-   *not* sigaltstack: shrink the on-stack path buffer to 512 bytes
-   and fall back to an init-allocated arena for longer paths. See
-   `issues/tawcroot-handler-stack-usage-too-deep.md` for the current
-   per-frame numbers.
+2. **Small-thread-stack overflow risk is mitigated.** Path-bearing
+   TRAPs still run on the trapping thread's stack, but large PATH_MAX
+   temporaries no longer live in handler frames. `path_scratch.c`
+   provides a preallocated 128-slot scratch pool (four 4 KiB buffers
+   per slot); filesystem handlers borrow path pairs from it, and the
+   path orchestration / symlink resolver borrow their internal
+   temporaries separately. `path_fold.c` now folds directly into the
+   caller output instead of carrying an extra PATH_MAX scratch. Current
+   `gcc -Wstack-usage=1024` checks produce no warnings for
+   `syscalls_fs.c`, `path_orchestrate.c`, `path_resolve.c`,
+   `path_fold.c`, or `chroot.c`; `exec_handler.c` is ~1.3 KiB. The
+   regression tests are `prod_path_trap_from_small_stack_thread`
+   (16 KiB child stack) and `prod_long_path_over_1024_still_translates`
+   (guards against a too-small path cap).
 
 3. **More `/proc` reverse-translation paths.** `/proc/self/maps` and
    `/proc/<our-pid>/maps` are done — `handle_openat` detects the path
@@ -3378,8 +3377,7 @@ chasing without a profile.
    newer container runtimes.
 
 Anything not on this list — BPF JEQ chain → bitmap, gettid
-caching, smaller PATH_MAX scratch buffers (a stack-pressure fix,
-not perf), reducing handler frame count for cache reasons — is
+caching, reducing handler frame count for cache reasons — is
 pedantic and below the noise floor without a profile that
 fingers it.
 

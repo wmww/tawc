@@ -9,6 +9,7 @@
 #include "exec_handler.h"
 #include "exec_state.h"
 #include "path.h"
+#include "path_scratch.h"
 #include "raw_sys.h"
 #include "shm.h"
 #include "tawc_uapi.h"
@@ -51,9 +52,11 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 	 * In legacy --exec-via-handler mode (no rootfs) the path is a
 	 * host-fs path, opened directly. */
 	if (tawcroot_rootfs_fd >= 0) {
-		char suffix[4096];
+		TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+		char *suffix = scratch->buf[0];
 		tawcroot_path_result r = tawcroot_path_translate(
-		    path, suffix, sizeof suffix, TAWCROOT_PATH_FOLLOW);
+		    path, suffix, TAWCROOT_PATH_SCRATCH_SIZE,
+		    TAWCROOT_PATH_FOLLOW);
 		if (r.err) return r.err;
 		if (suffix[0] == 0) return TAWC_EISDIR;
 		long probe = tawc_openat(r.base_fd, suffix,

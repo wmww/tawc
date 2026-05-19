@@ -39,6 +39,7 @@
 #include "fdtab.h"
 #include "io.h"
 #include "path.h"
+#include "path_scratch.h"
 #include "proc_rewrite.h"
 #include "raw_sys.h"
 #include "shm.h"
@@ -47,8 +48,6 @@
 #include "tawc_string.h"
 #include "tawc_uapi.h"
 #include "usercopy.h"
-
-#define TAWC_PATH_MAX 4096
 
 /* Peek the guest path to classify a possible `/dev/shm` intercept.
  *   0 = not shm (fall through to normal translation)
@@ -130,6 +129,7 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	const char *gpath = (const char *)(uintptr_t)args->b;
 	int flags = (int)args->c;
 	int mode  = (int)args->d;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 
 	/* /proc/self/maps and /proc/<our-pid>/maps: synthesize a shadow fd
 	 * backed by a memfd containing the kernel's maps output with each
@@ -185,10 +185,10 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 				return shadow;
 			if (dirfd != AT_FDCWD && tmp[0] != '/' &&
 			    could_be_proc_relative(tmp)) {
-				char composed[TAWC_PATH_MAX];
+				char *composed = scratch->buf[2];
 				if (compose_fd_relative(dirfd, tmp,
 							composed,
-							sizeof composed) > 0 &&
+							TAWCROOT_PATH_SCRATCH_SIZE) > 0 &&
 				    try_proc_shadow(composed, &shadow))
 					return shadow;
 			}
@@ -206,12 +206,12 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		 * /dev/shm dir would do. */
 	}
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int base_fd, use_empty;
 	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, sizeof path_buf,
-					suffix, sizeof suffix,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 					&base_fd, &use_empty,
 					openat_mode(flags));
 	if (e) return e;
@@ -319,12 +319,13 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
 	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, sizeof path_buf,
-					suffix, sizeof suffix,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 					&base_fd, &use_empty, pmode);
 	if (e) return e;
 
@@ -436,18 +437,19 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 		if (n < 0) return n;
 		if (path_buf[0] != '/') {
 			if (path_has_dotdot_component(path_buf)) {
-				char abs[TAWC_PATH_MAX];
+				TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+				char *abs = scratch->buf[0];
 				long al = tawcroot_fd_to_guest_abs(dirfd, abs,
-				                                   sizeof abs);
+				                                   TAWCROOT_PATH_SCRATCH_SIZE);
 				if (al >= 0) {
 					if (abs[al - 1] != '/') {
-						if ((size_t)al + 1 >= sizeof abs)
+						if ((size_t)al + 1 >= TAWCROOT_PATH_SCRATCH_SIZE)
 							return TAWC_ENAMETOOLONG;
 						abs[al++] = '/';
 					}
 					size_t pi = 0;
 					while (path_buf[pi] &&
-					       (size_t)al + 1 < sizeof abs)
+					       (size_t)al + 1 < TAWCROOT_PATH_SCRATCH_SIZE)
 						abs[al++] = path_buf[pi++];
 					if (path_buf[pi]) return TAWC_ENAMETOOLONG;
 					abs[al] = 0;
@@ -845,6 +847,7 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	char       *buf   = (char *)(uintptr_t)args->c;
 	int         size  = (int)args->d;
 	if (!gpath || !buf || size <= 0) return TAWC_EFAULT;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 
 	/* Phase 2e: synthesize /proc/self/exe from the stashed guest exe
 	 * path. The kernel's view points at libtawcroot.so; the guest
@@ -852,16 +855,18 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	 * case (readlinkat(proc_self_fd, "exe", ...)) is caught by re-
 	 * composing through the dirfd's /proc/self/fd/<n> link. */
 	{
-		char tmp[TAWC_PATH_MAX];
-		long n = tawc_copy_string_from_guest(tmp, sizeof tmp, gpath);
+		char *tmp = scratch->buf[0];
+		long n = tawc_copy_string_from_guest(
+			tmp, TAWCROOT_PATH_SCRATCH_SIZE, gpath);
 		if (n < 0) return n;
 		if (tawcroot_guest_exe_path_len > 0) {
 			int hit = is_proc_self_exe(tmp);
-			char composed[TAWC_PATH_MAX];
+			char *composed = scratch->buf[1];
 			if (!hit && dirfd != AT_FDCWD && tmp[0] != '/' &&
 			    could_be_proc_relative(tmp) &&
 			    compose_fd_relative(dirfd, tmp,
-						composed, sizeof composed) > 0)
+						composed,
+						TAWCROOT_PATH_SCRATCH_SIZE) > 0)
 				hit = is_proc_self_exe(composed);
 			if (hit) {
 				size_t len = tawcroot_guest_exe_path_len;
@@ -874,12 +879,12 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 		}
 	}
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
 	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, sizeof path_buf,
-					suffix, sizeof suffix,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 					&base_fd, &use_empty,
 					TAWCROOT_PATH_NOFOLLOW);
 	if (e) return e;
@@ -921,15 +926,16 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	 * fails, and the truncated host path falls through unsubstituted.
 	 * This is harmless in practice — every realpath caller passes a
 	 * PATH_MAX-sized buffer — but worth knowing. */
-	char *scratch     = path_buf;
-	int   scratch_cap = (size > (int)sizeof path_buf)
-	                    ? (int)sizeof path_buf : size;
-	long n = tawc_readlinkat(base_fd, p, scratch, (size_t)scratch_cap);
+	char *readlink_scratch = path_buf;
+	int   scratch_cap = (size > TAWCROOT_PATH_SCRATCH_SIZE)
+	                    ? TAWCROOT_PATH_SCRATCH_SIZE : size;
+	long n = tawc_readlinkat(base_fd, p, readlink_scratch,
+				 (size_t)scratch_cap);
 	if (n < 0) return n;
 	if (tawcroot_guest_exe_path_len > 0 &&
 	    tawcroot_self_host_path_len > 0 &&
 	    (size_t)n == tawcroot_self_host_path_len &&
-	    memcmp(scratch, tawcroot_self_host_path,
+	    memcmp(readlink_scratch, tawcroot_self_host_path,
 	           tawcroot_self_host_path_len) == 0) {
 		size_t glen = tawcroot_guest_exe_path_len;
 		if (glen > (size_t)size) glen = (size_t)size;
@@ -937,7 +943,7 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 		if (ce < 0) return ce;
 		return (long)glen;
 	}
-	long ce = tawc_copy_to_guest(buf, scratch, (size_t)n);
+	long ce = tawc_copy_to_guest(buf, readlink_scratch, (size_t)n);
 	if (ce < 0) return ce;
 	return n;
 }
@@ -963,12 +969,13 @@ static long handle_faccessat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
 	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, sizeof path_buf,
-					suffix, sizeof suffix,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 					&base_fd, &use_empty, pmode);
 	if (e) return e;
 	/* Empty suffix → guest asked for "/" or for a bind dst's root.
@@ -995,11 +1002,12 @@ static long handle_chdir(const tawcroot_syscall_args *args, ucontext_t *uc)
 	const char *gpath = (const char *)(uintptr_t)args->a;
 	if (!gpath) return TAWC_EFAULT;
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_FOLLOW);
 	if (e) return e;
@@ -1036,8 +1044,10 @@ static long handle_getcwd(const tawcroot_syscall_args *args, ucontext_t *uc)
 	size_t cap = (size_t)args->b;
 	if (!out || cap == 0) return TAWC_EFAULT;
 
-	char host[TAWC_PATH_MAX];
-	long r = TAWC_RAW(TAWC_SYS_getcwd, (long)host, (long)sizeof host,
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *host = scratch->buf[0];
+	long r = TAWC_RAW(TAWC_SYS_getcwd, (long)host,
+			  TAWCROOT_PATH_SCRATCH_SIZE,
 			  0, 0, 0, 0);
 	if (r < 0) return r;
 
@@ -1060,13 +1070,15 @@ static long handle_getcwd(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * the original implementation; a wild guest pointer would crash the
 	 * SIGSYS handler (review finding B1+B6). The kernel's getcwd
 	 * contract: returns length INCLUDING the trailing NUL. */
-	char tmp[TAWC_PATH_MAX];
+	char *tmp = scratch->buf[1];
 	size_t off = 0;
-	if (off + 1 >= cap || off + 1 >= sizeof tmp) return TAWC_ERANGE;
+	if (off + 1 >= cap || off + 1 >= TAWCROOT_PATH_SCRATCH_SIZE)
+		return TAWC_ERANGE;
 	tmp[off++] = '/';
 	for (size_t i = tawcroot_rootfs_host_path_len; i < host_len; i++) {
 		if (tmp[off - 1] == '/' && host[i] == '/') continue;
-		if (off + 1 >= cap || off + 1 >= sizeof tmp) return TAWC_ERANGE;
+		if (off + 1 >= cap || off + 1 >= TAWCROOT_PATH_SCRATCH_SIZE)
+			return TAWC_ERANGE;
 		tmp[off++] = host[i];
 	}
 	tmp[off] = 0;
@@ -1087,14 +1099,15 @@ static long handle_##name(const tawcroot_syscall_args *args,             \
 	(void)uc;                                                         \
 	int dirfd = (int)args->a;                                         \
 	const char *gpath = (const char *)(uintptr_t)args->b;             \
-	if (!gpath) return TAWC_EFAULT;                                           \
-	char path_buf[TAWC_PATH_MAX];                                     \
-	char suffix[TAWC_PATH_MAX];                                       \
-	int  base_fd, use_empty;                                          \
-	long e = fetch_and_translate_at(dirfd, gpath,                     \
-					path_buf, sizeof path_buf,        \
-					suffix, sizeof suffix,            \
-					&base_fd, &use_empty, pmode);     \
+	if (!gpath) return TAWC_EFAULT;                                       \
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);                                  \
+	char *path_buf = scratch->buf[0];                                     \
+	char *suffix = scratch->buf[1];                                       \
+	int  base_fd, use_empty;                                              \
+	long e = fetch_and_translate_at(dirfd, gpath,                         \
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE, \
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,   \
+					&base_fd, &use_empty, pmode);         \
 	if (e) return e;                                                  \
 	const char *p = use_empty ? "." : suffix;                         \
 	return TAWC_RAW(sysnr, base_fd, (long)p,                          \
@@ -1129,12 +1142,13 @@ static long handle_unlinkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		if (kind == SHM_PEEK_DIR) return (flag & 0x200) ? TAWC_EBUSY : TAWC_EISDIR;
 	}
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
 	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, sizeof path_buf,
-					suffix, sizeof suffix,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 					&base_fd, &use_empty,
 					TAWCROOT_PATH_PARENT_REMOVE);
 	if (e) return e;
@@ -1174,12 +1188,13 @@ static long handle_utimensat(const tawcroot_syscall_args *args,
 	tawcroot_path_mode pmode = (flags & AT_SYMLINK_NOFOLLOW)
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
 	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, sizeof path_buf,
-					suffix, sizeof suffix,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 					&base_fd, &use_empty, pmode);
 	if (e) return e;
 	const char *p = use_empty ? "." : suffix;
@@ -1209,12 +1224,13 @@ static long handle_symlinkat(const tawcroot_syscall_args *args,
 	const char *target = (const char *)(uintptr_t)args->a;
 	int newdirfd = (int)args->b;
 	const char *linkpath = (const char *)(uintptr_t)args->c;
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int base_fd, use_empty;
 	long e = fetch_and_translate_at(newdirfd, linkpath,
-					path_buf, sizeof path_buf,
-					suffix, sizeof suffix,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 					&base_fd, &use_empty,
 					TAWCROOT_PATH_PARENT_CREATE);
 	if (e) return e;
@@ -1296,12 +1312,13 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
 	long e = fetch_and_translate_at(dirfd, path,
-					path_buf, sizeof path_buf,
-					suffix, sizeof suffix,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 					&base_fd, &use_empty, pmode);
 	if (e) return e;
 
@@ -1332,10 +1349,11 @@ static long link_with_symlink_fallback(int src_fd, const char *src_suf,
 	if (rv == 0 || (rv != -13 /*EACCES*/ && rv != -1 /*EPERM*/)) {
 		return rv;
 	}
-	char abs_target[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *abs_target = scratch->buf[0];
 	abs_target[0] = '/';
 	size_t i = 0;
-	while (src_suf[i] && i + 2 < sizeof abs_target) {
+	while (src_suf[i] && i + 2 < TAWCROOT_PATH_SCRATCH_SIZE) {
 		abs_target[1 + i] = src_suf[i]; i++;
 	}
 	abs_target[1 + i] = 0;
@@ -1360,17 +1378,18 @@ static long handle_linkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		? TAWCROOT_PATH_FOLLOW
 		: TAWCROOT_PATH_NOFOLLOW;
 
-	char old_buf[TAWC_PATH_MAX], old_suf[TAWC_PATH_MAX];
-	char new_buf[TAWC_PATH_MAX], new_suf[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *old_buf = scratch->buf[0], *old_suf = scratch->buf[1];
+	char *new_buf = scratch->buf[2], *new_suf = scratch->buf[3];
 	int  old_fd, old_empty, new_fd, new_empty;
 	long e1 = fetch_and_translate_at(olddirfd, oldpath,
-					 old_buf, sizeof old_buf,
-					 old_suf, sizeof old_suf,
+					 old_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					 old_suf, TAWCROOT_PATH_SCRATCH_SIZE,
 					 &old_fd, &old_empty, src_mode);
 	if (e1) return e1;
 	long e2 = fetch_and_translate_at(newdirfd, newpath,
-					 new_buf, sizeof new_buf,
-					 new_suf, sizeof new_suf,
+					 new_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					 new_suf, TAWCROOT_PATH_SCRATCH_SIZE,
 					 &new_fd, &new_empty,
 					 TAWCROOT_PATH_PARENT_CREATE);
 	if (e2) return e2;
@@ -1391,18 +1410,19 @@ static long do_renameat(int olddirfd, const char *oldpath,
 			int newdirfd, const char *newpath,
 			unsigned int rflags)
 {
-	char old_buf[TAWC_PATH_MAX], old_suf[TAWC_PATH_MAX];
-	char new_buf[TAWC_PATH_MAX], new_suf[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *old_buf = scratch->buf[0], *old_suf = scratch->buf[1];
+	char *new_buf = scratch->buf[2], *new_suf = scratch->buf[3];
 	int  old_fd, old_empty, new_fd, new_empty;
 	long e1 = fetch_and_translate_at(olddirfd, oldpath,
-					 old_buf, sizeof old_buf,
-					 old_suf, sizeof old_suf,
+					 old_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					 old_suf, TAWCROOT_PATH_SCRATCH_SIZE,
 					 &old_fd, &old_empty,
 					 TAWCROOT_PATH_PARENT_REMOVE);
 	if (e1) return e1;
 	long e2 = fetch_and_translate_at(newdirfd, newpath,
-					 new_buf, sizeof new_buf,
-					 new_suf, sizeof new_suf,
+					 new_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					 new_suf, TAWCROOT_PATH_SCRATCH_SIZE,
 					 &new_fd, &new_empty,
 					 TAWCROOT_PATH_PARENT_CREATE);
 	if (e2) return e2;
@@ -1448,11 +1468,12 @@ static long handle_truncate(const tawcroot_syscall_args *args,
 	const char *gpath = (const char *)(uintptr_t)args->a;
 	long len          = (long)args->b;
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_FOLLOW);
 	if (e) return e;
@@ -1500,11 +1521,12 @@ static long stat_via_at(const char *path, struct stat *out, int flags)
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty, pmode);
 	if (e) return e;
 
@@ -1542,11 +1564,12 @@ static long handle_access(const tawcroot_syscall_args *args, ucontext_t *uc)
 		if (kind == SHM_PEEK_NAME) return tawcroot_shm_access_name(shm_name);
 		if (kind == SHM_PEEK_DIR)  return tawcroot_shm_access_dir();
 	}
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_FOLLOW);
 	if (e) return e;
@@ -1571,8 +1594,10 @@ static long handle_readlink(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * /proc/self/exe resolves to libtawcroot.so, and Firefox's stub
 	 * binary fails XPCOM lookup. */
 	{
-		char tmp[TAWC_PATH_MAX];
-		long n = tawc_copy_string_from_guest(tmp, sizeof tmp, path);
+		TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+		char *tmp = scratch->buf[0];
+		long n = tawc_copy_string_from_guest(
+			tmp, TAWCROOT_PATH_SCRATCH_SIZE, path);
 		if (n < 0) return n;
 		if (tawcroot_guest_exe_path_len > 0 && is_proc_self_exe(tmp)) {
 			size_t len = tawcroot_guest_exe_path_len;
@@ -1584,11 +1609,12 @@ static long handle_readlink(const tawcroot_syscall_args *args, ucontext_t *uc)
 		}
 	}
 
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_NOFOLLOW);
 	if (e) return e;
@@ -1603,11 +1629,12 @@ static long handle_chmod(const tawcroot_syscall_args *args, ucontext_t *uc)
 	(void)uc;
 	const char *path = (const char *)(uintptr_t)args->a;
 	int mode = (int)args->b;
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_FOLLOW);
 	if (e) return e;
@@ -1620,11 +1647,12 @@ static long handle_mkdir(const tawcroot_syscall_args *args, ucontext_t *uc)
 	(void)uc;
 	const char *path = (const char *)(uintptr_t)args->a;
 	int mode = (int)args->b;
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_CREATE);
 	if (e) return e;
@@ -1647,11 +1675,12 @@ static long handle_unlink_or_rmdir(const tawcroot_syscall_args *args,
 		}
 		if (kind == SHM_PEEK_DIR) return rmdir_flag ? TAWC_EBUSY : TAWC_EISDIR;
 	}
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_REMOVE);
 	if (e) return e;
@@ -1675,8 +1704,10 @@ static long handle_chown_legacy(const tawcroot_syscall_args *args,
 	 * success — matches the contract every other path-bearing
 	 * handler exposes. */
 	const char *path = (const char *)(uintptr_t)args->a;
-	char path_buf[TAWC_PATH_MAX];
-	long n = tawc_copy_string_from_guest(path_buf, sizeof path_buf, path);
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	long n = tawc_copy_string_from_guest(
+		path_buf, TAWCROOT_PATH_SCRATCH_SIZE, path);
 	if (n < 0) return n;
 	return 0;  /* fake-root no-op, like fchownat */
 }
@@ -1689,16 +1720,19 @@ static long handle_link_legacy(const tawcroot_syscall_args *args,
 	const char *oldpath = (const char *)(uintptr_t)args->a;
 	const char *newpath = (const char *)(uintptr_t)args->b;
 
-	char old_buf[TAWC_PATH_MAX], old_suf[TAWC_PATH_MAX];
-	char new_buf[TAWC_PATH_MAX], new_suf[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *old_buf = scratch->buf[0], *old_suf = scratch->buf[1];
+	char *new_buf = scratch->buf[2], *new_suf = scratch->buf[3];
 	int  old_fd, old_empty, new_fd, new_empty;
-	long e1 = fetch_and_translate(oldpath, old_buf, sizeof old_buf,
-				      old_suf, sizeof old_suf,
+	long e1 = fetch_and_translate(oldpath, old_buf,
+				      TAWCROOT_PATH_SCRATCH_SIZE,
+				      old_suf, TAWCROOT_PATH_SCRATCH_SIZE,
 				      &old_fd, &old_empty,
 				      TAWCROOT_PATH_NOFOLLOW);
 	if (e1) return e1;
-	long e2 = fetch_and_translate(newpath, new_buf, sizeof new_buf,
-				      new_suf, sizeof new_suf,
+	long e2 = fetch_and_translate(newpath, new_buf,
+				      TAWCROOT_PATH_SCRATCH_SIZE,
+				      new_suf, TAWCROOT_PATH_SCRATCH_SIZE,
 				      &new_fd, &new_empty,
 				      TAWCROOT_PATH_PARENT_CREATE);
 	if (e2) return e2;
@@ -1714,11 +1748,13 @@ static long handle_symlink_legacy(const tawcroot_syscall_args *args,
 	(void)uc;
 	const char *target   = (const char *)(uintptr_t)args->a;
 	const char *linkpath = (const char *)(uintptr_t)args->b;
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(linkpath, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(linkpath, path_buf,
+				     TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_CREATE);
 	if (e) return e;
@@ -1765,11 +1801,12 @@ static long handle_mknod(const tawcroot_syscall_args *args, ucontext_t *uc)
 	(void)uc;
 	const char *gpath = (const char *)(uintptr_t)args->a;
 	if (!gpath) return TAWC_EFAULT;
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_CREATE);
 	if (e) return e;
@@ -1826,16 +1863,17 @@ static long handle_statfs(const tawcroot_syscall_args *args, ucontext_t *uc)
 	(void)uc;
 	const char *gpath = (const char *)(uintptr_t)args->a;
 	if (!gpath) return TAWC_EFAULT;
-	char path_buf[TAWC_PATH_MAX];
-	char suffix[TAWC_PATH_MAX];
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
 	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, sizeof path_buf,
-				     suffix, sizeof suffix,
+	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_FOLLOW);
 	if (e) return e;
-	char host_path[TAWC_PATH_MAX];
-	long bp = build_proc_fd_path(host_path, sizeof host_path,
+	char *host_path = scratch->buf[2];
+	long bp = build_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
 				     base_fd, suffix, use_empty);
 	if (bp < 0) return bp;
 	return TAWC_RAW(TAWC_SYS_statfs, (long)host_path, args->b, 0, 0, 0, 0);
@@ -1869,20 +1907,24 @@ static long handle_statfs(const tawcroot_syscall_args *args, ucontext_t *uc)
 static long handle_##name(const tawcroot_syscall_args *args, ucontext_t *uc) \
 {                                                                          \
 	(void)uc;                                                          \
-	const char *gpath = (const char *)(uintptr_t)args->a;              \
-	if (!gpath) return TAWC_EFAULT;                                            \
-	char path_buf[TAWC_PATH_MAX];                                      \
-	char suffix[TAWC_PATH_MAX];                                        \
-	int  base_fd, use_empty;                                           \
-	long e = fetch_and_translate(gpath, path_buf, sizeof path_buf,     \
-				     suffix, sizeof suffix,                \
-				     &base_fd, &use_empty, pmode);         \
+	const char *gpath = (const char *)(uintptr_t)args->a;                  \
+	if (!gpath) return TAWC_EFAULT;                                        \
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);                                   \
+	char *path_buf = scratch->buf[0];                                      \
+	char *suffix = scratch->buf[1];                                        \
+	int  base_fd, use_empty;                                               \
+	long e = fetch_and_translate(gpath, path_buf,                          \
+				     TAWCROOT_PATH_SCRATCH_SIZE,              \
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,      \
+				     &base_fd, &use_empty, pmode);             \
 	if (e) return e;                                                   \
-	if (use_empty && (pmode) == TAWCROOT_PATH_NOFOLLOW)                \
-		return TAWC_EOPNOTSUPP; /* see big comment above */         \
-	char host_path[TAWC_PATH_MAX];                                     \
-	long bp = build_proc_fd_path(host_path, sizeof host_path,          \
-				     base_fd, suffix, use_empty);          \
+	if (use_empty && (pmode) == TAWCROOT_PATH_NOFOLLOW) {                  \
+		return TAWC_EOPNOTSUPP; /* see big comment above */            \
+	}                                                                      \
+	char *host_path = scratch->buf[2];                                      \
+	long bp = build_proc_fd_path(host_path,                                 \
+				     TAWCROOT_PATH_SCRATCH_SIZE,              \
+				     base_fd, suffix, use_empty);              \
 	if (bp < 0) return bp;                                             \
 	return TAWC_RAW(sysnr, (long)host_path,                            \
 			args->b, args->c, args->d,                         \

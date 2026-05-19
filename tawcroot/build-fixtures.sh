@@ -108,6 +108,7 @@ build_static  static_open_creat_argv1
 build_static  static_open_rdonly_argv1
 build_static  static_sleep_open_creat_argv1
 build_static  static_fork_open_argv1
+build_static  static_small_stack_open_argv1
 build_static  static_fork_exec_argv1
 build_static  static_fork_closefrom_exec_argv1
 build_static  static_fexecve_argv1

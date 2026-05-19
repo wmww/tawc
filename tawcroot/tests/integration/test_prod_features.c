@@ -62,6 +62,9 @@
 #ifndef TAWCROOT_STATIC_FORK_OPEN_ARGV1_BIN
 # error "TAWCROOT_STATIC_FORK_OPEN_ARGV1_BIN must be defined"
 #endif
+#ifndef TAWCROOT_STATIC_SMALL_STACK_OPEN_ARGV1_BIN
+# error "TAWCROOT_STATIC_SMALL_STACK_OPEN_ARGV1_BIN must be defined"
+#endif
 #ifndef TAWCROOT_STATIC_FEXECVE_ARGV1_BIN
 # error "TAWCROOT_STATIC_FEXECVE_ARGV1_BIN must be defined"
 #endif
@@ -103,6 +106,8 @@ static bool build_rootfs(void)
 		  "static_check_proc_self_fd" },
 		{ TAWCROOT_STATIC_FORK_OPEN_ARGV1_BIN,
 		  "static_fork_open_argv1" },
+		{ TAWCROOT_STATIC_SMALL_STACK_OPEN_ARGV1_BIN,
+		  "static_small_stack_open_argv1" },
 		{ TAWCROOT_STATIC_FEXECVE_ARGV1_BIN,
 		  "static_fexecve_argv1" },
 		{ TAWCROOT_STATIC_OPEN_CREAT_ARGV1_BIN,
@@ -262,6 +267,79 @@ test(prod_inherited_sigsys_block_unblocked_by_init)
 	test_int_eq(access(host_marker, F_OK), 0);
 
 	(void)unlink(host_marker);
+	rh_rmrf(FAKE_ROOTFS);
+}
+
+test(prod_path_trap_from_small_stack_thread)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	test_true(build_rootfs());
+
+	const char *guest_marker = "/marker-small-stack";
+	char host_marker[PATH_MAX];
+	snprintf(host_marker, sizeof host_marker,
+	         "%s%s", FAKE_ROOTFS, guest_marker);
+	(void)unlink(host_marker);
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS, "--",
+		"/bin/static_small_stack_open_argv1", guest_marker, NULL
+	};
+	test_int_eq(run_with(args), 42);
+	test_int_eq(access(host_marker, F_OK), 0);
+
+	(void)unlink(host_marker);
+	rh_rmrf(FAKE_ROOTFS);
+}
+
+test(prod_long_path_over_1024_still_translates)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	test_true(build_rootfs());
+
+	char guest_path[PATH_MAX];
+	char host_path[PATH_MAX];
+	size_t gl = 0;
+	size_t hl = 0;
+
+	int n = snprintf(guest_path, sizeof guest_path, "/long");
+	test_true(n > 0 && (size_t)n < sizeof guest_path);
+	gl = (size_t)n;
+	n = snprintf(host_path, sizeof host_path, "%s/long", FAKE_ROOTFS);
+	test_true(n > 0 && (size_t)n < sizeof host_path);
+	hl = (size_t)n;
+	test_true(rh_mkdir_p(host_path, 0755));
+
+	for (int i = 0; i < 24; i++) {
+		char comp[48];
+		n = snprintf(comp, sizeof comp,
+		             "/segment%02d-abcdefghijklmnopqrstuvwxyz0123456789", i);
+		test_true(n > 0 && (size_t)n < sizeof comp);
+		size_t cl = (size_t)n;
+		test_true(gl + cl + 1 < sizeof guest_path);
+		memcpy(guest_path + gl, comp, cl + 1);
+		gl += cl;
+		test_true(hl + cl + 1 < sizeof host_path);
+		memcpy(host_path + hl, comp, cl + 1);
+		hl += cl;
+		test_true(rh_mkdir_p(host_path, 0755));
+	}
+
+	const char *leaf = "/leaf";
+	size_t leaf_len = strlen(leaf);
+	test_true(gl + leaf_len + 1 < sizeof guest_path);
+	memcpy(guest_path + gl, leaf, leaf_len + 1);
+	test_true(hl + leaf_len + 1 < sizeof host_path);
+	memcpy(host_path + hl, leaf, leaf_len + 1);
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS, "--",
+		"/bin/static_open_creat_argv1", guest_path, NULL
+	};
+	test_true(strlen(guest_path) > 1024);
+	test_int_eq(run_with(args), 0);
+	test_int_eq(access(host_path, F_OK), 0);
+
 	rh_rmrf(FAKE_ROOTFS);
 }
 

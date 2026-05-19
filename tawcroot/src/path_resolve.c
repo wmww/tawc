@@ -14,13 +14,9 @@
  * we ever get here. The hop counter caps the total symlink walks at
  * SYMLOOP_MAX, matching Linux's own bound.
  *
- * Freestanding: no libc, no allocation. The two scratch buffers live
- * on the resolver's stack (`target` for the readlink result, `tmp`
- * for splice-then-fold). Each is `TAWC_PATH_MAX` (4 KB), so total
- * resolver stack is ~8 KB on top of the caller's frame. That's fine
- * for the handler's worker stack today; if a future guest's worker
- * threads have <16 KB stacks we'd want to shrink these (note in
- * `notes/tawcroot.md` "small-thread-stack overflow risk").
+ * Freestanding: no libc, no allocation. The readlink target and splice
+ * scratch buffers come from path_scratch.c so this resolver can run from
+ * a SIGSYS handler on a tiny guest stack.
  */
 
 #include <stddef.h>
@@ -29,8 +25,7 @@
 #include "path.h"
 #include "path_oracle.h"
 #include "path_resolve.h"
-
-#define TAWC_PATH_MAX 4096
+#include "path_scratch.h"
 
 /* Linux's SYMLOOP_MAX is 40. Match it so an in-rootfs chain of
  * symlinks fails identically to a no-tawcroot equivalent. */
@@ -116,6 +111,7 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 				    const struct tawcroot_path_oracle *oracle)
 {
 	if (!oracle || !oracle->readlink) return TAWC_EINVAL;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 
 	for (int hops = 0; hops < TAWC_SYMLOOP_MAX; hops++) {
 		size_t suf_len = rstrlen(suf);
@@ -144,14 +140,15 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 			char saved = suf[comp_end];
 			suf[comp_end] = 0;
 
-			char target[TAWC_PATH_MAX];
+			char *target = scratch->buf[0];
 			/* Pass full buffer (not cap-1) so we can detect
 			 * truncation: when readlink returns the full cap,
 			 * the kernel had more bytes to write but ran out
 			 * of room. cap-1 form silently mistakes a truncated
 			 * target for an exact-fit one. */
 			long n = oracle->readlink(oracle->ctx, suf,
-						  target, sizeof target);
+						  target,
+						  TAWCROOT_PATH_SCRATCH_SIZE);
 
 			suf[comp_end] = saved;
 
@@ -174,7 +171,7 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 				 * different rules than readlinkat used. */
 				return n;
 			}
-			if ((size_t)n == sizeof target) {
+			if ((size_t)n == TAWCROOT_PATH_SCRATCH_SIZE) {
 				/* Saturation: target is at least sizeof(target)
 				 * bytes, so we can neither NUL-terminate it nor
 				 * be sure the bytes we have are the whole target.
@@ -194,11 +191,12 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 			}
 			target[n] = 0;
 
-			char tmp[TAWC_PATH_MAX];
+			char *tmp = scratch->buf[1];
 			long sr = splice_target(suf, suf_len,
 						comp_start, comp_end,
 						target, (size_t)n,
-						tmp, sizeof tmp);
+						tmp,
+						TAWCROOT_PATH_SCRATCH_SIZE);
 			if (sr < 0) return sr;
 
 			long fr = tawcroot_path_fold_absolute(tmp, suf, cap);

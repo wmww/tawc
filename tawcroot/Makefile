@@ -112,6 +112,7 @@ PROD_C := \
     $(SRC_T)/src/handler.c \
     $(SRC_T)/src/dispatch.c \
     $(SRC_T)/src/path.c \
+    $(SRC_T)/src/path_scratch.c \
     $(SRC_T)/src/path_fold.c \
     $(SRC_T)/src/path_orchestrate.c \
     $(SRC_T)/src/path_resolve.c \
@@ -144,6 +145,7 @@ PROD_C := \
 PROD_C_FOR_TESTS := \
     $(SRC_T)/src/strings.c \
     $(SRC_T)/src/filter_build.c \
+    $(SRC_T)/src/path_scratch.c \
     $(SRC_T)/src/path_fold.c \
     $(SRC_T)/src/path_orchestrate.c \
     $(SRC_T)/src/path_resolve.c \
@@ -332,6 +334,13 @@ $(OUT)/programs/static_sleep_open_creat_argv1: $(SRC_TS)/integration/programs/st
 # fork-child PID — catches the cached-tid class of bug from
 # notes/tawcroot.md ("More phase-5b bugs"; usercopy.c:14-22).
 $(OUT)/programs/static_fork_open_argv1: $(SRC_TS)/integration/programs/static_fork_open_argv1_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
+
+# static_small_stack_open_argv1: clone(SIGCHLD) with an explicit 16 KiB
+# child stack, then child openat-creates argv[1]. Catches SIGSYS handler
+# stack regressions: the path-bearing trap runs on that tiny stack.
+$(OUT)/programs/static_small_stack_open_argv1: $(SRC_TS)/integration/programs/static_small_stack_open_argv1_x86_64.S | $(OUT)
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
 

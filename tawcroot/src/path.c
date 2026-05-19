@@ -35,10 +35,9 @@
 #include "path_oracle.h"
 #include "path_orchestrate.h"
 #include "path_resolve.h"
+#include "path_scratch.h"
 #include "raw_sys.h"
 #include "tawc_uapi.h"
-
-#define TAWC_PATH_MAX 4096
 
 int    tawcroot_rootfs_fd               = -1;
 char   tawcroot_rootfs_host_path[4096]  = {0};
@@ -73,9 +72,11 @@ void tawcroot_set_guest_exe_path(const char *path)
 	 * extra plumbing — exec'd binaries live in the rootfs proper in
 	 * every flow we care about. */
 	if (tawcroot_rootfs_fd >= 0) {
-		char suffix[TAWC_PATH_MAX];
+		TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+		char *suffix = scratch->buf[0];
 		tawcroot_path_result r = tawcroot_path_translate(
-			path, suffix, sizeof suffix, TAWCROOT_PATH_FOLLOW);
+			path, suffix, TAWCROOT_PATH_SCRATCH_SIZE,
+			TAWCROOT_PATH_FOLLOW);
 		if (r.err == 0 && r.base_fd == tawcroot_rootfs_fd) {
 			tawcroot_guest_exe_path[0] = '/';
 			size_t i = 0;
@@ -183,8 +184,10 @@ long tawcroot_fd_to_guest_abs(int fd, char *out, size_t out_cap)
 	if (fd < 0 || fd == AT_FDCWD) return TAWC_EINVAL;
 	if (out_cap < 2) return TAWC_ENAMETOOLONG;
 
-	char host[TAWC_PATH_MAX];
-	long n = tawcroot_proc_fd_to_host_path(fd, host, sizeof host);
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *host = scratch->buf[0];
+	long n = tawcroot_proc_fd_to_host_path(
+		fd, host, TAWCROOT_PATH_SCRATCH_SIZE);
 	if (n < 0) return n;
 
 	const struct tawcroot_bind *best_bind = 0;
@@ -371,8 +374,10 @@ static long prod_cwd_to_guest_abs(void *ctx, char *out, size_t out_cap)
 	(void)ctx;
 	if (tawcroot_rootfs_host_path_len == 0) return TAWC_ENOENT;
 
-	char cwd[TAWC_PATH_MAX];
-	long r = TAWC_RAW(TAWC_SYS_getcwd, (long)cwd, (long)sizeof cwd,
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *cwd = scratch->buf[0];
+	long r = TAWC_RAW(TAWC_SYS_getcwd, (long)cwd,
+			  TAWCROOT_PATH_SCRATCH_SIZE,
 			  0, 0, 0, 0);
 	if (r < 0) return r;
 	if ((size_t)r == 0) return TAWC_ENOENT;

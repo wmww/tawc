@@ -33,9 +33,8 @@
 #include "path_oracle.h"
 #include "path_orchestrate.h"
 #include "path_resolve.h"
+#include "path_scratch.h"
 #include "tawc_string.h"
-
-#define TAWC_PATH_MAX 4096
 
 /* Apply memoization to a folded suffix in place. Returns 1 if the
  * suffix changed (caller may want to re-fold), 0 otherwise.
@@ -258,15 +257,19 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	}
 	r.base_fd = ctx->rootfs_base_fd;
 
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+
 	if (guest_path[0] != '/') {
 		if (!ctx->cwd_to_guest_abs) { r.err = TAWC_ENOENT; return r; }
-		char cwd_abs[TAWC_PATH_MAX];
-		long cr = ctx->cwd_to_guest_abs(ctx->cwd_ctx, cwd_abs, sizeof cwd_abs);
+		char *cwd_abs = scratch->buf[0];
+		long cr = ctx->cwd_to_guest_abs(ctx->cwd_ctx, cwd_abs,
+						TAWCROOT_PATH_SCRATCH_SIZE);
 		if (cr < 0) { r.err = cr; return r; }
 		if (cwd_abs[0] != '/') { r.err = TAWC_ENOENT; return r; }
 
-		char joined[TAWC_PATH_MAX];
-		long jr = join_cwd_rel(cwd_abs, guest_path, joined, sizeof joined);
+		char *joined = scratch->buf[1];
+		long jr = join_cwd_rel(cwd_abs, guest_path, joined,
+				       TAWCROOT_PATH_SCRATCH_SIZE);
 		if (jr < 0) { r.err = jr; return r; }
 		long fr = tawcroot_path_fold_absolute(joined, out_suffix, out_cap);
 		if (fr < 0) { r.err = fr; return r; }
@@ -286,11 +289,12 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	for (int hop = 0; hop < 8; hop++) {
 		if (!apply_memo(out_suffix, out_cap, mode,
 				ctx->memos, ctx->n_memos)) break;
-		char tmp[TAWC_PATH_MAX];
+		char *tmp = scratch->buf[2];
 		size_t i = 0;
 		tmp[i++] = '/';
 		size_t j = 0;
-		while (out_suffix[j] && i + 1 < sizeof tmp) tmp[i++] = out_suffix[j++];
+		while (out_suffix[j] && i + 1 < TAWCROOT_PATH_SCRATCH_SIZE)
+			tmp[i++] = out_suffix[j++];
 		tmp[i] = 0;
 		long rf = tawcroot_path_fold_absolute(tmp, out_suffix, out_cap);
 		if (rf < 0) { r.err = rf; return r; }
