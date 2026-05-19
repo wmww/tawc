@@ -27,9 +27,9 @@ import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.InstallationStore
-import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.verticalLp
+import kotlin.math.min
 
 /**
  * App launcher: type-to-filter list of installed `.desktop` apps for one
@@ -79,13 +79,16 @@ class LauncherActivity : AppCompatActivity() {
         installationId = intent?.getStringExtra(EXTRA_ID) ?: ""
 
         installation = store.load(installationId)
-        val title = installation?.label ?: installationId.ifEmpty { "Launcher" }
-        val scaffold = buildChildScreen(title)
-
         val pad = (16 * resources.displayMetrics.density).toInt()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad / 2)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+        }
 
         searchField = EditText(this).apply {
-            hint = "Type to filter…"
+            hint = "Search"
+            textSize = 24f
             isSingleLine = true
             imeOptions = EditorInfo.IME_ACTION_GO
             // Keep the search box quietly focused on entry so the
@@ -105,9 +108,9 @@ class LauncherActivity : AppCompatActivity() {
                 if (isEnter) { launchTop(); true } else false
             }
         }
-        scaffold.content.addView(
+        content.addView(
             searchField,
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2),
+            verticalLp(MATCH_PARENT, WRAP_CONTENT),
         )
 
         emptyView = TextView(this).apply {
@@ -115,16 +118,26 @@ class LauncherActivity : AppCompatActivity() {
             textSize = 14f
             alpha = 0.7f
         }
-        scaffold.content.addView(
+        content.addView(
             emptyView,
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2),
         )
 
-        listColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val scroll = ScrollView(this).apply { addView(listColumn) }
-        scaffold.content.addView(scroll, verticalLp(MATCH_PARENT, MATCH_PARENT))
+        listColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, pad / 2)
+        }
+        val scroll = ScrollView(this).apply {
+            setFillViewport(true)
+            clipToPadding = false
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(pad)
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(listColumn)
+        }
+        content.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
-        setContentView(scaffold.root)
+        setContentView(content)
 
         // Force the keyboard up: simply requesting focus isn't enough on
         // some Android versions when the IME hasn't been shown yet in the
@@ -137,6 +150,11 @@ class LauncherActivity : AppCompatActivity() {
         loadApps()
     }
 
+    override fun onStart() {
+        super.onStart()
+        sizePopupWindow()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         uiScope.cancel()
@@ -144,13 +162,12 @@ class LauncherActivity : AppCompatActivity() {
         // activity should not tear down a freshly launched application.
     }
 
-    // Match the fade used by MainActivity's search-box click on the way
-    // in, so the round-trip looks symmetric instead of fading open and
-    // sliding closed.
-    override fun finish() {
-        super.finish()
-        @Suppress("DEPRECATION")
-        overridePendingTransition(R.anim.tawc_fade_in, R.anim.tawc_fade_out)
+    private fun sizePopupWindow() {
+        val display = resources.displayMetrics
+        val density = display.density
+        val width = min((display.widthPixels * 0.92f).toInt(), (720 * density).toInt())
+        val height = min((display.heightPixels * 0.78f).toInt(), (640 * density).toInt())
+        window.setLayout(width, height)
     }
 
     private fun loadApps() {

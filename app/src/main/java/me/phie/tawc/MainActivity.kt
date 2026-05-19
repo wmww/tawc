@@ -150,8 +150,6 @@ class MainActivity : AppCompatActivity() {
                 val i = Intent(this@MainActivity, LauncherActivity::class.java)
                     .putExtra(LauncherActivity.EXTRA_ID, inst.id)
                 startActivity(i)
-                @Suppress("DEPRECATION")
-                overridePendingTransition(R.anim.tawc_fade_in, R.anim.tawc_fade_out)
             }
         }
         searchBox.visibility = if (inst.state == Installation.State.FAILED) View.GONE else View.VISIBLE

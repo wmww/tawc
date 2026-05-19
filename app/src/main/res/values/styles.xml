@@ -39,6 +39,15 @@
         <item name="android:textStyle">bold</item>
     </style>
 
+    <style name="Theme.Tawc.Launcher" parent="Theme.Tawc">
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:windowCloseOnTouchOutside">true</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:windowBackground">@drawable/tawc_popup_bg</item>
+        <item name="android:windowMinWidthMajor">0%</item>
+        <item name="android:windowMinWidthMinor">0%</item>
+    </style>
+
     <!-- Compositor activity stays on the device-default theme: it draws
          its own surface and never inflates Material widgets, so pulling
          Material3 in here would just bloat the resource table for no win.

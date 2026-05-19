@@ -115,6 +115,7 @@
             android:name=".launcher.LauncherActivity"
             android:exported="false"
             android:label="Launcher"
+            android:theme="@style/Theme.Tawc.Launcher"
             android:windowSoftInputMode="stateVisible|adjustResize" />
 
         <service
