@@ -56,8 +56,14 @@
 #ifndef TAWCROOT_PROD_BIN
 # error "TAWCROOT_PROD_BIN must be defined by the build"
 #endif
+#ifndef TAWCROOT_STATIC_EXIT42_BIN
+# error "TAWCROOT_STATIC_EXIT42_BIN must be defined"
+#endif
 #ifndef TAWCROOT_STATIC_FORK_OPEN_ARGV1_BIN
 # error "TAWCROOT_STATIC_FORK_OPEN_ARGV1_BIN must be defined"
+#endif
+#ifndef TAWCROOT_STATIC_FEXECVE_ARGV1_BIN
+# error "TAWCROOT_STATIC_FEXECVE_ARGV1_BIN must be defined"
 #endif
 #ifndef TAWCROOT_STATIC_OPEN_CREAT_ARGV1_BIN
 # error "TAWCROOT_STATIC_OPEN_CREAT_ARGV1_BIN must be defined"
@@ -89,12 +95,16 @@ static bool build_rootfs(void)
 	if (!rh_mkdir_p(p, 0755)) return false;
 
 	struct { const char *src; const char *name; } fixtures[] = {
+		{ TAWCROOT_STATIC_EXIT42_BIN,
+		  "static_exit42" },
 		{ TAWCROOT_STATIC_UNIX_BIND_ARGV1_BIN,
 		  "static_unix_bind_argv1" },
 		{ TAWCROOT_STATIC_CHECK_PROC_SELF_FD_BIN,
 		  "static_check_proc_self_fd" },
 		{ TAWCROOT_STATIC_FORK_OPEN_ARGV1_BIN,
 		  "static_fork_open_argv1" },
+		{ TAWCROOT_STATIC_FEXECVE_ARGV1_BIN,
+		  "static_fexecve_argv1" },
 		{ TAWCROOT_STATIC_OPEN_CREAT_ARGV1_BIN,
 		  "static_open_creat_argv1" },
 		{ TAWCROOT_STATIC_IO_URING_DENY_BIN,
@@ -171,6 +181,20 @@ test(prod_proc_self_fd_hides_reserved)
 		"-b", "/proc:proc",
 		"--",
 		"/bin/static_check_proc_self_fd", NULL
+	};
+	test_int_eq(run_with(args), 42);
+
+	rh_rmrf(FAKE_ROOTFS);
+}
+
+test(prod_execveat_empty_path_execs_fd)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	test_true(build_rootfs());
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS, "--",
+		"/bin/static_fexecve_argv1", "/bin/static_exit42", NULL
 	};
 	test_int_eq(run_with(args), 42);
 

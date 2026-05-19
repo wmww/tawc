@@ -353,6 +353,13 @@ $(OUT)/programs/static_fork_closefrom_exec_argv1: $(SRC_TS)/integration/programs
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
 
+# static_fexecve_argv1: open(argv[1]) and execveat(fd, "", ..., AT_EMPTY_PATH).
+# Exercises the fexecve(3) shape that used to return -ENOSYS for dirfd !=
+# AT_FDCWD.
+$(OUT)/programs/static_fexecve_argv1: $(SRC_TS)/integration/programs/static_fexecve_argv1_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
+
 # static_unix_bind_argv1: socket(AF_UNIX) + bind(sun_path=argv[1]).
 # Validates syscalls_socket.c sun_path translation — the gpg-agent
 # regression where an in-rootfs path was opened on the host fs.

@@ -19,9 +19,8 @@
  *     itself caps argv strings at MAX_ARG_STRLEN (32 pages) so most
  *     normal usage fits comfortably.
  *
- *   - We don't yet handle execveat's dirfd != AT_FDCWD case
- *     (path-relative-to-fd). Phase 2.6 doesn't need it for the
- *     /bin/sh -c "ls /" exit gate; left as TODO.
+ *   - execveat's AT_SYMLINK_NOFOLLOW flag is intentionally not emulated
+ *     yet; callers get -ENOSYS rather than a silently-followed symlink.
  */
 
 #include <stddef.h>
@@ -31,6 +30,7 @@
 #include "dispatch.h"
 #include "errno_neg.h"
 #include "exec_handler.h"
+#include "path.h"
 #include "raw_sys.h"
 #include "syscalls_exec.h"
 #include "tawc_uapi.h"
@@ -101,16 +101,10 @@ static long collect_array(char *const *guest_arr,
  * collect strings; call perform. Returns the value to write back to
  * the guest as the syscall return — typically -errno on failure
  * (perform doesn't return on success). */
-static long do_exec(const void *guest_path,
-                    char *const *guest_argv, char *const *guest_envp)
+static long do_exec_path(const char *path,
+                         char *const *guest_argv, char *const *guest_envp)
 {
-	if (!guest_path) return TAWC_EFAULT;
-
-	/* Path. */
-	static char path_buf[MAX_STR];
-	long pn = tawc_copy_string_from_guest(path_buf, sizeof path_buf,
-	                                      (const char *)guest_path);
-	if (pn < 0) return pn;
+	if (!path) return TAWC_EFAULT;
 
 	/* argv: 64 KB total, MAX_STR per string. argv overflow is rare —
 	 * most callers pass a handful of short args — but ld-conf and
@@ -133,8 +127,20 @@ static long do_exec(const void *guest_path,
 	if (envc < 0) return envc;
 
 	/* Perform never returns on success. On failure it returns -errno. */
-	return tawcroot_exec_handler_perform(path_buf, (int)argc,
+	return tawcroot_exec_handler_perform(path, (int)argc,
 	                                     argv_ptrs, envp_ptrs);
+}
+
+static long do_exec(const void *guest_path,
+                    char *const *guest_argv, char *const *guest_envp)
+{
+	if (!guest_path) return TAWC_EFAULT;
+
+	static char path_buf[MAX_STR];
+	long pn = tawc_copy_string_from_guest(path_buf, sizeof path_buf,
+	                                      (const char *)guest_path);
+	if (pn < 0) return pn;
+	return do_exec_path(path_buf, guest_argv, guest_envp);
 }
 
 /* execve(path, argv, envp). Both x86_64 (NR 59) and aarch64 (NR 221)
@@ -152,15 +158,64 @@ static long handle_execve(const tawcroot_syscall_args *args, ucontext_t *uc)
 	               (char *const *)args->c);
 }
 
-/* execveat(dirfd, path, argv, envp, flags). Phase-2 minimum:
- * AT_FDCWD only. Anything else returns -ENOSYS for now. */
+static long append_relative(char *base, size_t *len, size_t cap,
+                            const char *rel)
+{
+	if (*len == 0) return TAWC_EINVAL;
+	if (base[*len - 1] != '/') {
+		if (*len + 1 >= cap) return TAWC_ENAMETOOLONG;
+		base[(*len)++] = '/';
+	}
+	size_t i = 0;
+	while (rel[i]) {
+		if (*len + 1 >= cap) return TAWC_ENAMETOOLONG;
+		base[(*len)++] = rel[i++];
+	}
+	base[*len] = 0;
+	return 0;
+}
+
+/* execveat(dirfd, path, argv, envp, flags). Handles the common fexecve(3)
+ * shape: execveat(fd, "", argv, envp, AT_EMPTY_PATH), plus dirfd-relative
+ * non-empty paths that can be reverse-translated into the rootfs view. */
 static long handle_execveat(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
 	int dirfd = (int)args->a;
-	if (dirfd != AT_FDCWD) return TAWC_ENOSYS;
-	return do_exec((const void *)args->b, (char *const *)args->c,
-	               (char *const *)args->d);
+	int flags = (int)args->e;
+
+	if (flags & ~(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW)) return TAWC_EINVAL;
+	if (flags & AT_SYMLINK_NOFOLLOW) return TAWC_ENOSYS;
+	if (dirfd == AT_FDCWD)
+		return do_exec((const void *)args->b, (char *const *)args->c,
+		               (char *const *)args->d);
+
+	static char guest_path[MAX_STR];
+	long pn = tawc_copy_string_from_guest(guest_path, sizeof guest_path,
+	                                      (const char *)args->b);
+	if (pn < 0) return pn;
+
+	if (guest_path[0] == '/') {
+		return do_exec_path(guest_path, (char *const *)args->c,
+		                    (char *const *)args->d);
+	}
+
+	if (guest_path[0] == 0 && !(flags & AT_EMPTY_PATH))
+		return TAWC_ENOENT;
+
+	static char resolved[MAX_STR];
+	long rn = tawcroot_fd_to_guest_abs(dirfd, resolved, sizeof resolved);
+	if (rn < 0) return rn;
+
+	if (guest_path[0] != 0) {
+		size_t len = (size_t)rn;
+		long ar = append_relative(resolved, &len, sizeof resolved,
+		                          guest_path);
+		if (ar < 0) return ar;
+	}
+
+	return do_exec_path(resolved, (char *const *)args->c,
+	                    (char *const *)args->d);
 }
 
 void tawcroot_exec_register(void)

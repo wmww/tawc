@@ -141,6 +141,80 @@ long tawcroot_proc_fd_to_host_path(int fd, char *out, size_t out_cap)
 	return n;
 }
 
+/* Helper: copy `host[start..n)` into `out` as a guest-absolute path
+ * with leading '/' (preserving / collapsing internal '/' runs). Used by
+ * both the rootfs-prefix and bind-src branches of tawcroot_fd_to_guest_abs.
+ * Returns the written length, or -ENAMETOOLONG. */
+static long write_guest_abs_suffix(char *out, size_t out_cap,
+                                   const char *host, size_t start, size_t n,
+                                   const char *bind_dst, size_t bind_dst_len)
+{
+	size_t off = 0;
+	if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
+	out[off++] = '/';
+	for (size_t i = 0; i < bind_dst_len; i++) {
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
+		out[off++] = bind_dst[i];
+	}
+	for (size_t i = start; i < n; i++) {
+		if (host[i] == '/' && off > 0 && out[off - 1] == '/') continue;
+		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
+		out[off++] = host[i];
+	}
+	out[off] = 0;
+	return (long)off;
+}
+
+/* True iff `host[0..n)` starts with `prefix[0..pl)` and the next byte (if
+ * any) is `/` — i.e. the prefix matches at a component boundary. */
+static int host_prefix_match(const char *host, size_t n,
+                             const char *prefix, size_t pl)
+{
+	if (pl == 0) return 0;
+	if (pl > n)  return 0;
+	for (size_t i = 0; i < pl; i++)
+		if (host[i] != prefix[i]) return 0;
+	if (n > pl && host[pl] != '/') return 0;
+	return 1;
+}
+
+long tawcroot_fd_to_guest_abs(int fd, char *out, size_t out_cap)
+{
+	if (fd < 0 || fd == AT_FDCWD) return TAWC_EINVAL;
+	if (out_cap < 2) return TAWC_ENAMETOOLONG;
+
+	char host[TAWC_PATH_MAX];
+	long n = tawcroot_proc_fd_to_host_path(fd, host, sizeof host);
+	if (n < 0) return n;
+
+	const struct tawcroot_bind *best_bind = 0;
+	size_t best_pl = 0;
+
+	if (host_prefix_match(host, (size_t)n, tawcroot_rootfs_host_path,
+	                      tawcroot_rootfs_host_path_len))
+		best_pl = tawcroot_rootfs_host_path_len;
+
+	for (size_t bi = 0; bi < tawcroot_n_binds; bi++) {
+		const struct tawcroot_bind *b = &tawcroot_binds[bi];
+		if (!b->active || b->src_len == 0) continue;
+		if (!host_prefix_match(host, (size_t)n, b->src, b->src_len))
+			continue;
+		if (b->src_len > best_pl) {
+			best_bind = b;
+			best_pl = b->src_len;
+		}
+	}
+
+	if (best_bind)
+		return write_guest_abs_suffix(out, out_cap, host,
+		                              best_pl, (size_t)n,
+		                              best_bind->dst, best_bind->dst_len);
+	if (best_pl > 0)
+		return write_guest_abs_suffix(out, out_cap, host,
+		                              best_pl, (size_t)n, 0, 0);
+	return TAWC_ENOENT;
+}
+
 /* Well-known-symlink memoization. After fold_absolute, the orchestrator
  * checks each memoized src against the path's first segment (component
  * boundary required). If matched, the segment is replaced with the

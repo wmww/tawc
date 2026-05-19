@@ -21,6 +21,7 @@ static_sleep_open_creat_argv1
 static_fork_open_argv1
 static_fork_exec_argv1
 static_fork_closefrom_exec_argv1
+static_fexecve_argv1
 static_unix_bind_argv1
 static_check_proc_self_fd
 static_check_proc_exe_argv0

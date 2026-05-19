@@ -195,6 +195,11 @@ long tawcroot_path_fold_absolute(const char *path, char *out, size_t out_cap);
  * init. */
 long tawcroot_proc_fd_to_host_path(int fd, char *out, size_t out_cap);
 
+/* Reverse-translate an fd visible to the guest into a guest-absolute path.
+ * The fd may point into the rootfs or an active bind source. Output starts
+ * with "/" and is NUL-terminated. */
+long tawcroot_fd_to_guest_abs(int fd, char *out, size_t out_cap);
+
 /* `/proc/self/exe` synthesis (phase 2e).
  *
  * After manual-load the kernel's view of /proc/self/exe is the
