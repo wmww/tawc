@@ -51,7 +51,7 @@ use tawc_integration::debug_app::DebugApp;
 use tawc_integration::helpers::{
     assert_compositor_clean, start_text_input, start_text_input_no_surrounding,
     start_wayland_debug_text_input, start_wayland_debug_text_input_no_surrounding,
-    TIMEOUT,
+    start_wayland_debug_touch, TIMEOUT,
 };
 use tawc_integration::GraphicsBackend;
 
@@ -167,11 +167,7 @@ fn reset_buffer(app: &DebugApp) {
             thread::sleep(Duration::from_millis(50));
         }
         let after = app.last_text().unwrap_or_default();
-        assert!(
-            after.is_empty(),
-            "reset_buffer left buffer = {:?}",
-            after
-        );
+        assert!(after.is_empty(), "reset_buffer left buffer = {:?}", after);
     }
 
     let preedit = app.last_preedit().unwrap_or_default();
@@ -402,11 +398,7 @@ fn scene_commit_text_replaces_composing_region(app: &DebugApp, taps: InputTapCoo
     let cursor = app
         .wait_for_cursor_change(cursor_count, TIMEOUT)
         .expect("cursor change after tap");
-    assert!(
-        cursor > 0 && cursor < 11,
-        "cursor mid, got {}",
-        cursor
-    );
+    assert!(cursor > 0 && cursor < 11, "cursor mid, got {}", cursor);
     thread::sleep(Duration::from_millis(200));
 
     adb::ic_set_composing_region(0, cursor).expect("ic_set_composing_region");
@@ -441,7 +433,8 @@ fn scene_commit_text_replaces_composing_region(app: &DebugApp, taps: InputTapCoo
 /// "hello" at the new cursor — `hellohello` in the buffer.
 fn scene_finish_composing_after_click_no_duplicate(app: &DebugApp, taps: InputTapCoords) {
     adb::ic_set_composing_text("hello").expect("setComposingText 'hello'");
-    app.wait_for_preedit("hello", TIMEOUT).expect("preedit 'hello'");
+    app.wait_for_preedit("hello", TIMEOUT)
+        .expect("preedit 'hello'");
 
     let cursor_count_before = app.cursor_pos_count();
     adb::input_tap(taps.text_mid_x, taps.text_mid_y).expect("tap mid");
@@ -468,7 +461,8 @@ fn scene_click_during_preedit_commits_pending_text(app: &DebugApp, taps: InputTa
     app.wait_for_text("world", TIMEOUT).expect("'world'");
 
     adb::ic_set_composing_text("hello").expect("setComposingText 'hello'");
-    app.wait_for_preedit("hello", TIMEOUT).expect("preedit 'hello'");
+    app.wait_for_preedit("hello", TIMEOUT)
+        .expect("preedit 'hello'");
     assert_eq!(
         app.last_text().as_deref().unwrap_or(""),
         "world",
@@ -508,7 +502,8 @@ fn scene_click_at_start_during_preedit_preserves_pending_text(
     app.wait_for_text("hello ", TIMEOUT).expect("'hello '");
 
     adb::ic_set_composing_text("world").expect("setComposingText 'world'");
-    app.wait_for_preedit("world", TIMEOUT).expect("preedit 'world'");
+    app.wait_for_preedit("world", TIMEOUT)
+        .expect("preedit 'world'");
     assert_eq!(
         app.last_text().as_deref().unwrap_or(""),
         "hello ",
@@ -551,18 +546,15 @@ fn scene_full_compose_loop_with_click_in_middle(app: &DebugApp, taps: InputTapCo
         adb::ic_set_composing_text(prefix).expect("setComposingText");
     }
     adb::ic_finish_composing().expect("finish word 2");
-    app.wait_for_text("hello world", TIMEOUT).expect("'hello world'");
+    app.wait_for_text("hello world", TIMEOUT)
+        .expect("'hello world'");
 
     let cursor_count = app.cursor_pos_count();
     adb::input_tap(taps.text_mid_x, taps.text_mid_y).expect("tap mid");
     let cursor = app
         .wait_for_cursor_change(cursor_count, TIMEOUT)
         .expect("cursor change");
-    assert!(
-        cursor > 0 && cursor < 11,
-        "cursor mid, got {}",
-        cursor
-    );
+    assert!(cursor > 0 && cursor < 11, "cursor mid, got {}", cursor);
 
     for prefix in ["x", "xy", "xyz"] {
         adb::ic_set_composing_text(prefix).expect("setComposingText 'xyz' loop");
@@ -610,7 +602,8 @@ fn scene_full_compose_loop_with_click_in_middle(app: &DebugApp, taps: InputTapCo
 /// the buffer ended up `hellohello `.
 fn scene_space_backspace_space_no_duplicate(app: &DebugApp) {
     adb::ic_set_composing_text("hello").expect("ic setComposingText 'hello'");
-    app.wait_for_preedit("hello", TIMEOUT).expect("preedit 'hello'");
+    app.wait_for_preedit("hello", TIMEOUT)
+        .expect("preedit 'hello'");
 
     let change_count = app.text_changed_count();
     adb::ic_commit_text("hello ").expect("ic commitText 'hello '");
@@ -659,12 +652,12 @@ fn scene_space_backspace_space_no_duplicate(app: &DebugApp) {
 /// bytes from the wrong position.
 fn scene_commit_after_diverged_cursor_no_byte_slicing(app: &DebugApp) {
     adb::ic_commit_text("hello world").expect("ic commitText 'hello world'");
-    app.wait_for_text("hello world", TIMEOUT).expect("'hello world'");
+    app.wait_for_text("hello world", TIMEOUT)
+        .expect("'hello world'");
     thread::sleep(Duration::from_millis(200));
 
     adb::ic_set_composing_region(0, 5).expect("ic setComposingRegion 0..5");
-    adb::ic_set_selection(5, 5)
-        .expect("ic setSelection 5..5 (diverges Editable from Wayland)");
+    adb::ic_set_selection(5, 5).expect("ic setSelection 5..5 (diverges Editable from Wayland)");
 
     let change_count = app.text_changed_count();
     adb::ic_commit_text("X").expect("ic commitText 'X' (diverged)");
@@ -807,7 +800,8 @@ fn test_input_dispatch() {
 
     run_input_dispatch_scenes(&app, GTK_TAP_COORDS);
 
-    app.stop().expect("debug app crashed or failed to stop cleanly");
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
     assert_compositor_clean();
 }
 
@@ -865,16 +859,79 @@ fn test_surroundingless_client_uses_keyboard_for_backspace() {
          on receipt"
     );
 
-    app.stop().expect("debug app crashed or failed to stop cleanly");
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
     assert_compositor_clean();
 }
 
 fn with_wayland_text_input(run: impl FnOnce(&DebugApp)) {
-    let mut app =
-        start_wayland_debug_text_input(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+    let mut app = start_wayland_debug_text_input(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
     run(&app);
-    app.stop().expect("debug app crashed or failed to stop cleanly");
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
     assert_compositor_clean();
+}
+
+fn with_wayland_touch(run: impl FnOnce(&DebugApp)) {
+    let mut app = start_wayland_debug_touch(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+    run(&app);
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+#[derive(Clone, Debug)]
+struct TouchDebugEvent {
+    id: i32,
+    x: f64,
+    y: f64,
+    active: u32,
+}
+
+fn parse_touch_event(payload: &str) -> TouchDebugEvent {
+    let mut parts = payload.split(':');
+    let id = parts
+        .next()
+        .expect("touch id")
+        .parse()
+        .expect("touch id integer");
+    let x = parts
+        .next()
+        .expect("touch x")
+        .parse()
+        .expect("touch x number");
+    let y = parts
+        .next()
+        .expect("touch y")
+        .parse()
+        .expect("touch y number");
+    let active = parts
+        .next()
+        .expect("touch active count")
+        .parse()
+        .expect("touch active integer");
+    assert!(
+        parts.next().is_none(),
+        "extra fields in touch payload {payload:?}"
+    );
+    TouchDebugEvent { id, x, y, active }
+}
+
+fn touch_events(app: &DebugApp, tag: &str) -> Vec<TouchDebugEvent> {
+    app.payloads_with_tag(tag)
+        .iter()
+        .map(|payload| parse_touch_event(payload))
+        .collect()
+}
+
+fn inject_touch(kind: &str) {
+    let output = adb::inject_touch(kind).unwrap_or_else(|e| panic!("inject-touch {kind}: {e}"));
+    assert!(
+        output.status.success(),
+        "inject-touch {kind} failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Toolkitless coverage for the basic text-input-v3 surfaces: commit_string,
@@ -979,6 +1036,110 @@ fn test_wayland_input_touch_cursor_and_pending_preedit() {
     });
 }
 
+/// The touch visualizer uses normalized host-side injection, so this test
+/// asserts event shape rather than absolute pixels. It covers a plain tap:
+/// wl_touch.down reaches the client, followed by wl_touch.up for the same
+/// slot, with no dependency on the device's physical resolution.
+#[test]
+fn test_wayland_touch_tap() {
+    with_wayland_touch(|app| {
+        inject_touch("tap");
+        app.wait_for_tag_count("TOUCH_DOWN", 1, TIMEOUT)
+            .expect("touch down");
+        app.wait_for_tag_count("TOUCH_UP", 1, TIMEOUT)
+            .expect("touch up");
+
+        let downs = touch_events(app, "TOUCH_DOWN");
+        let ups = touch_events(app, "TOUCH_UP");
+        assert_eq!(downs.len(), 1, "expected one TOUCH_DOWN, got {downs:?}");
+        assert_eq!(ups.len(), 1, "expected one TOUCH_UP, got {ups:?}");
+        assert_eq!(downs[0].id, ups[0].id, "tap up used a different slot");
+        assert_eq!(downs[0].active, 1, "tap down active count");
+        assert_eq!(ups[0].active, 0, "tap up active count");
+        assert!(
+            (downs[0].x - ups[0].x).abs() < 1.0 && (downs[0].y - ups[0].y).abs() < 1.0,
+            "tap moved unexpectedly: down={:?} up={:?}",
+            downs[0],
+            ups[0]
+        );
+    });
+}
+
+/// Drag is touch.down + a stream of wl_touch.motion events + touch.up. The
+/// assertions only compare the client's own observed coordinates, avoiding
+/// any baked-in screen dimensions or density assumptions.
+#[test]
+fn test_wayland_touch_drag() {
+    with_wayland_touch(|app| {
+        inject_touch("drag");
+        app.wait_for_tag_count("TOUCH_DOWN", 1, TIMEOUT)
+            .expect("touch down");
+        app.wait_for_tag_count("TOUCH_MOTION", 3, TIMEOUT)
+            .expect("touch motion");
+        app.wait_for_tag_count("TOUCH_UP", 1, TIMEOUT)
+            .expect("touch up");
+
+        let down = touch_events(app, "TOUCH_DOWN").remove(0);
+        let motions = touch_events(app, "TOUCH_MOTION");
+        let up = touch_events(app, "TOUCH_UP").remove(0);
+        let last_motion = motions.last().expect("last motion");
+
+        assert!(
+            motions.iter().all(|m| m.id == down.id),
+            "drag slot changed: {motions:?}"
+        );
+        assert!(up.id == down.id, "drag up slot changed");
+        assert!(
+            last_motion.x > down.x && last_motion.y > down.y,
+            "drag did not move down/right: down={down:?} last={last_motion:?}"
+        );
+        assert!(
+            (up.x - last_motion.x).abs() < 1.0 && (up.y - last_motion.y).abs() < 1.0,
+            "drag up should report the final motion position: up={up:?} last={last_motion:?}"
+        );
+    });
+}
+
+/// Two-finger delivery is the path most likely to rot because each Android
+/// pointer ID must remain a distinct Wayland touch slot through down,
+/// motion, and up. The debug broker builds a real multi-pointer MotionEvent
+/// stream against the focused SurfaceView; the client verifies both slots.
+#[test]
+fn test_wayland_touch_multitouch() {
+    with_wayland_touch(|app| {
+        inject_touch("multitouch");
+        app.wait_for_tag_count("TOUCH_DOWN", 2, TIMEOUT)
+            .expect("two touch downs");
+        app.wait_for_tag_count("TOUCH_MOTION", 6, TIMEOUT)
+            .expect("multi-touch motion");
+        app.wait_for_tag_count("TOUCH_UP", 2, TIMEOUT)
+            .expect("two touch ups");
+
+        let downs = touch_events(app, "TOUCH_DOWN");
+        let motions = touch_events(app, "TOUCH_MOTION");
+        let ups = touch_events(app, "TOUCH_UP");
+        assert_eq!(downs.len(), 2, "expected two downs, got {downs:?}");
+        assert_eq!(ups.len(), 2, "expected two ups, got {ups:?}");
+        assert_ne!(downs[0].id, downs[1].id, "two fingers shared one slot");
+        assert_eq!(downs[0].active, 1, "first down active count");
+        assert_eq!(downs[1].active, 2, "second down active count");
+        assert_eq!(ups.last().unwrap().active, 0, "all fingers should be up");
+
+        for id in [downs[0].id, downs[1].id] {
+            let first = downs.iter().find(|e| e.id == id).unwrap();
+            let last = motions
+                .iter()
+                .rev()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("missing motion for touch id {id}"));
+            assert!(
+                (last.x - first.x).abs() > 5.0 || (last.y - first.y).abs() > 5.0,
+                "touch id {id} did not move enough: first={first:?} last={last:?}"
+            );
+        }
+    });
+}
+
 /// The two composing-region replacement shapes are distinct IC paths:
 /// setComposingText over a region emits delete+preedit, while commitText over
 /// a region emits delete+commit. Keep both, but run them in one fresh client.
@@ -990,11 +1151,8 @@ fn test_wayland_input_composing_region_replacements() {
             .expect("'hello world'");
 
         let cursor_count = app.cursor_pos_count();
-        adb::input_tap(
-            WAYLAND_TAP_COORDS.text_mid_x,
-            WAYLAND_TAP_COORDS.text_mid_y,
-        )
-        .expect("tap mid");
+        adb::input_tap(WAYLAND_TAP_COORDS.text_mid_x, WAYLAND_TAP_COORDS.text_mid_y)
+            .expect("tap mid");
         let cursor = app
             .wait_for_cursor_change(cursor_count, TIMEOUT)
             .expect("cursor change after tap");
@@ -1016,7 +1174,11 @@ fn test_wayland_input_composing_region_replacements() {
             thread::sleep(Duration::from_millis(50));
         }
         let text = app.last_text().unwrap_or_default();
-        assert!(text.contains("HELLO"), "HELLO missing after finish: {:?}", text);
+        assert!(
+            text.contains("HELLO"),
+            "HELLO missing after finish: {:?}",
+            text
+        );
         assert_eq!(
             text.matches("hello").count(),
             0,
@@ -1059,8 +1221,7 @@ fn test_wayland_input_ic_delta_regressions() {
         thread::sleep(Duration::from_millis(200));
 
         adb::ic_set_composing_region(0, 5).expect("setComposingRegion 0..5");
-        adb::ic_set_selection(5, 5)
-            .expect("setSelection 5..5 (diverge Editable cursor)");
+        adb::ic_set_selection(5, 5).expect("setSelection 5..5 (diverge Editable cursor)");
         let change_count = app.text_changed_count();
         adb::ic_commit_text("X").expect("commitText after divergence");
         app.wait_for_text_change(change_count, TIMEOUT)
@@ -1085,11 +1246,7 @@ fn test_wayland_input_ic_delta_regressions() {
 /// Toolkitless mirror of the surrounding-less GTK/VTE-shaped input case.
 #[test]
 fn test_wayland_surroundingless_client_uses_keyboard_for_backspace() {
-    let mut app =
-        start_wayland_debug_text_input_no_surrounding(
-            INPUT_BACKEND,
-            WAYLAND_DEBUG_ENV,
-        );
+    let mut app = start_wayland_debug_text_input_no_surrounding(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
 
     assert_eq!(
         app.count_with_tag("DELETE_SURROUNDING"),
@@ -1111,6 +1268,7 @@ fn test_wayland_surroundingless_client_uses_keyboard_for_backspace() {
         "compositor sent delete_surrounding_text to a surrounding-less client"
     );
 
-    app.stop().expect("debug app crashed or failed to stop cleanly");
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
     assert_compositor_clean();
 }

@@ -32,22 +32,28 @@ use crate::GraphicsBackend;
 fn tawc_exec_bin() -> &'static str {
     static B: OnceLock<String> = OnceLock::new();
     B.get_or_init(|| {
-        if let Ok(env) = std::env::var("TAWC_EXEC_BIN") { return env; }
+        if let Ok(env) = std::env::var("TAWC_EXEC_BIN") {
+            return env;
+        }
         // CARGO_MANIFEST_DIR is `tests/integration`; the binary lives
         // at <repo>/build/tawc-exec/tawc-exec.
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors().nth(2).map(|p| p.to_path_buf())
+            .ancestors()
+            .nth(2)
+            .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::path::PathBuf::from("."));
-        repo.join("build").join("tawc-exec").join("tawc-exec")
-            .to_string_lossy().into_owned()
-    }).as_str()
+        repo.join("build")
+            .join("tawc-exec")
+            .join("tawc-exec")
+            .to_string_lossy()
+            .into_owned()
+    })
+    .as_str()
 }
 
 /// Run an adb shell command, wait for completion, return output.
 pub fn shell(cmd: &str) -> io::Result<Output> {
-    Command::new("adb")
-        .args(["shell", cmd])
-        .output()
+    Command::new("adb").args(["shell", cmd]).output()
 }
 
 /// Execute a command on the device as the app uid (no `su`, no
@@ -217,7 +223,10 @@ pub fn ic_set_selection(start: u32, end: u32) -> io::Result<Output> {
 pub fn ic_delete_surrounding_text(before: u32, after: u32) -> io::Result<Output> {
     let b = before.to_string();
     let a = after.to_string();
-    broker_action("ic-delete-surrounding-text", &[("before", &b), ("after", &a)])
+    broker_action(
+        "ic-delete-surrounding-text",
+        &[("before", &b), ("after", &a)],
+    )
 }
 
 /// Call `TawcInputConnection.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode))`
@@ -238,6 +247,14 @@ pub fn ic_send_key_event(keycode: u32) -> io::Result<Output> {
 /// divides by touch_scale (2) to get logical coordinates.
 pub fn input_tap(x: u32, y: u32) -> io::Result<Output> {
     shell(&format!("input tap {} {}", x, y))
+}
+
+/// Ask the debug broker to inject a normalized touch sequence into the
+/// focused compositor SurfaceView. `kind` is one of `tap`, `drag`, or
+/// `multitouch`; coordinates are chosen as fractions of the current view
+/// size on device, so callers do not need to know the physical screen size.
+pub fn inject_touch(kind: &str) -> io::Result<Output> {
+    broker_action("inject-touch", &[("kind", kind)])
 }
 
 /// Clear the logcat buffer so subsequent reads only show new messages.

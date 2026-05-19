@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::rootfs_process::RootfsProcess;
 use crate::debug_app::DebugApp;
-use crate::{adb, rootfs, compositor, GraphicsBackend};
+use crate::rootfs_process::RootfsProcess;
+use crate::{adb, compositor, rootfs, GraphicsBackend};
 
 /// Default deadline for short waits (compositor state queries, app startup
 /// after a window is mapped, etc).
@@ -76,8 +76,8 @@ pub fn start_text_input(backend: GraphicsBackend, env: &str) -> DebugApp {
     // the very first `onShowKeyboard` lands on the recorder rather than
     // briefly waking up Gboard / OpenBoard / AOSP-latin.
     adb::enable_test_input().expect("enable-test-input action");
-    let app = DebugApp::start(backend, &binary, "text-input", env)
-        .expect("Failed to start debug app");
+    let app =
+        DebugApp::start(backend, &binary, "text-input", env).expect("Failed to start debug app");
     app.wait_ready().expect("Debug app did not become ready");
 
     // Wait for the client's IM context to enable text input. Without this,
@@ -150,6 +150,19 @@ pub fn start_wayland_debug_text_input_no_surrounding(
     app.wait_ready()
         .expect("Surrounding-less wayland debug app did not become ready");
     wait_for_keyboard_shown(TIMEOUT);
+    app
+}
+
+/// Start wayland-debug-app's fullscreen touch visualizer. It does not
+/// enable text-input; tests drive touch through the focused SurfaceView and
+/// assert on the client's wl_touch events.
+pub fn start_wayland_debug_touch(backend: GraphicsBackend, env: &str) -> DebugApp {
+    let binary = ensure_wayland_debug_app();
+    adb::logcat_clear().expect("Failed to clear logcat");
+    let app = DebugApp::start(backend, &binary, "touch", env)
+        .expect("Failed to start wayland touch debug app");
+    app.wait_ready()
+        .expect("Wayland touch debug app did not become ready");
     app
 }
 
@@ -251,9 +264,7 @@ pub fn launch_and_wait_for_toplevel(
             panic!("{name} crashed/exited before first paint");
         }
         if let Ok(state) = compositor::query_state(TIMEOUT) {
-            if state.toplevels >= 1
-                && (state.surfaces_wlegl + state.surfaces_shm) >= 1
-            {
+            if state.toplevels >= 1 && (state.surfaces_wlegl + state.surfaces_shm) >= 1 {
                 painted = true;
                 break;
             }
@@ -336,12 +347,7 @@ pub fn launch_and_wait_for_ahb(
 /// against CPU (no GPU available → distro Mesa falls through to
 /// llvmpipe, the few GL apps that work still pick SHM) tests slightly
 /// different invariants — the helper handles both.
-pub fn assert_renders_via_shm(
-    backend: GraphicsBackend,
-    cmd: &str,
-    name: &str,
-    timeout: Duration,
-) {
+pub fn assert_renders_via_shm(backend: GraphicsBackend, cmd: &str, name: &str, timeout: Duration) {
     require_compositor();
     adb::logcat_clear().expect("Failed to clear logcat");
 
@@ -387,14 +393,15 @@ pub fn assert_renders_via_shm(
         backend,
     );
 
-    let state = compositor::query_state(TIMEOUT)
-        .expect("query compositor state while client running");
+    let state =
+        compositor::query_state(TIMEOUT).expect("query compositor state while client running");
     assert!(
         state.toplevels >= 1,
         "compositor sees no toplevel for {name}: {state:?}"
     );
 
-    app.stop().unwrap_or_else(|e| panic!("{name} failed to stop cleanly: {e}"));
+    app.stop()
+        .unwrap_or_else(|e| panic!("{name} failed to stop cleanly: {e}"));
     assert_compositor_clean();
 }
 
@@ -411,19 +418,15 @@ pub fn assert_renders_via_shm(
 /// Bespoke tests that need a steady-state surface-count or
 /// frames-counter check (e.g. Firefox's WebRender → AHB assertion) keep
 /// using [launch_and_wait_for_ahb] directly.
-pub fn assert_renders_via_ahb(
-    backend: GraphicsBackend,
-    cmd: &str,
-    name: &str,
-    timeout: Duration,
-) {
+pub fn assert_renders_via_ahb(backend: GraphicsBackend, cmd: &str, name: &str, timeout: Duration) {
     let mut app = launch_and_wait_for_ahb(backend, cmd, name, timeout);
-    let state = compositor::query_state(TIMEOUT)
-        .expect("query compositor state while client running");
+    let state =
+        compositor::query_state(TIMEOUT).expect("query compositor state while client running");
     assert!(
         state.toplevels >= 1,
         "compositor sees no toplevel for {name}: {state:?}"
     );
-    app.stop().unwrap_or_else(|e| panic!("{name} failed to stop cleanly: {e}"));
+    app.stop()
+        .unwrap_or_else(|e| panic!("{name} failed to stop cleanly: {e}"));
     assert_compositor_clean();
 }

@@ -38,6 +38,10 @@ GTK widget tree only routes events to children whose GdkWindow allocation contai
 ## Simulating Touch via adb
 
 `adb shell input tap X Y` injects touch events through the Android input framework.
+Integration tests that need drag or multi-touch use the debug broker
+`inject-touch` action instead. It creates normalized `MotionEvent`s against
+the focused `SurfaceView`, so tests avoid hard-coded screen coordinates while
+still exercising `CompositorActivity`'s MotionEvent-to-JNI dispatch.
 Coordinates are in screen pixels (same space as `screencap`). The app uses immersive
 fullscreen, so screen coordinates map 1:1 to SurfaceView coordinates. The compositor
 divides by the scale factor (2) to get Wayland logical coordinates.

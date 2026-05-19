@@ -14,6 +14,7 @@
  * Commands:
  *   text-input                  Minimal editable text-input-v3 surface
  *   text-input-no-surrounding   Text-input surface that never sends surrounding
+ *   touch                       Fullscreen touch visualizer
  */
 
 #define _GNU_SOURCE
@@ -48,6 +49,7 @@
 #define FONT_SIZE 32.0
 #define APPROX_CHAR_W 19.0
 #define MAX_TEXT 8192
+#define MAX_TOUCHES 16
 
 #define KEY_BACKSPACE 14
 #define KEY_TAB 15
@@ -166,6 +168,14 @@ struct text_input_pending {
     uint32_t after_length;
 };
 
+struct touch_point {
+    int active;
+    int seen;
+    int32_t id;
+    double x;
+    double y;
+};
+
 struct app {
     struct wl_display *display;
     struct wl_registry *registry;
@@ -188,6 +198,11 @@ struct app {
     int text_input_enabled;
     int editable;
     int provide_surrounding;
+    int touch_debug;
+    int fullscreen;
+    int dynamic_size;
+    int win_w;
+    int win_h;
     wl_fixed_t pointer_x;
 
     char text[MAX_TEXT];
@@ -195,6 +210,7 @@ struct app {
     size_t cursor;
     char preedit[MAX_TEXT];
     struct text_input_pending pending_text_input;
+    struct touch_point touches[MAX_TOUCHES];
 };
 
 struct wayland_mode {
@@ -203,6 +219,9 @@ struct wayland_mode {
     int use_text_input;
     int editable;
     int provide_surrounding;
+    int touch_debug;
+    int fullscreen;
+    int dynamic_size;
 };
 
 static struct app *signal_app;
@@ -494,13 +513,110 @@ static void draw_display_text(struct app *app, cairo_t *cr)
     }
 }
 
+static int active_touch_count(struct app *app)
+{
+    int count = 0;
+    for (int i = 0; i < MAX_TOUCHES; i++) {
+        if (app->touches[i].active)
+            count++;
+    }
+    return count;
+}
+
+static struct touch_point *find_touch(struct app *app, int32_t id)
+{
+    for (int i = 0; i < MAX_TOUCHES; i++) {
+        if (app->touches[i].seen && app->touches[i].id == id)
+            return &app->touches[i];
+    }
+    return NULL;
+}
+
+static struct touch_point *alloc_touch(struct app *app, int32_t id)
+{
+    struct touch_point *point = find_touch(app, id);
+    if (point)
+        return point;
+    for (int i = 0; i < MAX_TOUCHES; i++) {
+        if (!app->touches[i].active) {
+            app->touches[i].seen = 1;
+            app->touches[i].id = id;
+            return &app->touches[i];
+        }
+    }
+    fatal("too many touch slots");
+    return NULL;
+}
+
+static void emit_touch_event(struct app *app, const char *tag, int32_t id,
+                             double x, double y)
+{
+    char buf[96];
+    checked_snprintf(buf, sizeof(buf), "%d:%.1f:%.1f:%d", id, x, y,
+                     active_touch_count(app));
+    debug_emit(tag, buf);
+}
+
+static void draw_touch_debug(struct app *app, cairo_t *cr)
+{
+    cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_NORMAL);
+
+    cairo_set_source_rgb(cr, 0.95, 0.96, 0.95);
+    cairo_paint(cr);
+
+    cairo_set_source_rgb(cr, 0.82, 0.84, 0.84);
+    cairo_set_line_width(cr, 1.0);
+    for (int x = 0; x < app->win_w; x += 80) {
+        cairo_move_to(cr, x + 0.5, 0);
+        cairo_line_to(cr, x + 0.5, app->win_h);
+    }
+    for (int y = 0; y < app->win_h; y += 80) {
+        cairo_move_to(cr, 0, y + 0.5);
+        cairo_line_to(cr, app->win_w, y + 0.5);
+    }
+    cairo_stroke(cr);
+
+    cairo_set_font_size(cr, 18.0);
+    cairo_set_source_rgb(cr, 0.08, 0.09, 0.10);
+    cairo_move_to(cr, 24.0, 34.0);
+    cairo_show_text(cr, "wayland-debug-app touch");
+
+    for (int i = 0; i < MAX_TOUCHES; i++) {
+        struct touch_point *point = &app->touches[i];
+        if (!point->active)
+            continue;
+
+        double hue = (double)((point->id % 6 + 6) % 6);
+        double r = hue == 0 || hue == 5 ? 0.95 : 0.15;
+        double g = hue >= 1 && hue <= 3 ? 0.65 : 0.25;
+        double b = hue >= 3 ? 0.95 : 0.20;
+
+        cairo_set_source_rgba(cr, r, g, b, 0.30);
+        cairo_arc(cr, point->x, point->y, 38.0, 0.0, 6.283185307179586);
+        cairo_fill_preserve(cr);
+        cairo_set_source_rgb(cr, r, g, b);
+        cairo_set_line_width(cr, 4.0);
+        cairo_stroke(cr);
+
+        char label[32];
+        checked_snprintf(label, sizeof(label), "%d", point->id);
+        cairo_set_font_size(cr, 24.0);
+        cairo_set_source_rgb(cr, 0.05, 0.05, 0.05);
+        cairo_move_to(cr, point->x - 7.0, point->y + 8.0);
+        cairo_show_text(cr, label);
+    }
+}
+
 static void request_redraw(struct app *app)
 {
     if (!app->configured || !app->surface || !app->shm)
         return;
 
-    int stride = WIN_W * 4;
-    size_t size = (size_t)stride * WIN_H;
+    int width = app->win_w > 0 ? app->win_w : WIN_W;
+    int height = app->win_h > 0 ? app->win_h : WIN_H;
+    int stride = width * 4;
+    size_t size = (size_t)stride * height;
     int fd = create_shm_fd(size);
     if (fd < 0)
         fatal("create shm failed: %s", strerror(errno));
@@ -519,7 +635,7 @@ static void request_redraw(struct app *app)
     require_true(buf != NULL, "calloc shm_buffer failed");
     buf->data = data;
     buf->size = size;
-    buf->buffer = wl_shm_pool_create_buffer(pool, 0, WIN_W, WIN_H, stride,
+    buf->buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride,
                                             WL_SHM_FORMAT_ARGB8888);
     require_true(buf->buffer != NULL, "wl_shm_pool_create_buffer returned NULL");
     wl_buffer_add_listener(buf->buffer, &buffer_listener, buf);
@@ -527,7 +643,7 @@ static void request_redraw(struct app *app)
     close(fd);
 
     cairo_surface_t *cs = cairo_image_surface_create_for_data(
-        data, CAIRO_FORMAT_ARGB32, WIN_W, WIN_H, stride);
+        data, CAIRO_FORMAT_ARGB32, width, height, stride);
     cairo_t *cr = cairo_create(cs);
     require_true(cairo_surface_status(cs) == CAIRO_STATUS_SUCCESS,
                  "cairo surface failed: %s",
@@ -536,18 +652,22 @@ static void request_redraw(struct app *app)
                  "cairo context failed: %s",
                  cairo_status_to_string(cairo_status(cr)));
 
-    cairo_set_source_rgb(cr, 0.96, 0.96, 0.94);
-    cairo_paint(cr);
-    cairo_set_source_rgb(cr, 0.82, 0.84, 0.86);
-    cairo_rectangle(cr, 16.0, 52.0, WIN_W - 32.0, 72.0);
-    cairo_fill(cr);
-    draw_display_text(app, cr);
+    if (app->touch_debug) {
+        draw_touch_debug(app, cr);
+    } else {
+        cairo_set_source_rgb(cr, 0.96, 0.96, 0.94);
+        cairo_paint(cr);
+        cairo_set_source_rgb(cr, 0.82, 0.84, 0.86);
+        cairo_rectangle(cr, 16.0, 52.0, width - 32.0, 72.0);
+        cairo_fill(cr);
+        draw_display_text(app, cr);
+    }
 
     cairo_destroy(cr);
     cairo_surface_destroy(cs);
 
     wl_surface_attach(app->surface, buf->buffer, 0, 0);
-    wl_surface_damage_buffer(app->surface, 0, 0, WIN_W, WIN_H);
+    wl_surface_damage_buffer(app->surface, 0, 0, width, height);
     wl_surface_commit(app->surface);
     checked_flush(app->display);
 
@@ -586,11 +706,13 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
                                int32_t width, int32_t height,
                                struct wl_array *states)
 {
-    (void)data;
+    struct app *app = data;
     (void)toplevel;
-    (void)width;
-    (void)height;
     (void)states;
+    if (app->dynamic_size && width > 0 && height > 0) {
+        app->win_w = width;
+        app->win_h = height;
+    }
 }
 
 static void toplevel_close(void *data, struct xdg_toplevel *toplevel)
@@ -970,44 +1092,68 @@ static void touch_down(void *data, struct wl_touch *touch, uint32_t serial,
     (void)touch;
     (void)serial;
     (void)time;
-    (void)id;
-    (void)y;
     require_true(surface == app->surface,
                  "touch down for unexpected surface %p", (void *)surface);
-    move_cursor_to_surface_x(app, x);
+
+    double dx = wl_fixed_to_double(x);
+    double dy = wl_fixed_to_double(y);
+    struct touch_point *point = alloc_touch(app, id);
+    point->active = 1;
+    point->x = dx;
+    point->y = dy;
+    emit_touch_event(app, "TOUCH_DOWN", id, dx, dy);
+    request_redraw(app);
+
+    if (!app->touch_debug)
+        move_cursor_to_surface_x(app, x);
 }
 
 static void touch_up(void *data, struct wl_touch *touch, uint32_t serial,
                      uint32_t time, int32_t id)
 {
-    (void)data;
+    struct app *app = data;
     (void)touch;
     (void)serial;
     (void)time;
-    (void)id;
+    struct touch_point *point = find_touch(app, id);
+    require_true(point != NULL && point->active, "touch up for unknown id %d", id);
+    point->active = 0;
+    emit_touch_event(app, "TOUCH_UP", id, point->x, point->y);
+    request_redraw(app);
 }
 
 static void touch_motion(void *data, struct wl_touch *touch, uint32_t time,
                          int32_t id, wl_fixed_t x, wl_fixed_t y)
 {
-    (void)data;
+    struct app *app = data;
     (void)touch;
     (void)time;
-    (void)id;
-    (void)x;
-    (void)y;
+    double dx = wl_fixed_to_double(x);
+    double dy = wl_fixed_to_double(y);
+    struct touch_point *point = find_touch(app, id);
+    require_true(point != NULL && point->active,
+                 "touch motion for unknown id %d", id);
+    point->x = dx;
+    point->y = dy;
+    emit_touch_event(app, "TOUCH_MOTION", id, dx, dy);
+    request_redraw(app);
 }
 
 static void touch_frame(void *data, struct wl_touch *touch)
 {
-    (void)data;
+    struct app *app = data;
     (void)touch;
+    debug_emit_u32("TOUCH_FRAME", (uint32_t)active_touch_count(app));
 }
 
 static void touch_cancel(void *data, struct wl_touch *touch)
 {
-    (void)data;
+    struct app *app = data;
     (void)touch;
+    for (int i = 0; i < MAX_TOUCHES; i++)
+        app->touches[i].active = 0;
+    debug_emit("TOUCH_CANCEL", NULL);
+    request_redraw(app);
 }
 
 static const struct wl_touch_listener touch_listener = {
@@ -1121,6 +1267,11 @@ static void setup_wayland(struct app *app, const struct wayland_mode *mode)
     app->running = 1;
     app->editable = mode->editable;
     app->provide_surrounding = mode->provide_surrounding;
+    app->touch_debug = mode->touch_debug;
+    app->fullscreen = mode->fullscreen;
+    app->dynamic_size = mode->dynamic_size;
+    app->win_w = WIN_W;
+    app->win_h = WIN_H;
     app->display = wl_display_connect(NULL);
     if (!app->display)
         fatal("wl_display_connect failed");
@@ -1157,7 +1308,10 @@ static void setup_wayland(struct app *app, const struct wayland_mode *mode)
     xdg_toplevel_add_listener(app->toplevel, &toplevel_listener, app);
     xdg_toplevel_set_title(app->toplevel, mode->title);
     xdg_toplevel_set_app_id(app->toplevel, mode->app_id);
-    xdg_toplevel_set_min_size(app->toplevel, WIN_W, WIN_H);
+    if (mode->fullscreen)
+        xdg_toplevel_set_fullscreen(app->toplevel, NULL);
+    else
+        xdg_toplevel_set_min_size(app->toplevel, WIN_W, WIN_H);
 
     if (mode->use_text_input) {
         app->text_input =
@@ -1273,6 +1427,42 @@ static int cmd_text_input_no_surrounding(int argc, char **argv)
     return 0;
 }
 
+static int cmd_touch(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "tawc wayland touch debug",
+        .app_id = "wayland-debug-app-touch",
+        .use_text_input = 0,
+        .editable = 0,
+        .provide_surrounding = 0,
+        .touch_debug = 1,
+        .fullscreen = 1,
+        .dynamic_size = 1,
+    };
+
+    (void)argc;
+    (void)argv;
+
+    struct app app;
+    memset(&app, 0, sizeof(app));
+    signal_app = &app;
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+
+    setup_wayland(&app, &mode);
+
+    while (app.running) {
+        if (wl_display_dispatch(app.display) < 0) {
+            if (errno == EINTR && !app.running)
+                break;
+            fatal("wl_display_dispatch failed: %s", strerror(errno));
+        }
+    }
+
+    teardown_wayland(&app);
+    return 0;
+}
+
 typedef int (*command_fn)(int argc, char **argv);
 
 struct command {
@@ -1286,6 +1476,7 @@ static const struct command commands[] = {
     { "text-input-no-surrounding",
       "Text-input surface that never sends surrounding",
       cmd_text_input_no_surrounding },
+    { "touch", "Fullscreen touch visualizer", cmd_touch },
     { NULL, NULL, NULL },
 };
 

@@ -35,7 +35,21 @@ pub fn ensure_debug_app() -> io::Result<String> {
 
 /// `wayland-debug-app` — toolkitless Wayland protocol test driver.
 pub fn ensure_wayland_debug_app() -> io::Result<String> {
-    check_rootfs_app("wayland-debug-app")
+    let bin = check_rootfs_app("wayland-debug-app")?;
+    let probe = format!("grep -a -q 'Fullscreen touch visualizer' {bin} && echo OK || echo STALE");
+    let output = adb::rootfs_run(&probe)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.lines().any(|l| l.trim() == "OK") {
+        return Ok(bin);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "{bin} is stale and does not include the `touch` mode. Run \
+             `scripts/install-test-deps.sh` (re-run after editing \
+             tests/apps/wayland-debug-app/* to pick up the new source)."
+        ),
+    ))
 }
 
 /// `tawc-dri-test` — TAWC-DRI Phase 1 round-trip client.

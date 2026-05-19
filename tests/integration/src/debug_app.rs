@@ -131,36 +131,26 @@ impl DebugApp {
     /// so we accept both the bare-tag and `TAG:value` forms — without this,
     /// a buffer transition to "" is invisible to callers polling last_text.
     pub fn last_text(&self) -> Option<String> {
-        self.lines
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find_map(|l| {
-                if l == "TEXT_CHANGED" {
-                    Some(String::new())
-                } else {
-                    l.strip_prefix("TEXT_CHANGED:").map(|s| s.to_string())
-                }
-            })
+        self.lines.lock().unwrap().iter().rev().find_map(|l| {
+            if l == "TEXT_CHANGED" {
+                Some(String::new())
+            } else {
+                l.strip_prefix("TEXT_CHANGED:").map(|s| s.to_string())
+            }
+        })
     }
 
     /// Get the most recent preedit text reported by the debug app.
     /// `Some("")` means the preedit was explicitly cleared. `None` means no
     /// PREEDIT event has been seen yet.
     pub fn last_preedit(&self) -> Option<String> {
-        self.lines
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find_map(|l| {
-                if l == "PREEDIT" {
-                    Some(String::new())
-                } else {
-                    l.strip_prefix("PREEDIT:").map(|s| s.to_string())
-                }
-            })
+        self.lines.lock().unwrap().iter().rev().find_map(|l| {
+            if l == "PREEDIT" {
+                Some(String::new())
+            } else {
+                l.strip_prefix("PREEDIT:").map(|s| s.to_string())
+            }
+        })
     }
 
     /// Wait until the most recent preedit equals `expected`, or timeout.
@@ -181,7 +171,10 @@ impl DebugApp {
                         self.last_preedit()
                     )
                 })?;
-            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            match self
+                .line_rx
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(format!(
@@ -257,7 +250,10 @@ impl DebugApp {
                     )
                 })?;
             // Wait for any new line, then re-check
-            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            match self
+                .line_rx
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(format!(
@@ -272,7 +268,11 @@ impl DebugApp {
 
     /// Wait until `text_changed_count()` exceeds `prev_count`, or timeout.
     /// Returns the new text value.
-    pub fn wait_for_text_change(&self, prev_count: usize, timeout: Duration) -> Result<String, String> {
+    pub fn wait_for_text_change(
+        &self,
+        prev_count: usize,
+        timeout: Duration,
+    ) -> Result<String, String> {
         let deadline = Instant::now() + timeout;
         loop {
             if self.text_changed_count() > prev_count {
@@ -288,7 +288,10 @@ impl DebugApp {
                         self.last_text()
                     )
                 })?;
-            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            match self
+                .line_rx
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("Debug app exited waiting for text change".into());
@@ -298,7 +301,11 @@ impl DebugApp {
     }
 
     /// Wait until `cursor_pos_count()` exceeds `prev_count`, or timeout.
-    pub fn wait_for_cursor_change(&self, prev_count: usize, timeout: Duration) -> Result<u32, String> {
+    pub fn wait_for_cursor_change(
+        &self,
+        prev_count: usize,
+        timeout: Duration,
+    ) -> Result<u32, String> {
         let deadline = Instant::now() + timeout;
         loop {
             if self.cursor_pos_count() > prev_count {
@@ -308,9 +315,15 @@ impl DebugApp {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or_else(|| {
-                    format!("Timeout waiting for CURSOR_POS (count still {})", prev_count)
+                    format!(
+                        "Timeout waiting for CURSOR_POS (count still {})",
+                        prev_count
+                    )
                 })?;
-            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            match self
+                .line_rx
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("Debug app exited waiting for cursor change".into());
@@ -338,6 +351,62 @@ impl DebugApp {
             .iter()
             .filter(|l| *l == tag || l.starts_with(&format!("{}:", tag)))
             .count()
+    }
+
+    /// Return payloads for all lines with `tag`. Bare `TAG` lines are
+    /// returned as an empty string.
+    pub fn payloads_with_tag(&self, tag: &str) -> Vec<String> {
+        let prefix = format!("{}:", tag);
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|l| {
+                if l == tag {
+                    Some(String::new())
+                } else {
+                    l.strip_prefix(&prefix).map(|s| s.to_string())
+                }
+            })
+            .collect()
+    }
+
+    /// Wait until at least `expected` lines with `tag` have arrived.
+    pub fn wait_for_tag_count(
+        &self,
+        tag: &str,
+        expected: usize,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.count_with_tag(tag) >= expected {
+                thread::sleep(MIN_ACTION_DELAY);
+                return Ok(());
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    let received = self.lines.lock().unwrap().clone();
+                    format!(
+                        "Timeout waiting for {} {} lines (received: {:?})",
+                        expected, tag, received
+                    )
+                })?;
+            match self
+                .line_rx
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let received = self.lines.lock().unwrap().clone();
+                    return Err(format!(
+                        "Debug app exited waiting for {} {} lines (received: {:?})",
+                        expected, tag, received
+                    ));
+                }
+            }
+        }
     }
 
     /// Wait until at least one TAWC_DEBUG line with the given tag and exact
@@ -375,7 +444,10 @@ impl DebugApp {
                         tag, expected, received
                     )
                 })?;
-            match self.line_rx.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            match self
+                .line_rx
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     let received = self.lines.lock().unwrap().clone();

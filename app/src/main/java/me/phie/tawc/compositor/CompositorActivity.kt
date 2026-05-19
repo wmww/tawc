@@ -6,8 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
+import android.os.SystemClock
 import android.os.IBinder
 import android.util.Log
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -189,6 +191,131 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
             }
         }
         return true
+    }
+
+    /**
+     * Debug-broker hook used by integration tests that need deterministic
+     * multi-touch. Events are dispatched through the SurfaceView, so this
+     * still exercises the Activity's MotionEvent decoding before JNI.
+     */
+    fun injectTouchSequenceForDev(kind: String): String? {
+        val width = surfaceView.width.toFloat()
+        val height = surfaceView.height.toFloat()
+        if (width <= 0f || height <= 0f) {
+            return "surfaceView has no size yet (${surfaceView.width}x${surfaceView.height})"
+        }
+
+        val downTime = SystemClock.uptimeMillis()
+        var eventTime = downTime
+
+        fun point(xFrac: Float, yFrac: Float): Pair<Float, Float> =
+            (xFrac * width) to (yFrac * height)
+
+        fun send(
+            actionMasked: Int,
+            actionIndex: Int,
+            ids: IntArray,
+            points: Array<Pair<Float, Float>>,
+        ) {
+            eventTime += 16
+            val props = Array(ids.size) { i ->
+                MotionEvent.PointerProperties().apply {
+                    id = ids[i]
+                    toolType = MotionEvent.TOOL_TYPE_FINGER
+                }
+            }
+            val coords = Array(ids.size) { i ->
+                MotionEvent.PointerCoords().apply {
+                    x = points[i].first
+                    y = points[i].second
+                    pressure = 1f
+                    size = 0.08f
+                }
+            }
+            val action = if (
+                actionMasked == MotionEvent.ACTION_POINTER_DOWN ||
+                actionMasked == MotionEvent.ACTION_POINTER_UP
+            ) {
+                actionMasked or (actionIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+            } else {
+                actionMasked
+            }
+            val event = MotionEvent.obtain(
+                downTime,
+                eventTime,
+                action,
+                ids.size,
+                props,
+                coords,
+                0,
+                0,
+                1f,
+                1f,
+                0,
+                0,
+                InputDevice.SOURCE_TOUCHSCREEN,
+                0,
+            )
+            try {
+                surfaceView.dispatchTouchEvent(event)
+            } finally {
+                event.recycle()
+            }
+        }
+
+        fun lerp(a: Float, b: Float, i: Int, steps: Int): Float =
+            a + (b - a) * (i.toFloat() / steps.toFloat())
+
+        when (kind) {
+            "tap" -> {
+                val p = point(0.30f, 0.35f)
+                send(MotionEvent.ACTION_DOWN, 0, intArrayOf(0), arrayOf(p))
+                send(MotionEvent.ACTION_UP, 0, intArrayOf(0), arrayOf(p))
+            }
+            "drag" -> {
+                val ids = intArrayOf(0)
+                send(MotionEvent.ACTION_DOWN, 0, ids, arrayOf(point(0.25f, 0.35f)))
+                for (i in 1..6) {
+                    send(
+                        MotionEvent.ACTION_MOVE,
+                        0,
+                        ids,
+                        arrayOf(point(lerp(0.25f, 0.70f, i, 6), lerp(0.35f, 0.60f, i, 6))),
+                    )
+                }
+                send(MotionEvent.ACTION_UP, 0, ids, arrayOf(point(0.70f, 0.60f)))
+            }
+            "multitouch" -> {
+                send(MotionEvent.ACTION_DOWN, 0, intArrayOf(0), arrayOf(point(0.25f, 0.35f)))
+                send(
+                    MotionEvent.ACTION_POINTER_DOWN,
+                    1,
+                    intArrayOf(0, 1),
+                    arrayOf(point(0.25f, 0.35f), point(0.75f, 0.35f)),
+                )
+                for (i in 1..6) {
+                    send(
+                        MotionEvent.ACTION_MOVE,
+                        0,
+                        intArrayOf(0, 1),
+                        arrayOf(
+                            point(lerp(0.25f, 0.35f, i, 6), lerp(0.35f, 0.55f, i, 6)),
+                            point(lerp(0.75f, 0.65f, i, 6), lerp(0.35f, 0.55f, i, 6)),
+                        ),
+                    )
+                }
+                send(
+                    MotionEvent.ACTION_POINTER_UP,
+                    1,
+                    intArrayOf(0, 1),
+                    arrayOf(point(0.35f, 0.55f), point(0.65f, 0.55f)),
+                )
+                send(MotionEvent.ACTION_UP, 0, intArrayOf(0), arrayOf(point(0.35f, 0.55f)))
+            }
+            else -> return "unknown touch sequence '$kind'"
+        }
+
+        return null
     }
 
     companion object {

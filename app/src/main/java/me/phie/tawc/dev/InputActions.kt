@@ -59,6 +59,7 @@ import me.phie.tawc.compositor.RecordingImeOutput
  * | `ic-set-selection` | `start`, `end` | `IC.setSelection(start, end)` |
  * | `ic-delete-surrounding-text` | `before`, `after` | `IC.deleteSurroundingText(before, after)` |
  * | `ic-send-key-event` | `keycode` | `IC.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode))` |
+ * | `inject-touch` | `kind=tap|drag|multitouch` | Dispatch normalized MotionEvents to the focused SurfaceView |
  *
  * Test-mode helpers:
  *
@@ -85,6 +86,7 @@ internal object InputActions {
         ActionRegistry.register("ic-set-selection", IcSetSelectionAction)
         ActionRegistry.register("ic-delete-surrounding-text", IcDeleteSurroundingTextAction)
         ActionRegistry.register("ic-send-key-event", IcSendKeyEventAction)
+        ActionRegistry.register("inject-touch", InjectTouchAction)
 
         ActionRegistry.register("query-state", QueryStateAction)
         ActionRegistry.register("enable-test-input", EnableTestInputAction)
@@ -240,6 +242,27 @@ internal object InputActions {
                 Log.d(TAG, "InputAction ic-send-key-event $keycode (ic=${ic != null})")
                 ic?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keycode))
             }
+        }
+    }
+
+    /**
+     * Inject deterministic touch sequences into the focused SurfaceView.
+     * Coordinates are normalized inside CompositorActivity, so host tests
+     * do not depend on a particular device resolution.
+     */
+    private object InjectTouchAction : BrokerAction {
+        override fun run(args: Map<String, String>, ctx: ActionContext): Int {
+            val kind = args["kind"] ?: return ctx.fail("inject-touch: --arg kind=tap|drag|multitouch required")
+            if (kind !in setOf("tap", "drag", "multitouch")) {
+                return ctx.fail("inject-touch: unknown kind '$kind'")
+            }
+            var injectError: String? = null
+            val status = withFocusedActivity(ctx) { activity ->
+                Log.d(TAG, "InputAction inject-touch $kind")
+                injectError = activity.injectTouchSequenceForDev(kind)
+            }
+            if (status != 0) return status
+            return injectError?.let { ctx.fail("inject-touch: $it") } ?: 0
         }
     }
 
