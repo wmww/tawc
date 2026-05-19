@@ -212,12 +212,12 @@ returns null, before any disk state is written.
 Full install/uninstall flow exercised on the emulator (x86_64
 ALARM... no, x86_64 Arch via the `pkgbuild.com` zstd bootstrap):
 
-- `scripts/install-distro.sh arch tawcroot` → stages
+- `scripts/tawc-exec.sh --foreground-app --action install --arg id=arch --arg method=tawcroot` → stages
   `DOWNLOADING → EXTRACTING → CONFIGURING → PKG_KEYRING → PKG_INSTALL
   → DONE`.
 - Resulting `metadata.json` contains `distro="arch"`, `arch="x86_64"`,
   `state="READY"`.
-- `scripts/uninstall-distro.sh arch` → `UNMOUNTING → DELETING →
+- `scripts/tawc-exec.sh --foreground-app --action uninstall --arg id=arch` → `UNMOUNTING → DELETING →
   DONE`. `gpg-agent` killed by the rootfs dev:inode sweep, mount-master
   unmount, `find -xdev -depth -delete` cleared the dir.
 - `<distros>/arch/` is gone (`ls` returns no such file or directory).

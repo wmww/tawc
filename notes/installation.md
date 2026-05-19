@@ -474,7 +474,7 @@ Install and uninstall are driven from the host through the **dev exec
 broker** ([notes/exec-broker.md](exec-broker.md)). The broker is the
 single host→app channel for everything: arbitrary command exec
 (`tawc-exec /bin/sh -c …`) and structured app actions
-(`tawc-exec --action install …`). Activities are pure viewers —
+(`tawc-exec --foreground-app --action install …`). Activities are pure viewers —
 opening any in-app screen never side-effects.
 
 - **Trigger surface (debug builds only):** the broker's `ACTION` header
@@ -503,26 +503,30 @@ opening any in-app screen never side-effects.
 ```sh
 # Kick off a fresh install. Streams progress + log to your TTY and
 # opens the in-app log screen. Ctrl-C cancels.
-scripts/install-distro.sh arch tawcroot
+scripts/tawc-exec.sh --foreground-app --action install \
+    --arg id=arch \
+    --arg mirrorProxy=http://127.0.0.1:8080/proxy/
 
 # Or pick a different distro / pass extras forwarded as broker --arg
 # flags:
-scripts/install-distro.sh arch proot \
-    distro=archlinuxarm \
-    mirrorProxy=http://127.0.0.1:8080/proxy/
+scripts/tawc-exec.sh --foreground-app --action install \
+    --arg id=arch \
+    --arg method=proot \
+    --arg distro=archlinuxarm \
+    --arg mirrorProxy=http://127.0.0.1:8080/proxy/
 
 # Tear down. Same channel; the uninstall is also the only way to
 # clear a `FAILED` install before trying again.
-scripts/uninstall-distro.sh arch
+scripts/tawc-exec.sh --foreground-app --action uninstall \
+    --arg id=arch
 ```
 
-The wrappers ensure `MainActivity` is foreground first (the broker
+`--foreground-app` ensures `MainActivity` is foreground first (the broker
 runs as a background thread inside the app process; Android-14
 `mAllowStartForeground` rules block `startForegroundService` from a
 fully-backgrounded app). `tawc-exec` already brings the app cold-up
 when the process is dead; the foreground precondition matters only
-when the app is alive but backgrounded, which the wrappers handle by
-calling `am start MainActivity` before the broker action.
+when the app is alive but backgrounded.
 
 Attaching to a running op from another shell:
 
@@ -538,8 +542,7 @@ directly via the broker (no su / run-as needed).
 
 ```sh
 . scripts/lib/select-device.sh
-. scripts/lib/tawc-exec.sh
-"$TAWC_EXEC_BIN" /system/bin/sh -c 'ls /data/data/me.phie.tawc/distros/'
+scripts/tawc-exec.sh /system/bin/sh -c 'ls /data/data/me.phie.tawc/distros/'
 ```
 
 ## Required permissions
@@ -800,16 +803,15 @@ app to be in the foreground when the action fires — `MainActivity`
 state, then the broker's accept thread is allowed to call
 `startForegroundService` for [InstallationService].
 
-The wrappers (`scripts/install-distro.sh`, `scripts/uninstall-distro.sh`)
-do this transparently:
+`--foreground-app` does this before the action header is sent:
 
 ```sh
 adb shell am start -n me.phie.tawc/.MainActivity   # bring foreground
-"$TAWC_EXEC_BIN" --action install --arg id=…       # then trigger
+scripts/tawc-exec.sh --action install --arg id=...  # then trigger
 ```
 
-`tawc-exec` already auto-launches `MainActivity` when the app process
-is dead; the wrapper covers the case where the app is alive but
+`tawc-exec` also auto-launches `MainActivity` when the app process
+is dead; `--foreground-app` covers the case where the app is alive but
 backgrounded. If the broker action runs against a truly backgrounded
 app the FGS launch will throw `ForegroundServiceStartNotAllowedException`
 and the action returns a clear error.

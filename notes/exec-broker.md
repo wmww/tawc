@@ -82,9 +82,8 @@ and tees every chunk of process stdout/stderr into the op's log flow
 raw byte stream — the mirror is purely additive.
 
 **ACTION form** — invoke an in-process broker action. Used by
-`tawc-exec --action install --arg id=arch …` (and the
-`scripts/install-distro.sh` / `scripts/uninstall-distro.sh` wrappers
-on top). The broker looks the action name up in
+`tawc-exec --foreground-app --action install --arg id=arch ...`.
+The broker looks the action name up in
 `me.phie.tawc.dev.ActionRegistry`; the handler runs in-process and
 streams its output back over the same stream-frame protocol. See
 `me.phie.tawc.install.InstallActions` for the install/uninstall
@@ -303,8 +302,8 @@ before any client connection arrives.
 
 | Action | Source | Purpose |
 |--------|--------|---------|
-| `install` | InstallActions | Run the install state machine; mirrors the [Operation] log + progress to host stdout/stderr; cancels on disconnect. See `scripts/install-distro.sh`. |
-| `uninstall` | InstallActions | Same shape, opposite direction. See `scripts/uninstall-distro.sh`. |
+| `install` | InstallActions | Run the install state machine; mirrors the [Operation] log + progress to host stdout/stderr; cancels on disconnect. Use `--foreground-app`. |
+| `uninstall` | InstallActions | Same shape, opposite direction. Use `--foreground-app`. |
 | `query-state` | InputActions | Calls `NativeBridge.nativeQueryState()` so the compositor logs a `COMPOSITOR_STATE …` line under `tawc-native`. Observational only — doesn't change input state. Needs no focused activity. |
 | `enable-test-input` / `disable-test-input` | InputActions | Swap `NativeBridge.imeOutput` for a `RecordingImeOutput` (or back). Stops the system IME from reacting to `updateSelection` and racing input tests. Doesn't bypass our state machine — stubs out the *third-party* IME at the boundary. Process-global; reset on process death. |
 | `ic-commit-text` (`text`) | InputActions | `TawcInputConnection.commitText(text, 1)`. |
@@ -376,19 +375,22 @@ the UID-wide kill is the actual safety net for orphaned descendants.
 
 `tawc-exec` is a small Rust binary at `tools/tawc-exec/`. Build it once
 with `scripts/build-tawc-exec.sh`; the output binary is cached at
-`build/tawc-exec/tawc-exec`. Scripts source `scripts/lib/tawc-exec.sh`
-to get a `TAWC_EXEC_BIN` env var that auto-builds if missing. The
-sourced lib also defines a `tawc_exec` shell function for ergonomics —
-note that shell functions can't be `exec`'d, so when the caller wants
-exec semantics it should use `"$TAWC_EXEC_BIN"` directly.
+`build/tawc-exec/tawc-exec`. Most host scripts call
+`scripts/tawc-exec.sh`, which rebuilds the helper when sources are newer
+and then execs the cached binary.
 
 Usage:
 
 ```
-tawc-exec [--cwd DIR] [--env K=V ...] [--op-title TITLE] -- ARGV0 ARGV1 ...
-tawc-exec --action NAME [--arg K=V ...]
-tawc-exec --in-rootfs ID [--op-title TITLE] [-- CMD ...]
+tawc-exec [--foreground-app] [--cwd DIR] [--env K=V ...] [--op-title TITLE] -- ARGV0 ARGV1 ...
+tawc-exec [--foreground-app] --action NAME [--arg K=V ...]
+tawc-exec [--foreground-app] --in-rootfs ID [--graphics KEY] [--op-title TITLE] [-- CMD ...]
 ```
+
+`--foreground-app` starts `MainActivity` even when the app process is
+already running. Install/uninstall actions need it because they start
+`InstallationService` as a foreground service; ordinary broker probes
+should leave it off.
 
 `--op-title TITLE` opts into the in-app log-screen mirror — the broker
 posts an Operation, opens `LogScreenActivity`, and streams stdout /
@@ -458,4 +460,4 @@ through the broker.
 - `app/src/main/java/me/phie/tawc/dev/ExecBrokerSession.kt` — per-
   connection logic (header parsing, frame routing, descendant kill).
 - `tools/tawc-exec/` — host helper.
-- `scripts/lib/tawc-exec.sh` — sourced by host scripts.
+- `scripts/tawc-exec.sh` — host-side wrapper that auto-builds the helper.

@@ -25,24 +25,28 @@ const STREAM_ERR: u8 = 5;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let parsed = match parse_args(&args) {
+    let invocation = match parse_args(&args) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("tawc-exec: {e}");
-            eprintln!("usage: tawc-exec [--cwd DIR] [--env K=V ...] [--op-title TITLE] -- ARGV0 [ARG ...]");
-            eprintln!("       tawc-exec --action NAME [--arg K=V ...]");
-            eprintln!("       tawc-exec --in-rootfs ID [--graphics libhybris|gfxstream|cpu|libhybris-zink] [--op-title TITLE] [-- CMD ...]");
+            print_usage();
             return ExitCode::from(2);
         }
     };
 
-    match run(parsed) {
+    match run(invocation) {
         Ok(code) => map_exit(code),
         Err(e) => {
             eprintln!("tawc-exec: {e}");
             ExitCode::from(255)
         }
     }
+}
+
+fn print_usage() {
+    eprintln!("usage: tawc-exec [--foreground-app] [--cwd DIR] [--env K=V ...] [--op-title TITLE] -- ARGV0 [ARG ...]");
+    eprintln!("       tawc-exec [--foreground-app] --action NAME [--arg K=V ...]");
+    eprintln!("       tawc-exec [--foreground-app] --in-rootfs ID [--graphics libhybris|gfxstream|cpu|libhybris-zink] [--op-title TITLE] [-- CMD ...]");
 }
 
 /// Top-level invocation kind. Mirrors the wire protocol: an ARGV-form
@@ -79,7 +83,12 @@ enum Parsed {
     },
 }
 
-fn parse_args(args: &[String]) -> Result<Parsed, String> {
+struct Invocation {
+    foreground_app: bool,
+    parsed: Parsed,
+}
+
+fn parse_args(args: &[String]) -> Result<Invocation, String> {
     let mut env = Vec::new();
     let mut cwd: Option<String> = None;
     let mut action_name: Option<String> = None;
@@ -87,14 +96,24 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut run_inside_id: Option<String> = None;
     let mut run_inside_graphics: Option<String> = None;
     let mut op_title: Option<String> = None;
+    let mut foreground_app = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--" => { i += 1; break; }
+            "--" => {
+                i += 1;
+                break;
+            }
+            "--foreground-app" => {
+                foreground_app = true;
+                i += 1;
+            }
             "--env" => {
                 i += 1;
                 let v = args.get(i).ok_or("--env needs argument")?;
-                if !v.contains('=') { return Err(format!("--env value must be K=V (got '{v}')")); }
+                if !v.contains('=') {
+                    return Err(format!("--env value must be K=V (got '{v}')"));
+                }
                 env.push(v.clone());
                 i += 1;
             }
@@ -106,29 +125,36 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--action" => {
                 i += 1;
                 let v = args.get(i).ok_or("--action needs argument")?.clone();
-                if v.is_empty() { return Err("--action name must not be empty".into()); }
+                if v.is_empty() {
+                    return Err("--action name must not be empty".into());
+                }
                 action_name = Some(v);
                 i += 1;
             }
             "--arg" => {
                 i += 1;
                 let v = args.get(i).ok_or("--arg needs argument")?;
-                let eq = v.find('=').ok_or_else(||
-                    format!("--arg value must be key=value (got '{v}')"))?;
-                action_args.push((v[..eq].to_string(), v[eq+1..].to_string()));
+                let eq = v
+                    .find('=')
+                    .ok_or_else(|| format!("--arg value must be key=value (got '{v}')"))?;
+                action_args.push((v[..eq].to_string(), v[eq + 1..].to_string()));
                 i += 1;
             }
             "--in-rootfs" => {
                 i += 1;
                 let v = args.get(i).ok_or("--in-rootfs needs install id")?.clone();
-                if v.is_empty() { return Err("--in-rootfs id must not be empty".into()); }
+                if v.is_empty() {
+                    return Err("--in-rootfs id must not be empty".into());
+                }
                 run_inside_id = Some(v);
                 i += 1;
             }
             "--graphics" => {
                 i += 1;
                 let v = args.get(i).ok_or("--graphics needs a backend key")?.clone();
-                if v.is_empty() { return Err("--graphics key must not be empty".into()); }
+                if v.is_empty() {
+                    return Err("--graphics key must not be empty".into());
+                }
                 // Validation against the GraphicsBackend enum happens
                 // device-side in ExecBrokerSession; we just forward the
                 // string. Avoids duplicating the enum on the host.
@@ -138,7 +164,9 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--op-title" => {
                 i += 1;
                 let v = args.get(i).ok_or("--op-title needs argument")?.clone();
-                if v.is_empty() { return Err("--op-title must not be empty".into()); }
+                if v.is_empty() {
+                    return Err("--op-title must not be empty".into());
+                }
                 op_title = Some(v);
                 i += 1;
             }
@@ -167,7 +195,15 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         } else {
             String::new()
         };
-        return Ok(Parsed::RunInside { install_id: id, cmd, op_title, graphics: run_inside_graphics });
+        return Ok(Invocation {
+            foreground_app,
+            parsed: Parsed::RunInside {
+                install_id: id,
+                cmd,
+                op_title,
+                graphics: run_inside_graphics,
+            },
+        });
     }
     if run_inside_graphics.is_some() {
         return Err("--graphics is only valid with --in-rootfs".into());
@@ -188,7 +224,13 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         if op_title.is_some() {
             return Err("--op-title is not allowed with --action (the action's own log screen handles this)".into());
         }
-        return Ok(Parsed::Action { name, args: action_args });
+        return Ok(Invocation {
+            foreground_app,
+            parsed: Parsed::Action {
+                name,
+                args: action_args,
+            },
+        });
     }
     // ARGV form. --action / --arg must not be present.
     if !action_args.is_empty() {
@@ -196,12 +238,23 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     }
     let argv: Vec<String> = args[i..].to_vec();
     if argv.is_empty() {
-        return Err("no command (use `-- ARGV0 ...`, `--action NAME`, or `--in-rootfs ID -- CMD`)".to_string());
+        return Err(
+            "no command (use `-- ARGV0 ...`, `--action NAME`, or `--in-rootfs ID -- CMD`)"
+                .to_string(),
+        );
     }
-    Ok(Parsed::Exec { argv, env, cwd, op_title })
+    Ok(Invocation {
+        foreground_app,
+        parsed: Parsed::Exec {
+            argv,
+            env,
+            cwd,
+            op_title,
+        },
+    })
 }
 
-fn run(p: Parsed) -> io::Result<i32> {
+fn run(invocation: Invocation) -> io::Result<i32> {
     // Pick a free port on 127.0.0.1, drop the listener immediately so
     // adbd can bind. Race window is tiny and the port is otherwise
     // unbound; if it loses we error loudly.
@@ -218,24 +271,30 @@ fn run(p: Parsed) -> io::Result<i32> {
     // we'd notice only when the TCP connection got RST mid-handshake,
     // which is hard to distinguish from "broker disconnected normally".
     // Cheaper to ask up front.
-    if !app_running(serial.as_deref()) {
-        eprintln!("tawc-exec: app process down, starting MainActivity...");
-        let mut start = Command::new("adb");
-        if let Some(s) = serial.as_deref() { start.args(["-s", s]); }
-        start.args(["shell", "am", "start", "-n", "me.phie.tawc/.MainActivity"]);
-        start.stdout(Stdio::null()).stderr(Stdio::null());
-        let _ = start.status();
+    let was_running = app_running(serial.as_deref());
+    if invocation.foreground_app || !was_running {
+        if was_running {
+            eprintln!("tawc-exec: bringing MainActivity foreground...");
+        } else {
+            eprintln!("tawc-exec: app process down, starting MainActivity...");
+        }
+        start_main_activity(serial.as_deref())?;
+    }
+    if !was_running {
         // Wait up to ~10s for Application.onCreate -> ExecBroker.start
         // to actually bind the abstract socket.
         let mut waited = 0;
         while waited < 50 {
             std::thread::sleep(std::time::Duration::from_millis(200));
-            if app_running(serial.as_deref()) { break; }
+            if app_running(serial.as_deref()) {
+                break;
+            }
             waited += 1;
         }
         if !app_running(serial.as_deref()) {
             return Err(io::Error::other(
-                "app process didn't come up; is the debug APK installed?"));
+                "app process didn't come up; is the debug APK installed?",
+            ));
         }
         // Once pidof reports it, Application.onCreate has launched but
         // ExecBroker.start spawns the listener thread asynchronously —
@@ -247,7 +306,7 @@ fn run(p: Parsed) -> io::Result<i32> {
     let mut sock = TcpStream::connect(("127.0.0.1", port))?;
     sock.set_nodelay(true)?;
 
-    write_header(&mut sock, &p)?;
+    write_header(&mut sock, &invocation.parsed)?;
     // Make sure the header lands as a single TCP segment before any
     // frame bytes follow. flush() doesn't actually push past Nagle on
     // its own, but TCP_NODELAY above + a tiny header means the kernel
@@ -259,6 +318,21 @@ fn run(p: Parsed) -> io::Result<i32> {
     Ok(exit)
 }
 
+fn start_main_activity(serial: Option<&str>) -> io::Result<()> {
+    let mut start = Command::new("adb");
+    if let Some(s) = serial {
+        start.args(["-s", s]);
+    }
+    start.args(["shell", "am", "start", "-n", "me.phie.tawc/.MainActivity"]);
+    start.stdout(Stdio::null()).stderr(Stdio::null());
+    let status = start.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other("failed to start MainActivity"))
+    }
+}
+
 fn write_header(s: &mut TcpStream, p: &Parsed) -> io::Result<()> {
     let mut h = String::new();
     h.push_str("TAWCEXEC 1\n");
@@ -268,14 +342,37 @@ fn write_header(s: &mut TcpStream, p: &Parsed) -> io::Result<()> {
     // and goes through [encode_value] so a `\n` doesn't terminate the
     // header line early. The device side decodes in [decodeValue].
     match p {
-        Parsed::Exec { argv, env, cwd, op_title } => {
-            for a in argv { h.push_str("ARGV "); h.push_str(&encode_value(a)); h.push('\n'); }
-            for e in env  { h.push_str("ENV ");  h.push_str(&encode_value(e));  h.push('\n'); }
-            if let Some(c) = cwd { h.push_str("CWD "); h.push_str(&encode_value(c)); h.push('\n'); }
-            if let Some(t) = op_title { h.push_str("OP_TITLE "); h.push_str(&encode_value(t)); h.push('\n'); }
+        Parsed::Exec {
+            argv,
+            env,
+            cwd,
+            op_title,
+        } => {
+            for a in argv {
+                h.push_str("ARGV ");
+                h.push_str(&encode_value(a));
+                h.push('\n');
+            }
+            for e in env {
+                h.push_str("ENV ");
+                h.push_str(&encode_value(e));
+                h.push('\n');
+            }
+            if let Some(c) = cwd {
+                h.push_str("CWD ");
+                h.push_str(&encode_value(c));
+                h.push('\n');
+            }
+            if let Some(t) = op_title {
+                h.push_str("OP_TITLE ");
+                h.push_str(&encode_value(t));
+                h.push('\n');
+            }
         }
         Parsed::Action { name, args } => {
-            h.push_str("ACTION "); h.push_str(name); h.push('\n');
+            h.push_str("ACTION ");
+            h.push_str(name);
+            h.push('\n');
             for (k, v) in args {
                 h.push_str("ARG ");
                 h.push_str(k);
@@ -284,16 +381,33 @@ fn write_header(s: &mut TcpStream, p: &Parsed) -> io::Result<()> {
                 h.push('\n');
             }
         }
-        Parsed::RunInside { install_id, cmd, op_title, graphics } => {
-            h.push_str("RUNINSIDE "); h.push_str(install_id); h.push('\n');
+        Parsed::RunInside {
+            install_id,
+            cmd,
+            op_title,
+            graphics,
+        } => {
+            h.push_str("RUNINSIDE ");
+            h.push_str(install_id);
+            h.push('\n');
             // Empty cmd means interactive shell — omit the CMD line.
             if !cmd.is_empty() {
-                h.push_str("CMD "); h.push_str(&encode_value(cmd)); h.push('\n');
+                h.push_str("CMD ");
+                h.push_str(&encode_value(cmd));
+                h.push('\n');
             }
             // GRAPHICS key is a programmatic identifier (libhybris /
             // gfxstream / cpu / libhybris-zink); no encoding needed.
-            if let Some(g) = graphics { h.push_str("GRAPHICS "); h.push_str(g); h.push('\n'); }
-            if let Some(t) = op_title { h.push_str("OP_TITLE "); h.push_str(&encode_value(t)); h.push('\n'); }
+            if let Some(g) = graphics {
+                h.push_str("GRAPHICS ");
+                h.push_str(g);
+                h.push('\n');
+            }
+            if let Some(t) = op_title {
+                h.push_str("OP_TITLE ");
+                h.push_str(&encode_value(t));
+                h.push('\n');
+            }
         }
     }
     h.push('\n');
@@ -341,7 +455,9 @@ fn pump(sock: TcpStream) -> io::Result<i32> {
         let mut s = stdin_sock;
         let mut stdin = io::stdin().lock();
         loop {
-            if !stdin_alive.load(Ordering::Relaxed) { break; }
+            if !stdin_alive.load(Ordering::Relaxed) {
+                break;
+            }
             let n = match stdin.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => n,
@@ -355,7 +471,9 @@ fn pump(sock: TcpStream) -> io::Result<i32> {
             frame.push(STREAM_STDIN);
             frame.extend_from_slice(&(n as u32).to_be_bytes());
             frame.extend_from_slice(&buf[..n]);
-            if s.write_all(&frame).is_err() { break; }
+            if s.write_all(&frame).is_err() {
+                break;
+            }
         }
         // Send stdin EOF frame; ignore if socket is gone.
         let eof = [STREAM_STDIN_EOF, 0, 0, 0, 0];
@@ -378,29 +496,43 @@ fn pump(sock: TcpStream) -> io::Result<i32> {
         let stream = hdr[0];
         let len = u32::from_be_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
         if len > 16 * 1024 * 1024 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData,
-                format!("frame too large: stream={stream} len={len}")));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("frame too large: stream={stream} len={len}"),
+            ));
         }
         let mut payload = vec![0u8; len];
         read_exact(&mut s, &mut payload)?;
         match stream {
-            STREAM_STDOUT => { stdout.write_all(&payload)?; stdout.flush()?; }
-            STREAM_STDERR => { stderr.write_all(&payload)?; stderr.flush()?; }
+            STREAM_STDOUT => {
+                stdout.write_all(&payload)?;
+                stdout.flush()?;
+            }
+            STREAM_STDERR => {
+                stderr.write_all(&payload)?;
+                stderr.flush()?;
+            }
             STREAM_ERR => {
-                eprintln!("tawc-exec: broker error: {}",
-                    String::from_utf8_lossy(&payload));
+                eprintln!(
+                    "tawc-exec: broker error: {}",
+                    String::from_utf8_lossy(&payload)
+                );
             }
             STREAM_EXIT => {
                 if payload.len() != 4 {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData,
-                        format!("exit frame payload len={}", payload.len())));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("exit frame payload len={}", payload.len()),
+                    ));
                 }
                 exit_code = i32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 break 'recv;
             }
             other => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData,
-                    format!("unexpected server stream {other}")));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unexpected server stream {other}"),
+                ));
             }
         }
     }
@@ -415,7 +547,9 @@ fn pump(sock: TcpStream) -> io::Result<i32> {
 /// over plain `adb shell` (no privilege needed — pidof walks /proc).
 fn app_running(serial: Option<&str>) -> bool {
     let mut cmd = Command::new("adb");
-    if let Some(s) = serial { cmd.args(["-s", s]); }
+    if let Some(s) = serial {
+        cmd.args(["-s", s]);
+    }
     cmd.args(["shell", "pidof", "me.phie.tawc"]);
     cmd.output()
         .map(|o| o.stdout.iter().any(|b| b.is_ascii_digit()))
@@ -428,9 +562,15 @@ fn read_exact(s: &mut TcpStream, buf: &mut [u8]) -> io::Result<()> {
         match s.read(&mut buf[filled..]) {
             Ok(0) => {
                 if filled == 0 {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "eof at frame boundary"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "eof at frame boundary",
+                    ));
                 }
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "eof mid-frame"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "eof mid-frame",
+                ));
             }
             Ok(n) => filled += n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -454,7 +594,9 @@ struct AdbForward {
 impl AdbForward {
     fn start(serial: Option<&str>, port: u16) -> io::Result<Self> {
         let mut cmd = Command::new("adb");
-        if let Some(s) = serial { cmd.args(["-s", s]); }
+        if let Some(s) = serial {
+            cmd.args(["-s", s]);
+        }
         cmd.args([
             "forward",
             &format!("tcp:{port}"),
@@ -468,14 +610,19 @@ impl AdbForward {
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
-        Ok(AdbForward { serial: serial.map(String::from), port })
+        Ok(AdbForward {
+            serial: serial.map(String::from),
+            port,
+        })
     }
 }
 
 impl Drop for AdbForward {
     fn drop(&mut self) {
         let mut cmd = Command::new("adb");
-        if let Some(s) = &self.serial { cmd.args(["-s", s]); }
+        if let Some(s) = &self.serial {
+            cmd.args(["-s", s]);
+        }
         cmd.args(["forward", "--remove", &format!("tcp:{}", self.port)]);
         let _ = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status();
     }

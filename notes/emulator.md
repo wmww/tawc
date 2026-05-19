@@ -311,7 +311,7 @@ matching a real Magisk-rooted device.
 
 ### 6. Bootstrap the chroot
     adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
-    TAWC_TARGET=emulator scripts/install-distro.sh arch tawcroot
+    TAWC_TARGET=emulator scripts/tawc-exec.sh --foreground-app --action install --arg id=arch
 
 This installs the tawc app and triggers its in-app installer, which
 downloads the Arch x86_64 bootstrap tarball, extracts it to

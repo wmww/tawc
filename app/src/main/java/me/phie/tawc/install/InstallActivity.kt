@@ -35,8 +35,8 @@ import me.phie.tawc.ui.verticalLp
  *
  * Mutating an installation never happens as a side-effect of opening
  * this screen. The button press is the only trigger; CLI install /
- * uninstall lives on the dev exec broker (see [InstallActions] +
- * `scripts/install-distro.sh`). This was the
+ * uninstall lives on the dev exec broker (see [InstallActions]).
+ * This was the
  * `install-uninstall-trigger-via-activity-launch` issue's resolution.
  */
 class InstallActivity : AppCompatActivity() {

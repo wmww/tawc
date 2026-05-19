@@ -44,9 +44,10 @@ systemd's path:
 
 ## Repro
 
-    scripts/uninstall-distro.sh manjaro
-    scripts/install-distro.sh manjaro tawcroot \
-        mirrorProxy=http://127.0.0.1:8080/proxy/ distro=manjaro
+    scripts/tawc-exec.sh --foreground-app --action uninstall --arg id=manjaro
+    scripts/tawc-exec.sh --foreground-app --action install \
+        --arg id=manjaro --arg method=tawcroot \
+        --arg mirrorProxy=http://127.0.0.1:8080/proxy/ --arg distro=manjaro
 
 Search the log for `chroot() environment: Function not implemented`.
 

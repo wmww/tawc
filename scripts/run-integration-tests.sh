@@ -1,47 +1,14 @@
 #!/bin/bash
-# Run the tawc integration test suite.
+# Run the integration tests against the selected adb target.
 #
-# Builds all components (compositor APK including libhybris asset, debug
-# app), deploys to the target, then runs the cargo integration tests.
-# Pass an optional libtest substring filter to narrow the run; pass
-# --no-build to skip the rebuild/redeploy phase.
-#
-# Prerequisites:
-#   - Android device or emulator connected via adb and selected via
-#     ./.tawctarget or TAWC_TARGET=physical|emulator (see
-#     scripts/lib/select-device.sh -- no auto-fallback to a single
-#     connected target). The tawcroot path needs no `su`; only the
-#     `chroot` install method does (and that's debug-only).
-#   - tawc app installed (this script reinstalls it during build).
-#     libhybris ships inside the APK as an asset and is copied into each
-#     rootfs at install time — no on-device libhybris build step.
-#   - At least one in-app install present at
-#     /data/data/me.phie.tawc/distros/<id>/. The suite auto-targets it
-#     when there's exactly one; with multiple, set TAWC_INSTALL_ID=<id>
-#     explicitly. Install via:
-#       scripts/install-distro.sh <id> [tawcroot|proot|chroot] \
-#           [distro=<distro>]
-#   - Test-suite chroot packages installed (run
-#     `scripts/install-test-deps.sh` once per chroot install)
-#   - JAVA_HOME set or java-21-openjdk installed at default path
-#
-# Each test pins its own in-rootfs graphics backend per spawn via the
-# broker `GRAPHICS` header on RUNINSIDE (`tawc-exec --graphics …`), so a
-# single suite run exercises every backend without a global flip. The
-# `hybris::` / `gfxstream::` / `cpu_graphics::` modules each pin their
-# matching backend; `apps::` / `input::` use CPU (the most portable
-# launch path); `xwayland::` uses libhybris (TAWC-DRI / `xwl_tawc` are
-# libhybris-native). See `notes/testing.md`.
-#
-# Usage:
-#   scripts/run-integration-tests.sh                       # everything
-#   scripts/run-integration-tests.sh <filter>              # libtest substring filter,
-#                                                                 e.g. `<module>::` or `<module>::test_foo`
-#   scripts/run-integration-tests.sh --no-build [filter]   # skip rebuild/redeploy
+# Usage: scripts/run-integration-tests.sh [--no-build] [filter]
+# Requires an installed distro; set TAWC_INSTALL_ID when more than one exists.
+# Install test packages first with scripts/install-test-deps.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TAWC_EXEC="${TAWC_EXEC:-$ROOT_DIR/scripts/tawc-exec.sh}"
 
 export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
@@ -71,10 +38,9 @@ done
 source "$ROOT_DIR/scripts/lib/select-device.sh"
 # shellcheck source=../scripts/lib/tawc-scratch.sh
 source "$ROOT_DIR/scripts/lib/tawc-scratch.sh"
-# shellcheck source=../scripts/lib/tawc-exec.sh
-source "$ROOT_DIR/scripts/lib/tawc-exec.sh"
 # shellcheck source=../scripts/lib/tawc-install-id.sh
 source "$ROOT_DIR/scripts/lib/tawc-install-id.sh"
+export TAWC_EXEC_BIN="$ROOT_DIR/build/tawc-exec/tawc-exec"
 
 # tawc-install-id.sh exported TAWC_INSTALL_ID (auto-detected when unset
 # and exactly one install is present; errors if 0 or >1). The cargo
@@ -92,13 +58,13 @@ if [ "$DO_BUILD" -eq 1 ]; then
     "$ROOT_DIR/scripts/app-build-install.sh" --no-launch
 
     echo "=== Verifying in-app install is present at $INSTALL_DIR ==="
-    if ! "$TAWC_EXEC_BIN" /system/bin/sh -c "test -d $INSTALL_DIR/rootfs" >/dev/null 2>&1; then
+    if ! "$TAWC_EXEC" /system/bin/sh -c "test -d $INSTALL_DIR/rootfs" >/dev/null 2>&1; then
         cat >&2 <<EOF
 ERROR: in-app install not found at $INSTALL_DIR/.
 
 Install it from the host:
-  scripts/install-distro.sh $INSTALL_ID [tawcroot|proot|chroot] \\
-      [distro=<distro>]
+  scripts/tawc-exec.sh --foreground-app --action install \\
+      --arg id=$INSTALL_ID --arg mirrorProxy=http://127.0.0.1:8080/proxy/
 
 Progress streams to your TTY; the in-app log screen also opens.
 EOF
@@ -109,7 +75,7 @@ EOF
     adb push tests/apps/tawc-pidfile-exec.sh "$TAWC_SCRATCH/tawc-pidfile-exec.sh"
     # `cp` + chmod via the broker — runs as the app uid, which owns the
     # rootfs tree. No su required.
-    "$TAWC_EXEC_BIN" /system/bin/sh -c "cp $TAWC_SCRATCH/tawc-pidfile-exec.sh $INSTALL_DIR/rootfs/tmp/tawc-pidfile-exec.sh && chmod +x $INSTALL_DIR/rootfs/tmp/tawc-pidfile-exec.sh"
+    "$TAWC_EXEC" /system/bin/sh -c "cp $TAWC_SCRATCH/tawc-pidfile-exec.sh $INSTALL_DIR/rootfs/tmp/tawc-pidfile-exec.sh && chmod +x $INSTALL_DIR/rootfs/tmp/tawc-pidfile-exec.sh"
 
     # Pre-build the tawcroot device test bundle so the
     # `tawcroot::test_tawcroot_device_suite` integration case can run
@@ -148,7 +114,7 @@ for _ in $(seq 1 150); do
     # Wayland socket lives in the app's private data dir; probe via
     # the broker (runs as the app uid).
     if adb shell 'pidof me.phie.tawc >/dev/null' 2>/dev/null && \
-       "$TAWC_EXEC_BIN" /system/bin/sh -c "test -e /data/data/me.phie.tawc/share/wayland-0" 2>/dev/null && \
+       "$TAWC_EXEC" /system/bin/sh -c "test -e /data/data/me.phie.tawc/share/wayland-0" 2>/dev/null && \
        adb logcat -d -s tawc-native 2>/dev/null | grep -q "Entering calloop event loop"; then
         COMPOSITOR_READY=1
         break

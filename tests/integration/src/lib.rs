@@ -84,9 +84,9 @@ fn resolve_install_id() -> String {
     match ids.as_slice() {
         [one] => (*one).to_string(),
         [] => panic!(
-            "no in-app install found at /data/data/{pkg}/distros/*/ — \
-             install one with `scripts/install-distro.sh <id> [method]` \
-             (see AGENTS.md Quick Reference)"
+             "no in-app install found at /data/data/{pkg}/distros/*/ — \
+             install one with `scripts/tawc-exec.sh --foreground-app --action install --arg id=<id>` \
+             (see notes/installation.md)"
         ),
         many => panic!(
             "multiple installs found at /data/data/{pkg}/distros/ ({}); \

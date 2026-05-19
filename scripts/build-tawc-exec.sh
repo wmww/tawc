@@ -1,12 +1,6 @@
 #!/bin/bash
-# Build the host-side tawc-exec helper.
-#
-# Small Rust binary that adb-forwards the device-side dev exec broker
-# socket and multiplexes local stdio. See notes/exec-broker.md.
-#
-# Output: build/tawc-exec/tawc-exec (release build, stripped).
-# Invoked automatically by scripts/lib/tawc-exec.sh on first use; you
-# rarely need to run this by hand. `--clean` forces a fresh build.
+# Build the host-side tawc-exec helper into build/tawc-exec/.
+# scripts/tawc-exec.sh calls this automatically; pass --clean to rebuild.
 
 set -euo pipefail
 

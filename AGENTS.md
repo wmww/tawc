@@ -3,8 +3,6 @@ Tess's Android Wayland Compositor (tawc) is an Android app plus rootfs/build scr
 ## Quick Reference
 - Build APK: `JAVA_HOME=/usr/lib/jvm/java-21-openjdk ANDROID_HOME=$HOME/Android/Sdk ./gradlew assembleDebug`
 - Build/install/launch: `scripts/app-build-install.sh` (`--no-build`, `--no-launch` supported)
-- Install distro: `scripts/install-distro.sh <id> [tawcroot|proot|chroot] mirrorProxy=http://127.0.0.1:8080/proxy/`
-- Uninstall distro: `scripts/uninstall-distro.sh <id>`
 - Run in rootfs: `scripts/rootfs-run.sh '<command>'` or interactive with no command
 - Run Firefox: `scripts/rootfs-run.sh 'firefox --no-remote'`
 - Run lxterminal: `scripts/rootfs-run.sh 'lxterminal'`
@@ -17,7 +15,7 @@ Tess's Android Wayland Compositor (tawc) is an Android app plus rootfs/build scr
 ## Current Project Shape
 - Install methods: `tawcroot` is default and the only release-supported method. `proot` and `chroot` are debug-only dev-loop options.
 - Graphics backends: `libhybris`, `libhybris-zink`, `gfxstream`, and `cpu` ship by default. `libhybris` works on all tested physical devices and is the production/default path. `gfxstream` is experimental/partial; it is the x86_64 emulator default only because libhybris is unsupported there. See [notes/gpu-strategy.md](notes/gpu-strategy.md), [notes/libhybris-zink.md](notes/libhybris-zink.md), and [notes/gfxstream-bridge.md](notes/gfxstream-bridge.md).
-- The debug exec broker is the normal host-to-app command path. Host helper: `tools/tawc-exec/`; shell library: `scripts/lib/tawc-exec.sh`; protocol notes: [notes/exec-broker.md](notes/exec-broker.md).
+- The debug exec broker is the normal host-to-app command path. Host helper: `tools/tawc-exec/`; wrapper: `scripts/tawc-exec.sh`; protocol notes: [notes/exec-broker.md](notes/exec-broker.md).
 - SHM buffers are intentionally tinted magenta by default to expose fallback paths. Do not remove this unless explicitly asked.
 
 ## Operating Rules
@@ -53,7 +51,7 @@ Tess's Android Wayland Compositor (tawc) is an Android app plus rootfs/build scr
 - When updating a vendored git dep, update its commit in `deps/deps.list` in the same change. Tarball deps such as `talloc`/`libmd` are versioned by URLs in build scripts, not `deps.list`.
 
 ## Cache Proxy
-- Always use the dev mirror cache for install/test paths that download distro packages: pass `mirrorProxy=http://127.0.0.1:8080/proxy/` to `scripts/install-distro.sh` and equivalent install tests.
+- Always use the dev mirror cache for install/test paths that download distro packages: pass `--arg mirrorProxy=http://127.0.0.1:8080/proxy/` to install actions and equivalent install tests.
 - Never start the cache proxy yourself. If `127.0.0.1:8080` is refused, ask the user to run `scripts/cache-proxy.sh run`.
 - A `404` from `/` or `/proxy/` means the proxy is up; upstream URLs are appended after `/proxy/`.
 - Never wipe `build/cache-proxy/cache/`; ask the user if manual cache cleanup is needed.

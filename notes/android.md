@@ -21,7 +21,9 @@ This is the current development approach.
 Install (once, via the dev exec broker; progress streams to your TTY
 and the in-app log screen opens automatically):
 ```bash
-scripts/install-distro.sh arch tawcroot
+scripts/tawc-exec.sh --foreground-app --action install \
+    --arg id=arch \
+    --arg mirrorProxy=http://127.0.0.1:8080/proxy/
 ```
 
 Then drive the chroot from the host with:

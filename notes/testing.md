@@ -129,9 +129,8 @@ so a stale `cargo test` from a `.tawctarget=none` checkout fails fast
 instead of attaching to the wrong target.
 
 Prerequisites: a phone (or emulator) connected via adb, the tawc app
-installed, an in-app distro installed (via `scripts/install-distro.sh
-<id> [method]`; see [installation.md](installation.md)), and the
-test suite's chroot packages **and binaries** installed by
+installed, an in-app distro installed (see [installation.md](installation.md)),
+and the test suite's chroot packages **and binaries** installed by
 `scripts/install-test-deps.sh`. That script installs the runtime
 package set (gtk3/gtk4/weston/mesa-utils/vulkan-tools/…) plus a C
 toolchain, then compiles every in-rootfs test program from
@@ -149,16 +148,14 @@ module's docstring.
 Tests inject input by acting as a **keyboard**: every input action calls a method on the active `TawcInputConnection` via the broker `ic-*` actions. There is intentionally no test path that pokes `NativeBridge.native*` directly — see `notes/text-input.md` "Test infrastructure note" for the rationale.
 
 ```bash
-. scripts/lib/tawc-exec.sh
-
 # Stop the system IME from reacting to updateSelection / showSoftInput.
-"$TAWC_EXEC_BIN" --action enable-test-input
+scripts/tawc-exec.sh --action enable-test-input
 
 # Drive the IC: commit text, set preedit, send a key, etc.
-"$TAWC_EXEC_BIN" --action ic-commit-text --arg text=hello
-"$TAWC_EXEC_BIN" --action ic-set-composing-text --arg text=wor
-"$TAWC_EXEC_BIN" --action ic-finish-composing
-"$TAWC_EXEC_BIN" --action ic-send-key-event --arg keycode=67  # Backspace
+scripts/tawc-exec.sh --action ic-commit-text --arg text=hello
+scripts/tawc-exec.sh --action ic-set-composing-text --arg text=wor
+scripts/tawc-exec.sh --action ic-finish-composing
+scripts/tawc-exec.sh --action ic-send-key-event --arg keycode=67  # Backspace
 ```
 
 Every call goes through the same Kotlin entry points the system IMM uses to dispatch Gboard / OpenBoard / AOSP-latin events, so the IC's full state machine (Editable mirror, `computeReplaceDeltas`, the `composingRegionIsPreedit` short-circuit) runs on every test step.

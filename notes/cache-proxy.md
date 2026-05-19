@@ -24,9 +24,11 @@ would defeat the cache and make timing comparisons meaningless.
 scripts/cache-proxy.sh run
 
 # Terminal B: install with the proxy URL passed in.
-scripts/install-distro.sh manjaro tawcroot \
-    distro=manjaro \
-    mirrorProxy=http://127.0.0.1:8080/proxy/
+scripts/tawc-exec.sh --foreground-app --action install \
+    --arg id=manjaro \
+    --arg method=tawcroot \
+    --arg distro=manjaro \
+    --arg mirrorProxy=http://127.0.0.1:8080/proxy/
 ```
 
 The script has subcommands — run `scripts/cache-proxy.sh` (no args)

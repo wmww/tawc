@@ -1,44 +1,19 @@
 #!/bin/bash
-# Install the chroot packages the integration test suite needs AND
-# build the small in-rootfs test programs (gtk4-debug-app, tawc-dri-test,
-# eglx11-test) that drive those tests.
+# Install integration-test packages and rebuild in-rootfs test apps.
 #
-# Run once per chroot install — and re-run whenever you edit any source
-# under `tests/apps/<name>/`. The integration tests check that the
-# binaries are present (`tests/integration/src/rootfs.rs`) and bail out
-# with a pointer back to this script if not. Tests do NOT compile
-# anything at runtime, so a stale binary keeps running until you re-run
-# this script.
-#
-# Idempotent: re-running just confirms packages then rebuilds the
-# binaries from the current sources.
-#
-# Distro-aware: reads `metadata.json` to dispatch between pacman
-# (Arch / Manjaro) and xbps (Void) install paths. Same logical
-# package set on each side, with names translated.
-#
-# Prerequisites:
-#   - Android device or emulator connected via adb and selected via
-#     ./.tawctarget or TAWC_TARGET=physical|emulator (see
-#     scripts/lib/select-device.sh)
-#   - In-app chroot installed at
-#     /data/data/me.phie.tawc/distros/<id>/. Auto-targeted when exactly
-#     one install is present; set TAWC_INSTALL_ID=<id> to pin one.
-#
-# Usage:
-#   scripts/install-test-deps.sh
-#   TAWC_INSTALL_ID=void scripts/install-test-deps.sh
+# Usage: scripts/install-test-deps.sh
+# Set TAWC_INSTALL_ID=<id> when more than one install exists. Re-run after
+# editing tests/apps/**.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TAWC_EXEC="${TAWC_EXEC:-$ROOT_DIR/scripts/tawc-exec.sh}"
 
 # shellcheck source=../scripts/lib/select-device.sh
 source "$ROOT_DIR/scripts/lib/select-device.sh"
 # shellcheck source=../scripts/lib/tawc-scratch.sh
 source "$ROOT_DIR/scripts/lib/tawc-scratch.sh"
-# shellcheck source=../scripts/lib/tawc-exec.sh
-source "$ROOT_DIR/scripts/lib/tawc-exec.sh"
 # shellcheck source=../scripts/lib/tawc-install-id.sh
 source "$ROOT_DIR/scripts/lib/tawc-install-id.sh"
 
@@ -47,7 +22,7 @@ TAWC_DISTROS_DIR="/data/data/me.phie.tawc/distros/$TAWC_INSTALL_ID"
 # Read the distro key out of metadata.json via the broker (runs as app
 # uid, can read the private data dir directly — works for every install
 # method, no root needed).
-DISTRO_KEY=$("$TAWC_EXEC_BIN" /system/bin/cat "$TAWC_DISTROS_DIR/metadata.json" \
+DISTRO_KEY=$("$TAWC_EXEC" /system/bin/cat "$TAWC_DISTROS_DIR/metadata.json" \
     | tr -d '\r' \
     | sed -n 's/.*"distro"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
     | head -n1)
@@ -184,12 +159,12 @@ build_test_app() {
     [ -d "$src_dir" ] || { echo "ERROR: missing $src_dir" >&2; exit 1; }
 
     echo "=== Building $name ==="
-    "$TAWC_EXEC_BIN" /system/bin/sh -c "mkdir -p $TAWC_SCRATCH"
+    "$TAWC_EXEC" /system/bin/sh -c "mkdir -p $TAWC_SCRATCH"
     adb shell rm -rf "$staging" >/dev/null
     adb push "$src_dir" "$staging" >/dev/null
     # cp + chmod via the broker — runs as the app uid which owns the
     # rootfs tree (no su / no run-as / no ownership-flip dance).
-    "$TAWC_EXEC_BIN" /system/bin/sh -c \
+    "$TAWC_EXEC" /system/bin/sh -c \
         "mkdir -p $fs_build_dir && cp $staging/* $fs_build_dir && chmod -R a+rwX $fs_build_dir"
     "$ROOT_DIR/scripts/rootfs-run.sh" "$rootfs_path/build.sh"
 }
@@ -235,7 +210,7 @@ build_libhybris_tls_repro_helper() {
         "$ndk_clang" -fPIC -shared -o "$tmp_so" "$src_dir/${name}.c"
         adb push "$tmp_so" "$TAWC_SCRATCH/libhybris-tls-repro-${name}.so" >/dev/null
         rm -f "$tmp_so"
-        "$TAWC_EXEC_BIN" /system/bin/sh -c \
+        "$TAWC_EXEC" /system/bin/sh -c \
             "mkdir -p $fs_dir && cp $TAWC_SCRATCH/libhybris-tls-repro-${name}.so $fs_dir/${name}.so && chmod a+rx $fs_dir/${name}.so"
     done
 }
@@ -250,7 +225,7 @@ build_libhybris_tls_repro_helper() {
 # emulator; the integration tests that consume them already fail there
 # (`tests/integration/tests/apps.rs:9`,
 #  `tests/integration/tests/libhybris.rs`).
-HOST_ARCH=$("$TAWC_EXEC_BIN" /system/bin/uname -m | tr -d '\r\n')
+HOST_ARCH=$("$TAWC_EXEC" /system/bin/uname -m | tr -d '\r\n')
 APPS=(gtk4-debug-app eglx11-test)
 if [ "$HOST_ARCH" = "aarch64" ]; then
     APPS+=(tawc-dri-test libhybris-tls-repro)

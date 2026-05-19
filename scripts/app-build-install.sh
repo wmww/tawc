@@ -1,20 +1,7 @@
 #!/bin/bash
-# Build the tawc APK, install it on the selected adb device, and launch
-# MainActivity (which starts CompositorService).
+# Build, install, and optionally launch the debug APK.
 #
-# Target selection: ./.tawctarget or TAWC_TARGET=physical|emulator (see
-# scripts/lib/select-device.sh -- no auto-fallback).
-#
-# Flags:
-#   --no-build   skip `gradlew assembleDebug` (use the existing APK)
-#   --no-launch  install only; don't force-stop or start MainActivity
-#                (used by run-integration-tests.sh, which has its own
-#                launch + readiness wait)
-#
-# Usage:
-#   scripts/app-build-install.sh                   # build, install, launch
-#   scripts/app-build-install.sh --no-build        # reuse APK, install, launch
-#   scripts/app-build-install.sh --no-launch       # build, install only
+# Usage: scripts/app-build-install.sh [--no-build] [--no-launch]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -23,8 +23,8 @@ following a fresh proot install + `install-test-deps.sh`, then
 ## Repro
 
 ```
-TAWC_TARGET=physical scripts/uninstall-distro.sh arch
-TAWC_TARGET=physical scripts/install-distro.sh arch proot
+TAWC_TARGET=physical scripts/tawc-exec.sh --foreground-app --action uninstall --arg id=arch
+TAWC_TARGET=physical scripts/tawc-exec.sh --foreground-app --action install --arg id=arch --arg method=proot
 TAWC_TARGET=physical scripts/install-test-deps.sh
 TAWC_TARGET=physical scripts/run-integration-tests.sh --no-build
 # -> hybris::test_firefox_renders_via_ahb FAILS

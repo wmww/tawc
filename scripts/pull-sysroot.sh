@@ -25,11 +25,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TAWC_EXEC="${TAWC_EXEC:-$SCRIPT_DIR/tawc-exec.sh}"
 
 # shellcheck source=lib/select-device.sh
 . "$SCRIPT_DIR/lib/select-device.sh"
-# shellcheck source=lib/tawc-exec.sh
-. "$SCRIPT_DIR/lib/tawc-exec.sh"
 # shellcheck source=lib/tawc-install-id.sh
 . "$SCRIPT_DIR/lib/tawc-install-id.sh"
 
@@ -60,7 +59,7 @@ mkdir -p "$DEST"
 # build-mesa-gfxstream.sh handle the gap, so we don't actually need
 # every entry — drop the exit code on the floor.
 set +e
-"$TAWC_EXEC_BIN" -- /system/bin/sh -c "
+"$TAWC_EXEC" -- /system/bin/sh -c "
     cd '$ROOTFS_DIR' && tar -czf - \
         usr/include usr/lib/pkgconfig usr/share/pkgconfig \
         usr/lib/libwayland-* usr/lib/libdrm* usr/lib/libudev* usr/lib/libffi* \
