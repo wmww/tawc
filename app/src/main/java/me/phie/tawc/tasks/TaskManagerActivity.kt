@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.text.TextUtils
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -27,6 +28,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import me.phie.tawc.install.ChrootMethod
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.distro.DistroRegistry
@@ -62,6 +64,7 @@ class TaskManagerActivity : AppCompatActivity() {
     private var scope: CoroutineScope? = null
     private var refreshJob: Job? = null
     private val stoppingPids = mutableSetOf<Int>()
+    private val stoppingInstallIds = mutableSetOf<String>()
     private val collapsedPids = mutableSetOf<Int>()
     private val openDetailButtons = mutableMapOf<Int, View>()
     private var lastInstalls: List<Installation> = emptyList()
@@ -111,6 +114,7 @@ class TaskManagerActivity : AppCompatActivity() {
         scope = null
         refreshJob = null
         stoppingPids.clear()
+        stoppingInstallIds.clear()
         openDetailButtons.clear()
     }
 
@@ -151,7 +155,7 @@ class TaskManagerActivity : AppCompatActivity() {
         for (inst in installs) {
             val procs = byInstall[inst.id] ?: continue
             listContainer.addView(
-                buildGroupCard(installLabel(inst), procs),
+                buildGroupCard(installLabel(inst), procs, inst),
                 verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin),
             )
         }
@@ -173,7 +177,11 @@ class TaskManagerActivity : AppCompatActivity() {
         return inst.label ?: displayName
     }
 
-    private fun buildGroupCard(title: String, procs: List<ProcessInfo>): View {
+    private fun buildGroupCard(
+        title: String,
+        procs: List<ProcessInfo>,
+        install: Installation? = null,
+    ): View {
         val card = tawcCard()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -188,6 +196,15 @@ class TaskManagerActivity : AppCompatActivity() {
             column.addView(
                 buildProcessRow(row),
                 verticalLp(MATCH_PARENT, WRAP_CONTENT),
+            )
+        }
+        if (install != null) {
+            column.addView(
+                buildStopAllControl(install),
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+                    gravity = Gravity.END
+                    topMargin = cardPad
+                },
             )
         }
         card.addView(column)
@@ -327,15 +344,21 @@ class TaskManagerActivity : AppCompatActivity() {
     }
 
     private fun dialogStopButton(p: ProcessInfo): View {
-        val label = if (p.pid in stoppingPids) "Stopping..." else "Stop"
+        val label = if (isProcessStopping(p)) "Stopping..." else "Stop"
         return destructiveButton(label) {}.apply {
             minWidth = stopSlotWidth
             setDetailStopButtonState(this, p.pid)
         }
     }
 
-    private fun canStop(pid: Int): Boolean =
-        pid !in stoppingPids && lastResult.processes.any { it.pid == pid }
+    private fun canStop(pid: Int): Boolean {
+        val proc = lastResult.processes.firstOrNull { it.pid == pid } ?: return false
+        return !isProcessStopping(proc)
+    }
+
+    private fun isProcessStopping(p: ProcessInfo): Boolean =
+        p.pid in stoppingPids ||
+            (p.ownerInstallId != null && p.ownerInstallId in stoppingInstallIds)
 
     private fun updateOpenDetailButtons() {
         for ((pid, button) in openDetailButtons) {
@@ -403,7 +426,7 @@ class TaskManagerActivity : AppCompatActivity() {
     }
 
     private fun buildStopControl(p: ProcessInfo): View {
-        if (p.pid !in stoppingPids) {
+        if (!isProcessStopping(p)) {
             return destructiveButton("Stop") { stopProcess(p) }.apply {
                 minWidth = stopSlotWidth
                 minimumWidth = stopSlotWidth
@@ -426,6 +449,24 @@ class TaskManagerActivity : AppCompatActivity() {
                 },
                 FrameLayout.LayoutParams(spinnerSize, spinnerSize, Gravity.CENTER),
             )
+        }
+    }
+
+    private fun buildStopAllControl(inst: Installation): View {
+        val active = inst.id in stoppingInstallIds
+        return destructiveButton(if (active) "Stopping..." else "Stop all") {
+            stopAllInInstall(inst)
+        }.apply {
+            isEnabled = !active
+            minHeight = 0
+            minimumHeight = 0
+            insetTop = 0
+            insetBottom = 0
+            setPadding(cardPad, cardPad / 3, cardPad, cardPad / 3)
+            if (active) {
+                backgroundTintList = ColorStateList.valueOf(getColor(me.phie.tawc.R.color.tawc_tonal_bg))
+                setTextColor(getColor(me.phie.tawc.R.color.tawc_on_tonal))
+            }
         }
     }
 
@@ -478,6 +519,7 @@ class TaskManagerActivity : AppCompatActivity() {
      */
     private fun stopProcess(p: ProcessInfo) {
         val s = scope ?: return
+        if (isProcessStopping(p)) return
         if (!stoppingPids.add(p.pid)) return
         render(lastInstalls, lastResult)
         s.launch {
@@ -492,7 +534,39 @@ class TaskManagerActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Use the uninstall-time repeated scan/sweep path so a distro-wide
+     * stop catches fork races and helpers that appear after the first
+     * process list was rendered.
+     */
+    private fun stopAllInInstall(inst: Installation) {
+        val s = scope ?: return
+        if (!stoppingInstallIds.add(inst.id)) return
+        render(lastInstalls, lastResult)
+        s.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    runInterruptible {
+                        ProcessScanner.killAllInRootfs(
+                            rootfsPath = store.rootfsDir(inst.id).absolutePath,
+                            installId = inst.id,
+                            includeChroot = inst.method == ChrootMethod.KEY,
+                            log = { Log.d(TAG, "stop-all ${inst.id}: $it") },
+                        )
+                    }
+                }
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                Log.w(TAG, "stop-all failed for ${inst.id}", t)
+            } finally {
+                stoppingInstallIds.remove(inst.id)
+            }
+            startRefresh()
+        }
+    }
+
     companion object {
+        private const val TAG = "tawc"
         private const val REFRESH_INTERVAL_MS = 2000L
     }
 
