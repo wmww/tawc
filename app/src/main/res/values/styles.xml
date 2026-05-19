@@ -34,6 +34,11 @@
         <item name="android:windowLightNavigationBar">true</item>
     </style>
 
+    <style name="TextAppearance.Tawc.HomeTitle" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textSize">24sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
     <!-- Compositor activity stays on the device-default theme: it draws
          its own surface end-to-end and never inflates Material widgets,
          so pulling Material3 in here would just bloat the resource

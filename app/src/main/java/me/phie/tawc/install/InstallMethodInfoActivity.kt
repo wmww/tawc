@@ -29,8 +29,8 @@ class InstallMethodInfoActivity : AppCompatActivity() {
         if (EnabledMethods.tawcroot) {
             section(
                 content, pad,
-                "tawcroot (recommended)",
-                "Custom systrap-based syscall emulator written for tawc. Like " +
+                "TAWCroot (recommended)",
+                "Custom systrap-based syscall emulator written for TAWC. Like " +
                     "proot it needs no root, but uses a more efficient " +
                     "ptrace alternative and is built specifically to handle " +
                     "the Wayland / GPU paths the compositor needs. Default " +
@@ -44,7 +44,7 @@ class InstallMethodInfoActivity : AppCompatActivity() {
                 "proot (dev only)",
                 "Userspace chroot via the Termux fork of proot. Rootless and " +
                     "broadly compatible — pacman, package builds and most " +
-                    "desktop apps work. Slower than tawcroot because every " +
+                    "desktop apps work. Slower than TAWCroot because every " +
                     "syscall is intercepted via ptrace. Available in debug " +
                     "builds for comparison; not shipped to release users.",
             )

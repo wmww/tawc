@@ -182,7 +182,7 @@ class InstallationService : Service() {
         val anchorTitle = when (intent?.action) {
             ACTION_INSTALL -> "Install $rawId"
             ACTION_UNINSTALL -> "Uninstall $rawId"
-            else -> "tawc"
+            else -> "TAWC"
         }
         val (notifId, notif) = OperationsNotificationCenter.placeholderForegroundFor(
             applicationContext, anchorOpId, anchorTitle,

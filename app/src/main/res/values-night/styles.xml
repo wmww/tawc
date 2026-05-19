@@ -24,4 +24,9 @@
         <item name="android:windowLightNavigationBar">false</item>
     </style>
 
+    <style name="TextAppearance.Tawc.HomeTitle" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textSize">24sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
 </resources>

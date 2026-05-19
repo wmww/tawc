@@ -47,7 +47,7 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         File(context.applicationInfo.nativeLibraryDir, "libtawcroot.so").absolutePath
 
     override val key: String = KEY
-    override val displayName: String = "tawcroot (systrap, rootless)"
+    override val displayName: String = "TAWCroot (systrap, rootless)"
     override val requiresRoot: Boolean = false
 
     override fun isAvailable(context: Context): Boolean {

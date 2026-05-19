@@ -38,7 +38,10 @@ fun AppCompatActivity.buildChildScreen(title: CharSequence): Scaffold =
 
 /** Top-level screen (Home): toolbar with title only, no up arrow. */
 fun AppCompatActivity.buildHomeScreen(title: CharSequence): Scaffold =
-    buildScreenInternal(title, withUp = false)
+    buildScreenInternal(title, withUp = false).also {
+        it.toolbar.setTitleCentered(true)
+        it.toolbar.setTitleTextAppearance(this, R.style.TextAppearance_Tawc_HomeTitle)
+    }
 
 private fun AppCompatActivity.buildScreenInternal(title: CharSequence, withUp: Boolean): Scaffold {
     val root = LinearLayout(this).apply {

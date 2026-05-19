@@ -48,7 +48,7 @@ class MainActivity : AppCompatActivity() {
         // launcher tap is the natural place to ensure it's running.
         startForegroundService(Intent(this, CompositorService::class.java))
 
-        val scaffold = buildHomeScreen("tawc")
+        val scaffold = buildHomeScreen("TAWC")
 
         listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scaffold.content.addView(listContainer, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin))
@@ -84,7 +84,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         listContainer.removeAllViews()
-        for (inst in store.list()) {
+        val installations = store.list()
+        if (installations.isEmpty()) {
+            listContainer.addView(TextView(this).apply {
+                text = "You have no installed Linux distros, install one to get started."
+                textSize = 16f
+                alpha = 0.75f
+                gravity = Gravity.CENTER_HORIZONTAL
+            }, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin))
+            return
+        }
+        for (inst in installations) {
             listContainer.addView(buildCard(inst), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin))
         }
     }

@@ -366,7 +366,7 @@ class InstallActivity : AppCompatActivity() {
             val rb = RadioButton(this).apply {
                 id = rid
                 text = when (key) {
-                    TawcrootMethod.KEY -> "tawcroot (recommended)"
+                    TawcrootMethod.KEY -> "TAWCroot (recommended)"
                     ProotMethod.KEY -> "proot"
                     ChrootMethod.KEY -> "chroot (requires root)"
                     else -> key
@@ -405,7 +405,7 @@ class InstallActivity : AppCompatActivity() {
             // service start.
             android.widget.Toast.makeText(
                 this,
-                "root (su) not available — pick proot or tawcroot, or grant Magisk root.",
+                "root (su) not available — pick proot or TAWCroot, or grant Magisk root.",
                 android.widget.Toast.LENGTH_LONG,
             ).show()
             return

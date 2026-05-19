@@ -232,7 +232,7 @@ class CompositorService : Service() {
 
     private fun buildNotification(): Notification {
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("tawc compositor")
+            .setContentTitle("TAWC compositor")
             .setContentText("Wayland compositor is running")
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setOngoing(true)
