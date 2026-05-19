@@ -385,7 +385,7 @@ $(OUT)/programs/static_check_proc_exe_argv0: $(SRC_TS)/integration/programs/stat
 # static_io_uring_deny: probe io_uring_setup, io_uring_enter, and
 # io_uring_register; expect -ENOSYS from each. Validates the
 # defense-in-depth deny that closes the inheritance edge case in
-# issues/tawcroot-io-uring-not-fully-intercepted.md.
+# notes/tawcroot.md "io_uring MVP behavior".
 $(OUT)/programs/static_io_uring_deny: $(SRC_TS)/integration/programs/static_io_uring_deny_x86_64.S | $(OUT)
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@

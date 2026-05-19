@@ -3177,8 +3177,8 @@ here so we don't ship MVP and discover them at runtime.
      `io_uring_enter` and the ring's `mmap`. On enter, walk SQEs
      from cached head to current tail; for each path-bearing op
      (`OPENAT`, `OPENAT2`, `STATX`, `RENAMEAT`, `UNLINKAT`,
-     `LINKAT`, `SYMLINKAT`, `MKDIRAT`, …), allocate a translated-
-     path buffer we own, rewrite the SQE's path pointer to it,
+     `LINKAT`, `SYMLINKAT`, `MKDIRAT`, `RENAMEAT2`, etc.),
+     allocate a translated-path buffer we own, rewrite the SQE's path pointer to it,
      stash the buffer in a pending list keyed by `user_data`.
      Forward enter to the kernel; drain CQEs to free pending
      buffers as ops complete. The spec guarantees the app doesn't
@@ -3188,8 +3188,9 @@ here so we don't ship MVP and discover them at runtime.
    - **Per-op shapes:** each path-bearing opcode needs a small
      translator (mostly reusing `path_translate()`); `OPENAT2`
      and `RENAMEAT2` have extra pointer hops. New `IORING_OP_*`
-     show up each kernel release, so we keep an explicit allowlist
-     and pass through unknowns with a warning.
+     show up each kernel release, so unknown opcodes need an
+     explicit allow, warn, or deny decision rather than blind
+     pass-through.
    - **Size:** likely ~500–1000 lines as a self-contained
      `src/uring.c` module. Doesn't disturb the per-syscall
      dispatch; one-time chunk of work, not a continuous tax.

@@ -1,12 +1,11 @@
 /* Static x86_64 fixture: probe io_uring_setup, io_uring_register, and
  * io_uring_enter. Each must return -ENOSYS. Exit 42 if all three deny.
  *
- * Validates the defense-in-depth deny on
- * `issues/tawcroot-io-uring-not-fully-intercepted.md`. Without the
- * register/enter handlers, a guest with an inherited ring fd could
- * submit path-bearing SQEs that bypass tawcroot's translation. With
- * the handlers, every io_uring syscall returns -ENOSYS regardless of
- * ring-fd provenance.
+ * Validates the defense-in-depth deny described in notes/tawcroot.md
+ * "io_uring MVP behavior". Without the register/enter handlers, a
+ * guest with an inherited ring fd could submit path-bearing SQEs that
+ * bypass tawcroot's translation. With the handlers, every io_uring
+ * syscall returns -ENOSYS regardless of ring-fd provenance.
  *
  * io_uring NRs are arch-independent on aarch64/x86_64:
  *   io_uring_setup    = 425

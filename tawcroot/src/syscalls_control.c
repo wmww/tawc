@@ -124,8 +124,8 @@ static long fake_eperm(const tawcroot_syscall_args *args, ucontext_t *uc)
  * a ring fd, but a ring fd inherited from a non-tawcroot parent across
  * exec would otherwise sail past us untranslated. Trapping the post-
  * setup syscalls makes "no io_uring traffic ever escapes" enforceable
- * independently of the stacked Android filter. See
- * `issues/tawcroot-io-uring-not-fully-intercepted.md`. */
+ * independently of the stacked Android filter. See notes/tawcroot.md
+ * "io_uring MVP behavior". */
 static long handle_io_uring_deny(const tawcroot_syscall_args *args,
 				 ucontext_t *uc)
 {
