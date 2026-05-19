@@ -11,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -52,12 +53,16 @@ class TaskManagerActivity : AppCompatActivity() {
     private val pad by lazy { (16 * resources.displayMetrics.density).toInt() }
     private val cardMargin by lazy { (8 * resources.displayMetrics.density).toInt() }
     private val cardPad by lazy { (12 * resources.displayMetrics.density).toInt() }
-    private val stopSlotWidth by lazy { (72 * resources.displayMetrics.density).toInt() }
-    private val spinnerSize by lazy { (32 * resources.displayMetrics.density).toInt() }
+    private val treeIndent by lazy { (18 * resources.displayMetrics.density).toInt() }
+    private val toggleSlotWidth by lazy { (32 * resources.displayMetrics.density).toInt() }
+    private val toggleIconSize by lazy { (28 * resources.displayMetrics.density).toInt() }
+    private val stopSlotWidth by lazy { (56 * resources.displayMetrics.density).toInt() }
+    private val spinnerSize by lazy { (28 * resources.displayMetrics.density).toInt() }
 
     private var scope: CoroutineScope? = null
     private var refreshJob: Job? = null
     private val stoppingPids = mutableSetOf<Int>()
+    private val collapsedPids = mutableSetOf<Int>()
     private val openDetailButtons = mutableMapOf<Int, View>()
     private var lastInstalls: List<Installation> = emptyList()
     private var lastResult = ProcessScanner.ScanResult(emptyList())
@@ -132,6 +137,7 @@ class TaskManagerActivity : AppCompatActivity() {
         lastInstalls = installs
         lastResult = result
         updateOpenDetailButtons()
+        collapsedPids.retainAll(result.processes.mapTo(HashSet()) { it.pid })
         listContainer.removeAllViews()
 
         val byInstall = result.groupedByInstall()
@@ -178,21 +184,22 @@ class TaskManagerActivity : AppCompatActivity() {
             textSize = 16f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
-        for (p in procs) {
+        for (row in processTreeRows(procs)) {
             column.addView(
-                buildProcessRow(p),
-                verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin / 2),
+                buildProcessRow(row),
+                verticalLp(MATCH_PARENT, WRAP_CONTENT),
             )
         }
         card.addView(column)
         return card
     }
 
-    private fun buildProcessRow(p: ProcessInfo): View {
+    private fun buildProcessRow(treeRow: ProcessTreeRow): View {
+        val p = treeRow.process
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, cardPad / 2, 0, cardPad / 2)
+            setPadding(0, cardPad / 4, 0, cardPad / 4)
             isClickable = true
             isFocusable = true
             val attrs = intArrayOf(android.R.attr.selectableItemBackground)
@@ -204,23 +211,51 @@ class TaskManagerActivity : AppCompatActivity() {
             }
             setOnClickListener { showProcessDetails(p) }
         }
+
+        val toggle = ImageButton(this).apply {
+            if (treeRow.hasChildren) {
+                setImageResource(
+                    if (treeRow.isCollapsed) me.phie.tawc.R.drawable.ic_tree_collapsed
+                    else me.phie.tawc.R.drawable.ic_tree_expanded,
+                )
+                imageTintList = ColorStateList.valueOf(defaultTextColor())
+                contentDescription = if (treeRow.isCollapsed) "Expand" else "Collapse"
+            } else {
+                imageTintList = null
+                contentDescription = null
+            }
+            background = null
+            scaleType = android.widget.ImageView.ScaleType.CENTER
+            setPadding(0, 0, 0, 0)
+            minimumWidth = 0
+            minimumHeight = 0
+            alpha = if (treeRow.hasChildren) 0.75f else 0f
+            isClickable = treeRow.hasChildren
+            isFocusable = treeRow.hasChildren
+            if (treeRow.hasChildren) {
+                setOnClickListener {
+                    if (!collapsedPids.add(p.pid)) collapsedPids.remove(p.pid)
+                    render(lastInstalls, lastResult)
+                }
+            }
+        }
+        row.addView(
+            toggle,
+            LinearLayout.LayoutParams(toggleSlotWidth, toggleIconSize).apply {
+                marginStart = treeIndent * treeRow.depth
+                marginEnd = cardPad / 2
+            },
+        )
+
         val labelColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
         labelColumn.addView(
             TextView(this@TaskManagerActivity).apply {
                 text = p.displayCommand.ifBlank { "unknown command" }
-                textSize = 15f
-                maxLines = 2
+                textSize = 16.5f
+                maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
-            },
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
-        )
-        labelColumn.addView(
-            TextView(this@TaskManagerActivity).apply {
-                text = p.pid.toString()
-                textSize = 12f
-                alpha = 0.7f
             },
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
         )
@@ -235,6 +270,9 @@ class TaskManagerActivity : AppCompatActivity() {
         )
         return row
     }
+
+    private fun defaultTextColor(): Int =
+        TextView(this).currentTextColor
 
     private fun showProcessDetails(p: ProcessInfo) {
         val details = LinearLayout(this).apply {
@@ -368,6 +406,12 @@ class TaskManagerActivity : AppCompatActivity() {
         if (p.pid !in stoppingPids) {
             return destructiveButton("Stop") { stopProcess(p) }.apply {
                 minWidth = stopSlotWidth
+                minimumWidth = stopSlotWidth
+                minHeight = 0
+                minimumHeight = 0
+                insetTop = 0
+                insetBottom = 0
+                setPadding(cardPad / 2, cardPad / 3, cardPad / 2, cardPad / 3)
             }
         }
         return FrameLayout(this).apply {
@@ -383,6 +427,48 @@ class TaskManagerActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams(spinnerSize, spinnerSize, Gravity.CENTER),
             )
         }
+    }
+
+    private fun processTreeRows(procs: List<ProcessInfo>): List<ProcessTreeRow> {
+        if (procs.isEmpty()) return emptyList()
+        val byPid = procs.associateBy { it.pid }
+        val childrenByParent = procs
+            .filter { it.parentPid in byPid && it.parentPid != it.pid }
+            .groupBy { it.parentPid }
+            .mapValues { (_, children) -> children.sortedBy { it.pid } }
+        val roots = procs
+            .filter { it.parentPid !in byPid || it.parentPid == it.pid }
+            .sortedBy { it.pid }
+        val rows = ArrayList<ProcessTreeRow>(procs.size)
+        val visited = HashSet<Int>(procs.size)
+
+        fun append(process: ProcessInfo, depth: Int) {
+            if (!visited.add(process.pid)) return
+            val children = childrenByParent[process.pid].orEmpty()
+            val isCollapsed = process.pid in collapsedPids
+            rows += ProcessTreeRow(process, depth, children.isNotEmpty(), isCollapsed)
+            if (!isCollapsed) {
+                for (child in children) append(child, depth + 1)
+            }
+        }
+
+        fun hiddenByCollapsedAncestor(process: ProcessInfo): Boolean {
+            val seen = HashSet<Int>()
+            var parentPid = process.parentPid
+            while (seen.add(parentPid)) {
+                if (parentPid in collapsedPids) return true
+                val parent = byPid[parentPid] ?: return false
+                if (parent.parentPid == parent.pid) return false
+                parentPid = parent.parentPid
+            }
+            return false
+        }
+
+        for (root in roots) append(root, 0)
+        for (p in procs.sortedBy { it.pid }) {
+            if (!hiddenByCollapsedAncestor(p)) append(p, 0)
+        }
+        return rows
     }
 
     /**
@@ -409,4 +495,11 @@ class TaskManagerActivity : AppCompatActivity() {
     companion object {
         private const val REFRESH_INTERVAL_MS = 2000L
     }
+
+    private data class ProcessTreeRow(
+        val process: ProcessInfo,
+        val depth: Int,
+        val hasChildren: Boolean,
+        val isCollapsed: Boolean,
+    )
 }

@@ -101,10 +101,12 @@ internal object AppUidProcfsScanner {
             if (matchedInstall == null && matchedOrphan == null) continue
 
             val comm = readSmall("$procEntry/comm")?.trim().orEmpty()
+            val parentPid = readParentPid("$procEntry/stat")
             val guestCommand = guestCommand(cmdline, comm, match?.commandPath)
             val cwd = guestCwd(procEntry, classifier)
             out += ProcessInfo(
                 pid = pid,
+                parentPid = parentPid,
                 ownerInstallId = matchedInstall,
                 orphanRootfsId = matchedOrphan,
                 comm = comm,
@@ -116,6 +118,14 @@ internal object AppUidProcfsScanner {
             )
         }
         return out
+    }
+
+    private fun readParentPid(path: String): Int {
+        val stat = readSmall(path) ?: return 0
+        val afterComm = stat.substringAfterLast(") ", missingDelimiterValue = "")
+        if (afterComm.isBlank()) return 0
+        val parts = afterComm.trim().split(WHITESPACE, limit = 3)
+        return parts.getOrNull(1)?.toIntOrNull() ?: 0
     }
 
     private fun guestCwd(procEntry: String, classifier: RootfsClassifier): String {

@@ -132,7 +132,11 @@ $cases
                 comm=${'$'}(cat "${'$'}entry/comm" 2>/dev/null | tr -d '\n\t')
                 cmdline=${'$'}(tr '\0\t\r' '   ' < "${'$'}entry/cmdline" 2>/dev/null)
                 cwd=${'$'}(readlink "${'$'}entry/cwd" 2>/dev/null | tr -d '\n\t')
-                printf '%s\t%s\t%s\t%s\t%s\n' "${'$'}pid" "${'$'}id" "${'$'}comm" "${'$'}cmdline" "${'$'}cwd"
+                statline=${'$'}(cat "${'$'}entry/stat" 2>/dev/null)
+                after_comm=${'$'}{statline##*) }
+                set -- ${'$'}after_comm
+                ppid=${'$'}{2:-0}
+                printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${'$'}pid" "${'$'}ppid" "${'$'}id" "${'$'}comm" "${'$'}cmdline" "${'$'}cwd"
             done
         """.trimIndent()
     }
@@ -141,21 +145,23 @@ $cases
         val out = mutableListOf<ProcessInfo>()
         for (line in text.lineSequence()) {
             if (line.isEmpty()) continue
-            val parts = line.split('\t', limit = 5)
-            if (parts.size < 4) continue
+            val parts = line.split('\t', limit = 6)
+            if (parts.size < 5) continue
             val pid = parts[0].toIntOrNull() ?: continue
-            val rawId = parts[1]
+            val parentPid = parts[1].toIntOrNull() ?: 0
+            val rawId = parts[2]
             val ownerId = if (rawId == "__cmdline__") extraCmdlineId else rawId
-            val guestCommand = parts[3].trimEnd().ifBlank {
-                parts[2].trim().ifBlank { "unknown command" }
+            val guestCommand = parts[4].trimEnd().ifBlank {
+                parts[3].trim().ifBlank { "unknown command" }
             }
             out += ProcessInfo(
                 pid = pid,
+                parentPid = parentPid,
                 ownerInstallId = ownerId,
                 orphanRootfsId = null,
-                comm = parts[2].trim(),
-                cmdline = parts[3].trimEnd(),
-                cwd = parts.getOrNull(4)?.trim().orEmpty(),
+                comm = parts[3].trim(),
+                cmdline = parts[4].trimEnd(),
+                cwd = parts.getOrNull(5)?.trim().orEmpty(),
                 guestCommand = guestCommand,
                 displayCommand = binaryName(guestCommand),
                 requiresSu = true,

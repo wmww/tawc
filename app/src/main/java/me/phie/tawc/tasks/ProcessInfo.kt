@@ -22,6 +22,7 @@ package me.phie.tawc.tasks
  */
 data class ProcessInfo(
     val pid: Int,
+    val parentPid: Int,
     val ownerInstallId: String?,
     val orphanRootfsId: String?,
     val comm: String,
