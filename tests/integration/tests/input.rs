@@ -959,6 +959,21 @@ struct SurfaceTouchDebugEvent {
     active: u32,
 }
 
+#[derive(Clone, Debug)]
+struct PopupLayout {
+    child_x: i32,
+    child_y: i32,
+    shadow: i32,
+    content_w: i32,
+    content_h: i32,
+    configure_x: i32,
+    configure_y: i32,
+    configure_w: i32,
+    configure_h: i32,
+    parent_geom_x: i32,
+    parent_geom_y: i32,
+}
+
 fn parse_surface_touch_event(payload: &str) -> SurfaceTouchDebugEvent {
     let mut parts = payload.split(':');
     let target = parts.next().expect("touch target").to_string();
@@ -995,6 +1010,31 @@ fn parse_surface_touch_event(payload: &str) -> SurfaceTouchDebugEvent {
     }
 }
 
+fn parse_popup_layout(payload: &str) -> PopupLayout {
+    let fields: Vec<i32> = payload
+        .split(':')
+        .map(|part| part.parse().expect("popup layout integer"))
+        .collect();
+    assert_eq!(
+        fields.len(),
+        11,
+        "unexpected popup layout payload {payload:?}"
+    );
+    PopupLayout {
+        child_x: fields[0],
+        child_y: fields[1],
+        shadow: fields[2],
+        content_w: fields[3],
+        content_h: fields[4],
+        configure_x: fields[5],
+        configure_y: fields[6],
+        configure_w: fields[7],
+        configure_h: fields[8],
+        parent_geom_x: fields[9],
+        parent_geom_y: fields[10],
+    }
+}
+
 fn surface_touch_events(app: &DebugApp, tag: &str) -> Vec<SurfaceTouchDebugEvent> {
     app.payloads_with_tag(tag)
         .iter()
@@ -1022,6 +1062,41 @@ fn assert_surface_tap_delivered(app: &DebugApp, target: &str) {
         downs[0].x >= 0.0 && downs[0].y >= 0.0,
         "surface-local coordinates should be non-negative: {:?}",
         downs[0]
+    );
+}
+
+fn assert_popup_shadow_geometry_tap_delivered(app: &DebugApp) {
+    app.wait_for_tag_count("POPUP_LAYOUT", 1, TIMEOUT)
+        .expect("popup layout");
+    let layout = parse_popup_layout(
+        app.payloads_with_tag("POPUP_LAYOUT")
+            .last()
+            .expect("popup layout payload"),
+    );
+
+    assert_eq!(
+        layout.configure_x,
+        layout.child_x - layout.parent_geom_x,
+        "popup configure x should be relative to parent window geometry"
+    );
+    assert_eq!(
+        layout.configure_y,
+        layout.child_y - layout.parent_geom_y,
+        "popup configure y should be relative to parent window geometry"
+    );
+    assert_eq!(layout.configure_w, layout.content_w, "popup configure width");
+    assert_eq!(layout.configure_h, layout.content_h, "popup configure height");
+
+    assert_surface_tap_delivered(app, "popup");
+    let down = surface_touch_events(app, "SURFACE_TOUCH_DOWN")
+        .pop()
+        .expect("popup touch down");
+    let expected_x = f64::from(layout.shadow) + f64::from(layout.content_w) / 2.0;
+    let expected_y = f64::from(layout.shadow) + f64::from(layout.content_h) / 2.0;
+    assert!(
+        (down.x - expected_x).abs() <= 2.0 && (down.y - expected_y).abs() <= 2.0,
+        "popup surface-local touch should include shadow/window-geometry offset: \
+         down={down:?} expected=({expected_x:.1}, {expected_y:.1}) layout={layout:?}"
     );
 }
 
@@ -1176,13 +1251,15 @@ fn test_wayland_touch_subsurface_tap() {
 
 /// Basic xdg_popup coverage: create/map a popup from wayland-debug-app and
 /// verify the same touch path hit-tests to the popup surface rather than the
-/// parent toplevel. Full positioning policy is intentionally out of scope.
+/// parent toplevel. The fixture gives both parent and popup non-zero
+/// `set_window_geometry` offsets so client-side shadows are part of the
+/// coordinate assertion.
 #[test]
 fn test_wayland_touch_popup_tap() {
     with_wayland_popup(|app| {
         app.wait_for_tag_value("SURFACE_READY", "popup", TIMEOUT)
             .expect("popup ready");
-        assert_surface_tap_delivered(app, "popup");
+        assert_popup_shadow_geometry_tap_delivered(app);
     });
 }
 

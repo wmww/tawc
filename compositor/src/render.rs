@@ -24,6 +24,7 @@ use smithay::desktop::PopupManager;
 use smithay::wayland::compositor::{
     with_surface_tree_downward, SubsurfaceCachedState, SurfaceAttributes, TraversalAction,
 };
+use smithay::wayland::shell::xdg::SurfaceCachedState;
 
 use crate::compositor::TawcState;
 use crate::egl_android::AndroidNativeSurface;
@@ -589,6 +590,18 @@ struct SurfaceDrawSpec {
     kind: SurfaceKind,
 }
 
+fn xdg_window_geometry_loc(surface: &WlSurface) -> Point<i32, smithay::utils::Logical> {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<SurfaceCachedState>()
+            .current()
+            .geometry
+            .map(|geometry| geometry.loc)
+            .unwrap_or_default()
+    })
+}
+
 /// Walk a single surface tree, collecting drawable surfaces at their absolute
 /// logical positions. `offset_x`/`offset_y` is the root's position (0,0 for
 /// toplevels, popup geometry origin for popups).
@@ -665,9 +678,18 @@ fn collect_surface_draws(
         collect_tree_draws(root, 0, 0, &surface_fn, &mut draws);
         draws[start..].reverse();
 
+        let parent_geometry_loc = xdg_window_geometry_loc(root);
         for (popup, location) in PopupManager::popups_for_surface(root) {
+            let popup_geometry_loc = popup.geometry().loc;
+            let popup_offset = parent_geometry_loc + location - popup_geometry_loc;
             let start = draws.len();
-            collect_tree_draws(popup.wl_surface(), location.x, location.y, &surface_fn, &mut draws);
+            collect_tree_draws(
+                popup.wl_surface(),
+                popup_offset.x,
+                popup_offset.y,
+                &surface_fn,
+                &mut draws,
+            );
             draws[start..].reverse();
         }
     }

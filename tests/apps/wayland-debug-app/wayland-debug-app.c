@@ -48,6 +48,11 @@
 #define WIN_H 240
 #define CHILD_W 180
 #define CHILD_H 140
+#define POPUP_SHADOW 12
+#define POPUP_PARENT_GEOM_X 17
+#define POPUP_PARENT_GEOM_Y 9
+#define POPUP_PARENT_GEOM_R 11
+#define POPUP_PARENT_GEOM_B 7
 #define TAP_FRAC_X 0.30
 #define TAP_FRAC_Y 0.35
 #define TEXT_X 24.0
@@ -219,6 +224,10 @@ struct app {
     int scene_child_ready;
     int child_x;
     int child_y;
+    int popup_configure_x;
+    int popup_configure_y;
+    int popup_configure_w;
+    int popup_configure_h;
     int win_w;
     int win_h;
     wl_fixed_t pointer_x;
@@ -606,6 +615,18 @@ static void emit_scene_touch_event(struct app *app, const char *tag,
     debug_emit(tag, buf);
 }
 
+static void emit_popup_layout(struct app *app)
+{
+    char buf[192];
+    checked_snprintf(
+        buf, sizeof(buf), "%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d",
+        app->child_x, app->child_y, POPUP_SHADOW, CHILD_W, CHILD_H,
+        app->popup_configure_x, app->popup_configure_y,
+        app->popup_configure_w, app->popup_configure_h,
+        POPUP_PARENT_GEOM_X, POPUP_PARENT_GEOM_Y);
+    debug_emit("POPUP_LAYOUT", buf);
+}
+
 static void child_ready_done(void *data, struct wl_callback *callback,
                              uint32_t time)
 {
@@ -616,6 +637,8 @@ static void child_ready_done(void *data, struct wl_callback *callback,
     wl_callback_destroy(callback);
     app->child_ready_callback = NULL;
     app->scene_child_ready = 1;
+    if (app->scene_kind == SCENE_POPUP)
+        emit_popup_layout(app);
     debug_emit("SURFACE_READY",
                app->scene_kind == SCENE_POPUP ? "popup" : "subsurface");
     if (!app->ready_emitted) {
@@ -837,8 +860,12 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface,
     struct app *app = data;
     xdg_surface_ack_configure(xdg_surface, serial);
     if (xdg_surface == app->child_xdg_surface) {
-        attach_labeled_buffer(app, app->child_surface, CHILD_W, CHILD_H,
-                              "popup", 0.98, 0.72, 0.22);
+        xdg_surface_set_window_geometry(app->child_xdg_surface, POPUP_SHADOW,
+                                        POPUP_SHADOW, CHILD_W, CHILD_H);
+        attach_labeled_buffer(app, app->child_surface,
+                              CHILD_W + POPUP_SHADOW * 2,
+                              CHILD_H + POPUP_SHADOW * 2, "popup",
+                              0.98, 0.72, 0.22);
         checked_flush(app->display);
         return;
     }
@@ -847,6 +874,12 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface,
                  "configure for unexpected xdg_surface %p",
                  (void *)xdg_surface);
     app->configured = 1;
+    if (app->scene_kind == SCENE_POPUP) {
+        xdg_surface_set_window_geometry(
+            app->xdg_surface, POPUP_PARENT_GEOM_X, POPUP_PARENT_GEOM_Y,
+            app->win_w - POPUP_PARENT_GEOM_X - POPUP_PARENT_GEOM_R,
+            app->win_h - POPUP_PARENT_GEOM_Y - POPUP_PARENT_GEOM_B);
+    }
     request_redraw(app);
     create_scene_child(app);
 }
@@ -902,12 +935,15 @@ static const struct xdg_toplevel_listener toplevel_listener = {
 static void popup_configure(void *data, struct xdg_popup *popup, int32_t x,
                             int32_t y, int32_t width, int32_t height)
 {
-    (void)data;
+    struct app *app = data;
+    char buf[96];
     (void)popup;
-    (void)x;
-    (void)y;
-    (void)width;
-    (void)height;
+    app->popup_configure_x = x;
+    app->popup_configure_y = y;
+    app->popup_configure_w = width;
+    app->popup_configure_h = height;
+    checked_snprintf(buf, sizeof(buf), "%d:%d:%d:%d", x, y, width, height);
+    debug_emit("POPUP_CONFIGURE", buf);
 }
 
 static void popup_done(void *data, struct xdg_popup *popup)
@@ -984,8 +1020,9 @@ static void create_scene_child(struct app *app)
         require_true(positioner != NULL,
                      "xdg_wm_base_create_positioner returned NULL");
         xdg_positioner_set_size(positioner, CHILD_W, CHILD_H);
-        xdg_positioner_set_anchor_rect(positioner, app->child_x, app->child_y,
-                                       1, 1);
+        xdg_positioner_set_anchor_rect(
+            positioner, app->child_x - POPUP_PARENT_GEOM_X,
+            app->child_y - POPUP_PARENT_GEOM_Y, 1, 1);
         xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT);
         xdg_positioner_set_gravity(positioner,
                                    XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
@@ -996,6 +1033,8 @@ static void create_scene_child(struct app *app)
         require_true(app->child_popup != NULL,
                      "xdg_surface_get_popup returned NULL");
         xdg_popup_add_listener(app->child_popup, &popup_listener, app);
+        xdg_surface_set_window_geometry(app->child_xdg_surface, POPUP_SHADOW,
+                                        POPUP_SHADOW, CHILD_W, CHILD_H);
         xdg_positioner_destroy(positioner);
         wl_surface_commit(app->child_surface);
         checked_flush(app->display);

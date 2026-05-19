@@ -29,6 +29,7 @@ use smithay::wayland::compositor::{
     with_states, with_surface_tree_downward, BufferAssignment, SubsurfaceCachedState,
     SurfaceAttributes, TraversalAction,
 };
+use smithay::wayland::shell::xdg::SurfaceCachedState;
 use wayland_server::{Display, ListeningSocket};
 
 use crate::host::{ActivityId, OutputHost, SurfaceEvent};
@@ -44,6 +45,18 @@ struct HitSurface {
     y: i32,
     w: i32,
     h: i32,
+}
+
+fn xdg_window_geometry_loc(surface: &WlSurface) -> Point<i32, Logical> {
+    with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<SurfaceCachedState>()
+            .current()
+            .geometry
+            .map(|geometry| geometry.loc)
+            .unwrap_or_default()
+    })
 }
 
 fn surface_logical_size(data: &TawcState, surface: &WlSurface) -> Option<(i32, i32)> {
@@ -150,12 +163,15 @@ fn touch_focus_at(
         }
 
         hits.extend(collect_tree_hits(data, root, 0, 0));
+        let parent_geometry_loc = xdg_window_geometry_loc(root);
         for (popup, location) in PopupManager::popups_for_surface(root) {
+            let popup_geometry_loc = popup.geometry().loc;
+            let popup_offset = parent_geometry_loc + location - popup_geometry_loc;
             hits.extend(collect_tree_hits(
                 data,
                 popup.wl_surface(),
-                location.x,
-                location.y,
+                popup_offset.x,
+                popup_offset.y,
             ));
         }
     }
