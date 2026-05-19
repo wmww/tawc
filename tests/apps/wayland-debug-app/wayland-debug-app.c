@@ -12,7 +12,8 @@
  * Usage: wayland-debug-app <command>
  *
  * Commands:
- *   text-input   Minimal editable text-input-v3 surface
+ *   text-input                  Minimal editable text-input-v3 surface
+ *   text-input-no-surrounding   Text-input surface that never sends surrounding
  */
 
 #define _GNU_SOURCE
@@ -173,6 +174,7 @@ struct app {
     struct wl_seat *seat;
     struct wl_keyboard *keyboard;
     struct wl_pointer *pointer;
+    struct wl_touch *touch;
     struct xdg_wm_base *wm_base;
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
@@ -184,6 +186,8 @@ struct app {
     int configured;
     int ready_emitted;
     int text_input_enabled;
+    int editable;
+    int provide_surrounding;
     wl_fixed_t pointer_x;
 
     char text[MAX_TEXT];
@@ -197,6 +201,8 @@ struct wayland_mode {
     const char *title;
     const char *app_id;
     int use_text_input;
+    int editable;
+    int provide_surrounding;
 };
 
 static struct app *signal_app;
@@ -300,7 +306,8 @@ static void emit_text_and_cursor(struct app *app)
 
 static void sync_surrounding(struct app *app, uint32_t cause)
 {
-    if (!app->text_input || !app->text_input_enabled)
+    if (!app->provide_surrounding || !app->text_input ||
+        !app->text_input_enabled)
         return;
 
     zwp_text_input_v3_set_text_change_cause(app->text_input, cause);
@@ -368,6 +375,26 @@ static void apply_text_input_transaction(struct app *app)
         changed_by_input_method(app);
     else if (preedit_changed)
         request_redraw(app);
+}
+
+static void apply_surroundingless_text_input_transaction(struct app *app)
+{
+    struct text_input_pending *pending = &app->pending_text_input;
+
+    if (pending->has_preedit)
+        debug_emit("PREEDIT", pending->preedit);
+
+    if (pending->has_commit)
+        debug_emit("COMMIT", pending->commit);
+
+    if (pending->has_delete) {
+        char buf[64];
+        checked_snprintf(buf, sizeof(buf), "%u:%u", pending->before_length,
+                         pending->after_length);
+        debug_emit("DELETE_SURROUNDING", buf);
+    }
+
+    memset(pending, 0, sizeof(*pending));
 }
 
 /* --- Drawing ------------------------------------------------------------ */
@@ -613,9 +640,10 @@ static void text_input_enter(void *data, struct zwp_text_input_v3 *text_input,
     zwp_text_input_v3_set_cursor_rectangle(app->text_input, (int32_t)TEXT_X,
                                            (int32_t)(TEXT_Y - FONT_SIZE),
                                            2, (int32_t)(FONT_SIZE + 8.0));
-    zwp_text_input_v3_set_surrounding_text(app->text_input, app->text,
-                                           (int32_t)app->cursor,
-                                           (int32_t)app->cursor);
+    if (app->provide_surrounding)
+        zwp_text_input_v3_set_surrounding_text(app->text_input, app->text,
+                                               (int32_t)app->cursor,
+                                               (int32_t)app->cursor);
     zwp_text_input_v3_commit(app->text_input);
     checked_flush(app->display);
 }
@@ -687,7 +715,10 @@ static void text_input_done(void *data, struct zwp_text_input_v3 *text_input,
     (void)text_input;
     (void)serial;
     require_true(app->text_input_enabled, "done before text-input enter");
-    apply_text_input_transaction(app);
+    if (app->editable)
+        apply_text_input_transaction(app);
+    else
+        apply_surroundingless_text_input_transaction(app);
     debug_emit("DONE", NULL);
 }
 
@@ -745,6 +776,8 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
 
     if (key == KEY_BACKSPACE) {
         debug_emit("KEY", "BackSpace");
+        if (!app->editable)
+            return;
         if (app->cursor > 0) {
             size_t start = prev_char_start(app->text, app->cursor);
             delete_range(app, start, app->cursor);
@@ -752,6 +785,8 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
         }
     } else if (key == KEY_DELETE) {
         debug_emit("KEY", "Delete");
+        if (!app->editable)
+            return;
         if (app->cursor < app->text_len) {
             size_t end = next_char_end(app->text, app->text_len, app->cursor);
             delete_range(app, app->cursor, end);
@@ -759,10 +794,14 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
         }
     } else if (key == KEY_ENTER) {
         debug_emit("KEY", "Return");
+        if (!app->editable)
+            return;
         insert_text(app, "\n");
         changed_by_input_method(app);
     } else if (key == KEY_TAB) {
         debug_emit("KEY", "Tab");
+        if (!app->editable)
+            return;
         insert_text(app, "\t");
         changed_by_input_method(app);
     } else {
@@ -837,6 +876,22 @@ static void pointer_motion(void *data, struct wl_pointer *pointer,
     app->pointer_x = surface_x;
 }
 
+static void move_cursor_to_surface_x(struct app *app, wl_fixed_t surface_x)
+{
+    double x = wl_fixed_to_double(surface_x);
+    uint32_t chars = 0;
+    if (x > TEXT_X)
+        chars = (uint32_t)((x - TEXT_X + APPROX_CHAR_W / 2.0) / APPROX_CHAR_W);
+    app->cursor = char_count_to_byte(app->text, app->text_len, chars);
+    if (app->preedit[0]) {
+        insert_text(app, app->preedit);
+        app->preedit[0] = '\0';
+        debug_emit("PREEDIT", "");
+        emit_text_and_cursor(app);
+    }
+    cursor_changed_by_user(app);
+}
+
 static void pointer_button(void *data, struct wl_pointer *pointer,
                            uint32_t serial, uint32_t time, uint32_t button,
                            uint32_t state)
@@ -850,18 +905,7 @@ static void pointer_button(void *data, struct wl_pointer *pointer,
     require_true(button == 0x110 || button == 0x14a,
                  "unexpected pointer button: %u", button);
 
-    double x = wl_fixed_to_double(app->pointer_x);
-    uint32_t chars = 0;
-    if (x > TEXT_X)
-        chars = (uint32_t)((x - TEXT_X + APPROX_CHAR_W / 2.0) / APPROX_CHAR_W);
-    app->cursor = char_count_to_byte(app->text, app->text_len, chars);
-    if (app->preedit[0]) {
-        insert_text(app, app->preedit);
-        app->preedit[0] = '\0';
-        debug_emit("PREEDIT", "");
-        emit_text_and_cursor(app);
-    }
-    cursor_changed_by_user(app);
+    move_cursor_to_surface_x(app, app->pointer_x);
 }
 
 static void pointer_axis(void *data, struct wl_pointer *pointer, uint32_t time,
@@ -918,6 +962,62 @@ static const struct wl_pointer_listener pointer_listener = {
     .axis_discrete = pointer_axis_discrete,
 };
 
+static void touch_down(void *data, struct wl_touch *touch, uint32_t serial,
+                       uint32_t time, struct wl_surface *surface, int32_t id,
+                       wl_fixed_t x, wl_fixed_t y)
+{
+    struct app *app = data;
+    (void)touch;
+    (void)serial;
+    (void)time;
+    (void)id;
+    (void)y;
+    require_true(surface == app->surface,
+                 "touch down for unexpected surface %p", (void *)surface);
+    move_cursor_to_surface_x(app, x);
+}
+
+static void touch_up(void *data, struct wl_touch *touch, uint32_t serial,
+                     uint32_t time, int32_t id)
+{
+    (void)data;
+    (void)touch;
+    (void)serial;
+    (void)time;
+    (void)id;
+}
+
+static void touch_motion(void *data, struct wl_touch *touch, uint32_t time,
+                         int32_t id, wl_fixed_t x, wl_fixed_t y)
+{
+    (void)data;
+    (void)touch;
+    (void)time;
+    (void)id;
+    (void)x;
+    (void)y;
+}
+
+static void touch_frame(void *data, struct wl_touch *touch)
+{
+    (void)data;
+    (void)touch;
+}
+
+static void touch_cancel(void *data, struct wl_touch *touch)
+{
+    (void)data;
+    (void)touch;
+}
+
+static const struct wl_touch_listener touch_listener = {
+    .down = touch_down,
+    .up = touch_up,
+    .motion = touch_motion,
+    .frame = touch_frame,
+    .cancel = touch_cancel,
+};
+
 static void seat_capabilities(void *data, struct wl_seat *seat,
                               uint32_t capabilities)
 {
@@ -935,6 +1035,13 @@ static void seat_capabilities(void *data, struct wl_seat *seat,
         wl_pointer_add_listener(app->pointer, &pointer_listener, app);
     } else if (!(capabilities & WL_SEAT_CAPABILITY_POINTER) && app->pointer) {
         fatal("seat removed pointer capability");
+    }
+    if ((capabilities & WL_SEAT_CAPABILITY_TOUCH) && !app->touch) {
+        app->touch = wl_seat_get_touch(seat);
+        require_true(app->touch != NULL, "wl_seat_get_touch returned NULL");
+        wl_touch_add_listener(app->touch, &touch_listener, app);
+    } else if (!(capabilities & WL_SEAT_CAPABILITY_TOUCH) && app->touch) {
+        fatal("seat removed touch capability");
     }
 }
 
@@ -1012,6 +1119,8 @@ static void on_signal(int sig)
 static void setup_wayland(struct app *app, const struct wayland_mode *mode)
 {
     app->running = 1;
+    app->editable = mode->editable;
+    app->provide_surrounding = mode->provide_surrounding;
     app->display = wl_display_connect(NULL);
     if (!app->display)
         fatal("wl_display_connect failed");
@@ -1029,6 +1138,7 @@ static void setup_wayland(struct app *app, const struct wayland_mode *mode)
     require_true(app->seat != NULL, "missing wl_seat");
     require_true(app->keyboard != NULL, "wl_seat missing keyboard capability");
     require_true(app->pointer != NULL, "wl_seat missing pointer capability");
+    require_true(app->touch != NULL, "wl_seat missing touch capability");
     require_true(app->wm_base != NULL, "missing xdg_wm_base");
     if (mode->use_text_input)
         require_true(app->text_input_manager != NULL,
@@ -1069,6 +1179,8 @@ static void teardown_wayland(struct app *app)
         zwp_text_input_v3_destroy(app->text_input);
     if (app->pointer)
         wl_pointer_destroy(app->pointer);
+    if (app->touch)
+        wl_touch_destroy(app->touch);
     if (app->keyboard)
         wl_keyboard_destroy(app->keyboard);
     if (app->toplevel)
@@ -1101,6 +1213,41 @@ static int cmd_text_input(int argc, char **argv)
         .title = "tawc wayland text-input debug",
         .app_id = "wayland-debug-app",
         .use_text_input = 1,
+        .editable = 1,
+        .provide_surrounding = 1,
+    };
+
+    (void)argc;
+    (void)argv;
+
+    struct app app;
+    memset(&app, 0, sizeof(app));
+    signal_app = &app;
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+
+    setup_wayland(&app, &mode);
+
+    while (app.running) {
+        if (wl_display_dispatch(app.display) < 0) {
+            if (errno == EINTR && !app.running)
+                break;
+            fatal("wl_display_dispatch failed: %s", strerror(errno));
+        }
+    }
+
+    teardown_wayland(&app);
+    return 0;
+}
+
+static int cmd_text_input_no_surrounding(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "tawc wayland text-input no-surrounding debug",
+        .app_id = "wayland-debug-app-no-surrounding",
+        .use_text_input = 1,
+        .editable = 0,
+        .provide_surrounding = 0,
     };
 
     (void)argc;
@@ -1136,6 +1283,9 @@ struct command {
 
 static const struct command commands[] = {
     { "text-input", "Minimal editable text-input-v3 surface", cmd_text_input },
+    { "text-input-no-surrounding",
+      "Text-input surface that never sends surrounding",
+      cmd_text_input_no_surrounding },
     { NULL, NULL, NULL },
 };
 

@@ -50,7 +50,8 @@ use tawc_integration::adb;
 use tawc_integration::debug_app::DebugApp;
 use tawc_integration::helpers::{
     assert_compositor_clean, start_text_input, start_text_input_no_surrounding,
-    start_wayland_debug_text_input, TIMEOUT,
+    start_wayland_debug_text_input, start_wayland_debug_text_input_no_surrounding,
+    TIMEOUT,
 };
 use tawc_integration::GraphicsBackend;
 
@@ -72,6 +73,32 @@ const TAP_TEXT_MID_Y: u32 = 250;
 // "click at the very start of the line" repro.
 const TAP_TEXT_START_X: u32 = 85;
 
+// Same logical intent as the GTK coordinates above, but aimed at
+// wayland-debug-app's compact 640x240 surface. Coordinates are physical;
+// the compositor's 2x scale maps them to the app's logical surface.
+const WAYLAND_TAP_TEXT_MID_X: u32 = 200;
+const WAYLAND_TAP_TEXT_MID_Y: u32 = 250;
+const WAYLAND_TAP_TEXT_START_X: u32 = 40;
+
+#[derive(Clone, Copy)]
+struct InputTapCoords {
+    text_mid_x: u32,
+    text_mid_y: u32,
+    text_start_x: u32,
+}
+
+const GTK_TAP_COORDS: InputTapCoords = InputTapCoords {
+    text_mid_x: TAP_TEXT_MID_X,
+    text_mid_y: TAP_TEXT_MID_Y,
+    text_start_x: TAP_TEXT_START_X,
+};
+
+const WAYLAND_TAP_COORDS: InputTapCoords = InputTapCoords {
+    text_mid_x: WAYLAND_TAP_TEXT_MID_X,
+    text_mid_y: WAYLAND_TAP_TEXT_MID_Y,
+    text_start_x: WAYLAND_TAP_TEXT_START_X,
+};
+
 /// Env passed to gtk4-debug-app for input tests. Currently empty — i.e.
 /// GTK4 uses its default GSK renderer. Under [INPUT_BACKEND] = CPU, GSK
 /// picks up the distro Mesa loaded via llvmpipe (Vulkan via lavapipe if
@@ -83,9 +110,9 @@ const TAP_TEXT_START_X: u32 = 85;
 const INPUT_ENV: &str = "";
 const WAYLAND_DEBUG_ENV: &str = "";
 
-/// Reset the GTK4 buffer + preedit between scenarios so we don't pay GTK
-/// startup per scenario. Acts as a keyboard: clears any active preedit,
-/// then hammers Backspace until GTK reports the buffer empty.
+/// Reset the GTK4 debug app buffer + preedit between scenarios so we don't
+/// pay GTK startup per scenario. Acts as a keyboard: clears any active
+/// preedit, then hammers Backspace until GTK reports the buffer empty.
 ///
 /// Why not `ic_delete_surrounding_text` — that delegates the
 /// units-to-keys translation to the IC's `unitsToKeyCounts`, which
@@ -231,12 +258,12 @@ fn scene_autocorrect_replaces_preedit(app: &DebugApp) {
 /// Click cursor positioning + behaviour at the cursor: backspace deletes
 /// from cursor (not end), commit_string inserts at cursor (not end), and a
 /// preedit-then-finish round-trip places the new char at the click site.
-fn scene_click_cursor_positioning(app: &DebugApp) {
+fn scene_click_cursor_positioning(app: &DebugApp, taps: InputTapCoords) {
     adb::ic_commit_text("abcdef").expect("commit 'abcdef'");
     app.wait_for_text("abcdef", TIMEOUT).expect("'abcdef'");
 
     let cursor_count_before = app.cursor_pos_count();
-    adb::input_tap(TAP_TEXT_MID_X, TAP_TEXT_MID_Y).expect("tap mid");
+    adb::input_tap(taps.text_mid_x, taps.text_mid_y).expect("tap mid");
     let cursor = app
         .wait_for_cursor_change(cursor_count_before, TIMEOUT)
         .expect("CURSOR_POS event after tap");
@@ -307,13 +334,13 @@ fn scene_click_cursor_positioning(app: &DebugApp) {
 /// that gets paired with the preedit on the wire; without that, both
 /// the original word and the new preedit would coexist (the
 /// "hellohello" duplicate-text bug).
-fn scene_compose_region_replaces_committed_text(app: &DebugApp) {
+fn scene_compose_region_replaces_committed_text(app: &DebugApp, taps: InputTapCoords) {
     adb::ic_commit_text("hello world").expect("commit 'hello world'");
     app.wait_for_text("hello world", TIMEOUT)
         .expect("'hello world'");
 
     let cursor_count = app.cursor_pos_count();
-    adb::input_tap(TAP_TEXT_MID_X, TAP_TEXT_MID_Y).expect("tap mid");
+    adb::input_tap(taps.text_mid_x, taps.text_mid_y).expect("tap mid");
     let cursor = app
         .wait_for_cursor_change(cursor_count, TIMEOUT)
         .expect("cursor change after tap");
@@ -365,13 +392,13 @@ fn scene_compose_region_replaces_committed_text(app: &DebugApp) {
 /// Same as the preedit version but committing directly — Gboard's
 /// autocorrect-replace flow. `commitText` over a `setComposingRegion`-
 /// marked range must also delete the original bytes.
-fn scene_commit_text_replaces_composing_region(app: &DebugApp) {
+fn scene_commit_text_replaces_composing_region(app: &DebugApp, taps: InputTapCoords) {
     adb::ic_commit_text("hello world").expect("commit 'hello world'");
     app.wait_for_text("hello world", TIMEOUT)
         .expect("'hello world'");
 
     let cursor_count = app.cursor_pos_count();
-    adb::input_tap(TAP_TEXT_MID_X, TAP_TEXT_MID_Y).expect("tap mid");
+    adb::input_tap(taps.text_mid_x, taps.text_mid_y).expect("tap mid");
     let cursor = app
         .wait_for_cursor_change(cursor_count, TIMEOUT)
         .expect("cursor change after tap");
@@ -412,12 +439,12 @@ fn scene_commit_text_replaces_composing_region(app: &DebugApp) {
 /// wire. Without the fix, `current_preedit` was still set after the
 /// `cause=other` round-trip and `finishComposingText` re-committed
 /// "hello" at the new cursor — `hellohello` in the buffer.
-fn scene_finish_composing_after_click_no_duplicate(app: &DebugApp) {
+fn scene_finish_composing_after_click_no_duplicate(app: &DebugApp, taps: InputTapCoords) {
     adb::ic_set_composing_text("hello").expect("setComposingText 'hello'");
     app.wait_for_preedit("hello", TIMEOUT).expect("preedit 'hello'");
 
     let cursor_count_before = app.cursor_pos_count();
-    adb::input_tap(TAP_TEXT_MID_X, TAP_TEXT_MID_Y).expect("tap mid");
+    adb::input_tap(taps.text_mid_x, taps.text_mid_y).expect("tap mid");
     app.wait_for_cursor_change(cursor_count_before, TIMEOUT)
         .expect("cursor change");
 
@@ -436,7 +463,7 @@ fn scene_finish_composing_after_click_no_duplicate(app: &DebugApp) {
 /// (so it's not silently lost) AND clear the preedit overlay (so it
 /// doesn't follow the cursor visually). Tap lands in the middle of
 /// committed text.
-fn scene_click_during_preedit_commits_pending_text(app: &DebugApp) {
+fn scene_click_during_preedit_commits_pending_text(app: &DebugApp, taps: InputTapCoords) {
     adb::ic_commit_text("world").expect("commit 'world'");
     app.wait_for_text("world", TIMEOUT).expect("'world'");
 
@@ -449,7 +476,7 @@ fn scene_click_during_preedit_commits_pending_text(app: &DebugApp) {
     );
 
     let cursor_count_before = app.cursor_pos_count();
-    adb::input_tap(TAP_TEXT_MID_X, TAP_TEXT_MID_Y).expect("tap mid");
+    adb::input_tap(taps.text_mid_x, taps.text_mid_y).expect("tap mid");
     app.wait_for_cursor_change(cursor_count_before, TIMEOUT)
         .expect("cursor change after tap");
 
@@ -473,7 +500,10 @@ fn scene_click_during_preedit_commits_pending_text(app: &DebugApp) {
 /// Regression: same Touch::Down preedit-finalise, but the tap lands at
 /// the start of the line. Bug repro — the in-progress word vanished
 /// entirely when the cursor jumped to position 0.
-fn scene_click_at_start_during_preedit_preserves_pending_text(app: &DebugApp) {
+fn scene_click_at_start_during_preedit_preserves_pending_text(
+    app: &DebugApp,
+    taps: InputTapCoords,
+) {
     adb::ic_commit_text("hello ").expect("commit 'hello '");
     app.wait_for_text("hello ", TIMEOUT).expect("'hello '");
 
@@ -486,7 +516,7 @@ fn scene_click_at_start_during_preedit_preserves_pending_text(app: &DebugApp) {
     );
 
     let cursor_count_before = app.cursor_pos_count();
-    adb::input_tap(TAP_TEXT_START_X, TAP_TEXT_MID_Y).expect("tap line start");
+    adb::input_tap(taps.text_start_x, taps.text_mid_y).expect("tap line start");
     let cursor = app
         .wait_for_cursor_change(cursor_count_before, TIMEOUT)
         .expect("cursor change after tap");
@@ -509,7 +539,7 @@ fn scene_click_at_start_during_preedit_preserves_pending_text(app: &DebugApp) {
 /// the middle, compose another word at the new cursor. Catches
 /// regressions in the end-to-end Gboard flow that simple per-feature
 /// scenarios miss.
-fn scene_full_compose_loop_with_click_in_middle(app: &DebugApp) {
+fn scene_full_compose_loop_with_click_in_middle(app: &DebugApp, taps: InputTapCoords) {
     for prefix in ["h", "he", "hel", "hell", "hello"] {
         adb::ic_set_composing_text(prefix).expect("setComposingText");
     }
@@ -524,7 +554,7 @@ fn scene_full_compose_loop_with_click_in_middle(app: &DebugApp) {
     app.wait_for_text("hello world", TIMEOUT).expect("'hello world'");
 
     let cursor_count = app.cursor_pos_count();
-    adb::input_tap(TAP_TEXT_MID_X, TAP_TEXT_MID_Y).expect("tap mid");
+    adb::input_tap(taps.text_mid_x, taps.text_mid_y).expect("tap mid");
     let cursor = app
         .wait_for_cursor_change(cursor_count, TIMEOUT)
         .expect("cursor change");
@@ -721,6 +751,49 @@ fn scene_update_from_compositor_clears_composing_spans(app: &DebugApp) {
     );
 }
 
+fn run_input_dispatch_scenes(app: &DebugApp, taps: InputTapCoords) {
+    scene_basic_input_and_delete(app);
+    reset_buffer(app);
+
+    scene_compose_lifecycle(app);
+    reset_buffer(app);
+
+    scene_autocorrect_replaces_preedit(app);
+    reset_buffer(app);
+
+    scene_click_cursor_positioning(app, taps);
+    reset_buffer(app);
+
+    scene_compose_region_replaces_committed_text(app, taps);
+    reset_buffer(app);
+
+    scene_commit_text_replaces_composing_region(app, taps);
+    reset_buffer(app);
+
+    scene_finish_composing_after_click_no_duplicate(app, taps);
+    reset_buffer(app);
+
+    scene_click_during_preedit_commits_pending_text(app, taps);
+    reset_buffer(app);
+
+    scene_click_at_start_during_preedit_preserves_pending_text(app, taps);
+    reset_buffer(app);
+
+    scene_full_compose_loop_with_click_in_middle(app, taps);
+    reset_buffer(app);
+
+    scene_space_backspace_space_no_duplicate(app);
+    reset_buffer(app);
+
+    scene_commit_after_diverged_cursor_no_byte_slicing(app);
+    reset_buffer(app);
+
+    scene_recommit_word_then_newline_no_h_prepend(app);
+    reset_buffer(app);
+
+    scene_update_from_compositor_clears_composing_spans(app);
+}
+
 // --- The single test --------------------------------------------------------
 
 /// One #[test] that drives the full input-dispatch suite. Opening
@@ -732,46 +805,7 @@ fn scene_update_from_compositor_clears_composing_spans(app: &DebugApp) {
 fn test_input_dispatch() {
     let mut app = start_text_input(INPUT_BACKEND, INPUT_ENV);
 
-    scene_basic_input_and_delete(&app);
-    reset_buffer(&app);
-
-    scene_compose_lifecycle(&app);
-    reset_buffer(&app);
-
-    scene_autocorrect_replaces_preedit(&app);
-    reset_buffer(&app);
-
-    scene_click_cursor_positioning(&app);
-    reset_buffer(&app);
-
-    scene_compose_region_replaces_committed_text(&app);
-    reset_buffer(&app);
-
-    scene_commit_text_replaces_composing_region(&app);
-    reset_buffer(&app);
-
-    scene_finish_composing_after_click_no_duplicate(&app);
-    reset_buffer(&app);
-
-    scene_click_during_preedit_commits_pending_text(&app);
-    reset_buffer(&app);
-
-    scene_click_at_start_during_preedit_preserves_pending_text(&app);
-    reset_buffer(&app);
-
-    scene_full_compose_loop_with_click_in_middle(&app);
-    reset_buffer(&app);
-
-    scene_space_backspace_space_no_duplicate(&app);
-    reset_buffer(&app);
-
-    scene_commit_after_diverged_cursor_no_byte_slicing(&app);
-    reset_buffer(&app);
-
-    scene_recommit_word_then_newline_no_h_prepend(&app);
-    reset_buffer(&app);
-
-    scene_update_from_compositor_clears_composing_spans(&app);
+    run_input_dispatch_scenes(&app, GTK_TAP_COORDS);
 
     app.stop().expect("debug app crashed or failed to stop cleanly");
     assert_compositor_clean();
@@ -835,93 +869,246 @@ fn test_surroundingless_client_uses_keyboard_for_backspace() {
     assert_compositor_clean();
 }
 
-/// Toolkitless replacement-path smoke test: text-input-v3 commit_string,
-/// raw Backspace key event, and IME-style deleteSurroundingText all update
-/// the client's own edit buffer. This covers the basic GTK scenario without
-/// depending on GTK's text widget behaviour.
-#[test]
-fn test_wayland_input_basic_typing_and_delete() {
+fn with_wayland_text_input(run: impl FnOnce(&DebugApp)) {
     let mut app =
         start_wayland_debug_text_input(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
-
-    adb::ic_commit_text("hello world").expect("commit 'hello world'");
-    app.wait_for_text("hello world", TIMEOUT)
-        .expect("text 'hello world'");
-
-    adb::ic_send_key_event(adb::KEYCODE_DEL).expect("backspace");
-    app.wait_for_text("hello worl", TIMEOUT)
-        .expect("'hello worl' after backspace");
-
-    adb::ic_commit_text("d").expect("commit 'd'");
-    app.wait_for_text("hello world", TIMEOUT).expect("restored");
-
-    adb::ic_delete_surrounding_text(5, 0).expect("delete_surrounding");
-    app.wait_for_text("hello ", TIMEOUT)
-        .expect("'hello ' after delete_surrounding(5, 0)");
-
+    run(&app);
     app.stop().expect("debug app crashed or failed to stop cleanly");
     assert_compositor_clean();
 }
 
-/// The new toolkitless app exposes preedit directly, so the test can assert
-/// that composing text stays out of the committed buffer until finish.
+/// Toolkitless coverage for the basic text-input-v3 surfaces: commit_string,
+/// raw key events, IME deleteSurroundingText, preedit lifecycle, and commit
+/// replacing an active preedit. This intentionally uses one fresh app
+/// lifetime instead of matching GTK's reset-between-scenes structure.
 #[test]
-fn test_wayland_input_compose_lifecycle() {
-    let mut app =
-        start_wayland_debug_text_input(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+fn test_wayland_input_basic_editing_and_preedit() {
+    with_wayland_text_input(|app| {
+        adb::ic_commit_text("hello world").expect("commit 'hello world'");
+        app.wait_for_text("hello world", TIMEOUT)
+            .expect("text 'hello world'");
 
-    adb::ic_commit_text("hello ").expect("commit 'hello '");
-    app.wait_for_text("hello ", TIMEOUT).expect("'hello '");
+        adb::ic_send_key_event(adb::KEYCODE_DEL).expect("backspace");
+        app.wait_for_text("hello worl", TIMEOUT)
+            .expect("'hello worl' after backspace");
 
-    for prefix in ["w", "wo", "wor", "worl", "world"] {
-        adb::ic_set_composing_text(prefix).expect("setComposingText");
-        app.wait_for_preedit(prefix, TIMEOUT)
-            .unwrap_or_else(|e| panic!("preedit not '{}': {}", prefix, e));
-        assert_eq!(
-            app.last_text().as_deref().unwrap_or(""),
-            "hello ",
-            "preedit '{}' leaked into committed text",
-            prefix
-        );
-    }
+        adb::ic_commit_text("d").expect("commit 'd'");
+        app.wait_for_text("hello world", TIMEOUT).expect("restored");
 
-    adb::ic_finish_composing().expect("finishComposingText");
-    app.wait_for_text("hello world", TIMEOUT)
-        .expect("'hello world' after finishComposingText");
-    app.wait_for_preedit("", TIMEOUT)
-        .expect("preedit cleared after finishComposingText");
+        adb::ic_delete_surrounding_text(5, 0).expect("delete_surrounding");
+        app.wait_for_text("hello ", TIMEOUT)
+            .expect("'hello ' after delete_surrounding(5, 0)");
 
-    app.stop().expect("debug app crashed or failed to stop cleanly");
-    assert_compositor_clean();
-}
-
-/// Replacement-on-commit without GTK in the loop: a composing-region commit
-/// should delete the marked client text, then insert the replacement.
-#[test]
-fn test_wayland_input_commit_replaces_composing_region() {
-    let mut app =
-        start_wayland_debug_text_input(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
-
-    adb::ic_commit_text("hello").expect("commit 'hello'");
-    app.wait_for_text("hello", TIMEOUT).expect("'hello'");
-    thread::sleep(Duration::from_millis(200));
-
-    adb::ic_set_composing_region(0, 5).expect("ic_set_composing_region");
-    adb::ic_commit_text("HEY").expect("ic_commit_text 'HEY'");
-
-    let deadline = Instant::now() + TIMEOUT;
-    let mut last = String::new();
-    while Instant::now() < deadline {
-        last = app.last_text().unwrap_or_default();
-        if last == "HEY" {
-            break;
+        for prefix in ["w", "wo", "wor", "worl", "world"] {
+            adb::ic_set_composing_text(prefix).expect("setComposingText");
+            app.wait_for_preedit(prefix, TIMEOUT)
+                .unwrap_or_else(|e| panic!("preedit not '{}': {}", prefix, e));
+            assert_eq!(
+                app.last_text().as_deref().unwrap_or(""),
+                "hello ",
+                "preedit '{}' leaked into committed text",
+                prefix
+            );
         }
-        thread::sleep(Duration::from_millis(50));
-    }
+
+        adb::ic_finish_composing().expect("finishComposingText");
+        app.wait_for_text("hello world", TIMEOUT)
+            .expect("'hello world' after finishComposingText");
+        app.wait_for_preedit("", TIMEOUT)
+            .expect("preedit cleared after finishComposingText");
+
+        adb::ic_set_composing_text("teh").expect("setComposingText 'teh'");
+        app.wait_for_preedit("teh", TIMEOUT).expect("preedit 'teh'");
+        adb::ic_commit_text("the ").expect("commit autocorrect");
+        app.wait_for_preedit("", TIMEOUT)
+            .expect("preedit cleared after autocorrect");
+        let text = app.last_text().unwrap_or_default();
+        assert!(
+            text.ends_with("the ") && !text.contains("teh"),
+            "active preedit was not replaced by autocorrect commit: {:?}",
+            text
+        );
+    });
+}
+
+/// Cursor movement is the part GTK used to hide for us. The toolkitless app
+/// validates the compositor's touch delivery directly: tap moves the cursor,
+/// Backspace and composing insertion happen at that cursor, and touching
+/// elsewhere finalizes pending preedit without letting a stale
+/// finishComposingText duplicate it.
+#[test]
+fn test_wayland_input_touch_cursor_and_pending_preedit() {
+    with_wayland_text_input(|app| {
+        scene_click_cursor_positioning(app, WAYLAND_TAP_COORDS);
+
+        let before = app.last_text().unwrap_or_default();
+        adb::ic_set_composing_text("pending").expect("setComposingText 'pending'");
+        app.wait_for_preedit("pending", TIMEOUT)
+            .expect("preedit 'pending'");
+
+        let cursor_count = app.cursor_pos_count();
+        adb::input_tap(
+            WAYLAND_TAP_COORDS.text_start_x,
+            WAYLAND_TAP_COORDS.text_mid_y,
+        )
+        .expect("tap line start");
+        let cursor = app
+            .wait_for_cursor_change(cursor_count, TIMEOUT)
+            .expect("cursor change after tap");
+        assert_eq!(cursor, 0, "tap at line start should move cursor to 0");
+        app.wait_for_preedit("", TIMEOUT)
+            .expect("preedit cleared by tap");
+
+        adb::ic_finish_composing().expect("finishComposingText after tap");
+        thread::sleep(Duration::from_millis(300));
+
+        let text = app.last_text().unwrap_or_default();
+        let without_pending = text.replacen("pending", "", 1);
+        assert!(
+            without_pending == before && text.contains("pending"),
+            "tap dropped committed text or pending preedit: before={:?} after={:?}",
+            before,
+            text
+        );
+        assert_eq!(
+            text.matches("pending").count(),
+            1,
+            "stale finishComposingText duplicated pending preedit: {:?}",
+            text
+        );
+    });
+}
+
+/// The two composing-region replacement shapes are distinct IC paths:
+/// setComposingText over a region emits delete+preedit, while commitText over
+/// a region emits delete+commit. Keep both, but run them in one fresh client.
+#[test]
+fn test_wayland_input_composing_region_replacements() {
+    with_wayland_text_input(|app| {
+        adb::ic_commit_text("hello world").expect("commit 'hello world'");
+        app.wait_for_text("hello world", TIMEOUT)
+            .expect("'hello world'");
+
+        let cursor_count = app.cursor_pos_count();
+        adb::input_tap(
+            WAYLAND_TAP_COORDS.text_mid_x,
+            WAYLAND_TAP_COORDS.text_mid_y,
+        )
+        .expect("tap mid");
+        let cursor = app
+            .wait_for_cursor_change(cursor_count, TIMEOUT)
+            .expect("cursor change after tap");
+        assert!(cursor > 0 && cursor < 11, "cursor mid, got {}", cursor);
+        thread::sleep(Duration::from_millis(200));
+
+        adb::ic_set_composing_region(0, cursor).expect("setComposingRegion");
+        adb::ic_set_composing_text("HELLO").expect("setComposingText 'HELLO'");
+        app.wait_for_preedit("HELLO", TIMEOUT)
+            .expect("preedit 'HELLO'");
+        assert!(
+            !app.last_text().unwrap_or_default().starts_with("hello"),
+            "setComposingText over region did not delete original bytes"
+        );
+
+        adb::ic_finish_composing().expect("finishComposingText");
+        let deadline = Instant::now() + TIMEOUT;
+        while Instant::now() < deadline && !app.last_text().unwrap_or_default().contains("HELLO") {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let text = app.last_text().unwrap_or_default();
+        assert!(text.contains("HELLO"), "HELLO missing after finish: {:?}", text);
+        assert_eq!(
+            text.matches("hello").count(),
+            0,
+            "original lowercase region survived replacement: {:?}",
+            text
+        );
+
+        thread::sleep(Duration::from_millis(200));
+        adb::ic_set_composing_region(0, 5).expect("setComposingRegion 0..5");
+        adb::ic_commit_text("FOO").expect("commitText over composing region");
+        let deadline = Instant::now() + TIMEOUT;
+        while Instant::now() < deadline {
+            let text = app.last_text().unwrap_or_default();
+            if text.contains("FOO") && !text.contains("HELLO") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let text = app.last_text().unwrap_or_default();
+        assert!(
+            text.contains("FOO") && !text.contains("HELLO"),
+            "commitText over region did not replace marked text: {:?}",
+            text
+        );
+    });
+}
+
+/// IC regression cases that do not depend on GTK widget behavior: replacement
+/// deltas must not duplicate text, diverged Editable cursor state must not
+/// slice bytes from the Wayland buffer, newline re-commit must not prepend
+/// stray bytes, and compositor round-trips must clear stale composing spans.
+#[test]
+fn test_wayland_input_ic_delta_regressions() {
+    with_wayland_text_input(|app| {
+        scene_space_backspace_space_no_duplicate(app);
+
+        adb::ic_commit_text("world").expect("append 'world'");
+        app.wait_for_text("hello world", TIMEOUT)
+            .expect("'hello world' after append");
+        thread::sleep(Duration::from_millis(200));
+
+        adb::ic_set_composing_region(0, 5).expect("setComposingRegion 0..5");
+        adb::ic_set_selection(5, 5)
+            .expect("setSelection 5..5 (diverge Editable cursor)");
+        let change_count = app.text_changed_count();
+        adb::ic_commit_text("X").expect("commitText after divergence");
+        app.wait_for_text_change(change_count, TIMEOUT)
+            .expect("text change after diverged commit");
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            app.last_text().unwrap_or_default().contains("world"),
+            "diverged cursor propagated a byte-slicing delete: {:?}",
+            app.last_text()
+        );
+    });
+
+    with_wayland_text_input(|app| {
+        scene_recommit_word_then_newline_no_h_prepend(app);
+    });
+
+    with_wayland_text_input(|app| {
+        scene_update_from_compositor_clears_composing_spans(app);
+    });
+}
+
+/// Toolkitless mirror of the surrounding-less GTK/VTE-shaped input case.
+#[test]
+fn test_wayland_surroundingless_client_uses_keyboard_for_backspace() {
+    let mut app =
+        start_wayland_debug_text_input_no_surrounding(
+            INPUT_BACKEND,
+            WAYLAND_DEBUG_ENV,
+        );
+
     assert_eq!(
-        last, "HEY",
-        "composing-region replacement produced {:?}",
-        last
+        app.count_with_tag("DELETE_SURROUNDING"),
+        0,
+        "DELETE_SURROUNDING fired before we sent input"
+    );
+
+    adb::ic_commit_text(" ").expect("commit ' '");
+    app.wait_for_tag_value("COMMIT", " ", TIMEOUT)
+        .expect("commit_string ' ' did not reach the client");
+
+    adb::ic_delete_surrounding_text(1, 0).expect("delete_surrounding(1, 0)");
+    app.wait_for_tag_value("KEY", "BackSpace", TIMEOUT)
+        .expect("Backspace key did not reach the client");
+
+    assert_eq!(
+        app.count_with_tag("DELETE_SURROUNDING"),
+        0,
+        "compositor sent delete_surrounding_text to a surrounding-less client"
     );
 
     app.stop().expect("debug app crashed or failed to stop cleanly");

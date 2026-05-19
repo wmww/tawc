@@ -136,6 +136,23 @@ pub fn start_wayland_debug_text_input(backend: GraphicsBackend, env: &str) -> De
     app
 }
 
+/// Start wayland-debug-app's surrounding-less text-input mode. This is
+/// the toolkitless counterpart to [start_text_input_no_surrounding].
+pub fn start_wayland_debug_text_input_no_surrounding(
+    backend: GraphicsBackend,
+    env: &str,
+) -> DebugApp {
+    let binary = ensure_wayland_debug_app();
+    adb::logcat_clear().expect("Failed to clear logcat");
+    adb::enable_test_input().expect("enable-test-input action");
+    let app = DebugApp::start(backend, &binary, "text-input-no-surrounding", env)
+        .expect("Failed to start surrounding-less wayland debug app");
+    app.wait_ready()
+        .expect("Surrounding-less wayland debug app did not become ready");
+    wait_for_keyboard_shown(TIMEOUT);
+    app
+}
+
 /// True if compositor logcat shows a libhybris android_wlegl AHB import.
 pub fn saw_ahb_import(logs: &str) -> bool {
     logs.contains("wlegl: imported ANativeWindowBuffer as texture")
