@@ -15,6 +15,8 @@
  *   text-input                  Minimal editable text-input-v3 surface
  *   text-input-no-surrounding   Text-input surface that never sends surrounding
  *   touch                       Fullscreen touch visualizer
+ *   subsurface                  Fullscreen toplevel with a touchable subsurface
+ *   popup                       Fullscreen toplevel with a touchable xdg_popup
  */
 
 #define _GNU_SOURCE
@@ -44,6 +46,10 @@
 
 #define WIN_W 640
 #define WIN_H 240
+#define CHILD_W 180
+#define CHILD_H 140
+#define TAP_FRAC_X 0.30
+#define TAP_FRAC_Y 0.35
 #define TEXT_X 24.0
 #define TEXT_Y 96.0
 #define FONT_SIZE 32.0
@@ -174,12 +180,14 @@ struct touch_point {
     int32_t id;
     double x;
     double y;
+    char target[16];
 };
 
 struct app {
     struct wl_display *display;
     struct wl_registry *registry;
     struct wl_compositor *compositor;
+    struct wl_subcompositor *subcompositor;
     struct wl_shm *shm;
     struct wl_seat *seat;
     struct wl_keyboard *keyboard;
@@ -189,6 +197,11 @@ struct app {
     struct wl_surface *surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *toplevel;
+    struct wl_surface *child_surface;
+    struct wl_subsurface *child_subsurface;
+    struct wl_callback *child_ready_callback;
+    struct xdg_surface *child_xdg_surface;
+    struct xdg_popup *child_popup;
     struct zwp_text_input_manager_v3 *text_input_manager;
     struct zwp_text_input_v3 *text_input;
 
@@ -201,6 +214,11 @@ struct app {
     int touch_debug;
     int fullscreen;
     int dynamic_size;
+    int scene_kind;
+    int scene_child_created;
+    int scene_child_ready;
+    int child_x;
+    int child_y;
     int win_w;
     int win_h;
     wl_fixed_t pointer_x;
@@ -213,6 +231,12 @@ struct app {
     struct touch_point touches[MAX_TOUCHES];
 };
 
+enum scene_kind {
+    SCENE_NONE = 0,
+    SCENE_SUBSURFACE = 1,
+    SCENE_POPUP = 2,
+};
+
 struct wayland_mode {
     const char *title;
     const char *app_id;
@@ -222,6 +246,7 @@ struct wayland_mode {
     int touch_debug;
     int fullscreen;
     int dynamic_size;
+    int scene_kind;
 };
 
 static struct app *signal_app;
@@ -557,6 +582,52 @@ static void emit_touch_event(struct app *app, const char *tag, int32_t id,
     debug_emit(tag, buf);
 }
 
+static const char *surface_label_for_touch(struct app *app,
+                                           struct wl_surface *surface)
+{
+    if (surface == app->surface)
+        return "toplevel";
+    if (surface == app->child_surface) {
+        if (app->scene_kind == SCENE_SUBSURFACE)
+            return "subsurface";
+        if (app->scene_kind == SCENE_POPUP)
+            return "popup";
+    }
+    return NULL;
+}
+
+static void emit_scene_touch_event(struct app *app, const char *tag,
+                                   const char *label, int32_t id,
+                                   double x, double y)
+{
+    char buf[128];
+    checked_snprintf(buf, sizeof(buf), "%s:%d:%.1f:%.1f:%d", label, id, x, y,
+                     active_touch_count(app));
+    debug_emit(tag, buf);
+}
+
+static void child_ready_done(void *data, struct wl_callback *callback,
+                             uint32_t time)
+{
+    struct app *app = data;
+    (void)time;
+    require_true(callback == app->child_ready_callback,
+                 "ready callback for unexpected object");
+    wl_callback_destroy(callback);
+    app->child_ready_callback = NULL;
+    app->scene_child_ready = 1;
+    debug_emit("SURFACE_READY",
+               app->scene_kind == SCENE_POPUP ? "popup" : "subsurface");
+    if (!app->ready_emitted) {
+        app->ready_emitted = 1;
+        debug_emit("READY", NULL);
+    }
+}
+
+static const struct wl_callback_listener child_ready_listener = {
+    .done = child_ready_done,
+};
+
 static void draw_touch_debug(struct app *app, cairo_t *cr)
 {
     cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL,
@@ -606,6 +677,75 @@ static void draw_touch_debug(struct app *app, cairo_t *cr)
         cairo_move_to(cr, point->x - 7.0, point->y + 8.0);
         cairo_show_text(cr, label);
     }
+}
+
+static void attach_labeled_buffer(struct app *app, struct wl_surface *surface,
+                                  int width, int height, const char *label,
+                                  double r, double g, double b)
+{
+    int stride = width * 4;
+    size_t size = (size_t)stride * height;
+    int fd = create_shm_fd(size);
+    if (fd < 0)
+        fatal("create child shm failed: %s", strerror(errno));
+
+    void *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        int saved_errno = errno;
+        close(fd);
+        fatal("child mmap failed: %s", strerror(saved_errno));
+    }
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(app->shm, fd, (int32_t)size);
+    struct shm_buffer *buf = calloc(1, sizeof(*buf));
+    require_true(pool != NULL, "wl_shm_create_pool child returned NULL");
+    require_true(buf != NULL, "calloc child shm_buffer failed");
+    buf->data = data;
+    buf->size = size;
+    buf->buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride,
+                                            WL_SHM_FORMAT_ARGB8888);
+    require_true(buf->buffer != NULL, "wl_shm_pool_create_buffer child returned NULL");
+    wl_buffer_add_listener(buf->buffer, &buffer_listener, buf);
+    wl_shm_pool_destroy(pool);
+    close(fd);
+
+    cairo_surface_t *cs = cairo_image_surface_create_for_data(
+        data, CAIRO_FORMAT_ARGB32, width, height, stride);
+    cairo_t *cr = cairo_create(cs);
+    require_true(cairo_surface_status(cs) == CAIRO_STATUS_SUCCESS,
+                 "child cairo surface failed: %s",
+                 cairo_status_to_string(cairo_surface_status(cs)));
+    require_true(cairo_status(cr) == CAIRO_STATUS_SUCCESS,
+                 "child cairo context failed: %s",
+                 cairo_status_to_string(cairo_status(cr)));
+
+    cairo_set_source_rgb(cr, r, g, b);
+    cairo_paint(cr);
+    cairo_set_source_rgb(cr, 0.05, 0.05, 0.06);
+    cairo_set_line_width(cr, 4.0);
+    cairo_rectangle(cr, 2.0, 2.0, width - 4.0, height - 4.0);
+    cairo_stroke(cr);
+    cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 22.0);
+    cairo_move_to(cr, 18.0, 42.0);
+    cairo_show_text(cr, label);
+
+    cairo_destroy(cr);
+    cairo_surface_destroy(cs);
+
+    if (app->scene_kind != SCENE_NONE && surface == app->child_surface &&
+        !app->scene_child_ready && !app->child_ready_callback) {
+        app->child_ready_callback = wl_surface_frame(surface);
+        require_true(app->child_ready_callback != NULL,
+                     "wl_surface_frame child returned NULL");
+        wl_callback_add_listener(app->child_ready_callback,
+                                 &child_ready_listener, app);
+    }
+
+    wl_surface_attach(surface, buf->buffer, 0, 0);
+    wl_surface_damage_buffer(surface, 0, 0, width, height);
+    wl_surface_commit(surface);
 }
 
 static void request_redraw(struct app *app)
@@ -671,7 +811,7 @@ static void request_redraw(struct app *app)
     wl_surface_commit(app->surface);
     checked_flush(app->display);
 
-    if (!app->ready_emitted) {
+    if (!app->ready_emitted && app->scene_kind == SCENE_NONE) {
         app->ready_emitted = 1;
         debug_emit("READY", NULL);
     }
@@ -689,13 +829,26 @@ static const struct xdg_wm_base_listener wm_base_listener = {
     .ping = wm_base_ping,
 };
 
+static void create_scene_child(struct app *app);
+
 static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface,
                                   uint32_t serial)
 {
     struct app *app = data;
     xdg_surface_ack_configure(xdg_surface, serial);
+    if (xdg_surface == app->child_xdg_surface) {
+        attach_labeled_buffer(app, app->child_surface, CHILD_W, CHILD_H,
+                              "popup", 0.98, 0.72, 0.22);
+        checked_flush(app->display);
+        return;
+    }
+
+    require_true(xdg_surface == app->xdg_surface,
+                 "configure for unexpected xdg_surface %p",
+                 (void *)xdg_surface);
     app->configured = 1;
     request_redraw(app);
+    create_scene_child(app);
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -745,6 +898,111 @@ static const struct xdg_toplevel_listener toplevel_listener = {
     .configure_bounds = toplevel_configure_bounds,
     .wm_capabilities = toplevel_wm_capabilities,
 };
+
+static void popup_configure(void *data, struct xdg_popup *popup, int32_t x,
+                            int32_t y, int32_t width, int32_t height)
+{
+    (void)data;
+    (void)popup;
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+}
+
+static void popup_done(void *data, struct xdg_popup *popup)
+{
+    struct app *app = data;
+    (void)popup;
+    app->running = 0;
+}
+
+static void popup_repositioned(void *data, struct xdg_popup *popup,
+                               uint32_t token)
+{
+    (void)data;
+    (void)popup;
+    (void)token;
+}
+
+static const struct xdg_popup_listener popup_listener = {
+    .configure = popup_configure,
+    .popup_done = popup_done,
+    .repositioned = popup_repositioned,
+};
+
+static int clamp_i32(int value, int min, int max)
+{
+    if (value < min)
+        return min;
+    if (value > max)
+        return max;
+    return value;
+}
+
+static void compute_child_position(struct app *app)
+{
+    int x = (int)(app->win_w * TAP_FRAC_X) - CHILD_W / 2;
+    int y = (int)(app->win_h * TAP_FRAC_Y) - CHILD_H / 2;
+    app->child_x = clamp_i32(x, 0, app->win_w > CHILD_W ? app->win_w - CHILD_W : 0);
+    app->child_y = clamp_i32(y, 0, app->win_h > CHILD_H ? app->win_h - CHILD_H : 0);
+}
+
+static void create_scene_child(struct app *app)
+{
+    if (app->scene_kind == SCENE_NONE || app->scene_child_created ||
+        !app->configured)
+        return;
+
+    compute_child_position(app);
+    app->child_surface = wl_compositor_create_surface(app->compositor);
+    require_true(app->child_surface != NULL,
+                 "wl_compositor_create_surface child returned NULL");
+
+    if (app->scene_kind == SCENE_SUBSURFACE) {
+        app->child_subsurface = wl_subcompositor_get_subsurface(
+            app->subcompositor, app->child_surface, app->surface);
+        require_true(app->child_subsurface != NULL,
+                     "wl_subcompositor_get_subsurface returned NULL");
+        wl_subsurface_set_position(app->child_subsurface, app->child_x,
+                                   app->child_y);
+        wl_subsurface_set_desync(app->child_subsurface);
+        attach_labeled_buffer(app, app->child_surface, CHILD_W, CHILD_H,
+                              "subsurface", 0.35, 0.86, 0.62);
+        wl_surface_commit(app->surface);
+        checked_flush(app->display);
+    } else if (app->scene_kind == SCENE_POPUP) {
+        app->child_xdg_surface =
+            xdg_wm_base_get_xdg_surface(app->wm_base, app->child_surface);
+        require_true(app->child_xdg_surface != NULL,
+                     "xdg_wm_base_get_xdg_surface popup returned NULL");
+        xdg_surface_add_listener(app->child_xdg_surface,
+                                 &xdg_surface_listener, app);
+
+        struct xdg_positioner *positioner =
+            xdg_wm_base_create_positioner(app->wm_base);
+        require_true(positioner != NULL,
+                     "xdg_wm_base_create_positioner returned NULL");
+        xdg_positioner_set_size(positioner, CHILD_W, CHILD_H);
+        xdg_positioner_set_anchor_rect(positioner, app->child_x, app->child_y,
+                                       1, 1);
+        xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT);
+        xdg_positioner_set_gravity(positioner,
+                                   XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
+        xdg_positioner_set_constraint_adjustment(
+            positioner, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_NONE);
+        app->child_popup = xdg_surface_get_popup(
+            app->child_xdg_surface, app->xdg_surface, positioner);
+        require_true(app->child_popup != NULL,
+                     "xdg_surface_get_popup returned NULL");
+        xdg_popup_add_listener(app->child_popup, &popup_listener, app);
+        xdg_positioner_destroy(positioner);
+        wl_surface_commit(app->child_surface);
+        checked_flush(app->display);
+    }
+
+    app->scene_child_created = 1;
+}
 
 static void text_input_enter(void *data, struct zwp_text_input_v3 *text_input,
                              struct wl_surface *surface)
@@ -872,7 +1130,7 @@ static void keyboard_enter(void *data, struct wl_keyboard *keyboard,
     (void)keyboard;
     (void)serial;
     (void)keys;
-    require_true(surface == app->surface,
+    require_true(surface_label_for_touch(app, surface) != NULL,
                  "keyboard enter for unexpected surface %p", (void *)surface);
 }
 
@@ -1092,8 +1350,9 @@ static void touch_down(void *data, struct wl_touch *touch, uint32_t serial,
     (void)touch;
     (void)serial;
     (void)time;
-    require_true(surface == app->surface,
-                 "touch down for unexpected surface %p", (void *)surface);
+    const char *label = surface_label_for_touch(app, surface);
+    require_true(label != NULL, "touch down for unexpected surface %p",
+                 (void *)surface);
 
     double dx = wl_fixed_to_double(x);
     double dy = wl_fixed_to_double(y);
@@ -1101,7 +1360,11 @@ static void touch_down(void *data, struct wl_touch *touch, uint32_t serial,
     point->active = 1;
     point->x = dx;
     point->y = dy;
-    emit_touch_event(app, "TOUCH_DOWN", id, dx, dy);
+    checked_copy(point->target, sizeof(point->target), label, "touch target");
+    if (app->scene_kind == SCENE_NONE)
+        emit_touch_event(app, "TOUCH_DOWN", id, dx, dy);
+    else
+        emit_scene_touch_event(app, "SURFACE_TOUCH_DOWN", label, id, dx, dy);
     request_redraw(app);
 
     if (!app->touch_debug)
@@ -1118,7 +1381,11 @@ static void touch_up(void *data, struct wl_touch *touch, uint32_t serial,
     struct touch_point *point = find_touch(app, id);
     require_true(point != NULL && point->active, "touch up for unknown id %d", id);
     point->active = 0;
-    emit_touch_event(app, "TOUCH_UP", id, point->x, point->y);
+    if (app->scene_kind == SCENE_NONE)
+        emit_touch_event(app, "TOUCH_UP", id, point->x, point->y);
+    else
+        emit_scene_touch_event(app, "SURFACE_TOUCH_UP", point->target, id,
+                               point->x, point->y);
     request_redraw(app);
 }
 
@@ -1135,7 +1402,11 @@ static void touch_motion(void *data, struct wl_touch *touch, uint32_t time,
                  "touch motion for unknown id %d", id);
     point->x = dx;
     point->y = dy;
-    emit_touch_event(app, "TOUCH_MOTION", id, dx, dy);
+    if (app->scene_kind == SCENE_NONE)
+        emit_touch_event(app, "TOUCH_MOTION", id, dx, dy);
+    else
+        emit_scene_touch_event(app, "SURFACE_TOUCH_MOTION", point->target, id,
+                               dx, dy);
     request_redraw(app);
 }
 
@@ -1218,6 +1489,13 @@ static void registry_global(void *data, struct wl_registry *registry,
         require_true(app->shm == NULL, "duplicate wl_shm global");
         app->shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
         require_true(app->shm != NULL, "bind wl_shm failed");
+    } else if (strcmp(interface, wl_subcompositor_interface.name) == 0) {
+        require_true(app->subcompositor == NULL,
+                     "duplicate wl_subcompositor global");
+        app->subcompositor = wl_registry_bind(
+            registry, name, &wl_subcompositor_interface, 1);
+        require_true(app->subcompositor != NULL,
+                     "bind wl_subcompositor failed");
     } else if (strcmp(interface, wl_seat_interface.name) == 0) {
         require_true(app->seat == NULL, "duplicate wl_seat global");
         app->seat = wl_registry_bind(registry, name, &wl_seat_interface,
@@ -1270,6 +1548,7 @@ static void setup_wayland(struct app *app, const struct wayland_mode *mode)
     app->touch_debug = mode->touch_debug;
     app->fullscreen = mode->fullscreen;
     app->dynamic_size = mode->dynamic_size;
+    app->scene_kind = mode->scene_kind;
     app->win_w = WIN_W;
     app->win_h = WIN_H;
     app->display = wl_display_connect(NULL);
@@ -1286,6 +1565,8 @@ static void setup_wayland(struct app *app, const struct wayland_mode *mode)
 
     require_true(app->compositor != NULL, "missing wl_compositor");
     require_true(app->shm != NULL, "missing wl_shm");
+    if (mode->scene_kind == SCENE_SUBSURFACE)
+        require_true(app->subcompositor != NULL, "missing wl_subcompositor");
     require_true(app->seat != NULL, "missing wl_seat");
     require_true(app->keyboard != NULL, "wl_seat missing keyboard capability");
     require_true(app->pointer != NULL, "wl_seat missing pointer capability");
@@ -1337,6 +1618,16 @@ static void teardown_wayland(struct app *app)
         wl_touch_destroy(app->touch);
     if (app->keyboard)
         wl_keyboard_destroy(app->keyboard);
+    if (app->child_popup)
+        xdg_popup_destroy(app->child_popup);
+    if (app->child_xdg_surface)
+        xdg_surface_destroy(app->child_xdg_surface);
+    if (app->child_subsurface)
+        wl_subsurface_destroy(app->child_subsurface);
+    if (app->child_ready_callback)
+        wl_callback_destroy(app->child_ready_callback);
+    if (app->child_surface)
+        wl_surface_destroy(app->child_surface);
     if (app->toplevel)
         xdg_toplevel_destroy(app->toplevel);
     if (app->xdg_surface)
@@ -1351,6 +1642,8 @@ static void teardown_wayland(struct app *app)
         wl_seat_destroy(app->seat);
     if (app->shm)
         wl_shm_destroy(app->shm);
+    if (app->subcompositor)
+        wl_subcompositor_destroy(app->subcompositor);
     if (app->compositor)
         wl_compositor_destroy(app->compositor);
     if (app->registry)
@@ -1463,6 +1756,64 @@ static int cmd_touch(int argc, char **argv)
     return 0;
 }
 
+static int run_scene_command(const struct wayland_mode *mode)
+{
+    struct app app;
+    memset(&app, 0, sizeof(app));
+    signal_app = &app;
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+
+    setup_wayland(&app, mode);
+
+    while (app.running) {
+        if (wl_display_dispatch(app.display) < 0) {
+            if (errno == EINTR && !app.running)
+                break;
+            fatal("wl_display_dispatch failed: %s", strerror(errno));
+        }
+    }
+
+    teardown_wayland(&app);
+    return 0;
+}
+
+static int cmd_subsurface(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "tawc wayland subsurface debug",
+        .app_id = "wayland-debug-app-subsurface",
+        .use_text_input = 0,
+        .editable = 0,
+        .provide_surrounding = 0,
+        .fullscreen = 1,
+        .dynamic_size = 1,
+        .scene_kind = SCENE_SUBSURFACE,
+    };
+
+    (void)argc;
+    (void)argv;
+    return run_scene_command(&mode);
+}
+
+static int cmd_popup(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "tawc wayland popup debug",
+        .app_id = "wayland-debug-app-popup",
+        .use_text_input = 0,
+        .editable = 0,
+        .provide_surrounding = 0,
+        .fullscreen = 1,
+        .dynamic_size = 1,
+        .scene_kind = SCENE_POPUP,
+    };
+
+    (void)argc;
+    (void)argv;
+    return run_scene_command(&mode);
+}
+
 typedef int (*command_fn)(int argc, char **argv);
 
 struct command {
@@ -1477,6 +1828,9 @@ static const struct command commands[] = {
       "Text-input surface that never sends surrounding",
       cmd_text_input_no_surrounding },
     { "touch", "Fullscreen touch visualizer", cmd_touch },
+    { "subsurface", "Fullscreen toplevel with a touchable subsurface",
+      cmd_subsurface },
+    { "popup", "Fullscreen toplevel with a touchable xdg_popup", cmd_popup },
     { NULL, NULL, NULL },
 };
 

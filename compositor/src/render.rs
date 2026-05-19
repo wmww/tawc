@@ -562,7 +562,7 @@ struct SurfaceDraw {
 /// `draw_surfaces` always samples the full buffer. No current client
 /// (Firefox / GTK / vkcube / weston-simple-egl) uses `set_source`, so this
 /// is fine for now, but a client that does will see an uncropped result.
-fn logical_size(
+pub(crate) fn logical_size(
     buf_w: i32,
     buf_h: i32,
     buffer_scale: i32,
@@ -609,12 +609,17 @@ fn collect_tree_draws(
                 .location;
             TraversalAction::DoChildren((px + loc.x, py + loc.y))
         },
-        |surf, _states, &(abs_x, abs_y)| {
+        |surf, states, &(base_x, base_y)| {
             if let Some(spec) = surface_fn(surf) {
+                let loc = states
+                    .cached_state
+                    .get::<SubsurfaceCachedState>()
+                    .current()
+                    .location;
                 out.push(SurfaceDraw {
                     texture: spec.texture,
-                    logical_x: abs_x,
-                    logical_y: abs_y,
+                    logical_x: base_x + loc.x,
+                    logical_y: base_y + loc.y,
                     logical_w: spec.logical_w,
                     logical_h: spec.logical_h,
                     buf_w: spec.buf_w,

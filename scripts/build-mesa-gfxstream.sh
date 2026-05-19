@@ -145,8 +145,9 @@ build_one() {
     local CARGO_DIR="$OUT_DIR/cargo"
     local SYSROOT_DISTRO="${TAWC_SYSROOT_DISTRO:-arch}"
     local SYSROOT="$REPO_DIR/build/sysroots/$SYSROOT_DISTRO-$abi"
+    local SYSROOT_FIFO_XML="$SYSROOT/usr/share/wayland-protocols/staging/fifo/fifo-v1.xml"
 
-    if [ ! -d "$SYSROOT/usr" ] || [ ! -f "$SYSROOT/.tawc-sysroot" ]; then
+    if [ ! -d "$SYSROOT/usr" ] || [ ! -f "$SYSROOT/.tawc-sysroot" ] || [ ! -f "$SYSROOT_FIFO_XML" ]; then
         "$SCRIPT_DIR/build-host-sysroot.sh" "--abi=$abi" "--distro=$SYSROOT_DISTRO" --profile=prod
     fi
 

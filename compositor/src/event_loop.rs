@@ -14,14 +14,21 @@ use log::{error, info};
 use smithay::reexports::wayland_server::Resource;
 
 use smithay::backend::input::TouchSlot;
-use smithay::input::touch::{DownEvent, MotionEvent, UpEvent};
+use smithay::backend::renderer::{buffer_type, BufferType};
 use smithay::backend::input::KeyState;
+use smithay::desktop::PopupManager;
 use smithay::input::keyboard::{FilterResult, Keycode};
+use smithay::input::touch::{DownEvent, MotionEvent, UpEvent};
 use smithay::reexports::calloop::channel::{Channel, Event as ChannelEvent};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
-use smithay::utils::{Point, SERIAL_COUNTER};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::wayland::compositor::{
+    with_states, with_surface_tree_downward, BufferAssignment, SubsurfaceCachedState,
+    SurfaceAttributes, TraversalAction,
+};
 use wayland_server::{Display, ListeningSocket};
 
 use crate::host::{ActivityId, OutputHost, SurfaceEvent};
@@ -30,6 +37,139 @@ use crate::text_input::TextInputEvent;
 
 use crate::compositor::{ClientState, TawcState};
 use crate::render;
+
+struct HitSurface {
+    surface: WlSurface,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+fn surface_logical_size(data: &TawcState, surface: &WlSurface) -> Option<(i32, i32)> {
+    if let Some(ws) = data.surface_wlegl.get(surface) {
+        return Some(render::logical_size(
+            ws.committed_width,
+            ws.committed_height,
+            ws.buffer_scale,
+            ws.viewport_dst,
+        ));
+    }
+
+    if let Some(ss) = data.surface_shm.get(surface) {
+        return Some(render::logical_size(
+            ss.committed_width,
+            ss.committed_height,
+            ss.buffer_scale,
+            ss.viewport_dst,
+        ));
+    }
+
+    let mut size = None;
+    with_states(surface, |states| {
+        let mut guard = states.cached_state.get::<SurfaceAttributes>();
+        let attrs = guard.current();
+        let buffer_scale = attrs.buffer_scale.max(1);
+        let buffer = match &attrs.buffer {
+            Some(BufferAssignment::NewBuffer(buf))
+                if matches!(buffer_type(buf), Some(BufferType::Shm)) =>
+            {
+                Some(buf.clone())
+            }
+            _ => None,
+        };
+        drop(guard);
+        let mut vp_guard = states
+            .cached_state
+            .get::<smithay::wayland::viewporter::ViewportCachedState>();
+        let viewport_dst = vp_guard.current().dst.map(|s| (s.w, s.h));
+        if let Some(buffer) = buffer {
+            let dims = smithay::wayland::shm::with_buffer_contents(&buffer, |_, _, data| {
+                (data.width, data.height)
+            });
+            if let Ok((w, h)) = dims {
+                size = Some(render::logical_size(w, h, buffer_scale, viewport_dst));
+            }
+        }
+    });
+    size
+}
+
+fn collect_tree_hits(
+    data: &TawcState,
+    root: &WlSurface,
+    offset_x: i32,
+    offset_y: i32,
+) -> Vec<HitSurface> {
+    let mut hits = Vec::new();
+    with_surface_tree_downward(
+        root,
+        (offset_x, offset_y),
+        |_surf, states, &(px, py)| {
+            let loc = states
+                .cached_state
+                .get::<SubsurfaceCachedState>()
+                .current()
+                .location;
+            TraversalAction::DoChildren((px + loc.x, py + loc.y))
+        },
+        |surf, states, &(base_x, base_y)| {
+            if let Some((w, h)) = surface_logical_size(data, surf) {
+                let loc = states
+                    .cached_state
+                    .get::<SubsurfaceCachedState>()
+                    .current()
+                    .location;
+                hits.push(HitSurface {
+                    surface: surf.clone(),
+                    x: base_x + loc.x,
+                    y: base_y + loc.y,
+                    w,
+                    h,
+                });
+            }
+        },
+        |_, _, _| true,
+    );
+    hits.reverse();
+    hits
+}
+
+fn touch_focus_at(
+    data: &TawcState,
+    activity_id: &ActivityId,
+    location: Point<f64, Logical>,
+) -> Option<(WlSurface, Point<f64, Logical>)> {
+    let mut hits = Vec::new();
+
+    for toplevel in &data.toplevels {
+        let root = toplevel.wl_surface();
+        match data.toplevel_to_host.get(root) {
+            Some(assigned) if assigned == activity_id => {}
+            _ => continue,
+        }
+
+        hits.extend(collect_tree_hits(data, root, 0, 0));
+        for (popup, location) in PopupManager::popups_for_surface(root) {
+            hits.extend(collect_tree_hits(
+                data,
+                popup.wl_surface(),
+                location.x,
+                location.y,
+            ));
+        }
+    }
+
+    hits.into_iter().rev().find_map(|hit| {
+        let within_x = location.x >= hit.x as f64 && location.x < (hit.x + hit.w) as f64;
+        let within_y = location.y >= hit.y as f64 && location.y < (hit.y + hit.h) as f64;
+        if within_x && within_y {
+            Some((hit.surface, Point::from((hit.x as f64, hit.y as f64))))
+        } else {
+            None
+        }
+    })
+}
 
 /// Set up and run the calloop event loop. Returns when `running` becomes false.
 ///
@@ -100,14 +240,14 @@ pub fn run(
             None => return,
         };
 
-        // Identify the touch's host and its first alive assigned toplevel.
+        // Identify the touch's host and the surface under the event. Touch
+        // focus stores the surface origin in compositor space; Smithay
+        // subtracts it before sending surface-local wl_touch coordinates.
         let activity_id = match &evt {
             TouchEvent::Down { activity_id, .. }
             | TouchEvent::Motion { activity_id, .. }
             | TouchEvent::Up { activity_id, .. } => activity_id.clone(),
         };
-        let focus = first_alive_toplevel_of_host(data, &activity_id)
-            .map(|wl| (wl, Point::from((0.0, 0.0))));
 
         let touch_scale = data.output_scale as f64;
         let serial = SERIAL_COUNTER.next_serial();
@@ -116,6 +256,7 @@ pub fn run(
             TouchEvent::Down { id, x, y, time, .. } => {
                 let location: Point<f64, smithay::utils::Logical> =
                     (x as f64 / touch_scale, y as f64 / touch_scale).into();
+                let focus = touch_focus_at(data, &activity_id, location);
                 // Finalize any active preedit *before* the touch reaches the
                 // client. Wayland text-input-v3 has no way to insert text at
                 // an "old cursor" — preedit is purely a cursor-relative
@@ -154,6 +295,7 @@ pub fn run(
             TouchEvent::Motion { id, x, y, time, .. } => {
                 let location: Point<f64, smithay::utils::Logical> =
                     (x as f64 / touch_scale, y as f64 / touch_scale).into();
+                let focus = touch_focus_at(data, &activity_id, location);
                 touch.motion(
                     data,
                     focus,

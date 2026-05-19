@@ -50,8 +50,8 @@ use tawc_integration::adb;
 use tawc_integration::debug_app::DebugApp;
 use tawc_integration::helpers::{
     assert_compositor_clean, start_text_input, start_text_input_no_surrounding,
-    start_wayland_debug_text_input, start_wayland_debug_text_input_no_surrounding,
-    start_wayland_debug_touch, TIMEOUT,
+    start_wayland_debug_popup, start_wayland_debug_subsurface, start_wayland_debug_text_input,
+    start_wayland_debug_text_input_no_surrounding, start_wayland_debug_touch, TIMEOUT,
 };
 use tawc_integration::GraphicsBackend;
 
@@ -880,6 +880,22 @@ fn with_wayland_touch(run: impl FnOnce(&DebugApp)) {
     assert_compositor_clean();
 }
 
+fn with_wayland_subsurface(run: impl FnOnce(&DebugApp)) {
+    let mut app = start_wayland_debug_subsurface(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+    run(&app);
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+fn with_wayland_popup(run: impl FnOnce(&DebugApp)) {
+    let mut app = start_wayland_debug_popup(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+    run(&app);
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
+    assert_compositor_clean();
+}
+
 #[derive(Clone, Debug)]
 struct TouchDebugEvent {
     id: i32,
@@ -931,6 +947,81 @@ fn inject_touch(kind: &str) {
         "inject-touch {kind} failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[derive(Clone, Debug)]
+struct SurfaceTouchDebugEvent {
+    target: String,
+    id: i32,
+    x: f64,
+    y: f64,
+    active: u32,
+}
+
+fn parse_surface_touch_event(payload: &str) -> SurfaceTouchDebugEvent {
+    let mut parts = payload.split(':');
+    let target = parts.next().expect("touch target").to_string();
+    let id = parts
+        .next()
+        .expect("touch id")
+        .parse()
+        .expect("touch id integer");
+    let x = parts
+        .next()
+        .expect("touch x")
+        .parse()
+        .expect("touch x number");
+    let y = parts
+        .next()
+        .expect("touch y")
+        .parse()
+        .expect("touch y number");
+    let active = parts
+        .next()
+        .expect("touch active count")
+        .parse()
+        .expect("touch active integer");
+    assert!(
+        parts.next().is_none(),
+        "extra fields in surface touch payload {payload:?}"
+    );
+    SurfaceTouchDebugEvent {
+        target,
+        id,
+        x,
+        y,
+        active,
+    }
+}
+
+fn surface_touch_events(app: &DebugApp, tag: &str) -> Vec<SurfaceTouchDebugEvent> {
+    app.payloads_with_tag(tag)
+        .iter()
+        .map(|payload| parse_surface_touch_event(payload))
+        .collect()
+}
+
+fn assert_surface_tap_delivered(app: &DebugApp, target: &str) {
+    inject_touch("tap");
+    app.wait_for_tag_count("SURFACE_TOUCH_DOWN", 1, TIMEOUT)
+        .expect("surface touch down");
+    app.wait_for_tag_count("SURFACE_TOUCH_UP", 1, TIMEOUT)
+        .expect("surface touch up");
+
+    let downs = surface_touch_events(app, "SURFACE_TOUCH_DOWN");
+    let ups = surface_touch_events(app, "SURFACE_TOUCH_UP");
+    assert_eq!(downs.len(), 1, "expected one down, got {downs:?}");
+    assert_eq!(ups.len(), 1, "expected one up, got {ups:?}");
+    assert_eq!(downs[0].target, target, "touch down target");
+    assert_eq!(ups[0].target, target, "touch up target");
+    assert_eq!(downs[0].id, ups[0].id, "tap up used a different slot");
+    assert_eq!(downs[0].active, 1, "tap down active count");
+    assert_eq!(ups[0].active, 0, "tap up active count");
+    assert!(
+        downs[0].x >= 0.0 && downs[0].y >= 0.0,
+        "surface-local coordinates should be non-negative: {:?}",
+        downs[0]
     );
 }
 
@@ -1062,6 +1153,31 @@ fn test_wayland_touch_tap() {
             downs[0],
             ups[0]
         );
+    });
+}
+
+/// A wl_subsurface is rendered as part of the parent surface tree, but input
+/// must still be delivered to the child wl_surface with child-local
+/// coordinates. The debug scene places the subsurface under the broker's
+/// normalized tap point.
+#[test]
+fn test_wayland_touch_subsurface_tap() {
+    with_wayland_subsurface(|app| {
+        app.wait_for_tag_value("SURFACE_READY", "subsurface", TIMEOUT)
+            .expect("subsurface ready");
+        assert_surface_tap_delivered(app, "subsurface");
+    });
+}
+
+/// Basic xdg_popup coverage: create/map a popup from wayland-debug-app and
+/// verify the same touch path hit-tests to the popup surface rather than the
+/// parent toplevel. Full positioning policy is intentionally out of scope.
+#[test]
+fn test_wayland_touch_popup_tap() {
+    with_wayland_popup(|app| {
+        app.wait_for_tag_value("SURFACE_READY", "popup", TIMEOUT)
+            .expect("popup ready");
+        assert_surface_tap_delivered(app, "popup");
     });
 }
 

@@ -166,6 +166,28 @@ pub fn start_wayland_debug_touch(backend: GraphicsBackend, env: &str) -> DebugAp
     app
 }
 
+/// Start wayland-debug-app's subsurface touch scene.
+pub fn start_wayland_debug_subsurface(backend: GraphicsBackend, env: &str) -> DebugApp {
+    let binary = ensure_wayland_debug_app();
+    adb::logcat_clear().expect("Failed to clear logcat");
+    let app = DebugApp::start(backend, &binary, "subsurface", env)
+        .expect("Failed to start wayland subsurface debug app");
+    app.wait_ready()
+        .expect("Wayland subsurface debug app did not become ready");
+    app
+}
+
+/// Start wayland-debug-app's xdg_popup touch scene.
+pub fn start_wayland_debug_popup(backend: GraphicsBackend, env: &str) -> DebugApp {
+    let binary = ensure_wayland_debug_app();
+    adb::logcat_clear().expect("Failed to clear logcat");
+    let app = DebugApp::start(backend, &binary, "popup", env)
+        .expect("Failed to start wayland popup debug app");
+    app.wait_ready()
+        .expect("Wayland popup debug app did not become ready");
+    app
+}
+
 /// True if compositor logcat shows a libhybris android_wlegl AHB import.
 pub fn saw_ahb_import(logs: &str) -> bool {
     logs.contains("wlegl: imported ANativeWindowBuffer as texture")

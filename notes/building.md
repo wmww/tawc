@@ -98,10 +98,11 @@ scripts/build-host-sysroot.sh --abi=x86_64 --distro=arch --profile=prod
 ```
 
 `build-mesa-gfxstream.sh` runs this automatically when its production
-sysroot is missing. `tests/apps/Makefile` uses the same script with
-`--profile=full`, which pulls the GTK/Cairo/Wayland/X11 header and
-pkg-config closure needed to build test clients on the host. There is no
-device-rootfs sysroot pull path anymore.
+sysroot is missing or lacks Mesa's required Wayland protocol XMLs.
+`tests/apps/Makefile` uses the same script with `--profile=full`, which
+pulls the GTK/Cairo/Wayland/X11 header and pkg-config closure needed to
+build test clients on the host. There is no device-rootfs sysroot pull
+path anymore.
 
 Default distro is Arch (`TAWC_SYSROOT_DISTRO=arch`). `void` support uses
 `xbps-install` when that host tool is available. The builder keeps a

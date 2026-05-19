@@ -67,11 +67,18 @@ fetch_url() {
     local url="$1" out="$2" fetch
     fetch="$url"
     if [ -n "$MIRROR_PROXY" ]; then
-        fetch="${MIRROR_PROXY%/}/$url"
+        if [[ "$url" =~ ^(https?)://([^/]+)/(.*)$ ]]; then
+            fetch="${MIRROR_PROXY%/}/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}"
+        else
+            echo "ERROR: cannot proxy unsupported URL: $url" >&2
+            return 1
+        fi
     fi
     if ! curl -fsSL --retry 3 -o "$out" "$fetch"; then
         if [ -n "$MIRROR_PROXY" ]; then
             echo "ERROR: failed to fetch through mirror proxy: $MIRROR_PROXY" >&2
+            echo "       upstream URL: $url" >&2
+            echo "       proxy URL: $fetch" >&2
             echo "       If 127.0.0.1:8080 is refused, run: scripts/cache-proxy.sh run" >&2
         fi
         return 1
@@ -81,7 +88,7 @@ fetch_url() {
 arch_packages_for_profile() {
     case "$PROFILE" in
         prod)
-            echo "glibc linux-api-headers wayland libdrm systemd-libs libffi gcc-libs vulkan-icd-loader libxkbcommon libglvnd libdisplay-info"
+            echo "glibc linux-api-headers wayland wayland-protocols libdrm systemd-libs libffi gcc-libs vulkan-icd-loader libxkbcommon libglvnd libdisplay-info"
             ;;
         test|full)
             local pkgs="glibc linux-api-headers wayland wayland-protocols libdrm systemd-libs libffi gcc-libs vulkan-icd-loader libxkbcommon libglvnd libdisplay-info gtk4 cairo libx11 libxcb mesa"
@@ -98,7 +105,7 @@ arch_packages_for_profile() {
 void_packages_for_profile() {
     case "$PROFILE" in
         prod)
-            echo "wayland-devel libdrm-devel eudev-libudev-devel libffi-devel gcc-libs vulkan-loader-devel libxkbcommon-devel libglvnd-devel libdisplay-info-devel"
+            echo "wayland-devel wayland-protocols libdrm-devel eudev-libudev-devel libffi-devel gcc-libs vulkan-loader-devel libxkbcommon-devel libglvnd-devel libdisplay-info-devel"
             ;;
         test|full)
             echo "wayland-devel wayland-protocols libdrm-devel eudev-libudev-devel libffi-devel gcc-libs vulkan-loader-devel libxkbcommon-devel libglvnd-devel libdisplay-info-devel gtk4-devel cairo-devel libX11-devel libxcb-devel MesaLib-devel"
@@ -110,8 +117,8 @@ arch_repo_specs() {
     local abi="$1"
     case "$DISTRO/$abi" in
         arch/x86_64)
-            echo "core https://geo.mirror.pkgbuild.com/core/os/x86_64"
-            echo "extra https://geo.mirror.pkgbuild.com/extra/os/x86_64"
+            echo "core https://mirror.alwyzon.net/archlinux/core/os/x86_64"
+            echo "extra https://mirror.alwyzon.net/archlinux/extra/os/x86_64"
             ;;
         arch/aarch64)
             echo "core https://fl.us.mirror.archlinuxarm.org/aarch64/core"
