@@ -242,12 +242,9 @@ Two fixes were needed:
    intercepted (via `vkGetDeviceProcAddr` and `vkGetInstanceProcAddr`)
    to resize the `WaylandNativeWindow` to match the app's `imageExtent`.
 
-**Known compositor limitation:** the tawc compositor currently renders
-wlegl/Vulkan buffers 1:1 to physical pixels without applying output
-scale. Apps that query `wl_output` get logical dimensions (e.g.
-540x1200 at 2x scale) and create a swapchain at that size, which
-then only covers part of the physical display. The fix belongs in
-the compositor (scale wlegl surfaces by output scale factor).
+The compositor advertises the logical output size through the normal
+Wayland scale/output protocols and renders logical-sized wlegl/Vulkan
+buffers through `output_scale` to cover the physical display.
 
 ### Vulkan dispatch interception (2026-04-20)
 

@@ -29,6 +29,7 @@ use crate::compositor::TawcState;
 use crate::egl_android::AndroidNativeSurface;
 use crate::gl_import::AhbTextureImporter;
 use crate::host::OutputHost;
+use crate::scale::OutputScale;
 use crate::wlegl::{BufferOrigin, WleglBufferData};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 
@@ -698,10 +699,11 @@ fn collect_surface_draws(
 /// `wp_viewport.set_destination`. The on-screen physical size is that
 /// logical size times the output scale. So:
 ///
-///   dst_w = logical_w * output_scale
-///   dst_h = logical_h * output_scale
-///   dst_x = logical_x * output_scale
-///   dst_y = screen_h - logical_y * output_scale - dst_h
+///   dst_left   = round(logical_x * output_scale)
+///   dst_right  = round((logical_x + logical_w) * output_scale)
+///   dst_top    = round(logical_y * output_scale)
+///   dst_bottom = round((logical_y + logical_h) * output_scale)
+///   dst_y      = screen_h - dst_bottom
 ///
 /// The Y flip is because smithay's GlesRenderer projection has Y=0 at the
 /// screen bottom; `Transform::Flipped180` then flips the texture's Y inside
@@ -709,7 +711,7 @@ fn collect_surface_draws(
 fn draw_surfaces(
     draws: &[SurfaceDraw],
     frame: &mut GlesFrame<'_, '_>,
-    scale: i32,
+    scale: OutputScale,
     screen_w: i32,
     screen_h: i32,
     plain_shader: Option<&GlesTexProgram>,
@@ -717,16 +719,17 @@ fn draw_surfaces(
     tint_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for draw in draws {
-        let dst_w = draw.logical_w * scale;
-        let dst_h = draw.logical_h * scale;
+        let dst_x = scale.physical_edge(draw.logical_x);
+        let dst_right = scale.physical_edge(draw.logical_x + draw.logical_w);
+        let dst_top = scale.physical_edge(draw.logical_y);
+        let dst_bottom = scale.physical_edge(draw.logical_y + draw.logical_h);
+        let dst_w = (dst_right - dst_x).max(0);
+        let dst_h = (dst_bottom - dst_top).max(0);
         let src = Rectangle::from_size(
             Size::<i32, smithay::utils::Buffer>::from((draw.buf_w, draw.buf_h)).to_f64(),
         );
         let dst = Rectangle::new(
-            Point::from((
-                draw.logical_x * scale,
-                screen_h - draw.logical_y * scale - dst_h,
-            )),
+            Point::from((dst_x, screen_h - dst_bottom)),
             Size::from((dst_w, dst_h)),
         );
         let damage = Rectangle::from_size(Size::from((dst_w, dst_h)));

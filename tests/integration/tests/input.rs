@@ -61,7 +61,7 @@ use tawc_integration::GraphicsBackend;
 const INPUT_BACKEND: GraphicsBackend = GraphicsBackend::Cpu;
 
 // Physical screen coordinates for tapping inside the text view.
-// Compositor uses 2x scale, so logical = physical / 2.
+// Compositor uses fractional output scale, so logical = physical / scale.
 // Text content starts at approximately physical (80, 234).
 // The actual char width depends on font size set in gtk4-debug-app.c —
 // each scenario only asserts cursor lies somewhere in the middle of the
@@ -75,7 +75,7 @@ const TAP_TEXT_START_X: u32 = 85;
 
 // Same logical intent as the GTK coordinates above, but aimed at
 // wayland-debug-app's compact 640x240 surface. Coordinates are physical;
-// the compositor's 2x scale maps them to the app's logical surface.
+// the compositor maps them to the app's logical surface through output scale.
 const WAYLAND_TAP_TEXT_MID_X: u32 = 200;
 const WAYLAND_TAP_TEXT_MID_Y: u32 = 250;
 const WAYLAND_TAP_TEXT_START_X: u32 = 40;

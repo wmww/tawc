@@ -24,6 +24,7 @@ mod protocol;
 mod wlegl;
 mod compositor;
 mod render;
+mod scale;
 mod event_loop;
 mod input;
 mod keymap;
@@ -35,6 +36,7 @@ use gl_import::AhbTextureImporter;
 use compositor::TawcState;
 use host::{ActivityId, SurfaceEvent};
 use render::RenderState;
+use scale::OutputScale;
 
 /// Global flag shared between JNI calls to signal shutdown.
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -574,8 +576,9 @@ pub fn finish_activity_from_native(activity_id: &str) {
 }
 
 /// Default output scale used while no Activity has registered its size.
-/// Matches the historical hardcoded value.
-const DEFAULT_OUTPUT_SCALE: i32 = 2;
+/// Fractional by default so the normal dev path exercises the fractional
+/// scale protocol and rendering math.
+const DEFAULT_OUTPUT_SCALE: f64 = 2.0;
 
 /// Set up EGL context, renderer, Wayland display, and socket. Then hand off
 /// to the calloop event loop. The first `OutputHost` is added asynchronously
@@ -627,10 +630,10 @@ fn run_compositor(
     // finally registers — Vulkan WSI doesn't recover from that and the
     // cube hangs after committing two buffers.
     let mut wl_display: Display<TawcState> = Display::new()?;
-    let scale = DEFAULT_OUTPUT_SCALE;
+    let scale = OutputScale::new(DEFAULT_OUTPUT_SCALE);
     let (init_pw, init_ph) = initial_physical_size;
     let initial_logical = if init_pw > 0 && init_ph > 0 {
-        (init_pw / scale, init_ph / scale)
+        scale.logical_size(init_pw, init_ph)
     } else {
         (0, 0)
     };
@@ -650,7 +653,7 @@ fn run_compositor(
     output.change_current_state(
         Some(smithay::output::Mode { size: initial_mode_size, refresh: 60_000 }),
         Some(Transform::Normal),
-        Some(smithay::output::Scale::Integer(scale)),
+        Some(scale.smithay_scale()),
         Some((0, 0).into()),
     );
     // GlobalId is not RAII — the global lives as long as the Display.

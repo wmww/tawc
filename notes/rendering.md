@@ -6,11 +6,11 @@ The compositor clears every frame to a flat color matching the rest of the app U
 
 ## Window Management
 
-All toplevels are configured as maximized at the full logical output size (physical pixels /
-scale factor). The output scale is 2x, so on a 1080x2400 display, apps see a 540x1200
-logical surface. The xdg-decoration protocol is implemented, always requesting server-side
-decorations (which we don't draw, so clients get no decorations). Surfaces are rendered at
-(0,0) instead of centered.
+All toplevels are configured as maximized at the full logical output size:
+`round(physical_size / output_scale)`. The xdg-decoration protocol is
+implemented, always requesting server-side decorations (which we don't draw,
+so clients get no decorations). Surfaces are rendered at (0,0) instead of
+centered.
 
 ## Popup and Subsurface Positioning
 
@@ -45,11 +45,12 @@ Popup trees are appended after their parent toplevel so they draw on top.
 
 1. **Logical vs physical:** Subsurface positions (from `wl_subsurface.set_position`) and
    popup positions (from xdg_positioner) are in logical (surface-local) coordinates.
-   The renderer works in physical pixels. Multiply positions by `output_scale`.
+   The renderer works in physical pixels. Convert logical edges through
+   `OutputScale` and round the physical edges.
 
 2. **Y-axis flip:** Smithay's GlesRenderer uses a GL projection where Y=0 is at the
    **bottom** of the screen, not the top, so we compute
-   `physical_y = screen_h - logical_y * output_scale - dst_h`. The buffer
+   `physical_y = screen_h - round((logical_y + logical_h) * output_scale)`. The buffer
    itself is also Y-down (Wayland convention) vs. Y-up (GL), so we pass
    `Transform::Flipped180` to `Frame::render_texture_from_to`. Both are
    needed — Firefox and the `weston-simple-egl` triangle expose the bug if
@@ -62,12 +63,14 @@ Popup trees are appended after their parent toplevel so they draw on top.
 
    Both `wp_viewporter` and `wl_surface.set_buffer_scale` matter here:
    - **vkcube / weston-simple-egl** allocate buffers at the configured logical
-     size (540×1200) with `buffer_scale=1` and no viewport. Logical = 540×1200,
-     physical = 1080×2400 → full screen.
-   - **GTK** (Firefox / GTK3 / GTK4) allocates a HiDPI buffer (1080×2400) and
-     either commits `buffer_scale=2` (toplevel placeholder) or
-     `buffer_scale=1` plus `wp_viewport.set_destination(540,1200)` (Firefox's
-     WebRender subsurface). Both end up at 1080×2400 physical.
+     size with `buffer_scale=1` and no viewport. The compositor scales that
+     logical-size buffer to the physical output.
+   - **Fractional-scale-aware GTK / Firefox / GTK4** learn the scale from
+     `wp_fractional_scale_v1.preferred_scale`, allocate a physical-resolution
+     buffer, and use `wp_viewport.set_destination(logical_width, logical_height)`
+     to describe the logical surface size. Integer-only clients see the
+     rounded-up fallback in `wl_surface.preferred_buffer_scale` and
+     `wl_output.scale`.
 
    **Firefox specifically requires `wp_viewporter`** — Firefox's WebRender
    renders into a HiDPI subsurface but commits `buffer_scale=1`, relying on
@@ -79,7 +82,8 @@ Popup trees are appended after their parent toplevel so they draw on top.
    `SurfaceShmState`; the `logical_size` helper in `render.rs` applies the
    precedence rule.
 
-The canonical output scale factor lives in `TawcState::output_scale`. Do not hardcode `2` elsewhere.
+The canonical output scale factor lives in `TawcState::output_scale` as an
+`OutputScale`, not an integer. Do not hardcode a scale elsewhere.
 
 ## SHM Buffer Support
 
@@ -104,28 +108,23 @@ per surface. Surfaces using the AHB channel protocol are never checked for SHM b
 
 ### Output scale advertisement
 
-We advertise `wl_compositor` v6 and call `compositor::send_surface_state`
-from `CompositorHandler::new_surface` to emit
-`wl_surface.preferred_buffer_scale` (and the matching transform) for every
-surface. Modern GDK (GTK4 ≥ 4.18) deliberately drops the older
-`wl_surface.enter`-driven scale guess and **requires** either this v6 event
-or `wp_fractional_scale_v1.preferred_scale` to learn the output scale. With
-neither, GDK falls back to a constructed-time monitor guess that races
-against output-event delivery and frequently lands on scale=1 — surfaces
-end up committed at half resolution into a half-size `wl_egl_window` that
-the compositor then upscales to fill the screen.
+We advertise all scale paths clients commonly need:
 
-Symptom of forgetting this: HiDPI buffers come in at 540×1200 instead of
-1080×2400, viewport `set_destination(540, 1200)` matches both, so the
-display is full-screen but blurry; on GTK 4.18 specifically the renderer
-also produces blank chrome-only windows in this state. After the v6 fix,
-buffers arrive at the correct 1080×2400 with stride 1088 — same as
-hand-fixed clients (Firefox/WebRender) that rely on `wp_viewporter`
-explicitly.
+- `wp_fractional_scale_manager_v1`: the authoritative scale for modern
+  clients. Smithay sends `preferred_scale` as `round(scale * 120)`.
+- `wp_viewporter`: required with fractional scale because clients usually
+  render at physical resolution and set a logical `set_destination`.
+- `wl_compositor` v6 `wl_surface.preferred_buffer_scale`: integer fallback,
+  rounded up from the fractional scale.
+- `wl_output.scale`: integer fallback, also rounded up by Smithay's
+  `Scale::Fractional`.
+- `xdg-output`: reports the logical output size derived from the fractional
+  output scale.
 
-We don't yet implement `wp_fractional_scale_v1`. Adding it would let
-clients pick a non-integer scale, but for our integer-scale=2 output the
-v6 event is sufficient and conformant.
+Runtime scale changes should update the single `OutputScale`, call
+`Output::change_current_state` with `Scale::Fractional`, resend
+`TawcState::send_surface_scale` for every live surface, then reconfigure
+toplevels with the new logical sizes.
 
 ### GTK4 minimum version
 
@@ -142,9 +141,9 @@ The bug exists across all `GSK_RENDERER` flavours (`gl|ngl|vulkan`) and
 isn't fixable via `GSK_GPU_DISABLE` flags or any compositor-side change —
 it's in GTK4 4.18's GpuRenderer interaction with libhybris-wrapped Adreno
 EGL, fixed upstream by GTK4 4.22. (Confirmed via `WAYLAND_DEBUG=client`:
-post-fix, GTK 4.18 sends the same `create_buffer 1080×2400 stride 1088`
-as 4.22 and wraps it identically, so the visible breakage lives entirely
-inside the client's own GpuRenderer pixel writes.)
+post-fix, GTK 4.18 sends the same physical-sized buffer as 4.22 and wraps
+it identically, so the visible breakage lives entirely inside the client's
+own GpuRenderer pixel writes.)
 
 In practice: **Manjaro ARM ships gtk4 1:4.18.6-1 in arm-testing as of
 2026-05-04 — too old.** Void aarch64 ships gtk4-4.22.2_1 — works. The

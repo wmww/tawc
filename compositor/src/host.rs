@@ -13,6 +13,8 @@ use smithay::backend::egl::EGLSurface;
 use smithay::reexports::calloop::channel::{Channel, Sender, channel};
 use smithay::utils::{Physical, Size};
 
+use crate::scale::OutputScale;
+
 /// Activity identifier — stable per Android task. UUID once we get to
 /// per-document Activities; for now a hardcoded `"primary"` for the single
 /// `CompositorActivity`. The string travels Rust→Kotlin in
@@ -43,7 +45,7 @@ pub struct OutputHost {
     pub physical_size: Size<i32, Physical>,
 
     /// Logical dimensions sent to clients in `xdg_toplevel.configure`
-    /// (= physical_size / output_scale).
+    /// (= physical_size / output_scale, rounded to logical pixels).
     pub logical_size: (i32, i32),
 
     /// True iff Android currently shows this Activity in the foreground.
@@ -67,13 +69,13 @@ impl OutputHost {
     /// Take ownership of an `ANativeWindow` reference (caller must have
     /// done `ANativeWindow_acquire`-equivalent — `ANativeWindow_fromSurface`
     /// returns a +1 ref).
-    pub fn new(activity_id: ActivityId, native_window: *mut c_void, w: i32, h: i32, scale: i32) -> Self {
+    pub fn new(activity_id: ActivityId, native_window: *mut c_void, w: i32, h: i32, scale: OutputScale) -> Self {
         Self {
             activity_id,
             native_window,
             egl_surface: None,
             physical_size: Size::from((w, h)),
-            logical_size: (w / scale, h / scale),
+            logical_size: scale.logical_size(w, h),
             foreground: false,
         }
     }
@@ -85,14 +87,14 @@ impl OutputHost {
     /// Replace the Surface (e.g. after `surfaceDestroyed` →
     /// `surfaceCreated` round-trip). Drops the old EGLSurface and
     /// releases the old ANativeWindow before taking the new one.
-    pub fn replace_native_window(&mut self, native_window: *mut c_void, w: i32, h: i32, scale: i32) {
+    pub fn replace_native_window(&mut self, native_window: *mut c_void, w: i32, h: i32, scale: OutputScale) {
         self.egl_surface = None;
         if !self.native_window.is_null() {
             unsafe { ndk_sys::ANativeWindow_release(self.native_window as *mut _) };
         }
         self.native_window = native_window;
         self.physical_size = Size::from((w, h));
-        self.logical_size = (w / scale, h / scale);
+        self.logical_size = scale.logical_size(w, h);
     }
 
     /// Forget the Surface (Activity backgrounded / surface destroyed).
@@ -106,9 +108,9 @@ impl OutputHost {
         }
     }
 
-    pub fn update_size(&mut self, w: i32, h: i32, scale: i32) {
+    pub fn update_size(&mut self, w: i32, h: i32, scale: OutputScale) {
         self.physical_size = Size::from((w, h));
-        self.logical_size = (w / scale, h / scale);
+        self.logical_size = scale.logical_size(w, h);
     }
 }
 

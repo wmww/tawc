@@ -223,8 +223,7 @@ pub fn run(
     // --- Source 3: Touch input channel ---
     // Receives touch events from the Android UI thread via JNI, tagged
     // with the activity_id of the SurfaceView that produced them.
-    // Coordinates arrive in physical pixels; we convert to logical
-    // (/ scale).
+    // Coordinates arrive in physical pixels; we convert to logical.
     //
     // Focus picks the first alive toplevel assigned to the touch's host —
     // each Android task only has its own toplevels in the recents card,
@@ -249,13 +248,13 @@ pub fn run(
             | TouchEvent::Up { activity_id, .. } => activity_id.clone(),
         };
 
-        let touch_scale = data.output_scale as f64;
+        let touch_scale = data.output_scale;
         let serial = SERIAL_COUNTER.next_serial();
 
         match evt {
             TouchEvent::Down { id, x, y, time, .. } => {
                 let location: Point<f64, smithay::utils::Logical> =
-                    (x as f64 / touch_scale, y as f64 / touch_scale).into();
+                    (touch_scale.logical_coord(x as f64), touch_scale.logical_coord(y as f64)).into();
                 let focus = touch_focus_at(data, &activity_id, location);
                 // Finalize any active preedit *before* the touch reaches the
                 // client. Wayland text-input-v3 has no way to insert text at
@@ -294,7 +293,7 @@ pub fn run(
             }
             TouchEvent::Motion { id, x, y, time, .. } => {
                 let location: Point<f64, smithay::utils::Logical> =
-                    (x as f64 / touch_scale, y as f64 / touch_scale).into();
+                    (touch_scale.logical_coord(x as f64), touch_scale.logical_coord(y as f64)).into();
                 let focus = touch_focus_at(data, &activity_id, location);
                 touch.motion(
                     data,
@@ -650,11 +649,11 @@ fn handle_surface_event(data: &mut TawcState, evt: SurfaceEvent) {
             // Update primary-output mode + the cached logical_size that
             // configure events use. Phase 0/1 advertises only one
             // wl_output, so we just track the first/most recent host.
-            data.output_logical_size = (width / scale, height / scale);
+            data.output_logical_size = scale.logical_size(width, height);
             data.output.change_current_state(
                 Some(smithay::output::Mode { size: (width, height).into(), refresh: 60_000 }),
                 Some(smithay::utils::Transform::Normal),
-                Some(smithay::output::Scale::Integer(scale)),
+                Some(scale.smithay_scale()),
                 Some((0, 0).into()),
             );
             data.output.set_preferred(smithay::output::Mode { size: (width, height).into(), refresh: 60_000 });
@@ -676,7 +675,7 @@ fn handle_surface_event(data: &mut TawcState, evt: SurfaceEvent) {
                 info!("SurfaceChanged for unknown host {}", activity_id);
                 return;
             }
-            data.output_logical_size = (width / scale, height / scale);
+            data.output_logical_size = scale.logical_size(width, height);
             data.output.change_current_state(
                 Some(smithay::output::Mode { size: (width, height).into(), refresh: 60_000 }),
                 None, None, None,

@@ -44,28 +44,30 @@ the focused `SurfaceView`, so tests avoid hard-coded screen coordinates while
 still exercising `CompositorActivity`'s MotionEvent-to-JNI dispatch.
 Coordinates are in screen pixels (same space as `screencap`). The app uses immersive
 fullscreen, so screen coordinates map 1:1 to SurfaceView coordinates. The compositor
-divides by the scale factor (2) to get Wayland logical coordinates.
+divides by the current output scale to get Wayland logical coordinates.
 
 **Debug loop:**
 1. Screenshot: `adb shell screencap -p /data/local/tmp/tawc-dev/screenshot.png && adb pull /data/local/tmp/tawc-dev/screenshot.png /tmp/screenshot.png`
-2. Identify target element's pixel coordinates in the 1080x2400 image
+2. Identify target element's pixel coordinates in the screenshot
 3. Tap: `adb shell input tap X Y`
 4. Screenshot again to see result
 5. Clean up: `adb shell rm /data/local/tmp/tawc-dev/screenshot.png && rm /tmp/screenshot.png`
 
-Be precise -- at 2x scale, UI elements are small in physical pixels. The Firefox tab
+Be precise -- after output scaling, UI elements are small in physical pixels. The Firefox tab
 close "X" and toolbar hamburger are only ~50-60px apart.
 
-**Keyboard key coordinates** (Gboard QWERTY layout on 1080x2400 screen):
-When the Android OSK is visible, the keyboard rows are approximately at:
-- QWERTY row: y ≈ 1775
-- ASDFGH row: y ≈ 1875  
-- ZXCVBN row: y ≈ 1975
-- Bottom row (?123, space, period, enter): y ≈ 2200
-Each QWERTY key is ~108px wide (1080/10). ASDFGH keys are ~120px wide (offset from QWERTY).
-ZXCVBN keys start after a wider shift key (~160px).
+**Keyboard key coordinates:** derive these from the current screenshot. When
+the Android OSK is visible, identify the row centers directly from the captured
+image.
+Each QWERTY key is roughly `screen_width / 10` wide. ASDFGH keys are wider
+and offset from QWERTY; ZXCVBN keys start after a wider shift key.
 
-**Firefox UI element positions** (2x scale, 540x1200 logical):
+**Firefox UI element positions:** derive these from the current screenshot
+and output scale. Do not treat these as stable across devices or scale
+settings:
 - Tab bar: logical y ≈ 0-20
-- URL/address bar: logical y ≈ 40-70 (physical y ≈ 80-140)
+- URL/address bar: logical y ≈ 40-70
 - Content area starts at logical y ≈ 80
+
+Convert logical coordinates to physical tap coordinates with
+`physical = logical * current_output_scale`, then verify against the screenshot.

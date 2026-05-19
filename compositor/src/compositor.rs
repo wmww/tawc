@@ -27,6 +27,10 @@ use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self, CompositorClientState, CompositorHandler, CompositorState,
 };
+use smithay::wayland::fractional_scale::{
+    self, FractionalScaleHandler, FractionalScaleManagerState,
+};
+use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::selection::data_device::{
     DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
@@ -36,7 +40,6 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
-use smithay::wayland::output::OutputHandler;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xwayland_shell::XWaylandShellState;
@@ -45,6 +48,7 @@ use smithay::xwayland::{X11Surface, X11Wm, XWaylandClientData};
 use crate::host::{ActivityId, OutputHost};
 use crate::protocol::android_wlegl::server::android_wlegl::AndroidWlegl;
 use crate::protocol::tawc_gfxstream::server::tawc_gfxstream::TawcGfxstream;
+use crate::scale::OutputScale;
 use crate::text_input::TextInputState;
 use crate::wlegl;
 use wayland_protocols::wp::text_input::zv3::server::zwp_text_input_manager_v3::ZwpTextInputManagerV3;
@@ -106,11 +110,19 @@ pub struct TawcState {
     pub compositor_state: CompositorState,
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
+    // Held to keep the xdg-output manager global registered for the
+    // display lifetime; Smithay's delegate macro reaches it through the
+    // `OutputHandler` impl.
+    #[allow(dead_code)]
+    pub output_manager_state: OutputManagerState,
     // Held to keep the zxdg_decoration_manager_v1 global registered for the
     // life of the display; smithay's delegate macro reaches it via the
     // `XdgDecorationHandler` impl, never through this field.
     #[allow(dead_code)]
     pub xdg_decoration_state: XdgDecorationState,
+    // Held to keep wp_fractional_scale_manager_v1 registered.
+    #[allow(dead_code)]
+    pub fractional_scale_manager_state: FractionalScaleManagerState,
     pub data_device_state: DataDeviceState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
@@ -128,7 +140,7 @@ pub struct TawcState {
 
     /// Output scale factor (physical pixels per logical pixel). Canonical source
     /// of truth — lib.rs sets this at startup and render.rs reads it back.
-    pub output_scale: i32,
+    pub output_scale: OutputScale,
 
     /// Logical output size (physical pixels / scale), used to configure toplevels.
     /// Tracks the primary display's geometry; per-host sizing is handled by
@@ -223,7 +235,7 @@ pub struct TawcState {
 impl TawcState {
     pub fn new(
         display: &mut Display<Self>,
-        output_scale: i32,
+        output_scale: OutputScale,
         output_logical_size: (i32, i32),
         render: crate::render::RenderState,
         output: smithay::output::Output,
@@ -231,11 +243,13 @@ impl TawcState {
         let dh = display.handle();
 
         // v6 so we can send wl_surface.preferred_buffer_scale per surface
-        // (done from `new_surface`). GTK4 ≥ 4.18 needs that signal to
-        // allocate HiDPI buffers — see notes/rendering.md.
+        // as the integer fallback. Clients that support fractional scaling
+        // get the real value through wp_fractional_scale_v1.
         let compositor_state = CompositorState::new_v6::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, []);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         // wp_viewporter lets clients set a logical destination size separate
@@ -243,7 +257,7 @@ impl TawcState {
         // buffers with buffer_scale=1 and uses viewport.set_destination to
         // tell the compositor the surface's logical size; without
         // viewporter, Firefox falls back to a path that ends up oversizing
-        // the surface on a 2x output. The returned `ViewporterState` has no
+        // the surface on a scaled output. The returned `ViewporterState` has no
         // Drop impl — the global lives for the lifetime of the Display.
         ViewporterState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
@@ -294,7 +308,9 @@ impl TawcState {
             compositor_state,
             shm_state,
             xdg_shell_state,
+            output_manager_state,
             xdg_decoration_state,
+            fractional_scale_manager_state,
             data_device_state,
             seat_state,
             seat,
@@ -344,6 +360,25 @@ impl TawcState {
             keyboard.set_focus(self, target_owned, serial);
         }
         self.text_input_state.update_focus(target);
+    }
+
+    /// Advertise the current scale to one surface through both scale paths:
+    /// the integer wl_surface v6 fallback and the fractional-scale protocol.
+    /// Runtime scale changes can reuse this over every live surface before
+    /// reconfiguring toplevels.
+    pub fn send_surface_scale(&self, surface: &WlSurface) {
+        let scale = self.output_scale;
+        compositor::with_states(surface, |data| {
+            compositor::send_surface_state(
+                surface,
+                data,
+                scale.integer_fallback(),
+                smithay::utils::Transform::Normal,
+            );
+            fractional_scale::with_fractional_scale(data, |fractional| {
+                fractional.set_preferred_scale(scale.fractional());
+            });
+        });
     }
 
     /// Outcome of a host assignment: the host the toplevel ends up on,
@@ -425,12 +460,11 @@ impl CompositorHandler for TawcState {
     }
 
     fn new_surface(&mut self, surface: &WlSurface) {
-        // Send preferred_buffer_scale up front so HiDPI clients commit at
-        // native size from the first frame. No-op on pre-v6 surfaces.
-        let scale = self.output_scale;
-        compositor::with_states(surface, |data| {
-            compositor::send_surface_state(surface, data, scale, smithay::utils::Transform::Normal);
-        });
+        // Send scale up front so HiDPI clients commit at native size from
+        // the first frame. Fractional-aware clients use
+        // wp_fractional_scale_v1; integer-only clients use the rounded-up
+        // wl_surface.preferred_buffer_scale fallback.
+        self.send_surface_scale(surface);
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -546,11 +580,9 @@ impl XdgShellHandler for TawcState {
             // Send xdg_toplevel.configure_bounds so clients that ignore
             // Maximized still cap their natural size to the screen. GTK4
             // 4.18 widget-factory ignores Maximized and produces a
-            // 1369x1200 buffer (gtk4-widget-factory's natural width) on a
-            // 540x1200 logical screen, ending up rendered as a 2738x2400
-            // physical surface most of which is off-screen — symptom is
-            // a "blank" window. Sending bounds tells GTK4 the maximum
-            // size it should pick.
+            // buffer wider than the logical screen, ending up rendered as a
+            // physical surface mostly off-screen — symptom is a "blank"
+            // window. Sending bounds tells GTK4 the maximum size it should pick.
             state.bounds = Some((w, h).into());
         });
         surface.send_configure();
@@ -615,6 +647,12 @@ impl XdgShellHandler for TawcState {
 }
 
 impl OutputHandler for TawcState {}
+
+impl FractionalScaleHandler for TawcState {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        self.send_surface_scale(&surface);
+    }
+}
 
 impl XdgDecorationHandler for TawcState {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {

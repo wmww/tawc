@@ -244,7 +244,7 @@ pub fn ic_send_key_event(keycode: u32) -> io::Result<Output> {
 /// Send a tap at physical screen coordinates (x, y) via the OS-level
 /// `input tap` command. Real touch event from the SurfaceView's
 /// perspective — same path a finger on the screen takes. The compositor
-/// divides by touch_scale (2) to get logical coordinates.
+/// divides by the current output scale to get logical coordinates.
 pub fn input_tap(x: u32, y: u32) -> io::Result<Output> {
     shell(&format!("input tap {} {}", x, y))
 }
