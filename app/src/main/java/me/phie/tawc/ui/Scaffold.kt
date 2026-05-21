@@ -2,10 +2,13 @@ package me.phie.tawc.ui
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
@@ -48,6 +51,7 @@ private fun AppCompatActivity.buildScreenInternal(title: CharSequence, withUp: B
         orientation = LinearLayout.VERTICAL
         layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
     }
+    root.applySystemBarPadding()
 
     val toolbar = MaterialToolbar(this).apply {
         this.title = title
@@ -69,6 +73,15 @@ private fun AppCompatActivity.buildScreenInternal(title: CharSequence, withUp: B
     root.addView(content, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
 
     return Scaffold(root, toolbar, content)
+}
+
+private fun View.applySystemBarPadding() {
+    ViewCompat.setOnApplyWindowInsetsListener(this) { view, insets ->
+        val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+        view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+        insets
+    }
+    ViewCompat.requestApplyInsets(this)
 }
 
 // MaterialButton's default fully-rounded "pill" looks slick but reads

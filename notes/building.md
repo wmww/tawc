@@ -40,7 +40,7 @@ and launch as documented in AGENTS.md's Common Commands.
 | Rust glibc targets (`build-mesa-gfxstream.sh` cross-builds Mesa's gfxstream-vk Rust pieces) | `rustup target add aarch64-unknown-linux-gnu` (and `rustup target add x86_64-unknown-linux-gnu` for the emulator bridge) | same |
 | `bindgen` (Mesa's gfxstream-vk meson Rust bindings) | `cargo install bindgen-cli` | same |
 | Cargo NDK (cargo subcommand — `cargo build` will fail with `error: no such command: ndk` if missing) | `cargo install cargo-ndk` | same |
-| Android SDK + NDK | install Android Studio, or use `sdkmanager` directly. NDK version pinned in `app/build.gradle.kts` (currently 27.2.12479018). | same |
+| Android SDK + NDK | install Android Studio, or use `sdkmanager` directly. Android platform API 36 is required by `compileSdk`; NDK version pinned in `app/build.gradle.kts` (currently 27.2.12479018). | same |
 | Build basics | `base-devel`                                        | `build-essential pkg-config curl libarchive-tools`   |
 | Meson + Ninja (libxkbcommon) | `meson ninja`                            | `meson ninja-build`                                  |
 | Wayland host tools (libhybris cross-build) | `wayland wayland-protocols` | `libwayland-dev wayland-protocols`                   |

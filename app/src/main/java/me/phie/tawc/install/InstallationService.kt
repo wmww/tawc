@@ -1,11 +1,14 @@
 package me.phie.tawc.install
 
+import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -187,7 +190,7 @@ class InstallationService : Service() {
         val (notifId, notif) = OperationsNotificationCenter.placeholderForegroundFor(
             applicationContext, anchorOpId, anchorTitle,
         )
-        startForeground(notifId, notif)
+        startDataSyncForeground(notifId, notif)
 
         when (intent?.action) {
             ACTION_INSTALL -> startInstall(
@@ -210,6 +213,20 @@ class InstallationService : Service() {
     override fun onDestroy() {
         scope.cancel()
         super.onDestroy()
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        val state = currentJob
+        if (state != null) {
+            val msg = "foreground service timed out; cancelling ${state.kind.name.lowercase()} '${state.id}'"
+            Log.e(TAG, msg)
+            appendLog(msg)
+            scope.launch { runCancelKillScript(state.id) }
+            state.job.cancel(CancellationException("foreground service timed out"))
+        } else {
+            Log.e(TAG, "foreground service timed out with no active job")
+        }
+        stopSelf(startId)
     }
 
     /** The kind of the in-flight job, or `null` if idle. UI uses this to dispatch cancel taps. */
@@ -332,7 +349,7 @@ class InstallationService : Service() {
         // the registry-watcher's first progress emit immediately
         // updates the visible notification with proper PendingIntents.
         val (notifId, notif) = OperationsNotificationCenter.fgsAnchorFor(op.id)
-        startForeground(notifId, notif)
+        startDataSyncForeground(notifId, notif)
         val job = scope.launch {
             val installer = Installer(
                 applicationContext, store, BootstrapCache(applicationContext),
@@ -407,7 +424,7 @@ class InstallationService : Service() {
         )
         OperationsRegistry.register(op)
         val (notifId, notif) = OperationsNotificationCenter.fgsAnchorFor(op.id)
-        startForeground(notifId, notif)
+        startDataSyncForeground(notifId, notif)
         val job = scope.launch {
             val installer = Installer(
                 applicationContext, store, BootstrapCache(applicationContext),
@@ -509,7 +526,7 @@ class InstallationService : Service() {
             val (bridgeNotifId, bridgeNotif) = OperationsNotificationCenter.placeholderForegroundFor(
                 applicationContext, "uninstall:$id", "Uninstall $id", "Cancelling install: cleaning up…",
             )
-            startForeground(bridgeNotifId, bridgeNotif)
+            startDataSyncForeground(bridgeNotifId, bridgeNotif)
             pendingFollowupUninstallId = null
             installCancelTailUninstallId = id
             startUninstall(id)
@@ -713,6 +730,15 @@ class InstallationService : Service() {
             kotlinx.coroutines.delay(TRANSIENT_REJECT_HOLD_MS)
             OperationsRegistry.unregister(opId)
         }
+    }
+
+    private fun startDataSyncForeground(notifId: Int, notif: Notification) {
+        ServiceCompat.startForeground(
+            this,
+            notifId,
+            notif,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
     }
 
     /** See [rejectAsTransientOp]; load-bearing for the broker mirror. */

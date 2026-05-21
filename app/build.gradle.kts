@@ -48,13 +48,13 @@ val libhybrisZinkEnabled: Boolean = "libhybris-zink" in enabledGraphics
 
 android {
     namespace = "me.phie.tawc"
-    compileSdk = 34
+    compileSdk = 36
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "me.phie.tawc"
         minSdk = 29
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
     }

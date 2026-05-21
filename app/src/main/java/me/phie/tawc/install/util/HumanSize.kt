@@ -1,5 +1,7 @@
 package me.phie.tawc.install.util
 
+import java.util.Locale
+
 /**
  * Format a byte count as a short human-readable string (`"1.2 MiB"`,
  * `"512 B"`). Used by download progress messages.
@@ -11,6 +13,6 @@ object HumanSize {
         var v = bytes / 1024.0
         var i = 0
         while (v >= 1024 && i < units.size - 1) { v /= 1024; i++ }
-        return String.format("%.1f %s", v, units[i])
+        return String.format(Locale.US, "%.1f %s", v, units[i])
     }
 }

@@ -530,7 +530,7 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
      * Extract the kernel pid of [proc]. `Process.pid()` is the public
      * Java 9+ API but it isn't exposed at the Android API surface we
      * compile against (verified: `proc.pid()` doesn't resolve on
-     * compileSdk=34 / minSdk=29). The underlying `ProcessImpl` /
+     * compileSdk=36 / minSdk=29). The underlying `ProcessImpl` /
      * `UNIXProcess` carries a `pid` int field we can pluck off via
      * reflection. Returns -1 on any failure.
      */

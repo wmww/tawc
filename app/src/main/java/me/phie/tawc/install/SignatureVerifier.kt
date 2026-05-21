@@ -21,6 +21,7 @@ import java.io.InterruptedIOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import me.phie.tawc.R
 
 /**
  * Detached-PGP-signature verification for downloaded bootstrap tarballs.
@@ -338,7 +339,10 @@ object SignatureVerifier {
     }
 
     private fun loadKeyRing(context: Context, resourceName: String): PGPPublicKeyRingCollection {
-        val resId = context.resources.getIdentifier(resourceName, "raw", context.packageName)
+        val resId = when (resourceName) {
+            "arch_signing_key" -> R.raw.arch_signing_key
+            else -> 0
+        }
         if (resId == 0) {
             throw IOException("Missing PGP key resource: res/raw/$resourceName")
         }

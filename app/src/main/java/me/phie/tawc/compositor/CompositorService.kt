@@ -8,12 +8,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Point
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.system.Os
 import android.util.Log
 import android.view.WindowManager
+import androidx.core.app.ServiceCompat
 import java.io.File
 import java.lang.ref.WeakReference
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
@@ -51,15 +53,17 @@ class CompositorService : Service() {
         // none of the standard types (mediaPlayback, dataSync, etc.) match
         // a desktop compositor. The app declares the corresponding
         // PROPERTY_SPECIAL_USE_FGS_SUBTYPE in the manifest.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            )
+        val foregroundType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         } else {
-            startForeground(NOTIFICATION_ID, buildNotification())
+            0
         }
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(),
+            foregroundType,
+        )
 
         // xkbcommon's keymap lookup happens during compositor startup and
         // dereferences a NULL keymap if XKB_CONFIG_ROOT is missing — extract
@@ -194,8 +198,16 @@ class CompositorService : Service() {
      *  configure correctly; refined on the first nativeRegister. */
     private fun currentDisplaySize(): Pair<Int, Int> {
         val wm = getSystemService(WindowManager::class.java) ?: return 0 to 0
-        val bounds = wm.maximumWindowMetrics.bounds
-        return bounds.width() to bounds.height()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = wm.maximumWindowMetrics.bounds
+            return bounds.width() to bounds.height()
+        }
+        @Suppress("DEPRECATION")
+        val display = wm.defaultDisplay ?: return 0 to 0
+        val size = Point()
+        @Suppress("DEPRECATION")
+        display.getRealSize(size)
+        return size.x to size.y
     }
 
     private fun ensureXkbDataExtracted() {

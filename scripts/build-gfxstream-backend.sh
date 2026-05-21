@@ -49,8 +49,9 @@ ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 NDK_DIR="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)"
 [ -d "$NDK_DIR" ] || { echo "ERROR: no NDK at $ANDROID_HOME/ndk/*"; exit 1; }
 NDK_BIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
-# API 28 is the floor for our app (compileSdk in app/build.gradle.kts);
-# need ≥ 26 for AHardwareBuffer_*, ≥ 28 for vkGetMemoryAndroidHardwareBufferANDROID.
+# API 28 is the native floor for this backend; the app minSdk is higher
+# but this keeps the backend's direct NDK symbol requirements explicit.
+# Need ≥ 26 for AHardwareBuffer_*, ≥ 28 for vkGetMemoryAndroidHardwareBufferANDROID.
 API=28
 
 for tool in meson ninja pkg-config; do
