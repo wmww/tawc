@@ -346,6 +346,32 @@ pub fn get_output_scale() -> io::Result<f32> {
         .map_err(|e| io::Error::other(format!("parse output scale: {e}; stdout={stdout:?}")))
 }
 
+/// Dynamically toggle the contained GTK3 broken menus workaround through
+/// the same broker action used by Settings.
+pub fn set_gtk3_broken_menus_workaround(enabled: bool) -> io::Result<Output> {
+    let enabled = if enabled { "true" } else { "false" };
+    broker_action("set-gtk3-broken-menus-workaround", &[("enabled", enabled)])
+}
+
+/// Read the persisted GTK3 broken menus workaround setting.
+pub fn get_gtk3_broken_menus_workaround() -> io::Result<bool> {
+    let output = broker_action("get-gtk3-broken-menus-workaround", &[])?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "get-gtk3-broken-menus-workaround failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match stdout.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(io::Error::other(format!(
+            "parse gtk3 broken menus workaround: stdout={other:?}"
+        ))),
+    }
+}
+
 // Common Android keycodes (used with [ic_send_key_event]).
 pub const KEYCODE_DEL: u32 = 67; // Backspace
 pub const KEYCODE_FORWARD_DEL: u32 = 112; // Delete (forward delete)

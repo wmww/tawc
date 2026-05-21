@@ -161,6 +161,14 @@ pub struct TawcState {
     /// to keep popup-grab bookkeeping in sync with `popup_done`.
     pub active_popup_grab: Option<PopupGrab<Self>>,
 
+    /// GTK3 broken menus workaround.
+    ///
+    /// This deliberately contained compatibility path exposes a wl_pointer
+    /// and briefly enters/leaves each new toplevel so GTK3 initializes its
+    /// cold pointer-crossing state before touchscreen menubar taps. See
+    /// notes/gtk3-broken-menus-workaround.md.
+    pub gtk3_broken_menus_workaround_enabled: bool,
+
     /// Output scale factor (physical pixels per logical pixel). Canonical source
     /// of truth — lib.rs sets this at startup and render.rs reads it back.
     pub output_scale: OutputScale,
@@ -269,6 +277,7 @@ impl TawcState {
         output_scale: OutputScale,
         output_logical_size: (i32, i32),
         output_physical_size: (i32, i32),
+        gtk3_broken_menus_workaround_enabled: bool,
         render: crate::render::RenderState,
         output: smithay::output::Output,
     ) -> Self {
@@ -326,6 +335,12 @@ impl TawcState {
         seat.add_keyboard(XkbConfig::default(), 200, 25)
             .expect("Failed to add keyboard to seat");
         seat.add_touch();
+        // GTK3 broken menus workaround: when enabled, expose a pointer so
+        // the isolated workaround helper can briefly enter/leave each new
+        // toplevel and prime GTK3's crossing state.
+        if gtk3_broken_menus_workaround_enabled {
+            seat.add_pointer();
+        }
 
         dh.create_global::<Self, AndroidWlegl, ()>(2, ());
         dh.create_global::<Self, ZwpTextInputManagerV3, ()>(1, ());
@@ -355,6 +370,7 @@ impl TawcState {
             toplevels: Vec::new(),
             popup_manager: PopupManager::default(),
             active_popup_grab: None,
+            gtk3_broken_menus_workaround_enabled,
             output_scale,
             output_logical_size,
             output_physical_size,
@@ -673,6 +689,7 @@ impl XdgShellHandler for TawcState {
         });
         set_toplevel_fullscreen_state(&surface, fullscreen, None);
         surface.send_configure();
+        crate::gtk3_menus_workaround::prime_toplevel(self, surface.wl_surface(), w, h);
 
         // Move input focus to the new toplevel only if its host is
         // currently in the foreground. Otherwise the FocusChanged event

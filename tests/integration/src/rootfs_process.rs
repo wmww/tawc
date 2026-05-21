@@ -1,5 +1,5 @@
 use std::io;
-use std::process::ChildStdout;
+use std::process::{ChildStderr, ChildStdout};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -135,6 +135,11 @@ impl RootfsProcess {
     /// Take stdout from the underlying adb process (can only be called once).
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.child.stdout.take()
+    }
+
+    /// Take stderr from the underlying adb process (can only be called once).
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
     }
 
     /// Check if the chroot process is still running by probing /proc/PID.

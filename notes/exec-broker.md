@@ -317,6 +317,8 @@ before any client connection arrives.
 | `get-graphics-backend` | SettingsActions | Print the current backend key on stdout. |
 | `set-output-scale` (`value`) | SettingsActions | Snap to the 0.25x grid, persist `Settings.outputScale`, and push the live compositor output scale. Integration tests restore the previous value after use. |
 | `get-output-scale` | SettingsActions | Print the persisted output scale. |
+| `set-gtk3-broken-menus-workaround` (`enabled`) | SettingsActions | Persist and push the live GTK3 broken menus workaround toggle. Accepts `true` or `false`. |
+| `get-gtk3-broken-menus-workaround` | SettingsActions | Print the persisted GTK3 broken menus workaround setting. |
 
 **Rule for input actions: every driver goes through `TawcInputConnection`.**
 There is intentionally no broker action that calls `NativeBridge.native*`

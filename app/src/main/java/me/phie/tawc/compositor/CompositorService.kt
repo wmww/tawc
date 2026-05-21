@@ -108,7 +108,12 @@ class CompositorService : Service() {
         // when the Activity finally registers — Vulkan WSI doesn't recover
         // from that and the cube hangs after committing two buffers.
         val (w, h) = currentDisplaySize()
-        NativeBridge.nativeStartCompositor(w, h, me.phie.tawc.Settings.outputScale)
+        NativeBridge.nativeStartCompositor(
+            w,
+            h,
+            me.phie.tawc.Settings.outputScale,
+            me.phie.tawc.Settings.gtk3BrokenMenusWorkaround,
+        )
         ClipboardBridge.syncCurrentTextToNative()
         // Push the saved render-time settings into the compositor. The
         // Rust side defaults match the Settings defaults, so this is
@@ -117,6 +122,7 @@ class CompositorService : Service() {
         // process restart with no extra control flow.
         NativeBridge.nativeSetTintBuffersByType(me.phie.tawc.Settings.tintBuffersByType)
         NativeBridge.nativeSetOutputScale(me.phie.tawc.Settings.outputScale)
+        NativeBridge.nativeSetGtk3BrokenMenusWorkaround(me.phie.tawc.Settings.gtk3BrokenMenusWorkaround)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

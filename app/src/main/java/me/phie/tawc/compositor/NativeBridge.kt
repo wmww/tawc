@@ -121,7 +121,12 @@ object NativeBridge {
      *  between the initial configure and the host registering would
      *  otherwise be told to resize after the fact, which Vulkan/vkcube
      *  doesn't recover from. */
-    external fun nativeStartCompositor(width: Int, height: Int, outputScale: Float)
+    external fun nativeStartCompositor(
+        width: Int,
+        height: Int,
+        outputScale: Float,
+        gtk3BrokenMenusWorkaround: Boolean,
+    )
 
     /** Stop the Rust compositor thread. Called when the Service is destroyed. */
     external fun nativeStopCompositor()
@@ -214,6 +219,9 @@ object NativeBridge {
     /** Update the compositor output scale live. The compositor propagates
      *  this through wl_output, fractional-scale, and xdg configure events. */
     external fun nativeSetOutputScale(scale: Float)
+
+    /** Toggle the contained GTK3 broken menubar workaround. */
+    external fun nativeSetGtk3BrokenMenusWorkaround(enabled: Boolean)
 
     /** Forward Android ClipboardManager text changes into the compositor. */
     external fun nativeOnAndroidClipboardText(text: String)

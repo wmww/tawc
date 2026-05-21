@@ -47,6 +47,10 @@ class SettingsActivity : AppCompatActivity() {
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
         scaffold.content.addView(
+            buildSectionCard("Compatibility", buildGtk3BrokenMenusWorkaroundCheckbox()),
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
+        )
+        scaffold.content.addView(
             buildOutputScaleCard(),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
@@ -112,6 +116,31 @@ class SettingsActivity : AppCompatActivity() {
                 NativeBridge.nativeSetTintBuffersByType(checked)
             }
         }
+    }
+
+    private fun buildGtk3BrokenMenusWorkaroundCheckbox(): android.view.View {
+        val cardPad = (12 * resources.displayMetrics.density).toInt()
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val checkbox = CheckBox(this).apply {
+            text = "GTK3 broken menus workaround"
+            textSize = 15f
+            isChecked = Settings.gtk3BrokenMenusWorkaround
+            setPadding(0, cardPad / 2, 0, cardPad / 4)
+            setOnCheckedChangeListener { _, checked ->
+                Settings.gtk3BrokenMenusWorkaround = checked
+                NativeBridge.nativeSetGtk3BrokenMenusWorkaround(checked)
+            }
+        }
+        val detail = TextView(this).apply {
+            text = "Spoof a pointer briefly entering each window, allows GTK3 menus to work correctly"
+            textSize = 13f
+            setPadding(cardPad / 2, 0, 0, cardPad / 2)
+        }
+        column.addView(checkbox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        column.addView(detail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        return column
     }
 
     private fun buildOutputScaleCard(): android.view.View {

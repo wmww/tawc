@@ -22,6 +22,7 @@ object Settings {
     private const val KEY_GRAPHICS_BACKEND = "graphics_backend"
     private const val KEY_TINT_BUFFERS_BY_TYPE = "tint_buffers_by_type"
     private const val KEY_OUTPUT_SCALE = "output_scale"
+    private const val KEY_GTK3_BROKEN_MENUS_WORKAROUND = "gtk3_broken_menus_workaround"
 
     const val MIN_OUTPUT_SCALE = 0.5f
     const val MAX_OUTPUT_SCALE = 4.0f
@@ -71,6 +72,18 @@ object Settings {
         get() = snapOutputScale(requirePrefs().getFloat(KEY_OUTPUT_SCALE, DEFAULT_OUTPUT_SCALE))
         set(value) {
             requirePrefs().edit().putFloat(KEY_OUTPUT_SCALE, snapOutputScale(value)).apply()
+        }
+
+    /**
+     * Workaround for GTK3 native Wayland menubars on touch-only seats. When
+     * enabled, the compositor exposes a wl_pointer and briefly enters/leaves
+     * each new toplevel at its center so GTK3 initializes its pointer crossing
+     * state before the first touch on a server-side-decorated menubar.
+     */
+    var gtk3BrokenMenusWorkaround: Boolean
+        get() = requirePrefs().getBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, true)
+        set(value) {
+            requirePrefs().edit().putBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, value).apply()
         }
 
     fun snapOutputScale(value: Float): Float {

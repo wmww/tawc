@@ -23,11 +23,13 @@ Touch events flow: Android `onTouchEvent` -> JNI `nativeOnTouchEvent` -> `calloo
   visible render-only child surfaces may use an empty input region, so the touch
   must fall through to the browser toplevel.
 - Multi-touch is supported: each Android pointer ID maps to a Smithay `TouchSlot`.
-- The seat should advertise only real input capabilities. Keyboard capability
-  is required for Firefox to enable text input (see text-input.md). Do not
-  spoof a Wayland pointer or synthesize `wl_pointer.enter`/motion from finger
-  taps just to satisfy toolkit assumptions; if real pointer hardware is added,
-  wire it as a real pointer path.
+- The seat normally advertises only real input capabilities. Keyboard
+  capability is required for Firefox to enable text input (see text-input.md).
+  The one explicit exception is the optional
+  [GTK3 broken menus workaround](gtk3-broken-menus-workaround.md), which
+  exposes a `wl_pointer` and sends a brief center enter/leave for new
+  toplevels. Do not expand that into a general touch-to-pointer path; if real
+  pointer hardware is added, wire it as real pointer input.
 - Touch-down moves both keyboard focus AND text-input-v3 focus to the target
   surface via `TawcState::set_input_focus` — they are conceptually one focus and
   splitting them invites drift. The focus update happens *before* delivering
@@ -37,9 +39,11 @@ Touch events flow: Android `onTouchEvent` -> JNI `nativeOnTouchEvent` -> `calloo
 
 **GTK3 touch handling note:** GTK3 handles `wl_touch` events natively — GtkGestureMultiPress
 processes `GDK_TOUCH_BEGIN` directly, and GDK's Wayland backend sets `emulating_pointer=TRUE`
-on the primary touch which synthesizes crossing events for child widget routing. No server-side
-touch-to-pointer emulation is needed. When debugging touch, check coordinates carefully — the
-GTK widget tree only routes events to children whose GdkWindow allocation contains the hit point.
+on the primary touch which synthesizes crossing events for child widget routing. The GTK3
+menubar workaround primes that cold crossing state with one synthetic pointer
+enter/leave per new toplevel; it does not convert touches into pointer clicks. When debugging
+touch, check coordinates carefully — the GTK widget tree only routes events to children whose
+GdkWindow allocation contains the hit point.
 
 ## Simulating Touch via adb
 

@@ -178,6 +178,8 @@ pub enum SurfaceEvent {
     FocusChanged { activity_id: ActivityId, has_focus: bool },
     /// Runtime output scale change from Settings / test broker.
     OutputScaleChanged { scale: f64 },
+    /// Runtime toggle for the contained GTK3 broken menubar workaround.
+    Gtk3BrokenMenusWorkaroundChanged { enabled: bool },
     /// Android-side fullscreen state changed outside an xdg request.
     FullscreenChanged { activity_id: ActivityId, fullscreen: bool },
 }

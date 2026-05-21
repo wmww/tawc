@@ -21,6 +21,8 @@ import me.phie.tawc.compositor.NativeBridge
  * | `get-graphics-backend` | — | prints current backend key on stdout |
  * | `set-output-scale` | `value` ∈ 0.5..4.0, snapped to 0.25 | persist and push live compositor scale |
  * | `get-output-scale` | — | prints current output scale |
+ * | `set-gtk3-broken-menus-workaround` | `enabled` ∈ true|false | persist and push live workaround toggle |
+ * | `get-gtk3-broken-menus-workaround` | — | prints true/false |
  */
 internal object SettingsActions {
 
@@ -31,6 +33,8 @@ internal object SettingsActions {
         ActionRegistry.register("get-graphics-backend", GetGraphicsBackendAction)
         ActionRegistry.register("set-output-scale", SetOutputScaleAction)
         ActionRegistry.register("get-output-scale", GetOutputScaleAction)
+        ActionRegistry.register("set-gtk3-broken-menus-workaround", SetGtk3BrokenMenusWorkaroundAction)
+        ActionRegistry.register("get-gtk3-broken-menus-workaround", GetGtk3BrokenMenusWorkaroundAction)
     }
 
     private object SetGraphicsBackendAction : BrokerAction {
@@ -73,6 +77,27 @@ internal object SettingsActions {
     private object GetOutputScaleAction : BrokerAction {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
             ctx.out(String.format(java.util.Locale.US, "%.2f", Settings.outputScale))
+            return 0
+        }
+    }
+
+    private object SetGtk3BrokenMenusWorkaroundAction : BrokerAction {
+        override fun run(args: Map<String, String>, ctx: ActionContext): Int {
+            val raw = args["enabled"] ?: args["value"]
+                ?: return ctx.fail("set-gtk3-broken-menus-workaround: --arg enabled=true|false required")
+            val enabled = raw.toBooleanStrictOrNull()
+                ?: return ctx.fail("set-gtk3-broken-menus-workaround: invalid boolean '$raw'")
+            Settings.gtk3BrokenMenusWorkaround = enabled
+            NativeBridge.nativeSetGtk3BrokenMenusWorkaround(enabled)
+            Log.i(TAG, "set-gtk3-broken-menus-workaround: $enabled")
+            ctx.out(enabled.toString())
+            return 0
+        }
+    }
+
+    private object GetGtk3BrokenMenusWorkaroundAction : BrokerAction {
+        override fun run(args: Map<String, String>, ctx: ActionContext): Int {
+            ctx.out(Settings.gtk3BrokenMenusWorkaround.toString())
             return 0
         }
     }

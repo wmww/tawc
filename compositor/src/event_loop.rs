@@ -933,6 +933,9 @@ fn handle_surface_event(data: &mut TawcState, evt: SurfaceEvent) {
         SurfaceEvent::OutputScaleChanged { scale } => {
             apply_output_scale(data, OutputScale::new(scale));
         }
+        SurfaceEvent::Gtk3BrokenMenusWorkaroundChanged { enabled } => {
+            crate::gtk3_menus_workaround::set_enabled(data, enabled);
+        }
         SurfaceEvent::FullscreenChanged { activity_id, fullscreen } => {
             data.set_host_fullscreen(&activity_id, fullscreen);
             data.needs_render = true;

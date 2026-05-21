@@ -18,6 +18,7 @@ mod ahb_export;
 mod bridge;
 mod egl_android;
 mod gfxstream_present;
+mod gtk3_menus_workaround;
 mod gl_import;
 mod host;
 mod protocol;
@@ -103,6 +104,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
     initial_width: jint,
     initial_height: jint,
     output_scale: f32,
+    gtk3_broken_menus_workaround: jboolean,
 ) {
     android_logger::init_once(
         android_logger::Config::default()
@@ -180,6 +182,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
 
     let initial_size = (initial_width.max(0), initial_height.max(0));
     let initial_scale = sanitize_output_scale(output_scale as f64).unwrap_or(DEFAULT_OUTPUT_SCALE);
+    let initial_gtk3_broken_menus_workaround = gtk3_broken_menus_workaround != 0;
     std::thread::spawn(move || {
         if let Err(e) = run_compositor(
             touch_channel,
@@ -189,6 +192,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
             state_query_channel,
             initial_size,
             initial_scale,
+            initial_gtk3_broken_menus_workaround,
         ) {
             log::error!("Compositor failed: {}", e);
         }
@@ -463,6 +467,17 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetOutput
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetGtk3BrokenMenusWorkaround(
+    _env: JNIEnv,
+    _class: JClass,
+    enabled: jboolean,
+) {
+    host::send_surface_event(SurfaceEvent::Gtk3BrokenMenusWorkaroundChanged {
+        enabled: enabled != 0,
+    });
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnAndroidClipboardText(
     mut env: JNIEnv,
     _class: JClass,
@@ -733,6 +748,7 @@ fn run_compositor(
     state_query_channel: smithay::reexports::calloop::channel::Channel<()>,
     initial_physical_size: (i32, i32),
     initial_scale: f64,
+    initial_gtk3_broken_menus_workaround: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // --- EGL context (no surface yet — first Activity provides one) ---
     let (raw_display, raw_config, raw_context) =
@@ -808,6 +824,7 @@ fn run_compositor(
         scale,
         initial_logical,
         (init_pw, init_ph),
+        initial_gtk3_broken_menus_workaround,
         render_state,
         output,
     );
