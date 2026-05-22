@@ -295,7 +295,10 @@ source even when distro sysroot packages lag.
 ### Xwayland (binary + libs → ships in APK as asset)
 
 Cross-built once. NDK clang against bionic — same toolchain as the
-Rust compositor. Aarch64-only.
+Rust compositor. Aarch64-only. APK builds include it by default when
+`arm64-v8a` is enabled; pass `-PtawcXwayland=false` to Gradle or
+`--no-xwayland` to `scripts/build-app.sh` / `scripts/app-build-install.sh`
+to skip building, packaging, extracting, and spawning it.
 
 ```bash
 scripts/build-xwayland.sh           # incremental
@@ -383,7 +386,8 @@ Invokes the Rust compositor build, copies its output into
 (when enabled) and tawcroot; builds the gfxstream host backend for each
 enabled ABI; builds/packs Mesa gfxstream-vk and optional Mesa-Zink
 assets; builds/packs libhybris for arm64; builds/packs Xwayland for
-arm64; then produces `app/build/outputs/apk/debug/app-debug.apk`.
+arm64 unless `--no-xwayland` is passed; then produces
+`app/build/outputs/apk/debug/app-debug.apk`.
 Everything the supported install/runtime paths need ships inside this
 APK.
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build, install, and optionally launch the debug APK.
 #
-# Usage: scripts/app-build-install.sh [--no-build] [--no-launch] [--force-install]
+# Usage: scripts/app-build-install.sh [--no-build] [--no-launch] [--force-install] [--xwayland|--no-xwayland]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,11 +13,13 @@ export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 DO_BUILD=1
 DO_LAUNCH=1
 FORCE_INSTALL=0
+BUILD_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --no-build)  DO_BUILD=0 ;;
         --no-launch) DO_LAUNCH=0 ;;
         --force-install) FORCE_INSTALL=1 ;;
+        --xwayland|--no-xwayland) BUILD_ARGS+=("$arg") ;;
         -h|--help)
             sed -n '2,/^set -/p' "$0" | sed 's/^# \?//;$d'
             exit 0
@@ -30,7 +32,7 @@ done
 source "$ROOT_DIR/scripts/lib/select-device.sh"
 
 if [ "$DO_BUILD" -eq 1 ]; then
-    "$ROOT_DIR/scripts/build-app.sh" --quiet
+    "$ROOT_DIR/scripts/build-app.sh" --quiet "${BUILD_ARGS[@]}"
 fi
 
 APK="$ROOT_DIR/app/build/outputs/apk/debug/app-debug.apk"

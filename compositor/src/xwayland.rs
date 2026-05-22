@@ -63,6 +63,14 @@ pub fn start_xwayland(
     handle: &smithay::reexports::calloop::LoopHandle<'static, TawcState>,
     state: &TawcState,
 ) {
+    if matches!(
+        std::env::var("TAWC_XWAYLAND_ENABLED").as_deref(),
+        Ok("0") | Ok("false") | Ok("FALSE")
+    ) {
+        info!("xwayland: disabled or unavailable; not spawning");
+        return;
+    }
+
     let handle_for_wm = handle.clone();
     // Make sure <appData>/share/xtmp/.X11-unix/ exists. Patched
     // smithay drops the listening socket here; bionic-built libxcb /

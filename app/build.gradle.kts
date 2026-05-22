@@ -46,6 +46,28 @@ run {
 }
 val libhybrisZinkEnabled: Boolean = "libhybris-zink" in enabledGraphics
 
+fun booleanProjectProperty(name: String, default: Boolean): Boolean {
+    val raw = project.findProperty(name) as String? ?: return default
+    return when (raw.trim().lowercase()) {
+        "1", "true", "yes", "on" -> true
+        "0", "false", "no", "off" -> false
+        else -> error("Invalid $name=$raw (expected true or false)")
+    }
+}
+
+// Build and package the bionic Xwayland server. Aarch64-only today
+// (x86_64 emulator builds have no matching Xwayland binary), and
+// overrideable for lean ARM builds with `-PtawcXwayland=false`.
+val xwaylandRequested: Boolean = booleanProjectProperty("tawcXwayland", true)
+
+// Build the Rust compositor for one or both Android ABIs and copy the
+// resulting .so into jniLibs/. Override the default by setting the
+// `tawcAbis` Gradle property: `-PtawcAbis=arm64-v8a` or
+// `-PtawcAbis=x86_64` or `-PtawcAbis=arm64-v8a,x86_64`.
+val tawcAbis: List<String> = (project.findProperty("tawcAbis") as String?
+    ?: "arm64-v8a").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+val xwaylandPackaged: Boolean = xwaylandRequested && "arm64-v8a" in tawcAbis
+
 android {
     namespace = "me.phie.tawc"
     compileSdk = 36
@@ -68,6 +90,7 @@ android {
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ZINK_ENABLED", "${"libhybris-zink" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_CPU_ENABLED",            "${"cpu" in enabledGraphics}")
+            buildConfigField("boolean", "XWAYLAND_ENABLED", "$xwaylandPackaged")
         }
         getByName("release") {
             isMinifyEnabled = false
@@ -83,6 +106,7 @@ android {
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ZINK_ENABLED", "${"libhybris-zink" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_CPU_ENABLED",            "${"cpu" in enabledGraphics}")
+            buildConfigField("boolean", "XWAYLAND_ENABLED", "$xwaylandPackaged")
         }
     }
 
@@ -98,6 +122,30 @@ android {
                 variant.packaging.jniLibs.excludes.addAll(
                     "**/libproot.so",
                     "**/libproot-loader.so",
+                )
+            }
+            if (!xwaylandPackaged) {
+                variant.packaging.jniLibs.excludes.addAll(
+                    "**/libxwayland.so",
+                    "**/libxkbcomp.so",
+                    "**/libX11-xcb.so",
+                    "**/libX11.so",
+                    "**/libXau.so",
+                    "**/libXfont2.so",
+                    "**/libdrm.so",
+                    "**/libffi.so",
+                    "**/libfontenc.so",
+                    "**/libfreetype.so",
+                    "**/libmd.so",
+                    "**/libpixman-1.so",
+                    "**/libwayland-client.so",
+                    "**/libwayland-cursor.so",
+                    "**/libwayland-egl.so",
+                    "**/libwayland-server.so",
+                    "**/libxcb*.so",
+                    "**/libxcvt.so",
+                    "**/libxkbfile.so",
+                    "**/libxshmfence.so",
                 )
             }
         }
@@ -143,6 +191,12 @@ android {
             pickFirsts.add("META-INF/versions/9/OSGI-INF/MANIFEST.MF")
         }
     }
+
+    if (!xwaylandPackaged) {
+        androidResources {
+            ignoreAssetsPatterns.add("xwayland")
+        }
+    }
 }
 
 dependencies {
@@ -170,13 +224,6 @@ dependencies {
     // destructive button styles. AppCompat is pulled in transitively.
     implementation("com.google.android.material:material:1.12.0")
 }
-
-// Build the Rust compositor for one or both Android ABIs and copy the
-// resulting .so into jniLibs/. Override the default by setting the
-// `tawcAbis` Gradle property: `-PtawcAbis=arm64-v8a` or
-// `-PtawcAbis=x86_64` or `-PtawcAbis=arm64-v8a,x86_64`.
-val tawcAbis: List<String> = (project.findProperty("tawcAbis") as String?
-    ?: "arm64-v8a").split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
 val rustTripleFor = mapOf(
     "arm64-v8a" to "aarch64-linux-android",
@@ -563,7 +610,7 @@ tawcAbis.forEach { abi ->
     }
 }
 
-if ("arm64-v8a" in tawcAbis) {
+if (xwaylandPackaged) {
     val tawcRoot = rootProject.projectDir
 
     // Cross-compile Xwayland (and its bionic-ported X11 / font / pixman

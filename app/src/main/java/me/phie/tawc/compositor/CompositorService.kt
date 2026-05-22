@@ -15,6 +15,7 @@ import android.os.SystemClock
 import android.system.Os
 import android.util.Log
 import androidx.core.app.ServiceCompat
+import me.phie.tawc.BuildConfig
 import java.io.File
 import java.lang.ref.WeakReference
 import kotlinx.coroutines.flow.StateFlow
@@ -96,11 +97,12 @@ class CompositorService : Service() {
         // symlinks pointing at the real binaries in nativeLibraryDir.
         // Only the XKB share tree (read by fopen via baked-in absolute
         // path) still needs runtime extraction.
-        ensureXwaylandExtracted(this)
+        val xwaylandAvailable = ensureXwaylandExtracted(this)
 
         // The Rust side adds nativeLibraryDir to LD_LIBRARY_PATH so
         // Xwayland's bionic linker finds its DT_NEEDED libs (libX11.so,
         // libxcb.so, …) alongside the binary in apk_data_file context.
+        Os.setenv("TAWC_XWAYLAND_ENABLED", if (xwaylandAvailable) "1" else "0", true)
         Os.setenv("TAWC_NATIVE_LIB_DIR", applicationInfo.nativeLibraryDir, true)
 
         // Hand the application context + service to NativeBridge so its
@@ -599,12 +601,27 @@ class CompositorService : Service() {
          *    tree, so we can't flatten them into jniLibs.
          *
          * Same versioned-stamp + staging-dir-then-rename pattern as
-         * [ensureLibhybrisExtracted]. Returns true on success or if no
-         * asset is shipped (eg. emulator x86_64 build) — Xwayland just
-         * won't spawn (X11 clients see :0 connection-refused) and
+         * [ensureLibhybrisExtracted]. Returns true only when the build
+         * config, native binaries, and asset tree are all present. Otherwise
+         * Xwayland won't spawn (X11 clients see :0 connection-refused) and
          * Wayland clients keep working.
          */
         fun ensureXwaylandExtracted(context: Context): Boolean = synchronized(XWAYLAND_EXTRACT_LOCK) {
+            if (!BuildConfig.XWAYLAND_ENABLED) {
+                clearXwaylandExtraction(context)
+                Log.i(TAG, "Xwayland disabled by build config; X11 clients will fail to connect")
+                return false
+            }
+
+            val nativeLibDir = context.applicationInfo.nativeLibraryDir
+            val nativeXwayland = File(nativeLibDir, "libxwayland.so")
+            val nativeXkbcomp = File(nativeLibDir, "libxkbcomp.so")
+            if (!nativeXwayland.exists() || !nativeXkbcomp.exists()) {
+                clearXwaylandExtraction(context)
+                Log.i(TAG, "No Xwayland native binaries shipped; X11 clients will fail to connect")
+                return false
+            }
+
             val assetPath = "xwayland/share.tar"
             val available = try {
                 context.assets.open(assetPath).close()
@@ -613,6 +630,7 @@ class CompositorService : Service() {
                 false
             }
             if (!available) {
+                clearXwaylandExtraction(context)
                 Log.i(TAG, "No Xwayland asset shipped; X11 clients will fail to connect")
                 return false
             }
@@ -657,15 +675,19 @@ class CompositorService : Service() {
             // PATH lookup in the compositor finds the symlink, execve(2)
             // follows to the real file, SELinux checks the *target's*
             // domain (apk_data_file) — allowed.
-            val nativeLibDir = context.applicationInfo.nativeLibraryDir
             val binDir = File(stagingDir, "bin").apply { mkdirs() }
-            Os.symlink("$nativeLibDir/libxwayland.so", File(binDir, "Xwayland").absolutePath)
-            Os.symlink("$nativeLibDir/libxkbcomp.so", File(binDir, "xkbcomp").absolutePath)
+            Os.symlink(nativeXwayland.absolutePath, File(binDir, "Xwayland").absolutePath)
+            Os.symlink(nativeXkbcomp.absolutePath, File(binDir, "xkbcomp").absolutePath)
 
             atomicReplaceDir(stagingDir, destDir)
             File(destDir, ".version").writeText(currentStamp)
             Log.i(TAG, "Staged Xwayland under $destDir (binaries -> $nativeLibDir)")
             return true
+        }
+
+        private fun clearXwaylandExtraction(context: Context) {
+            File(context.filesDir, "xwayland").deleteRecursively()
+            File(context.filesDir, "xwayland.new").deleteRecursively()
         }
     }
 }
