@@ -182,6 +182,8 @@ pub enum SurfaceEvent {
     Gtk3BrokenMenusWorkaroundChanged { enabled: bool },
     /// Android-side fullscreen state changed outside an xdg request.
     FullscreenChanged { activity_id: ActivityId, fullscreen: bool },
+    /// Android Back was pressed while this host's Activity was active.
+    BackPressed { activity_id: ActivityId },
 }
 
 // SAFETY: `native_window` is stored as `usize` to keep `SurfaceEvent: Send`;

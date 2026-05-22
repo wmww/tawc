@@ -35,7 +35,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 
 ## Input And Apps
 
-- [input.md](input.md) - touch input architecture.
+- [input.md](input.md) - touch input and Android Back behavior.
 - [gtk3-broken-menus-workaround.md](gtk3-broken-menus-workaround.md) - contained compatibility workaround for GTK3 native Wayland menubars on touch-only devices.
 - [text-input.md](text-input.md) - Android IME to `zwp_text_input_v3` bridge.
 - [firefox.md](firefox.md) - Firefox setup, libhybris fixes, browser-specific issues.

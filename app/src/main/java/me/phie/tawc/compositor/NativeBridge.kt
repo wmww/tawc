@@ -156,6 +156,9 @@ object NativeBridge {
      *  xdg-shell handling and come back through [setActivityFullscreen]. */
     external fun nativeOnActivityFullscreenChanged(activityId: String, fullscreen: Boolean)
 
+    /** Let the compositor consume Android Back using Wayland window state. */
+    external fun nativeOnBackPressed(activityId: String)
+
     // --- Text input: Android InputConnection → Compositor ---
     //
     // These are the JNI primitives the production [TawcInputConnection]

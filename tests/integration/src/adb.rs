@@ -372,6 +372,11 @@ pub fn input_tap(x: u32, y: u32) -> io::Result<Output> {
     shell(&format!("input tap {} {}", x, y))
 }
 
+/// Send Android Back through the system input path.
+pub fn input_back() -> io::Result<Output> {
+    shell("input keyevent BACK")
+}
+
 /// Ask the debug broker to inject a normalized touch sequence into the
 /// focused compositor SurfaceView. `kind` is one of `tap`, `drag`, or
 /// `multitouch`; coordinates are chosen as fractions of the current view

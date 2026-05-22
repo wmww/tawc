@@ -252,6 +252,99 @@ fn apply_keyboard_focus_action(data: &mut TawcState, action: KeyboardFocusAction
     }
 }
 
+fn host_for_surface(data: &TawcState, surface: &WlSurface) -> Option<ActivityId> {
+    let mut current = Some(surface.clone());
+    while let Some(surface) = current {
+        if let Some(host) = data.toplevel_to_host.get(&surface) {
+            return Some(host.clone());
+        }
+        current = get_parent(&surface);
+    }
+
+    for (root, host) in &data.toplevel_to_host {
+        for (popup, _) in PopupManager::popups_for_surface(root) {
+            if popup.wl_surface() == surface {
+                return Some(host.clone());
+            }
+        }
+    }
+    None
+}
+
+fn send_keyboard_key_press(data: &mut TawcState, evdev_keycode: u32) {
+    if let Some(keyboard) = data.seat.get_keyboard() {
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = data.start_time.elapsed().as_millis() as u32;
+        let keycode = Keycode::from(evdev_keycode + 8);
+        keyboard.input::<(), _>(
+            data, keycode, KeyState::Pressed, serial, time,
+            |_, _, _| FilterResult::Forward,
+        );
+        let serial = SERIAL_COUNTER.next_serial();
+        keyboard.input::<(), _>(
+            data, keycode, KeyState::Released, serial, time + 1,
+            |_, _, _| FilterResult::Forward,
+        );
+    }
+}
+
+fn dismiss_topmost_grabbing_popup(data: &mut TawcState, activity_id: &ActivityId) -> bool {
+    let Some(grab) = data.active_popup_grab.as_ref() else {
+        return false;
+    };
+    if grab.has_ended() {
+        return false;
+    }
+    let Some(surface) = grab.current_grab() else {
+        return false;
+    };
+    if host_for_surface(data, &surface).as_ref() != Some(activity_id) {
+        return false;
+    }
+
+    let serial = SERIAL_COUNTER.next_serial();
+    let time = data.start_time.elapsed().as_millis() as u32;
+    let ended = if let Some(grab) = data.active_popup_grab.as_mut() {
+        let _ = grab.ungrab(PopupUngrabStrategy::Topmost);
+        grab.has_ended()
+    } else {
+        false
+    };
+    if ended {
+        data.active_popup_grab = None;
+        if let Some(pointer) = data.seat.get_pointer() {
+            pointer.unset_grab(data, serial, time);
+        }
+        if let Some(keyboard) = data.seat.get_keyboard() {
+            if keyboard.is_grabbed() {
+                keyboard.unset_grab(data);
+            }
+        }
+    }
+    data.needs_render = true;
+    true
+}
+
+fn handle_back_pressed(data: &mut TawcState, activity_id: &ActivityId) {
+    if data.foreground_host.as_ref() != Some(activity_id) || !data.hosts.contains_key(activity_id) {
+        info!("Ignoring BackPressed for non-foreground/unknown host {}", activity_id);
+        return;
+    }
+
+    if dismiss_topmost_grabbing_popup(data, activity_id) {
+        return;
+    }
+
+    if data.host_fullscreen(activity_id) {
+        data.set_host_fullscreen(activity_id, false);
+        crate::set_activity_fullscreen_from_native(activity_id, false);
+        data.needs_render = true;
+        return;
+    }
+
+    send_keyboard_key_press(data, crate::keymap::EVDEV_KEY_ESC);
+}
+
 fn dismiss_host_popups_if_touch_is_outside_popup(
     data: &mut TawcState,
     activity_id: &ActivityId,
@@ -540,20 +633,7 @@ pub fn run(
         match evt {
             TextInputEvent::KeyPress { keycode } => {
                 // Send as a real wl_keyboard key event (press + release)
-                if let Some(keyboard) = data.seat.get_keyboard() {
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let time = data.start_time.elapsed().as_millis() as u32;
-                    let keycode = Keycode::from(keycode + 8); // evdev → XKB offset
-                    keyboard.input::<(), _>(
-                        data, keycode, KeyState::Pressed, serial, time,
-                        |_, _, _| FilterResult::Forward,
-                    );
-                    let serial = SERIAL_COUNTER.next_serial();
-                    keyboard.input::<(), _>(
-                        data, keycode, KeyState::Released, serial, time + 1,
-                        |_, _, _| FilterResult::Forward,
-                    );
-                }
+                send_keyboard_key_press(data, keycode);
             }
             TextInputEvent::KeyState { keycode, pressed } => {
                 if let Some(keyboard) = data.seat.get_keyboard() {
@@ -989,6 +1069,9 @@ fn handle_surface_event(data: &mut TawcState, evt: SurfaceEvent) {
         SurfaceEvent::FullscreenChanged { activity_id, fullscreen } => {
             data.set_host_fullscreen(&activity_id, fullscreen);
             data.needs_render = true;
+        }
+        SurfaceEvent::BackPressed { activity_id } => {
+            handle_back_pressed(data, &activity_id);
         }
     }
 }

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.os.IBinder
@@ -18,6 +19,8 @@ import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import android.widget.FrameLayout
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
@@ -51,6 +54,7 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
     private var compositorFullscreen = false
 
     private var compositorService: CompositorService? = null
+    private var backCallback: Any? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -108,12 +112,14 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         surfaceView.setOnTouchListener { _, event -> dispatchTouchToCompositor(event) }
         NativeBridge.inputView = surfaceView
         applyCompositorFullscreen(NativeBridge.fullscreenForActivity(activityId))
+        registerBackCallback()
 
         initialized = true
     }
 
     override fun onDestroy() {
         if (initialized) {
+            unregisterBackCallback()
             if (NativeBridge.activeInputConnection?.targetsView(surfaceView) == true) {
                 NativeBridge.activeInputConnection = null
             }
@@ -129,6 +135,16 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
             }
         }
         super.onDestroy()
+    }
+
+    @Suppress("DEPRECATION")
+    @Deprecated("Deprecated in Android; kept for pre-OnBackInvoked dispatch.")
+    override fun onBackPressed() {
+        if (initialized) {
+            NativeBridge.nativeOnBackPressed(activityId)
+        } else {
+            super.onBackPressed()
+        }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -198,6 +214,33 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         } else {
             insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
         }
+
+    private fun registerBackCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        registerBackCallbackApi33()
+    }
+
+    private fun unregisterBackCallback() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        unregisterBackCallbackApi33()
+    }
+
+    private fun registerBackCallbackApi33() {
+        val callback = OnBackInvokedCallback {
+            if (initialized) NativeBridge.nativeOnBackPressed(activityId)
+        }
+        backCallback = callback
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_OVERLAY,
+            callback,
+        )
+    }
+
+    private fun unregisterBackCallbackApi33() {
+        val callback = backCallback as? OnBackInvokedCallback ?: return
+        onBackInvokedDispatcher.unregisterOnBackInvokedCallback(callback)
+        backCallback = null
+    }
 
     /**
      * Custom SurfaceView that provides our InputConnection to the IME.

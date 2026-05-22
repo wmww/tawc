@@ -83,3 +83,26 @@ settings:
 
 Convert logical coordinates to physical tap coordinates with
 `physical = logical * current_output_scale`, then verify against the screenshot.
+
+## Android Back Button
+
+`CompositorActivity` consumes Android Back for active Wayland windows and
+forwards it to Rust via `nativeOnBackPressed(activityId)`. The compositor
+decides from Wayland state, in this order:
+
+1. If the host has an active grabbing `xdg_popup`, dismiss only the topmost
+   grabbed popup (`PopupUngrabStrategy::Topmost`). Do not dismiss the whole
+   popup stack; nested menus should peel back one layer at a time.
+2. Else if the host is fullscreen / immersive, restore it to maximized. This
+   clears the xdg fullscreen state, sends a maximized configure, and asks
+   Android to show system bars again.
+3. Else inject one Escape key press/release into the focused Wayland keyboard
+   target.
+
+Back is host-scoped. The `activityId` must still be the foreground host; stale
+events for destroyed/backgrounded Activities are ignored. A popup must belong
+to the Activity that received Back before it is dismissed; otherwise the policy
+falls through to that host's fullscreen/Escape behavior. `CompositorActivity`
+uses an overlay-priority `OnBackInvokedCallback` on API 33+ so the Wayland
+policy wins over transient Android UI such as the IME, and the legacy
+`onBackPressed` override on older supported Android versions.

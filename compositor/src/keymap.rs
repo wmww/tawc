@@ -12,6 +12,7 @@
 /// evdev `KEY_ENTER`. Re-exposed because `nativeCommitText` converts a
 /// literal `"\n"` from the IME into an Enter key event.
 pub const EVDEV_KEY_ENTER: u32 = 28;
+pub const EVDEV_KEY_ESC: u32 = 1;
 
 /// Translate an Android `KeyEvent.KEYCODE_*` value into the matching
 /// Linux evdev keycode. `None` for keys we have no mapping for (media
@@ -24,7 +25,7 @@ pub fn android_to_evdev(android: i32) -> Option<u32> {
         112 => 111,                // KEYCODE_FORWARD_DEL    -> KEY_DELETE
         66 => EVDEV_KEY_ENTER,     // KEYCODE_ENTER          -> KEY_ENTER
         61 => 15,                  // KEYCODE_TAB            -> KEY_TAB
-        111 => 1,                  // KEYCODE_ESCAPE         -> KEY_ESC
+        111 => EVDEV_KEY_ESC,      // KEYCODE_ESCAPE         -> KEY_ESC
         62 => 57,                  // KEYCODE_SPACE          -> KEY_SPACE
 
         // Navigation

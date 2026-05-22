@@ -350,6 +350,41 @@ fn test_xdg_configure_state_maximized_vs_fullscreen() {
 }
 
 #[test]
+fn test_back_restores_fullscreen_then_sends_escape() {
+    let mut app = start_wayland_debug_touch(BACKEND, "");
+    app.wait_for_tag_value("CONFIGURE_STATE", "fullscreen", TIMEOUT)
+        .expect("fullscreen-requesting app should be configured fullscreen");
+
+    let output = adb::input_back().expect("input back");
+    assert!(
+        output.status.success(),
+        "input back failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    app.wait_for_tag_value("CONFIGURE_STATE", "maximized", TIMEOUT)
+        .expect("back should restore fullscreen app to maximized");
+    assert!(
+        app.payloads_with_tag("KEY").iter().all(|s| s != "1"),
+        "first back should restore fullscreen, not inject Escape"
+    );
+
+    let output = adb::input_back().expect("second input back");
+    assert!(
+        output.status.success(),
+        "second input back failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    app.wait_for_tag_value("KEY", "1", TIMEOUT)
+        .expect("second back should inject Escape");
+
+    app.stop()
+        .expect("fullscreen debug app failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+#[test]
 fn test_gtk3_demo_application_menu_opens_leftmost_without_workaround() {
     assert_gtk3_demo_application_menu_tap(false, Gtk3Menu::Leftmost);
 }

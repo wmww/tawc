@@ -345,6 +345,17 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnActivit
     host::send_surface_event(SurfaceEvent::FullscreenChanged { activity_id, fullscreen });
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnBackPressed(
+    mut env: JNIEnv,
+    _class: JClass,
+    activity_id: JString,
+) {
+    let activity_id = jstring_to_id(&mut env, activity_id);
+    info!("nativeOnBackPressed({})", activity_id);
+    host::send_surface_event(SurfaceEvent::BackPressed { activity_id });
+}
+
 // ---------------------------------------------------------------------------
 // JNI: Text input events from Android InputConnection
 // ---------------------------------------------------------------------------
