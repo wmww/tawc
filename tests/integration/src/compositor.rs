@@ -15,6 +15,8 @@ pub struct CompositorState {
     /// Number of toplevels visible in the last rendered frame.
     /// If this is non-zero while toplevels is zero, the screen shows a stale frame.
     pub rendered_toplevels: u32,
+    pub hosts: u32,
+    pub bound_hosts: u32,
     pub output_physical_w: i32,
     pub output_physical_h: i32,
     pub output_logical_w: i32,
@@ -88,6 +90,8 @@ fn parse_compositor_state_line(line: &str) -> Option<CompositorState> {
     let mut surfaces_shm = None;
     let mut frames = None;
     let mut rendered_toplevels = None;
+    let mut hosts = None;
+    let mut bound_hosts = None;
     let mut output_physical_w = None;
     let mut output_physical_h = None;
     let mut output_logical_w = None;
@@ -102,6 +106,8 @@ fn parse_compositor_state_line(line: &str) -> Option<CompositorState> {
                 "surfaces_shm" => surfaces_shm = Some(val.parse().ok()?),
                 "frames" => frames = Some(val.parse().ok()?),
                 "rendered_toplevels" => rendered_toplevels = Some(val.parse().ok()?),
+                "hosts" => hosts = Some(val.parse().ok()?),
+                "bound_hosts" => bound_hosts = Some(val.parse().ok()?),
                 "output_physical_w" => output_physical_w = Some(val.parse().ok()?),
                 "output_physical_h" => output_physical_h = Some(val.parse().ok()?),
                 "output_logical_w" => output_logical_w = Some(val.parse().ok()?),
@@ -118,6 +124,8 @@ fn parse_compositor_state_line(line: &str) -> Option<CompositorState> {
         surfaces_shm: surfaces_shm?,
         frames: frames?,
         rendered_toplevels: rendered_toplevels?,
+        hosts: hosts.unwrap_or_default(),
+        bound_hosts: bound_hosts.unwrap_or_default(),
         output_physical_w: output_physical_w.unwrap_or_default(),
         output_physical_h: output_physical_h.unwrap_or_default(),
         output_logical_w: output_logical_w.unwrap_or_default(),

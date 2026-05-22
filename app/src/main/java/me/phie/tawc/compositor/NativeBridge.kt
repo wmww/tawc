@@ -85,6 +85,7 @@ object NativeBridge {
     /** Weak ref to the running CompositorService for finishActivity lookups. */
     private var serviceRef: WeakReference<CompositorService>? = null
     private val fullscreenByActivity = mutableMapOf<String, Boolean>()
+    private val pendingFinishActivities = mutableSetOf<String>()
 
     fun attachService(service: CompositorService) {
         appContext = service.applicationContext
@@ -105,6 +106,11 @@ object NativeBridge {
      * for this; use [attachService]/[detachService] instead.
      */
     fun serviceRefForDev(): CompositorService? = serviceRef?.get()
+
+    fun consumePendingFinishActivity(activityId: String): Boolean =
+        synchronized(pendingFinishActivities) {
+            pendingFinishActivities.remove(activityId)
+        }
 
     init {
         System.loadLibrary("compositor")
@@ -292,12 +298,24 @@ object NativeBridge {
     fun finishActivity(activityId: String) {
         Log.d(TAG, "finishActivity from native: $activityId")
         mainHandler.post {
-            val service = serviceRef?.get() ?: return@post
+            val service = serviceRef?.get()
+            if (service == null) {
+                synchronized(pendingFinishActivities) {
+                    pendingFinishActivities.add(activityId)
+                }
+                return@post
+            }
             service.removeWindow(activityId)
             val activity = service.getActivity(activityId)
             if (activity == null) {
-                Log.d(TAG, "finishActivity($activityId): no live Activity")
+                synchronized(pendingFinishActivities) {
+                    pendingFinishActivities.add(activityId)
+                }
+                Log.d(TAG, "finishActivity($activityId): no live Activity yet")
                 return@post
+            }
+            synchronized(pendingFinishActivities) {
+                pendingFinishActivities.remove(activityId)
             }
             activity.finishAndRemoveTask()
         }

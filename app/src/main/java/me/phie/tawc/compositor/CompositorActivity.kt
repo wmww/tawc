@@ -97,6 +97,11 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         }
         activityId = id
         Log.d(TAG, "CompositorActivity onCreate activityId=$activityId")
+        if (NativeBridge.consumePendingFinishActivity(activityId)) {
+            Log.d(TAG, "CompositorActivity $activityId had pending finish — finishing")
+            finishAndRemoveTask()
+            return
+        }
 
         // Start and bind the CompositorService. The Service owns the
         // compositor thread (and runs xkb-data extraction) and survives

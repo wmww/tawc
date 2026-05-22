@@ -257,6 +257,16 @@ pub fn assert_compositor_clean() {
         "Expected no SHM surfaces after cleanup, got {:?}",
         state
     );
+    assert_eq!(
+        state.hosts, 0,
+        "Expected no Android hosts after cleanup, got {:?}",
+        state
+    );
+    assert_eq!(
+        state.bound_hosts, 0,
+        "Expected no bound Android hosts after cleanup, got {:?}",
+        state
+    );
     // Verify the screen reflects the clean state — the last rendered frame
     // should show 0 toplevels, not a stale frame from the previous client.
     compositor::wait_for_rendered_toplevels(0, TIMEOUT)

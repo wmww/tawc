@@ -805,25 +805,10 @@ pub fn run(
         data.surface_shm.retain(|surface, _| surface.is_alive());
         data.toplevel_to_host.retain(|surface, _| surface.is_alive());
 
-        // For each host that just lost a toplevel: if no toplevels remain
-        // assigned to it, ask Kotlin to finishAndRemoveTask the matching
-        // Activity so its recents card disappears. There is no special
-        // launcher / bootstrap Activity to exempt — every
-        // CompositorActivity exists for exactly one Wayland window.
-        let mut already_finished: std::collections::HashSet<crate::host::ActivityId> =
-            std::collections::HashSet::new();
-        for (_, host_id) in dead {
-            let Some(host_id) = host_id else { continue };
-            if already_finished.contains(&host_id) {
-                continue;
-            }
-            let still_used = data.toplevel_to_host.values().any(|h| h == &host_id);
-            if !still_used {
-                already_finished.insert(host_id.clone());
-                data.window_metadata.remove(&host_id);
-                crate::finish_activity_from_native(&host_id);
-            }
-        }
+        // For each host that just lost a window: if neither Wayland nor
+        // Xwayland still has windows assigned to it, finish the matching
+        // Activity so its recents card disappears.
+        data.finish_hosts_if_unused(dead.into_iter().filter_map(|(_, host)| host));
 
         data.popup_manager.cleanup();
         if data
@@ -1027,23 +1012,13 @@ fn handle_surface_event(data: &mut TawcState, evt: SurfaceEvent) {
             }
         }
         SurfaceEvent::ActivityDestroyed { activity_id } => {
-            // Send xdg_toplevel.close to every toplevel assigned to this
-            // host. Well-behaved clients then destroy the toplevel; we
-            // clean up via the dead-toplevel pass on the next frame.
+            // Ask every window assigned to this host to close. Well-behaved
+            // clients then destroy/unmap their surfaces; the cleanup paths
+            // remove the remaining assignments on later events.
             // (Phase 7 polish: handle clients that refuse to close.)
-            let assigned: Vec<_> = data
-                .toplevels
-                .iter()
-                .filter(|t| {
-                    data.toplevel_to_host.get(t.wl_surface()) == Some(&activity_id)
-                })
-                .cloned()
-                .collect();
-            for t in &assigned {
-                t.send_close();
-            }
+            let closed = data.request_close_windows_for_host(&activity_id);
             if data.hosts.remove(&activity_id).is_some() {
-                info!("Host {} removed (closed {} toplevels)", activity_id, assigned.len());
+                info!("Host {} removed (closed {} windows)", activity_id, closed);
             }
             data.host_fullscreen.remove(&activity_id);
             data.window_metadata.remove(&activity_id);

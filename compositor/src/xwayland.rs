@@ -262,6 +262,7 @@ impl XwmHandler for TawcState {
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         info!("xwayland: unmapped {:?}", window);
+        let host = self.x11_surface_host(&window);
         if let Some(wl) = window.wl_surface() {
             self.x11_to_host.remove(&wl);
         }
@@ -270,14 +271,21 @@ impl XwmHandler for TawcState {
             let _ = window.set_mapped(false);
         }
         self.toplevels_changed = true;
+        if let Some(host) = host {
+            self.finish_host_if_unused(&host);
+        }
     }
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        let host = self.x11_surface_host(&window);
         if let Some(wl) = window.wl_surface() {
             self.x11_to_host.remove(&wl);
         }
         self.x11_surfaces.retain(|w| w != &window);
         self.toplevels_changed = true;
+        if let Some(host) = host {
+            self.finish_host_if_unused(&host);
+        }
     }
 
     fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
@@ -446,15 +454,7 @@ impl XwmHandler for TawcState {
 pub struct PendingHost(pub std::cell::RefCell<Option<ActivityId>>);
 
 fn x11_host(state: &TawcState, surface: &X11Surface) -> Option<ActivityId> {
-    if let Some(wl) = surface.wl_surface() {
-        if let Some(h) = state.x11_to_host.get(&wl) {
-            return Some(h.clone());
-        }
-    }
-    surface
-        .user_data()
-        .get::<PendingHost>()
-        .and_then(|p| p.0.borrow().clone())
+    state.x11_surface_host(surface)
 }
 
 /// Look up the host an existing X11Surface is on. Tries the live

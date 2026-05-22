@@ -140,6 +140,11 @@ class CompositorService : Service() {
     }
 
     fun registerActivity(activityId: String, activity: CompositorActivity) {
+        if (NativeBridge.consumePendingFinishActivity(activityId)) {
+            Log.d(TAG, "Registered activity $activityId already had pending finish")
+            activity.finishAndRemoveTask()
+            return
+        }
         activities[activityId] = WeakReference(activity)
         activity.setFullscreenFromCompositor(NativeBridge.fullscreenForActivity(activityId))
         windowRegistry.get(activityId)?.let { activity.setTaskMetadata(it) }

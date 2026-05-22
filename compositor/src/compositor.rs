@@ -4,10 +4,10 @@
 //! and all the smithay handler trait impls. It does NOT own the renderer,
 //! EGL context, or GPU textures — those live in render::RenderState.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use log::{error, info};
+use log::{error, info, warn};
 
 use smithay::backend::renderer::gles::GlesTexture;
 use smithay::delegate_dispatch2;
@@ -567,6 +567,87 @@ impl TawcState {
         };
         let (title, app_id) = xdg_toplevel_metadata(toplevel);
         self.update_host_window_metadata(&host_id, title, app_id);
+    }
+
+    pub fn x11_surface_host(&self, surface: &X11Surface) -> Option<ActivityId> {
+        if let Some(wl) = surface.wl_surface() {
+            if let Some(h) = self.x11_to_host.get(&wl) {
+                return Some(h.clone());
+            }
+        }
+        surface
+            .user_data()
+            .get::<crate::xwayland::PendingHost>()
+            .and_then(|p| p.0.borrow().clone())
+    }
+
+    pub fn host_has_windows(&self, host_id: &ActivityId) -> bool {
+        self.toplevel_to_host.values().any(|h| h == host_id)
+            || self.x11_to_host.values().any(|h| h == host_id)
+            || self
+                .x11_surfaces
+                .iter()
+                .any(|surface| self.x11_surface_host(surface).as_ref() == Some(host_id))
+    }
+
+    pub fn finish_host_if_unused(&mut self, host_id: &ActivityId) -> bool {
+        if self.host_has_windows(host_id) {
+            return false;
+        }
+        self.finish_host(host_id);
+        true
+    }
+
+    pub fn finish_hosts_if_unused(&mut self, host_ids: impl IntoIterator<Item = ActivityId>) {
+        let mut seen = HashSet::new();
+        for host_id in host_ids {
+            if seen.insert(host_id.clone()) {
+                self.finish_host_if_unused(&host_id);
+            }
+        }
+    }
+
+    pub fn finish_host(&mut self, host_id: &ActivityId) {
+        let should_finish_activity = self.hosts.contains_key(host_id)
+            || self.window_metadata.contains_key(host_id)
+            || self.host_fullscreen.contains_key(host_id);
+        self.window_metadata.remove(host_id);
+        self.host_fullscreen.remove(host_id);
+        if self.foreground_host.as_ref() == Some(host_id) {
+            self.foreground_host = None;
+        }
+        self.hosts.remove(host_id);
+        if should_finish_activity {
+            crate::finish_activity_from_native(host_id);
+        }
+    }
+
+    pub fn request_close_windows_for_host(&mut self, host_id: &ActivityId) -> usize {
+        let mut closed = 0;
+        let toplevels: Vec<_> = self
+            .toplevels
+            .iter()
+            .filter(|t| self.toplevel_to_host.get(t.wl_surface()) == Some(host_id))
+            .cloned()
+            .collect();
+        for toplevel in toplevels {
+            toplevel.send_close();
+            closed += 1;
+        }
+
+        let x11_surfaces: Vec<_> = self
+            .x11_surfaces
+            .iter()
+            .filter(|surface| self.x11_surface_host(surface).as_ref() == Some(host_id))
+            .cloned()
+            .collect();
+        for surface in x11_surfaces {
+            if let Err(e) = surface.close() {
+                warn!("xwayland: failed to close window {}: {}", surface.window_id(), e);
+            }
+            closed += 1;
+        }
+        closed
     }
 
     pub fn update_host_window_metadata(
