@@ -101,8 +101,6 @@ fn cache_jni_globals(env: &mut JNIEnv) {
 pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartCompositor(
     mut env: JNIEnv,
     _class: JClass,
-    initial_width: jint,
-    initial_height: jint,
     output_scale: f32,
     gtk3_broken_menus_workaround: jboolean,
 ) {
@@ -180,7 +178,6 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
         smithay::reexports::calloop::channel::channel();
     *STATE_QUERY_SENDER.lock().unwrap() = Some(state_query_sender);
 
-    let initial_size = (initial_width.max(0), initial_height.max(0));
     let initial_scale = sanitize_output_scale(output_scale as f64).unwrap_or(DEFAULT_OUTPUT_SCALE);
     let initial_gtk3_broken_menus_workaround = gtk3_broken_menus_workaround != 0;
     std::thread::spawn(move || {
@@ -190,7 +187,6 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
             clipboard_channel,
             surface_event_channel,
             state_query_channel,
-            initial_size,
             initial_scale,
             initial_gtk3_broken_menus_workaround,
         ) {
@@ -746,7 +742,6 @@ fn run_compositor(
     clipboard_channel: smithay::reexports::calloop::channel::Channel<clipboard::ClipboardEvent>,
     surface_event_channel: smithay::reexports::calloop::channel::Channel<SurfaceEvent>,
     state_query_channel: smithay::reexports::calloop::channel::Channel<()>,
-    initial_physical_size: (i32, i32),
     initial_scale: f64,
     initial_gtk3_broken_menus_workaround: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -781,22 +776,12 @@ fn run_compositor(
     };
 
     // --- Wayland display + protocol state ---
-    // Seed `output_logical_size` from the display size that
-    // CompositorService passed in. A client connecting before the first
-    // CompositorActivity has registered (test harness drives this — vkcube
-    // launches faster than Android can spawn the Activity) would otherwise
-    // see configure(0,0) on its xdg_toplevel, allocate a default-sized
-    // swapchain, then receive a real size mid-flight when the Activity
-    // finally registers — Vulkan WSI doesn't recover from that and the
-    // cube hangs after committing two buffers.
+    // Output geometry is unknown until the assigned Android Activity
+    // registers its SurfaceView. Toplevel configures are deferred until
+    // that real size arrives, avoiding both configure(0,0) and
+    // service-side display-size guesses.
     let mut wl_display: Display<TawcState> = Display::new()?;
     let scale = OutputScale::new(initial_scale);
-    let (init_pw, init_ph) = initial_physical_size;
-    let initial_logical = if init_pw > 0 && init_ph > 0 {
-        scale.logical_size(init_pw, init_ph)
-    } else {
-        (0, 0)
-    };
     // --- Output (geometry updated when first Activity surface arrives) ---
     let output = smithay::output::Output::new(
         "tawc-0".to_string(),
@@ -809,7 +794,7 @@ fn run_compositor(
         },
     );
     let initial_mode_size: smithay::utils::Size<i32, smithay::utils::Physical> =
-        if init_pw > 0 && init_ph > 0 { (init_pw, init_ph).into() } else { (1, 1).into() };
+        (1, 1).into();
     output.change_current_state(
         Some(smithay::output::Mode { size: initial_mode_size, refresh: 60_000 }),
         Some(Transform::Normal),
@@ -822,8 +807,8 @@ fn run_compositor(
     let state = TawcState::new(
         &mut wl_display,
         scale,
-        initial_logical,
-        (init_pw, init_ph),
+        (0, 0),
+        (0, 0),
         initial_gtk3_broken_menus_workaround,
         render_state,
         output,

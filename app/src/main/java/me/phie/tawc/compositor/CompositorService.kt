@@ -8,13 +8,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.graphics.Point
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.system.Os
 import android.util.Log
-import android.view.WindowManager
 import androidx.core.app.ServiceCompat
 import java.io.File
 import java.lang.ref.WeakReference
@@ -104,17 +102,7 @@ class CompositorService : Service() {
         // reverse-JNI spawnActivity/finishActivity entry points work even
         // when no Activity is currently in the foreground.
         NativeBridge.attachService(this)
-        // Pass the display size so the compositor can advertise a real
-        // initial output_logical_size before any CompositorActivity has
-        // registered. Otherwise a client (notably vkcube) that connects
-        // before the first Activity boots receives configure(0,0), creates
-        // a default-sized swapchain, then receives a real size mid-flight
-        // when the Activity finally registers — Vulkan WSI doesn't recover
-        // from that and the cube hangs after committing two buffers.
-        val (w, h) = currentDisplaySize()
         NativeBridge.nativeStartCompositor(
-            w,
-            h,
             me.phie.tawc.Settings.outputScale,
             me.phie.tawc.Settings.gtk3BrokenMenusWorkaround,
         )
@@ -189,25 +177,6 @@ class CompositorService : Service() {
             }
         }
         return null
-    }
-
-    /** Read the current display size (physical pixels) without needing an
-     *  Activity. WindowManager.maximumWindowMetrics returns the full
-     *  display bounds — close enough to the per-Activity SurfaceView size
-     *  (CompositorActivity uses immersive fullscreen) to seed the initial
-     *  configure correctly; refined on the first nativeRegister. */
-    private fun currentDisplaySize(): Pair<Int, Int> {
-        val wm = getSystemService(WindowManager::class.java) ?: return 0 to 0
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val bounds = wm.maximumWindowMetrics.bounds
-            return bounds.width() to bounds.height()
-        }
-        @Suppress("DEPRECATION")
-        val display = wm.defaultDisplay ?: return 0 to 0
-        val size = Point()
-        @Suppress("DEPRECATION")
-        display.getRealSize(size)
-        return size.x to size.y
     }
 
     private fun ensureXkbDataExtracted() {

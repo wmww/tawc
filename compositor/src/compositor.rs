@@ -438,6 +438,38 @@ impl TawcState {
         });
     }
 
+    pub fn host_logical_size(&self, host_id: &ActivityId) -> Option<(i32, i32)> {
+        self.hosts
+            .get(host_id)
+            .map(|host| host.logical_size)
+            .filter(|(w, h)| *w > 0 && *h > 0)
+    }
+
+    pub fn toplevel_host_ready(&self, toplevel: &ToplevelSurface) -> bool {
+        self.toplevel_to_host
+            .get(toplevel.wl_surface())
+            .and_then(|host_id| self.host_logical_size(host_id))
+            .is_some()
+    }
+
+    pub fn configure_toplevel_for_host(
+        &self,
+        toplevel: &ToplevelSurface,
+        host_id: &ActivityId,
+    ) -> Option<(i32, i32)> {
+        let (w, h) = self.host_logical_size(host_id)?;
+        let fullscreen = self.host_fullscreen(host_id);
+        toplevel.with_pending_state(|state| {
+            state.size = Some((w, h).into());
+            // Clients that ignore Maximized still need a cap for their
+            // natural size. GTK4 otherwise picks buffers wider than the
+            // logical screen and renders mostly off-screen.
+            state.bounds = Some((w, h).into());
+        });
+        set_toplevel_fullscreen_state(toplevel, fullscreen, None);
+        Some((w, h))
+    }
+
     /// Outcome of a host assignment: the host the toplevel ends up on,
     /// and whether the policy decided a fresh Activity needs to be
     /// spawned for it. Phase 5+ uses `spawn_activity` to fire the
@@ -480,6 +512,7 @@ impl TawcState {
         if let Some(host) = self.hosts.get_mut(host_id) {
             host.fullscreen = fullscreen;
         }
+        let host_ready = self.host_logical_size(host_id).is_some();
 
         let toplevels: Vec<_> = self
             .toplevels
@@ -490,7 +523,9 @@ impl TawcState {
 
         for toplevel in toplevels {
             set_toplevel_fullscreen_state(&toplevel, fullscreen, None);
-            toplevel.send_pending_configure();
+            if host_ready {
+                toplevel.send_pending_configure();
+            }
         }
     }
 
@@ -666,30 +701,22 @@ impl XdgShellHandler for TawcState {
         // The result tells us whether to spawn a new Activity (phase 5+).
         let assignment = self.assign_toplevel_to_host(&surface);
 
-        // Configure with the host's logical size if it exists, otherwise
-        // fall back to the cached primary-output size.
-        let (w, h) = self
-            .hosts
-            .get(&assignment.host)
-            .map(|h| h.logical_size)
-            .unwrap_or(self.output_logical_size);
-        let fullscreen = self.host_fullscreen(&assignment.host);
         surface.with_pending_state(|state| {
             state.states.set(
                 wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated,
             );
-            state.size = Some((w, h).into());
-            // Send xdg_toplevel.configure_bounds so clients that ignore
-            // Maximized still cap their natural size to the screen. GTK4
-            // 4.18 widget-factory ignores Maximized and produces a
-            // buffer wider than the logical screen, ending up rendered as a
-            // physical surface mostly off-screen — symptom is a "blank"
-            // window. Sending bounds tells GTK4 the maximum size it should pick.
-            state.bounds = Some((w, h).into());
         });
-        set_toplevel_fullscreen_state(&surface, fullscreen, None);
-        surface.send_configure();
-        crate::gtk3_menus_workaround::prime_toplevel(self, surface.wl_surface(), w, h);
+        set_toplevel_fullscreen_state(&surface, self.host_fullscreen(&assignment.host), None);
+        if let Some((w, h)) = self.configure_toplevel_for_host(&surface, &assignment.host) {
+            surface.send_configure();
+            crate::gtk3_menus_workaround::prime_toplevel(self, surface.wl_surface(), w, h);
+        } else {
+            info!(
+                "Deferring initial configure for {:?} until host {} registers",
+                surface.wl_surface().id(),
+                assignment.host,
+            );
+        }
 
         // Move input focus to the new toplevel only if its host is
         // currently in the foreground. Otherwise the FocusChanged event
@@ -782,21 +809,23 @@ impl XdgShellHandler for TawcState {
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<wl_output::WlOutput>) {
         let host_id = self.toplevel_to_host.get(surface.wl_surface()).cloned();
-        set_toplevel_fullscreen_state(&surface, true, output);
-        surface.send_pending_configure();
         if let Some(host_id) = host_id {
             self.set_host_fullscreen(&host_id, true);
             crate::set_activity_fullscreen_from_native(&host_id, true);
+        } else {
+            set_toplevel_fullscreen_state(&surface, true, output);
+            surface.send_pending_configure();
         }
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         let host_id = self.toplevel_to_host.get(surface.wl_surface()).cloned();
-        set_toplevel_fullscreen_state(&surface, false, None);
-        surface.send_pending_configure();
         if let Some(host_id) = host_id {
             self.set_host_fullscreen(&host_id, false);
             crate::set_activity_fullscreen_from_native(&host_id, false);
+        } else {
+            set_toplevel_fullscreen_state(&surface, false, None);
+            surface.send_pending_configure();
         }
     }
 }
@@ -815,7 +844,9 @@ impl XdgDecorationHandler for TawcState {
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(Mode::ServerSide);
         });
-        toplevel.send_configure();
+        if self.toplevel_host_ready(&toplevel) {
+            toplevel.send_pending_configure();
+        }
     }
 
     fn request_mode(
@@ -827,7 +858,9 @@ impl XdgDecorationHandler for TawcState {
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(Mode::ServerSide);
         });
-        toplevel.send_configure();
+        if self.toplevel_host_ready(&toplevel) {
+            toplevel.send_pending_configure();
+        }
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
@@ -835,7 +868,9 @@ impl XdgDecorationHandler for TawcState {
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(Mode::ServerSide);
         });
-        toplevel.send_configure();
+        if self.toplevel_host_ready(&toplevel) {
+            toplevel.send_pending_configure();
+        }
     }
 }
 

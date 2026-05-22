@@ -113,17 +113,8 @@ object NativeBridge {
     // --- Compositor lifecycle: called from CompositorService ---
 
     /** Start the Rust compositor thread. Idempotent — second call is a no-op.
-     *
-     *  `width`/`height` are the device's display size in physical pixels,
-     *  used as the initial `output_logical_size` so `xdg_toplevel.configure`
-     *  events sent before any CompositorActivity has registered carry a
-     *  real size instead of 0x0 — a Wayland client that commits a buffer
-     *  between the initial configure and the host registering would
-     *  otherwise be told to resize after the fact, which Vulkan/vkcube
-     *  doesn't recover from. */
+     *  The first real output size comes from [nativeRegisterActivitySurface]. */
     external fun nativeStartCompositor(
-        width: Int,
-        height: Int,
         outputScale: Float,
         gtk3BrokenMenusWorkaround: Boolean,
     )

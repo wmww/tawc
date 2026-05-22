@@ -879,8 +879,10 @@ fn handle_surface_event(data: &mut TawcState, evt: SurfaceEvent) {
                 data.render.attach_host_surface(host);
             }
             let fullscreen = data.host_fullscreen(&activity_id);
+            let foreground = data.foreground_host.as_ref() == Some(&activity_id);
             if let Some(host) = data.hosts.get_mut(&activity_id) {
                 host.fullscreen = fullscreen;
+                host.foreground = foreground;
             }
             crate::set_activity_fullscreen_from_native(&activity_id, fullscreen);
             // Update primary-output mode + the cached logical_size that
@@ -1053,6 +1055,7 @@ fn live_surfaces(state: &TawcState) -> Vec<WlSurface> {
 fn set_host_foreground(state: &mut TawcState, host_id: &crate::host::ActivityId, foreground: bool) {
     use wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
 
+    let host_ready = state.host_logical_size(host_id).is_some();
     let toplevels: Vec<_> = state
         .toplevels
         .iter()
@@ -1072,7 +1075,9 @@ fn set_host_foreground(state: &mut TawcState, host_id: &crate::host::ActivityId,
                 s.states.set(XdgState::Suspended);
             }
         });
-        t.send_pending_configure();
+        if host_ready {
+            t.send_pending_configure();
+        }
     }
     if let Some(host) = state.hosts.get_mut(host_id) {
         host.foreground = foreground;
@@ -1095,30 +1100,27 @@ fn first_alive_toplevel_of_host(
 }
 
 fn reconfigure_all_toplevels(state: &mut TawcState) {
-    // Each toplevel uses ITS OWN host's logical_size if known, else the
-    // primary-output cached size as a fallback. Going through
+    // Each toplevel uses its own host's real SurfaceView size. If the
+    // Activity has not registered yet, leave the configure pending rather
+    // than sending a service-side display-size guess or configure(0,0).
+    //
+    // Going through
     // `send_pending_configure` keeps us from re-sending an identical
     // configure when nothing changed (e.g. Register and SurfaceChanged
     // arrive back-to-back with the same dimensions): vkcube's Vulkan WSI
     // wedges if it sees a duplicate configure between its first and
     // second commit.
-    let primary = state.output_logical_size;
-    for toplevel in &state.toplevels {
-        let (w, h) = state
+    let toplevels = state.toplevels.clone();
+    for toplevel in &toplevels {
+        let Some(host_id) = state
             .toplevel_to_host
             .get(toplevel.wl_surface())
-            .and_then(|id| state.hosts.get(id))
-            .map(|host| host.logical_size)
-            .unwrap_or(primary);
-        let fullscreen = state
-            .toplevel_to_host
-            .get(toplevel.wl_surface())
-            .map(|id| state.host_fullscreen(id))
-            .unwrap_or(false);
-        toplevel.with_pending_state(|s| {
-            s.size = Some((w, h).into());
-        });
-        crate::compositor::set_toplevel_fullscreen_state(toplevel, fullscreen, None);
-        toplevel.send_pending_configure();
+        else {
+            continue;
+        };
+        if let Some((w, h)) = state.configure_toplevel_for_host(toplevel, host_id) {
+            toplevel.send_pending_configure();
+            crate::gtk3_menus_workaround::prime_toplevel(state, toplevel.wl_surface(), w, h);
+        }
     }
 }
