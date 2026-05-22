@@ -15,11 +15,14 @@ _pkg=me.phie.tawc
 _distros=/data/data/$_pkg/distros
 
 _lib_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-_repo_dir=$(cd "$_lib_dir/../.." && pwd)
-TAWC_EXEC="${TAWC_EXEC:-$_repo_dir/scripts/tawc-exec.sh}"
+
+if [ -z "${ANDROID_SERIAL:-}" ]; then
+    # shellcheck source=select-device.sh
+    source "$_lib_dir/select-device.sh"
+fi
 
 _probe='for d in '"$_distros"'/*/metadata.json; do test -f "$d" && basename "$(dirname "$d")"; done; true'
-_ids=$("$TAWC_EXEC" /system/bin/sh -c "$_probe" 2>/dev/null \
+_ids=$(adb shell "run-as $_pkg /system/bin/sh -c '$_probe'" 2>/dev/null \
        | tr -d '\r' \
        | awk 'NF' \
        | sort -u)
