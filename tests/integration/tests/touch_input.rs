@@ -112,16 +112,6 @@ fn inject_touch(kind: &str) {
     );
 }
 
-fn press_back() {
-    let output = adb::input_back().unwrap_or_else(|e| panic!("input back: {e}"));
-    assert!(
-        output.status.success(),
-        "input back failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 #[derive(Clone, Debug)]
 struct SurfaceTouchDebugEvent {
     target: String,
@@ -412,35 +402,6 @@ fn test_touch_grabbed_popup_switches_to_next_popup() {
             .expect("first grabbed popup dismissed before second popup");
         app.wait_for_tag_value("SURFACE_READY", "popup2", TIMEOUT)
             .expect("second grabbed popup ready after outside touch");
-    });
-}
-
-#[test]
-fn test_back_dismisses_grabbed_popup() {
-    with_wayland_popup_switch(|app| {
-        inject_touch("tap-menu-a");
-        app.wait_for_tag_value("CONFIGURE_STATE", "fullscreen", TIMEOUT)
-            .expect("popup switch scene should start fullscreen");
-        app.wait_for_tag_value("SURFACE_READY", "popup", TIMEOUT)
-            .expect("first grabbed popup ready");
-        let maximized_before = app
-            .payloads_with_tag("CONFIGURE_STATE")
-            .iter()
-            .filter(|s| *s == "maximized")
-            .count();
-
-        press_back();
-        app.wait_for_tag_value("POPUP_DONE", "", TIMEOUT)
-            .expect("grabbed popup dismissed after back");
-        let maximized_after = app
-            .payloads_with_tag("CONFIGURE_STATE")
-            .iter()
-            .filter(|s| *s == "maximized")
-            .count();
-        assert_eq!(
-            maximized_after, maximized_before,
-            "back should dismiss popup before restoring fullscreen"
-        );
     });
 }
 

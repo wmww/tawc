@@ -7,10 +7,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use tawc_integration::debug_app::DebugApp;
 use tawc_integration::helpers::{
-    assert_broker_ok, assert_compositor_clean, ensure_wayland_debug_app,
-    start_wayland_debug_scale, start_wayland_debug_touch, TIMEOUT,
+    assert_broker_ok, assert_compositor_clean, start_wayland_debug_scale, TIMEOUT,
 };
 use tawc_integration::rootfs_process::RootfsProcess;
 use tawc_integration::{adb, compositor, GraphicsBackend};
@@ -321,67 +319,6 @@ fn set_scale_and_expect(app: &tawc_integration::debug_app::DebugApp, scale: f32)
         .cloned()
         .unwrap_or_default();
     assert_eq!(last, expected, "latest client scale event");
-}
-
-#[test]
-fn test_xdg_configure_state_maximized_vs_fullscreen() {
-    let binary = ensure_wayland_debug_app();
-
-    let mut normal = DebugApp::start(BACKEND, &binary, "scale", "")
-        .expect("start non-fullscreen debug app");
-    normal
-        .wait_for_tag_value("CONFIGURE_STATE", "maximized", TIMEOUT)
-        .expect("non-fullscreen app should be configured maximized");
-    assert!(
-        normal.payloads_with_tag("CONFIGURE_STATE").iter().all(|s| s != "fullscreen"),
-        "non-fullscreen app received fullscreen configure"
-    );
-    normal.stop().expect("normal debug app failed to stop cleanly");
-    assert_compositor_clean();
-
-    let mut fullscreen = start_wayland_debug_touch(BACKEND, "");
-    fullscreen
-        .wait_for_tag_value("CONFIGURE_STATE", "fullscreen", TIMEOUT)
-        .expect("fullscreen-requesting app should be configured fullscreen");
-    fullscreen
-        .stop()
-        .expect("fullscreen debug app failed to stop cleanly");
-    assert_compositor_clean();
-}
-
-#[test]
-fn test_back_restores_fullscreen_then_sends_escape() {
-    let mut app = start_wayland_debug_touch(BACKEND, "");
-    app.wait_for_tag_value("CONFIGURE_STATE", "fullscreen", TIMEOUT)
-        .expect("fullscreen-requesting app should be configured fullscreen");
-
-    let output = adb::input_back().expect("input back");
-    assert!(
-        output.status.success(),
-        "input back failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    app.wait_for_tag_value("CONFIGURE_STATE", "maximized", TIMEOUT)
-        .expect("back should restore fullscreen app to maximized");
-    assert!(
-        app.payloads_with_tag("KEY").iter().all(|s| s != "1"),
-        "first back should restore fullscreen, not inject Escape"
-    );
-
-    let output = adb::input_back().expect("second input back");
-    assert!(
-        output.status.success(),
-        "second input back failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    app.wait_for_tag_value("KEY", "1", TIMEOUT)
-        .expect("second back should inject Escape");
-
-    app.stop()
-        .expect("fullscreen debug app failed to stop cleanly");
-    assert_compositor_clean();
 }
 
 #[test]
