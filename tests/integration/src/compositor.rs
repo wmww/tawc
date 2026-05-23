@@ -80,12 +80,7 @@ pub fn query_state_once() -> Result<CompositorState, String> {
 }
 
 fn parse_compositor_state(line: &str) -> Option<CompositorState> {
-    let payload = if let Some(idx) = line.find("COMPOSITOR_STATE:") {
-        &line[idx + "COMPOSITOR_STATE:".len()..]
-    } else {
-        line
-    };
-    parse_compositor_state_payload(payload)
+    parse_compositor_state_payload(line)
 }
 
 fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {

@@ -4,10 +4,8 @@
 //! TawcState (compositor.rs) owns Wayland protocol state; this module
 //! turns that protocol state into pixels.
 
-use std::collections::HashSet;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use log::{error, info};
@@ -30,7 +28,6 @@ use smithay::backend::renderer::utils::{
     draw_render_elements, CommitCounter, DamageSet, OpaqueRegions,
 };
 use smithay::reexports::wayland_server::protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface};
-use smithay::reexports::wayland_server::Resource;
 use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer as BufferCoord, Physical, Rectangle, Scale, Size, Transform};
 
@@ -55,7 +52,6 @@ const BACKGROUND_COLOR: Color32F = Color32F::new(0.1059, 0.1059, 0.1333, 1.0);
 /// Defaults to `true` so a fresh process matches the historical
 /// behaviour before any setting has been pushed in.
 pub static TINT_BUFFERS_BY_TYPE: AtomicBool = AtomicBool::new(true);
-static LOGGED_SHM_BUFFERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 /// Width, as a fraction of the buffer, of the band along each buffer edge
 /// over which the buffer-type tint fades from full strength at the
@@ -399,11 +395,6 @@ fn surface_kind_for_buffer(buffer: &WlBuffer) -> (SurfaceKind, bool) {
     }
     match buffer_type(buffer) {
         Some(BufferType::Shm) => {
-            let logged = LOGGED_SHM_BUFFERS.get_or_init(|| Mutex::new(HashSet::new()));
-            let id = format!("{:?}", buffer.id());
-            if logged.lock().unwrap().insert(id) {
-                info!("SHM buffer imported: {:?}", buffer.id());
-            }
             (SurfaceKind::Shm, false)
         }
         _ => (SurfaceKind::Shm, false),

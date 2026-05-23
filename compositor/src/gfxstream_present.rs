@@ -16,7 +16,7 @@ unsafe fn tawc_gfxstream_lookup_ahb(_handle: u32) -> *mut ndk_sys::AHardwareBuff
     std::ptr::null_mut()
 }
 
-use log::{error, info};
+use log::error;
 use smithay::backend::renderer::ExternalBufferData;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
@@ -42,7 +42,6 @@ impl GlobalDispatch<TawcGfxstream, ()> for TawcState {
         data_init: &mut DataInit<'_, Self>,
     ) {
         data_init.init(resource, ());
-        info!("gfxstream_present: client bound tawc_gfxstream");
     }
 }
 
@@ -62,7 +61,7 @@ impl Dispatch<TawcGfxstream, ()> for TawcState {
                 colorbuffer_id,
                 width,
                 height,
-                format,
+                format: _format,
             } => {
                 // SAFETY: tawc_gfxstream_lookup_ahb is a plain C entry
                 // point inside libgfxstream_backend.so. Returns a
@@ -82,15 +81,7 @@ impl Dispatch<TawcGfxstream, ()> for TawcState {
                 // Adopt the AHB ref; WleglBufferData releases it when
                 // the wl_buffer is destroyed.
                 let data = WleglBufferData::from_ahb(ahb, width, height, state.render.importer);
-                let buffer = data_init.init(id, ExternalBufferData::new(data));
-                info!(
-                    "gfxstream_present: bound colorbuffer_id={} as wl_buffer id={} {}x{} fmt=0x{:08x}",
-                    colorbuffer_id,
-                    buffer.id().protocol_id(),
-                    width,
-                    height,
-                    format,
-                );
+                data_init.init(id, ExternalBufferData::new(data));
             }
             tawc_gfxstream::Request::Destroy => {
                 // Destructor; live wl_buffers stay alive until they're

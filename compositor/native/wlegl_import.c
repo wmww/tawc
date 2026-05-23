@@ -23,7 +23,6 @@
 
 #define LOG_TAG "tawc-native"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 
 // native_handle_t isn't in the public NDK. Mirror the tiny struct here —
 // it's a stable ABI documented by cutils/native_handle.h.
@@ -129,8 +128,6 @@ AHardwareBuffer *tawc_wlegl_import(
         return NULL;
     }
 
-    LOGI("tawc_wlegl_import: ok, ahb=%p %ux%u fmt=%u usage=0x%llx",
-         (void *)ahb, width, height, format, (unsigned long long)usage);
     return ahb;
 }
 

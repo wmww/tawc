@@ -541,12 +541,6 @@ impl XwmHandler for TawcState {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        info!(
-            "xwayland: map_window_request title={:?} class={:?} geo={:?}",
-            window.title(),
-            window.class(),
-            window.geometry(),
-        );
         // Translate X11 parent/transient state into the shared desktop
         // host-placement policy.
         let assignment = assign_host_for_x11(self, &window);
@@ -580,7 +574,6 @@ impl XwmHandler for TawcState {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        info!("xwayland: mapped_OR {:?}", window);
         let assignment = assign_host_for_x11(self, &window);
         self.x11_surfaces.push(window.clone());
         window
@@ -594,7 +587,6 @@ impl XwmHandler for TawcState {
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        info!("xwayland: unmapped {:?}", window);
         let host = self.x11_surface_host(&window);
         if let Some(wl) = window.wl_surface() {
             self.desktop.remove_surface(&wl);
@@ -896,11 +888,6 @@ fn associate_x11_surface(state: &mut TawcState, surface: X11Surface) -> bool {
             (assignment.host, assignment.spawn_activity)
         }
     };
-    info!(
-        "xwayland: associated X11 surface {} to host {}",
-        surface.window_id(),
-        host,
-    );
     state.desktop.assign_surface_to_host(wl.clone(), host.clone());
     state.desktop.ensure_x11_window(wl, surface.clone());
     state.toplevels_changed = true;

@@ -20,7 +20,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use log::{debug, info};
 use smithay::reexports::calloop::channel;
 use smithay::reexports::wayland_server::backend::ObjectId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -91,12 +90,10 @@ pub fn send_text_input_event(event: TextInputEvent) {
 // ---------------------------------------------------------------------------
 
 fn show_keyboard(activity_id: &str) {
-    info!("text_input: requesting keyboard show for {}", activity_id);
     crate::show_keyboard_from_native(activity_id);
 }
 
 fn hide_keyboard(activity_id: &str) {
-    info!("text_input: requesting keyboard hide for {}", activity_id);
     crate::hide_keyboard_from_native(activity_id);
 }
 
@@ -117,10 +114,6 @@ fn update_editable_text(activity_id: &str, text: &str, sel_start: i32, sel_end: 
 /// caches the values and calls `InputMethodManager.restartInput` so the
 /// next `onCreateInputConnection` builds an `EditorInfo` carrying them.
 fn push_input_type_to_android(activity_id: &str, input_type: i32, ime_flags: i32) {
-    debug!(
-        "text_input: pushing inputType=0x{:x} imeFlags=0x{:x} to {}",
-        input_type, ime_flags, activity_id
-    );
     crate::update_ime_content_type_from_native(activity_id, input_type, ime_flags);
 }
 
@@ -288,14 +281,12 @@ impl TextInputState {
         // enable resets all state from the previous enable/disable cycle.
         let mut just_enabled = false;
         if state.pending_disable {
-            info!("text_input: commit disable");
             state.enabled = false;
             state.surrounding = None;
             state.current_preedit = None;
             state.pending_content_hint = 0;
             state.pending_content_purpose = 0;
         } else if state.pending_enable {
-            info!("text_input: commit enable");
             state.enabled = true;
             // Per spec: enable resets all associated state.
             state.surrounding = None;
@@ -366,8 +357,6 @@ impl TextInputState {
                 // just means the IME also needs to drop its prediction model.
                 if let Some(activity_id) = focused_activity_id {
                     update_editable_text(activity_id, &text, sel_start, sel_end);
-                } else {
-                    debug!("text_input: focused surface has no activity host; skipping Android Editable sync");
                 }
             }
         }
@@ -869,7 +858,6 @@ impl GlobalDispatch<ZwpTextInputManagerV3, ()> for TawcState {
         data_init: &mut DataInit<'_, Self>,
     ) {
         data_init.init(resource, ());
-        info!("Client bound zwp_text_input_manager_v3");
     }
 }
 
@@ -886,7 +874,6 @@ impl Dispatch<ZwpTextInputManagerV3, ()> for TawcState {
         match request {
             zwp_text_input_manager_v3::Request::GetTextInput { id, seat: _ } => {
                 let ti = data_init.init(id, TextInputData);
-                info!("Created zwp_text_input_v3: {:?}", ti.id());
                 state.text_input_state.add_instance(ti);
             }
             zwp_text_input_manager_v3::Request::Destroy => {}

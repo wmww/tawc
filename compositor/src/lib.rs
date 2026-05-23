@@ -362,7 +362,6 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnBackPre
     activity_id: JString,
 ) {
     let activity_id = jstring_to_id(&mut env, activity_id);
-    info!("nativeOnBackPressed({})", activity_id);
     host::send_surface_event(SurfaceEvent::BackPressed { activity_id });
 }
 
@@ -376,13 +375,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnHardwar
     repeat_count: i32,
 ) -> jboolean {
     let activity_id = jstring_to_id(&mut env, activity_id);
-    let Some(evdev_keycode) = keymap::android_to_evdev(keycode) else {
-        info!(
-            "Unhandled hardware key event: activity={} keycode={} pressed={}",
-            activity_id, keycode, pressed
-        );
-        return 0;
-    };
+    let Some(evdev_keycode) = keymap::android_to_evdev(keycode) else { return 0 };
 
     host::send_surface_event(SurfaceEvent::HardwareKey {
         activity_id,
@@ -448,11 +441,10 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSendKeyEv
     _class: JClass,
     keycode: i32,
 ) {
-    match keymap::android_to_evdev(keycode) {
-        Some(evdev) => text_input::send_text_input_event(
+    if let Some(evdev) = keymap::android_to_evdev(keycode) {
+        text_input::send_text_input_event(
             text_input::TextInputEvent::KeyPress { keycode: evdev },
-        ),
-        None => info!("Unhandled key event: keycode={}", keycode),
+        );
     }
 }
 
@@ -463,14 +455,13 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSendKeySt
     keycode: i32,
     pressed: bool,
 ) {
-    match keymap::android_to_evdev(keycode) {
-        Some(evdev) => text_input::send_text_input_event(
+    if let Some(evdev) = keymap::android_to_evdev(keycode) {
+        text_input::send_text_input_event(
             text_input::TextInputEvent::KeyState {
                 keycode: evdev,
                 pressed,
             },
-        ),
-        None => info!("Unhandled key state: keycode={} pressed={}", keycode, pressed),
+        );
     }
 }
 

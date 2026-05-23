@@ -556,7 +556,7 @@ class TaskManagerActivity : AppCompatActivity() {
                             rootfsPath = store.rootfsDir(inst.id).absolutePath,
                             installId = inst.id,
                             includeChroot = inst.method == ChrootMethod.KEY,
-                            log = { Log.d(TAG, "stop-all ${inst.id}: $it") },
+                            log = {},
                         )
                     }
                 }

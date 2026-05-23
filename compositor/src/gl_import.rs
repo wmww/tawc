@@ -4,7 +4,7 @@
 //! eglGetNativeClientBufferANDROID + eglCreateImageKHR + glEGLImageTargetTexture2DOES.
 
 use std::ffi::{c_void, CString};
-use log::{info, error};
+use log::error;
 
 use smithay::backend::egl::ffi as egl_ffi;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -167,8 +167,6 @@ impl AhbTextureImporter {
         (self.gl_tex_parameteri)(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         (self.gl_tex_parameteri)(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         (self.gl_bind_texture)(GL_TEXTURE_EXTERNAL_OES, 0);
-
-        info!("GL texture {} created from EGLImage (EXTERNAL_OES) {}x{}", tex, width, height);
 
         let size = Size::from((width, height));
         let texture = GlesTexture::from_raw_with_flags(

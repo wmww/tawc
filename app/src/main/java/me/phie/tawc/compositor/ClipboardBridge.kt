@@ -26,7 +26,6 @@ object ClipboardBridge {
         if (text == suppressText && now <= suppressUntilMs) {
             suppressText = null
             suppressUntilMs = 0
-            Log.d(TAG, "ClipboardBridge: suppressed compositor-originated clipboard callback")
             return@OnPrimaryClipChangedListener
         }
 

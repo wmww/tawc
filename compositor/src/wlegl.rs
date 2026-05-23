@@ -17,8 +17,6 @@ use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use log::info;
-
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{ExternalBuffer, ExternalBufferData, ExternalBufferImportError};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
@@ -227,10 +225,6 @@ impl ExternalBuffer for WleglBufferData {
             Err(err) => return Some(Err(err)),
         };
         *self.texture.lock().unwrap() = Some(texture.clone());
-        info!(
-            "wlegl: imported ANativeWindowBuffer as texture {}x{}",
-            self.width, self.height
-        );
         WLEGL_IMPORT_TEXTURE_TOTAL.fetch_add(1, Ordering::Relaxed);
         Some(Ok(texture))
     }
@@ -275,7 +269,6 @@ impl GlobalDispatch<AndroidWlegl, ()> for TawcState {
         data_init: &mut DataInit<'_, Self>,
     ) {
         data_init.init(resource, ());
-        info!("Client bound android_wlegl");
     }
 }
 
@@ -394,10 +387,6 @@ impl Dispatch<AndroidWlegl, ()> for TawcState {
                     texture: Mutex::new(None),
                 };
                 data_init.init(id, ExternalBufferData::new(data));
-                info!(
-                    "wlegl: create_buffer {}x{} stride={} fmt={} usage=0x{:x}",
-                    width, height, stride, format, usage_u64
-                );
             }
             android_wlegl::Request::GetServerBufferHandle { .. } => {
                 resource.post_error(

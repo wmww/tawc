@@ -1,6 +1,5 @@
 package me.phie.tawc.dev
 
-import android.util.Log
 import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.Settings
 import me.phie.tawc.compositor.NativeBridge
@@ -27,8 +26,6 @@ import me.phie.tawc.compositor.NativeBridge
  */
 internal object SettingsActions {
 
-    private const val TAG = "tawc"
-
     fun registerAll() {
         ActionRegistry.register("set-graphics-backend", SetGraphicsBackendAction)
         ActionRegistry.register("get-graphics-backend", GetGraphicsBackendAction)
@@ -50,7 +47,6 @@ internal object SettingsActions {
                         "Valid: ${GraphicsBackend.entries.joinToString { it.key }}"
                 )
             Settings.graphicsBackend = picked
-            Log.i(TAG, "set-graphics-backend: ${picked.key}")
             return 0
         }
     }
@@ -71,7 +67,6 @@ internal object SettingsActions {
             val scale = Settings.snapOutputScale(parsed)
             Settings.outputScale = scale
             NativeBridge.nativeSetOutputScale(scale)
-            Log.i(TAG, "set-output-scale: ${Settings.formatOutputScale(scale)}")
             ctx.out(String.format(java.util.Locale.US, "%.2f", scale))
             return 0
         }
@@ -92,7 +87,6 @@ internal object SettingsActions {
                 ?: return ctx.fail("set-xwayland: invalid boolean '$raw'")
             Settings.xwayland = enabled
             NativeBridge.nativeSetXwaylandEnabled(enabled)
-            Log.i(TAG, "set-xwayland: $enabled")
             ctx.out(enabled.toString())
             return 0
         }
@@ -113,7 +107,6 @@ internal object SettingsActions {
                 ?: return ctx.fail("set-gtk3-broken-menus-workaround: invalid boolean '$raw'")
             Settings.gtk3BrokenMenusWorkaround = enabled
             NativeBridge.nativeSetGtk3BrokenMenusWorkaround(enabled)
-            Log.i(TAG, "set-gtk3-broken-menus-workaround: $enabled")
             ctx.out(enabled.toString())
             return 0
         }

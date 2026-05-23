@@ -837,8 +837,6 @@ impl XdgShellHandler for TawcState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        info!("New toplevel surface: {:?}", surface.wl_surface().id());
-
         // Run the desktop registry's assignment policy.
         // The result tells us whether to spawn a new Activity (phase 5+).
         let assignment = self.assign_toplevel_to_host(&surface);
@@ -1102,13 +1100,11 @@ impl ClientData for ClientState {
     fn initialized(&self, client_id: ClientId) {
         self.client_ids.lock().unwrap().push(client_id);
         self.client_count.fetch_add(1, Ordering::Relaxed);
-        info!("Wayland client initialized (total: {})", self.client_count.load(Ordering::Relaxed));
     }
 
     fn disconnected(&self, client_id: ClientId, _reason: DisconnectReason) {
         self.client_ids.lock().unwrap().retain(|id| id != &client_id);
         self.client_count.fetch_sub(1, Ordering::Relaxed);
-        info!("Wayland client disconnected: {:?} (total: {})", _reason, self.client_count.load(Ordering::Relaxed));
     }
 }
 
@@ -1139,7 +1135,6 @@ impl SelectionHandler for TawcState {
 
         if ty == SelectionTarget::Clipboard {
             if let Some(mime_types) = mime_types {
-                log::debug!("clipboard: Wayland client offered clipboard mimes: {:?}", mime_types);
                 crate::clipboard::queue_wayland_pull(mime_types);
             }
         }

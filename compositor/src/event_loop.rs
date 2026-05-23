@@ -184,15 +184,11 @@ fn handle_hardware_key(
     activity_id: &ActivityId,
     evdev_keycode: u32,
     pressed: bool,
-    repeat_count: u32,
+    _repeat_count: u32,
 ) {
     let key = (activity_id.clone(), evdev_keycode);
     if pressed {
         if !host_can_receive_hardware_key(data, activity_id) {
-            info!(
-                "Ignoring hardware key for non-foreground/unknown host {} key={} pressed=true repeat={}",
-                activity_id, evdev_keycode, repeat_count
-            );
             return;
         }
         if data.hardware_keys_down.insert(key) {
@@ -245,7 +241,6 @@ fn dismiss_topmost_grabbing_popup(data: &mut TawcState, activity_id: &ActivityId
 
 fn handle_back_pressed(data: &mut TawcState, activity_id: &ActivityId) {
     if data.desktop.foreground_host() != Some(activity_id) || !data.hosts.contains_key(activity_id) {
-        info!("Ignoring BackPressed for non-foreground/unknown host {}", activity_id);
         return;
     }
 
@@ -497,7 +492,6 @@ pub fn run(
                 }
             }
             ClipboardEvent::PullWaylandSelection { mime_type } => {
-                log::debug!("clipboard: requesting Wayland clipboard as {}", mime_type);
                 let (read_fd, write_fd) = match crate::clipboard::pipe() {
                     Ok(fds) => fds,
                     Err(e) => {
@@ -516,7 +510,7 @@ pub fn run(
                         }
                         crate::clipboard::read_fd_for_android(read_fd, "wayland");
                     }
-                    Err(e) => log::debug!("clipboard: Wayland pull skipped: {:?}", e),
+                    Err(_) => {}
                 }
             }
         }
@@ -590,10 +584,6 @@ pub fn run(
                 data.output_logical_size.0,
                 data.output_logical_size.1,
                 data.output_advertised,
-            );
-            info!(
-                "COMPOSITOR_STATE: {}",
-                payload,
             );
             let _ = response.send(payload);
         }
@@ -726,22 +716,6 @@ pub fn run(
             error!("flush_clients error: {}", e);
         }
 
-        // Periodic heartbeat — every 300 actual frames. Guard on
-        // frame_count > 0 so the log doesn't fire every tick when the
-        // compositor is idle (no foreground host means rendering is
-        // skipped entirely and frame_count stays at 0 forever).
-        if data.frame_count > 0 && data.frame_count.is_multiple_of(300) {
-            let (surfaces_wlegl, surfaces_shm) = data.attached_buffer_counts();
-            info!(
-                "Compositor: {} frames, {} toplevels, {} wlegl, {} shm, {} hosts",
-                data.frame_count,
-                toplevel_count(data),
-                surfaces_wlegl,
-                surfaces_shm,
-                data.hosts.len(),
-            );
-        }
-
         TimeoutAction::ToDuration(Duration::from_millis(16))
     })?;
 
@@ -764,7 +738,6 @@ pub fn run(
     let listener_source = Generic::new(listener, Interest::READ, Mode::Level);
     loop_handle.insert_source(listener_source, |_, source, data: &mut TawcState| {
         while let Some(stream) = source.accept().map_err(std::io::Error::other)? {
-            info!("New Wayland client connected");
             let client_state = ClientState::new(data.client_count.clone(), data.client_ids.clone());
             if let Err(e) = data
                 .display_handle
@@ -958,9 +931,6 @@ fn handle_surface_event(
         }
         SurfaceEvent::CloseAllClientsForTest { response } => {
             let closed = data.request_close_all_client_windows_for_test();
-            if closed > 0 {
-                info!("test-init requested close for {} client windows", closed);
-            }
             let _ = response.send(closed);
         }
     }

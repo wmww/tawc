@@ -258,7 +258,6 @@ object NativeBridge {
     /** Called from native when a Wayland client enables text input. */
     @JvmStatic
     fun onShowKeyboard(activityId: String) {
-        Log.d(TAG, "onShowKeyboard (from compositor): $activityId")
         synchronized(pendingKeyboardShownByActivity) {
             pendingKeyboardShownByActivity[activityId] = true
         }
@@ -272,7 +271,6 @@ object NativeBridge {
     /** Called from native when a Wayland client disables text input. */
     @JvmStatic
     fun onHideKeyboard(activityId: String) {
-        Log.d(TAG, "onHideKeyboard (from compositor): $activityId")
         synchronized(pendingKeyboardShownByActivity) {
             pendingKeyboardShownByActivity[activityId] = false
         }
@@ -294,7 +292,6 @@ object NativeBridge {
      */
     @JvmStatic
     fun spawnActivity(activityId: String) {
-        Log.d(TAG, "spawnActivity from native: $activityId")
         mainHandler.post {
             val ctx = appContext ?: run {
                 Log.e(TAG, "spawnActivity($activityId): no appContext yet")
@@ -318,7 +315,6 @@ object NativeBridge {
      */
     @JvmStatic
     fun finishActivity(activityId: String) {
-        Log.d(TAG, "finishActivity from native: $activityId")
         mainHandler.post {
             val service = serviceRef?.get()
             if (service == null) {
@@ -333,7 +329,6 @@ object NativeBridge {
                 synchronized(pendingFinishActivities) {
                     pendingFinishActivities.add(activityId)
                 }
-                Log.d(TAG, "finishActivity($activityId): no live Activity yet")
                 return@post
             }
             synchronized(pendingFinishActivities) {
@@ -348,7 +343,6 @@ object NativeBridge {
 
     @JvmStatic
     fun setActivityFullscreen(activityId: String, fullscreen: Boolean) {
-        Log.d(TAG, "setActivityFullscreen from native: $activityId fullscreen=$fullscreen")
         synchronized(fullscreenByActivity) {
             fullscreenByActivity[activityId] = fullscreen
         }
@@ -368,7 +362,6 @@ object NativeBridge {
         desktopName: String,
         iconPath: String,
     ) {
-        Log.d(TAG, "updateWindowMetadata from native: $activityId title=$title appId=$appId desktopId=$desktopId icon=$iconPath")
         mainHandler.post {
             serviceRef?.get()?.updateWindowMetadata(
                 activityId = activityId,
@@ -399,7 +392,6 @@ object NativeBridge {
      */
     @JvmStatic
     fun onContentTypeChanged(activityId: String, inputType: Int, imeFlags: Int) {
-        Log.d(TAG, "onContentTypeChanged $activityId inputType=0x${Integer.toHexString(inputType)} imeFlags=0x${Integer.toHexString(imeFlags)}")
         synchronized(imeEditorInfoByActivity) {
             imeEditorInfoByActivity[activityId] = inputType to imeFlags
         }
@@ -426,7 +418,6 @@ object NativeBridge {
      */
     @JvmStatic
     fun onUpdateEditableText(activityId: String, text: String, selStart: Int, selEnd: Int) {
-        Log.d(TAG, "onUpdateEditableText (from compositor): $activityId \"$text\" sel=$selStart..$selEnd")
         mainHandler.post {
             serviceRef?.get()
                 ?.getActivity(activityId)
@@ -438,7 +429,6 @@ object NativeBridge {
      * Android's system clipboard text. */
     @JvmStatic
     fun onSetAndroidClipboardText(text: String) {
-        Log.d(TAG, "onSetAndroidClipboardText (from compositor): ${text.length} chars")
         mainHandler.post {
             ClipboardBridge.setTextFromCompositor(text)
         }

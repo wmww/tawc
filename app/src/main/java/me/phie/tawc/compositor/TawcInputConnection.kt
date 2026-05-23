@@ -12,7 +12,6 @@ import android.view.inputmethod.ExtractedText
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputContentInfo
 import android.view.inputmethod.TextAttribute
-import android.util.Log
 
 /**
  * Custom InputConnection that bridges Android IME events to the Wayland
@@ -154,12 +153,10 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
     internal fun targetsView(view: View): Boolean = targetView === view
 
     override fun beginBatchEdit(): Boolean {
-        Log.d(TAG, "InputConnection.beginBatchEdit")
         return super.beginBatchEdit()
     }
 
     override fun endBatchEdit(): Boolean {
-        Log.d(TAG, "InputConnection.endBatchEdit")
         return super.endBatchEdit()
     }
 
@@ -188,7 +185,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
                 val composingEnd = BaseInputConnection.getComposingSpanEnd(ed)
                 if (composingStart >= 0 && composingEnd > composingStart &&
                     str == ed.subSequence(composingStart, composingEnd).toString()) {
-                    Log.d(TAG, "InputConnection.commitText: \"$str\" no-op (matches composing region)")
                     BaseInputConnection.removeComposingSpans(ed)
                     composingRegionIsPreedit = false
                     return true
@@ -198,7 +194,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         if (newCursorPosition != 1) return false
         val deltas = computeReplaceDeltas() ?: return false
         val (before, after) = deltas
-        Log.d(TAG, "InputConnection.commitText: \"$str\" cursorPos=$newCursorPosition delete=$before/$after")
         super.commitText(text, newCursorPosition)
         // Pass the delete deltas (if any) through to the compositor so the
         // wire delete + commit happens atomically inside one done() — the
@@ -222,7 +217,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
 
     override fun commitCompletion(text: CompletionInfo?): Boolean {
         val str = text?.text?.toString() ?: return false
-        Log.d(TAG, "InputConnection.commitCompletion: \"$str\"")
         return commitText(str, 1)
     }
 
@@ -231,12 +225,10 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         val offset = info.offset
         val oldText = info.oldText?.toString() ?: return false
         val newText = info.newText?.toString() ?: return false
-        Log.d(TAG, "InputConnection.commitCorrection: $offset \"$oldText\" -> \"$newText\"")
         if (offset < 0) return false
         val ed = editable ?: return false
         if (offset + oldText.length > ed.length) return false
         if (ed.subSequence(offset, offset + oldText.length).toString() != oldText) {
-            Log.d(TAG, "InputConnection.commitCorrection: old text mismatch")
             return false
         }
         return replaceText(offset, offset + oldText.length, newText, 1, null)
@@ -256,22 +248,16 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         val str = text.toString()
         val ed = editable ?: return false
         if (start < 0 || end < 0 || start > end || start > ed.length || end > ed.length) {
-            Log.d(TAG, "InputConnection.replaceText: \"$str\" $start..$end out of bounds len=${ed.length}")
             return false
         }
 
         val cursor = wireCursor.coerceIn(0, ed.length)
         if (cursor < start || cursor > end) {
-            Log.d(
-                TAG,
-                "InputConnection.replaceText: \"$str\" $start..$end not representable at cursor=$cursor",
-            )
             return false
         }
 
         val before = cursor - start
         val after = end - cursor
-        Log.d(TAG, "InputConnection.replaceText: \"$str\" $start..$end cursorPos=$newCursorPosition delete=$before/$after")
         val ok = super.replaceText(start, end, text, newCursorPosition, textAttribute)
         if (!ok) return false
         NativeBridge.nativeCommitText(str, before, after)
@@ -287,7 +273,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         if (newCursorPosition != 1) return false
         val deltas = computeReplaceDeltas() ?: return false
         val (before, after) = deltas
-        Log.d(TAG, "InputConnection.setComposingText: \"$str\" cursorPos=$newCursorPosition delete=$before/$after")
         super.setComposingText(text, newCursorPosition)
         NativeBridge.nativeSetComposingText(str, before, after)
         wireCursor = (wireCursor - before).coerceAtLeast(0)
@@ -306,7 +291,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
     ): Boolean = setComposingText(text, newCursorPosition)
 
     override fun setComposingRegion(start: Int, end: Int): Boolean {
-        Log.d(TAG, "InputConnection.setComposingRegion: $start..$end")
         super.setComposingRegion(start, end)
         // The newly-marked range is committed text on the Wayland side
         // (setComposingRegion doesn't insert anything). Next replace must
@@ -319,7 +303,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         setComposingRegion(start, end)
 
     override fun finishComposingText(): Boolean {
-        Log.d(TAG, "InputConnection.finishComposingText")
         super.finishComposingText()
         NativeBridge.nativeFinishComposingText()
         wireCursor += activePreeditUtf16Length
@@ -425,7 +408,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
         if (beforeLength < 0 || afterLength < 0) return false
-        Log.d(TAG, "InputConnection.deleteSurroundingText: before=$beforeLength after=$afterLength")
         // Snapshot key counts BEFORE super collapses the deleted span.
         val keys = unitsToKeyPlan(beforeLength, afterLength)
         super.deleteSurroundingText(beforeLength, afterLength)
@@ -447,7 +429,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
     }
 
     override fun performEditorAction(actionCode: Int): Boolean {
-        Log.d(TAG, "InputConnection.performEditorAction: actionCode=$actionCode")
         // IME action button (Go, Done, Search, etc.) — treat as Enter
         NativeBridge.nativeSendKeyEvent(KeyEvent.KEYCODE_ENTER)
         return true
@@ -469,7 +450,6 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         // Only handle key-down events to avoid double-processing
         if (event.action != KeyEvent.ACTION_DOWN) return true
 
-        Log.d(TAG, "InputConnection.sendKeyEvent: keyCode=${event.keyCode} meta=${event.metaState}")
         if (event.isCtrlPressed || event.isAltPressed || event.isShiftPressed) {
             emitModifiedKey(event)
         } else {
@@ -589,7 +569,4 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
         return true
     }
 
-    companion object {
-        private const val TAG = "tawc"
-    }
 }

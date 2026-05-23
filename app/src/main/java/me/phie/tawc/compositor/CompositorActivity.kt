@@ -74,7 +74,6 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             compositorService = (binder as CompositorService.LocalBinder).getService()
             compositorService?.registerActivity(activityId, this@CompositorActivity)
-            Log.d(TAG, "Bound to CompositorService for $activityId")
         }
         override fun onServiceDisconnected(name: ComponentName) {
             compositorService = null
@@ -97,9 +96,7 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
             return
         }
         activityId = id
-        Log.d(TAG, "CompositorActivity onCreate activityId=$activityId")
         if (NativeBridge.consumePendingFinishActivity(activityId)) {
-            Log.d(TAG, "CompositorActivity $activityId had pending finish — finishing")
             finishAndRemoveTask()
             return
         }

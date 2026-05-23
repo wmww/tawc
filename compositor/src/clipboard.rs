@@ -14,7 +14,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use smithay::reexports::calloop::channel;
 use smithay::wayland::selection::SelectionTarget;
 
@@ -80,7 +80,6 @@ pub fn send_android_text(text: String) {
 
 pub fn queue_wayland_pull(mime_types: Vec<String>) {
     let Some(mime_type) = preferred_text_mime(&mime_types) else {
-        debug!("clipboard: no supported text MIME in {:?}", mime_types);
         return;
     };
     if let Some(sender) = CLIPBOARD_SENDER.lock().unwrap().as_ref() {
@@ -117,7 +116,6 @@ pub fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
 pub fn read_fd_for_android(fd: OwnedFd, label: &'static str) {
     let generation = READ_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     if READ_ACTIVE.swap(true, Ordering::AcqRel) {
-        debug!("clipboard: dropping {} pull while another pull is active", label);
         return;
     }
 
@@ -127,7 +125,6 @@ pub fn read_fd_for_android(fd: OwnedFd, label: &'static str) {
             let result = read_capped_utf8(fd);
             READ_ACTIVE.store(false, Ordering::Release);
             if generation != READ_GENERATION.load(Ordering::Acquire) {
-                debug!("clipboard: dropping stale {} selection pull", label);
                 return;
             }
             match result {
@@ -149,9 +146,7 @@ pub fn write_text_to_fd(fd: OwnedFd, text: String) {
         .name("clipboard-write-android".into())
         .spawn(move || {
             let mut file = File::from(fd);
-            if let Err(e) = file.write_all(text.as_bytes()) {
-                debug!("clipboard: selection write failed: {}", e);
-            }
+            let _ = file.write_all(text.as_bytes());
         }) {
         error!("clipboard: failed to spawn writer: {}", e);
     }

@@ -344,14 +344,12 @@ fn test_gtk4_renders_via_ahb() {
 /// `apps::test_firefox_launches` (which only checks that the process
 /// comes up).
 ///
-/// Earlier revisions counted "wlegl: imported ANativeWindowBuffer as
-/// texture" log lines in a 2-second window. That looked sensible — the
-/// AHB is hot, the import path runs every frame — but actually the
-/// compositor only logs an *import* the first time it sees a given AHB;
-/// subsequent commits of the same buffer come through the cached
-/// EGLImage and emit nothing. Firefox's WebRender-on-AHB path settles
-/// into a small ring (2-6 buffers) within the first few hundred ms, so
-/// post-launch the import-line count is zero even though every chrome
+/// Earlier revisions counted buffer import log lines in a 2-second
+/// window. That looked sensible, but the compositor only imports a given
+/// AHB once; subsequent commits of the same buffer come through the
+/// cached EGLImage and emit nothing. Firefox's WebRender-on-AHB path
+/// settles into a small ring (2-6 buffers) within the first few hundred
+/// ms, so post-launch import counts can be zero even though every chrome
 /// frame is rendering as AHB at 60 fps.
 ///
 /// Use the compositor state snapshot instead. It exposes the *currently

@@ -3,7 +3,6 @@ package me.phie.tawc.dev
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import android.view.KeyEvent
 import android.view.inputmethod.CompletionInfo
 import android.view.inputmethod.CorrectionInfo
@@ -93,9 +92,6 @@ import me.phie.tawc.tasks.ProcessScanner
  * | `query-state` | `NativeBridge.nativeQueryState()` (no main-loop hop, no focused activity required) |
  */
 internal object InputActions {
-
-    private const val TAG = "tawc"
-
     fun registerAll() {
         ActionRegistry.register("ic-commit-text", IcCommitTextAction)
         ActionRegistry.register("ic-commit-completion", IcCommitCompletionAction)
@@ -224,7 +220,6 @@ internal object InputActions {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
             val text = args["text"] ?: return ctx.fail("ic-commit-text: --arg text=... required")
             return withActiveInputConnection(ctx, "ic-commit-text") { ic ->
-                Log.d(TAG, "InputAction ic-commit-text \"$text\"")
                 ic.commitText(text, 1)
             }
         }
@@ -234,7 +229,6 @@ internal object InputActions {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
             val text = args["text"] ?: return ctx.fail("ic-commit-completion: --arg text=... required")
             return withActiveInputConnection(ctx, "ic-commit-completion") { ic ->
-                Log.d(TAG, "InputAction ic-commit-completion \"$text\"")
                 ic.commitCompletion(CompletionInfo(0, 0, text))
             }
         }
@@ -247,7 +241,6 @@ internal object InputActions {
             val newText = args["new"] ?: return ctx.fail("ic-commit-correction: --arg new=... required")
             if (offset < 0) return ctx.fail("ic-commit-correction: offset must be >= 0")
             return withActiveInputConnection(ctx, "ic-commit-correction") { ic ->
-                Log.d(TAG, "InputAction ic-commit-correction $offset \"$oldText\" -> \"$newText\"")
                 ic.commitCorrection(CorrectionInfo(offset, oldText, newText))
             }
         }
@@ -260,7 +253,6 @@ internal object InputActions {
             val text = args["text"] ?: return ctx.fail("ic-replace-text: --arg text=... required")
             if (start < 0 || end < 0) return ctx.fail("ic-replace-text: start/end must be >= 0")
             return withActiveInputConnection(ctx, "ic-replace-text") { ic ->
-                Log.d(TAG, "InputAction ic-replace-text $start..$end \"$text\"")
                 ic.replaceText(start, end, text, 1, null)
             }
         }
@@ -270,7 +262,6 @@ internal object InputActions {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
             val text = args["text"] ?: return ctx.fail("ic-set-composing-text: --arg text=... required")
             return withActiveInputConnection(ctx, "ic-set-composing-text") { ic ->
-                Log.d(TAG, "InputAction ic-set-composing-text \"$text\"")
                 ic.setComposingText(text, 1)
             }
         }
@@ -282,7 +273,6 @@ internal object InputActions {
             val end = argInt(args, "end") ?: return ctx.fail("ic-set-composing-region: --arg end=... required")
             if (start < 0 || end < 0) return ctx.fail("ic-set-composing-region: start/end must be >= 0")
             return withActiveInputConnection(ctx, "ic-set-composing-region") { ic ->
-                Log.d(TAG, "InputAction ic-set-composing-region $start..$end")
                 ic.setComposingRegion(start, end)
             }
         }
@@ -291,7 +281,6 @@ internal object InputActions {
     private object IcFinishComposingAction : BrokerAction {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
             return withActiveInputConnection(ctx, "ic-finish-composing") { ic ->
-                Log.d(TAG, "InputAction ic-finish-composing")
                 ic.finishComposingText()
             }
         }
@@ -303,7 +292,6 @@ internal object InputActions {
             val end = argInt(args, "end") ?: return ctx.fail("ic-set-selection: --arg end=... required")
             if (start < 0 || end < 0) return ctx.fail("ic-set-selection: start/end must be >= 0")
             return withActiveInputConnection(ctx, "ic-set-selection") { ic ->
-                Log.d(TAG, "InputAction ic-set-selection $start..$end")
                 ic.setSelection(start, end)
             }
         }
@@ -314,7 +302,6 @@ internal object InputActions {
             val before = argInt(args, "before", 0)!!
             val after = argInt(args, "after", 0)!!
             return withActiveInputConnection(ctx, "ic-delete-surrounding-text") { ic ->
-                Log.d(TAG, "InputAction ic-delete-surrounding-text $before/$after")
                 ic.deleteSurroundingText(before, after)
             }
         }
@@ -325,7 +312,6 @@ internal object InputActions {
             val before = argInt(args, "before", 0)!!
             val after = argInt(args, "after", 0)!!
             return withActiveInputConnection(ctx, "ic-delete-surrounding-text-codepoints") { ic ->
-                Log.d(TAG, "InputAction ic-delete-surrounding-text-codepoints $before/$after")
                 ic.deleteSurroundingTextInCodePoints(before, after)
             }
         }
@@ -345,7 +331,6 @@ internal object InputActions {
             val keycode = argInt(args, "keycode") ?: return ctx.fail("ic-send-key-event: --arg keycode=... required")
             if (keycode < 0) return ctx.fail("ic-send-key-event: keycode must be >= 0")
             return withActiveInputConnection(ctx, "ic-send-key-event") { ic ->
-                Log.d(TAG, "InputAction ic-send-key-event $keycode")
                 ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keycode))
             }
         }
@@ -361,7 +346,6 @@ internal object InputActions {
             if (argBool(args, "alt")) metaState = metaState or KeyEvent.META_ALT_ON
             if (argBool(args, "shift")) metaState = metaState or KeyEvent.META_SHIFT_ON
             return withActiveInputConnection(ctx, "ic-send-modified-key-event") { ic ->
-                Log.d(TAG, "InputAction ic-send-modified-key-event $keycode meta=$metaState")
                 ic.sendKeyEvent(KeyEvent(0, 0, KeyEvent.ACTION_DOWN, keycode, 0, metaState))
             }
         }
@@ -393,7 +377,6 @@ internal object InputActions {
 
             var handled = false
             val status = withFocusedActivity(ctx) { activity ->
-                Log.d(TAG, "InputAction hardware-key $keycode action=$action repeat=$repeat")
                 handled = when (action) {
                     "down" -> activity.dispatchHardwareKeyForDev(keycode, true, repeat)
                     "up" -> activity.dispatchHardwareKeyForDev(keycode, false, repeat)
@@ -427,7 +410,6 @@ internal object InputActions {
             }
             var injectError: String? = null
             val status = withFocusedActivity(ctx) { activity ->
-                Log.d(TAG, "InputAction inject-touch $kind")
                 injectError = activity.injectTouchSequenceForDev(kind, x, y)
             }
             if (status != 0) return status
@@ -537,7 +519,7 @@ internal object InputActions {
             rootfsPath = rootfs.absolutePath,
             installId = installId,
             includeChroot = includeChroot,
-            log = { Log.d(TAG, "rootfs cleanup: $it") },
+            log = {},
         )
     }
 
@@ -578,7 +560,6 @@ internal object InputActions {
             }
             ctx.out("closed=$closed")
             ctx.out("rootfs_killed=$killedRootfs")
-            Log.i(TAG, "InputAction test-init: reset in-memory settings, requested close for $closed client windows, killed $killedRootfs rootfs processes")
             return 0
         }
     }

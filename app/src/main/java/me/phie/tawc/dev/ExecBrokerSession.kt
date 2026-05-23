@@ -80,18 +80,9 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
         }
         val sin = DataInputStream(rawIn)
         when (req) {
-            is Request.Exec -> {
-                Log.i(ExecBroker.TAG, "exec argv=${req.argv} cwd=${req.cwd}")
-                runExec(req, sin, sout)
-            }
-            is Request.Action -> {
-                Log.i(ExecBroker.TAG, "action name=${req.name} args=${req.args.keys}")
-                runAction(req, sin, sout)
-            }
-            is Request.RunInside -> {
-                Log.i(ExecBroker.TAG, "runInside install=${req.installId} cmd=${req.cmd?.take(64)}")
-                runInside(req, sin, sout)
-            }
+            is Request.Exec -> runExec(req, sin, sout)
+            is Request.Action -> runAction(req, sin, sout)
+            is Request.RunInside -> runInside(req, sin, sout)
         }
     }
 

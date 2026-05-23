@@ -66,7 +66,6 @@ class CompositorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "CompositorService onCreate")
         serviceScope.launch {
             toplevelCount.collect { count ->
                 if (!lifecycle.postsNotification) return@collect
@@ -185,7 +184,6 @@ class CompositorService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
-        Log.d(TAG, "CompositorService onDestroy — stopping compositor")
         serviceScope.cancel()
         NativeBridge.nativeStopCompositor()
         NativeBridge.detachService()
@@ -197,7 +195,6 @@ class CompositorService : Service() {
 
     fun registerActivity(activityId: String, activity: CompositorActivity) {
         if (NativeBridge.consumePendingFinishActivity(activityId)) {
-            Log.d(TAG, "Registered activity $activityId already had pending finish")
             activity.finishAndRemoveTask()
             return
         }
@@ -205,12 +202,10 @@ class CompositorService : Service() {
         activity.setFullscreenFromCompositor(NativeBridge.fullscreenForActivity(activityId))
         windowRegistry.get(activityId)?.let { activity.setTaskMetadata(it) }
         NativeBridge.replayPendingKeyboardForActivity(activityId, activity)
-        Log.d(TAG, "Registered activity $activityId (count=${activities.size})")
     }
 
     fun unregisterActivity(activityId: String) {
         activities.remove(activityId)
-        Log.d(TAG, "Unregistered activity $activityId (count=${activities.size})")
     }
 
     fun removeWindow(activityId: String) {
@@ -295,7 +290,6 @@ class CompositorService : Service() {
             finishCompositorActivities()
             withContext(Dispatchers.IO) {
                 ProcessScanner.killAllKnownRootfs(this@CompositorService) {
-                    Log.d(TAG, "notification-exit: $it")
                 }
             }
             if (restartAfterStop) {
@@ -342,7 +336,6 @@ class CompositorService : Service() {
         extractDir("xkb", stagingDir)
         atomicReplaceDir(stagingDir, destDir)
         File(destDir, ".version").writeText(currentStamp)
-        Log.d(TAG, "Extracted xkb data to $destDir")
     }
 
     private fun ensureNotificationChannel() {

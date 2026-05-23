@@ -324,10 +324,10 @@ fn test_tawc_dri_ahb_present_round_trip() {
 
     let bin = rootfs::ensure_tawc_dri_test().expect("build tawc-dri-test");
     // HOLD_SECS=1 is enough — the test client commits the AHB once, the
-    // X server attaches it to the wl_surface, and the compositor logs
-    // the wlegl create_buffer / texture import. We don't need to keep
-    // the window mapped for screencap inspection in an integration test
-    // that only verifies the compositor logs.
+    // X server attaches it to the wl_surface, and the compositor state
+    // counters record the wlegl create_buffer / texture import. We don't
+    // need to keep the window mapped for screencap inspection in an
+    // integration test that only verifies compositor state.
     let before = compositor::query_state(TIMEOUT).expect("query compositor state before TAWC-DRI");
     let cmd = format!("DISPLAY=:0 TAWC_DRI_HOLD_SECS=1 {}", bin);
     let output = adb::rootfs_run_with(BACKEND, &cmd).expect("run tawc-dri-test");
@@ -354,14 +354,14 @@ fn test_tawc_dri_ahb_present_round_trip() {
             && after.last_wlegl_width == 320
             && after.last_wlegl_height == 240
             && after.last_wlegl_format == 1,
-        "compositor never reported `wlegl create_buffer 320x240 fmt=1`, \
+        "compositor never reported wlegl_create_buffer_total for 320x240 fmt=1, \
          meaning the TAWC-DRI AHB never reached the compositor's android_wlegl \
          import path. The client may have fallen back to SHM (which would \
          tint the buffer magenta), or the X server's TAWC-DRI dispatch may \
          be silently dropping the request. before={before:?} after={after:?}",
     );
     // Also verify the AHB completed the trip into a GL texture on the
-    // compositor side. A pure SHM fallback path won't produce this line.
+    // compositor side. A pure SHM fallback path won't bump this counter.
     // Catches a regression where the AHB import succeeds but the GL bind
     // fails (e.g. format/usage mismatch).
     assert!(
@@ -516,7 +516,7 @@ fn test_eglx11_renders_via_ahb() {
     assert!(
         after.wlegl_create_buffer_total > before.wlegl_create_buffer_total
             && after.last_wlegl_format == 1,
-        "compositor never reported `wlegl create_buffer ... fmt=1`. \
+        "compositor never reported wlegl_create_buffer_total for fmt=1. \
          The libhybris EGL plugin's swap chain didn't ship an AHB through \
          TAWC-DRI to the compositor. Either eglGetPlatformDisplay didn't \
          dispatch to our x11 plugin, or queueBuffer's TAWCDRIPresentBuffer \

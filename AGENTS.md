@@ -27,6 +27,7 @@ Tess's Android Wayland Compositor (tawc) is an Android app plus rootfs/build scr
 - Only commit, amend, tag, or push when explicitly asked. Git push may hang without user approval.
 - Do not run formatting tools (`cargo fmt`, `rustfmt`, etc.) unless explicitly asked.
 - Keep prose, comments, errors, and commit messages short unless extra detail is genuinely useful.
+- Keep production logging sparse. Do not log per-frame work, per-input events, test-only milestones, or high-volume protocol chatter; prefer explicit query/debug surfaces for tests.
 
 ## Issues
 - Issues live in `issues/`. Do not solve them unless asked or the fix falls out of current work.
