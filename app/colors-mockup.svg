@@ -1,0 +1,1095 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="960"
+   height="1080"
+   viewBox="0 0 960 1080"
+   version="1.1"
+   id="svg77"
+   sodipodi:docname="colors-mockup.svg"
+   inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview77"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.68148148"
+     inkscape:cx="633.91304"
+     inkscape:cy="553.20652"
+     inkscape:window-width="1440"
+     inkscape:window-height="905"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="svg77" />
+  <title
+     id="title1">tawc color mockup</title>
+  <desc
+     id="desc1">
+    Side-by-side light/dark mockup of the tawc Android app for iterating on
+    colors in Inkscape. Every named color is a solid Inkscape swatch
+    defined in &lt;defs&gt;. Open the Swatches panel (Object &gt; Swatches,
+    or Shift+Ctrl+W) or simply double-click a tile in the &quot;Palette&quot; row at
+    the bottom — every fill on canvas that references that swatch updates.
+
+    Swatch IDs map directly to Android color resources:
+      tawc_FOO_light  -&gt; app/src/main/res/values/colors.xml @tawc_FOO
+      tawc_FOO_dark   -&gt; app/src/main/res/values-night/colors.xml @tawc_FOO
+      tawc_FOO        -&gt; shared (no values-night override in colors.xml)
+
+    The text-on-card / text-on-window text in the real app uses Material3's
+    default colorOnSurface, which currently matches tawc_on_tonal, so the
+    mockup reuses that swatch for all body text. If you want to break that
+    coupling, add a dedicated color resource and update the swatch IDs here
+    to match.
+  </desc>
+  <defs
+     id="defs14">
+    <!-- =====================================================================
+         Inkscape solid swatches. ID == Android resource name (+ _light/_dark).
+         Editing a stop-color here propagates to every fill="url(#...)" below.
+         ===================================================================== -->
+    <!-- Light theme -->
+    <linearGradient
+       id="tawc_accent_light"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_accent (light)"
+       gradientTransform="translate(80,80)">
+      <stop
+         offset="0"
+         stop-color="#7D7812"
+         stop-opacity="1"
+         id="stop1"
+         style="stop-color:#ff621f;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_success_light"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_success (light)">
+      <stop
+         offset="0"
+         stop-color="#2E7D32"
+         stop-opacity="1"
+         id="stop2"
+         style="stop-color:#149519;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_window_bg_light"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_window_bg (light)"
+       gradientTransform="translate(80,80)">
+      <stop
+         offset="0"
+         stop-color="#EDE7EF"
+         stop-opacity="1"
+         id="stop3"
+         style="stop-color:#f3f3f3;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_card_bg_light"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_card_bg (light)"
+       gradientTransform="translate(80,80)">
+      <stop
+         offset="0"
+         stop-color="#FFFFFF"
+         stop-opacity="1"
+         id="stop4"
+         style="stop-color:#ffffff;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_tonal_bg_light"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_tonal_bg (light)"
+       gradientTransform="translate(80,80)">
+      <stop
+         offset="0"
+         stop-color="#87828D"
+         stop-opacity="1"
+         id="stop5"
+         style="stop-color:#d5d4d2;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_on_tonal_light"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_on_tonal (light)"
+       gradientTransform="translate(640,640)">
+      <stop
+         offset="0"
+         stop-color="#000000"
+         stop-opacity="1"
+         id="stop6" />
+    </linearGradient>
+    <!-- Dark theme -->
+    <linearGradient
+       id="tawc_accent_dark"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_accent (dark)"
+       gradientTransform="translate(520,80)">
+      <stop
+         offset="0"
+         stop-color="#8C8713"
+         stop-opacity="1"
+         id="stop7"
+         style="stop-color:#b93710;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_success_dark"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_success (dark)">
+      <stop
+         offset="0"
+         stop-color="#66BB6A"
+         stop-opacity="1"
+         id="stop8"
+         style="stop-color:#3be646;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_window_bg_dark"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_window_bg (dark)"
+       gradientTransform="translate(520,80)">
+      <stop
+         offset="0"
+         stop-color="#1F1B22"
+         stop-opacity="1"
+         id="stop9"
+         style="stop-color:#1b1b22;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_card_bg_dark"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_card_bg (dark)"
+       gradientTransform="translate(520,80)">
+      <stop
+         offset="0"
+         stop-color="#0F0D13"
+         stop-opacity="1"
+         id="stop10"
+         style="stop-color:#0d0d13;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_tonal_bg_dark"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_tonal_bg (dark)"
+       gradientTransform="translate(520,80)">
+      <stop
+         offset="0"
+         stop-color="#3A363D"
+         stop-opacity="1"
+         id="stop11" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_on_tonal_dark"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_on_tonal (dark)"
+       gradientTransform="translate(4160,640)">
+      <stop
+         offset="0"
+         stop-color="#FFFFFF"
+         stop-opacity="1"
+         id="stop12" />
+    </linearGradient>
+    <!-- Shared between light/dark (no values-night override) -->
+    <linearGradient
+       id="tawc_danger"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_danger (shared)"
+       gradientTransform="translate(600,160)">
+      <stop
+         offset="0"
+         stop-color="#C62828"
+         stop-opacity="1"
+         id="stop13" />
+    </linearGradient>
+    <linearGradient
+       id="tawc_on_danger"
+       inkscape:swatch="solid"
+       inkscape:label="tawc_on_danger (shared)"
+       gradientTransform="translate(600,160)">
+      <stop
+         offset="0"
+         stop-color="#FFFFFF"
+         stop-opacity="1"
+         id="stop14" />
+    </linearGradient>
+    <!-- Phone-screen rounded clip. -->
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath77">
+      <rect
+         x="80"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect78" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath78">
+      <rect
+         x="80"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect79" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath79">
+      <rect
+         x="80"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect80" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath80">
+      <rect
+         x="80"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect81" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath81">
+      <rect
+         x="80"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect82" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath82">
+      <rect
+         x="80"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect83" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath83">
+      <rect
+         x="520"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect84" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath84">
+      <rect
+         x="520"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect85" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath85">
+      <rect
+         x="520"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect86" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath86">
+      <rect
+         x="520"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect87" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath87">
+      <rect
+         x="520"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect88" />
+    </clipPath>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath88">
+      <rect
+         x="520"
+         y="80"
+         width="360"
+         height="720"
+         rx="24"
+         ry="24"
+         id="rect89" />
+    </clipPath>
+  </defs>
+  <!-- Neutral canvas so neither window_bg is favoured visually. Not part
+       of the app; just makes the mockups easier to read. -->
+  <rect
+     x="0"
+     y="0"
+     width="960"
+     height="1080"
+     fill="#5a5a5a"
+     id="rect15" />
+  <text
+     x="480"
+     y="34"
+     font-family="sans-serif"
+     font-size="20"
+     font-weight="bold"
+     text-anchor="middle"
+     fill="#fff"
+     id="text15">tawc color mockup</text>
+  <!-- ========================================================================
+       LIGHT phone mockup
+       ======================================================================== -->
+  <text
+     x="260"
+     y="70"
+     font-family="sans-serif"
+     font-size="14px"
+     text-anchor="middle"
+     fill="#ffffff"
+     font-weight="bold"
+     id="text16">Light</text>
+  <rect
+     x="80"
+     y="80"
+     width="360"
+     height="720"
+     fill="url(#tawc_window_bg_light)"
+     id="rect16"
+     clip-path="url(#clipPath82)" />
+  <path
+     d="m 108,108 -10,8 10,8 m -10,-8 h 22"
+     stroke="url(#tawc_on_tonal_light)"
+     stroke-width="2"
+     fill="none"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="path16"
+     clip-path="url(#clipPath81)" />
+  <text
+     x="136"
+     y="122"
+     font-family="sans-serif"
+     font-size="18px"
+     font-weight="500"
+     fill="url(#tawc_on_tonal_light)"
+     id="text17">Debian (arm64)</text>
+  <g
+     font-family="sans-serif"
+     font-size="13px"
+     fill="url(#tawc_on_tonal_light)"
+     id="g29"
+     transform="translate(80,80)">
+    <text
+       x="16"
+       y="100"
+       id="text18">ID</text>
+    <text
+       x="128"
+       y="100"
+       font-family="monospace"
+       id="text19">deb-arm64</text>
+    <text
+       x="16"
+       y="128"
+       id="text20">Distro</text>
+    <text
+       x="128"
+       y="128"
+       font-family="monospace"
+       id="text21">Debian</text>
+    <text
+       x="16"
+       y="156"
+       id="text22">Architecture</text>
+    <text
+       x="128"
+       y="156"
+       font-family="monospace"
+       id="text23">arm64</text>
+    <text
+       x="16"
+       y="184"
+       id="text24">Method</text>
+    <text
+       x="128"
+       y="184"
+       font-family="monospace"
+       id="text25">tawcroot</text>
+    <text
+       x="16"
+       y="212"
+       id="text26">State</text>
+    <text
+       x="128"
+       y="212"
+       font-family="monospace"
+       fill="url(#tawc_success_light)"
+       font-weight="bold"
+       id="text27">READY</text>
+    <text
+       x="16"
+       y="240"
+       id="text28">Size</text>
+    <text
+       x="128"
+       y="240"
+       font-family="monospace"
+       id="text29">412 MB</text>
+  </g>
+  <rect
+     x="96"
+     y="350"
+     width="328"
+     height="150"
+     rx="12"
+     ry="12"
+     fill="url(#tawc_card_bg_light)"
+     id="rect29"
+     clip-path="url(#clipPath80)" />
+  <text
+     x="112"
+     y="380"
+     font-family="sans-serif"
+     font-size="15px"
+     font-weight="bold"
+     fill="url(#tawc_on_tonal_light)"
+     id="text30">Run a command</text>
+  <text
+     x="112"
+     y="404"
+     font-family="sans-serif"
+     font-size="13px"
+     fill="url(#tawc_on_tonal_light)"
+     id="text31">Choose a command to launch in the rootfs.</text>
+  <text
+     x="112"
+     y="444"
+     font-family="monospace"
+     font-size="13px"
+     fill="url(#tawc_on_tonal_light)"
+     id="text32">$ firefox --no-remote</text>
+  <text
+     x="112"
+     y="468"
+     font-family="monospace"
+     font-size="13px"
+     fill="url(#tawc_on_tonal_light)"
+     id="text33">$ lxterminal</text>
+  <rect
+     x="96"
+     y="590"
+     width="328"
+     height="48"
+     rx="6"
+     ry="6"
+     fill="url(#tawc_accent_light)"
+     id="rect33"
+     clip-path="url(#clipPath79)" />
+  <text
+     x="260"
+     y="620"
+     font-family="sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     text-anchor="middle"
+     fill="url(#tawc_on_tonal_light)"
+     id="text34">INSTALL</text>
+  <rect
+     x="96"
+     y="650"
+     width="328"
+     height="48"
+     rx="6"
+     ry="6"
+     fill="url(#tawc_tonal_bg_light)"
+     id="rect34"
+     clip-path="url(#clipPath78)" />
+  <text
+     x="260"
+     y="680"
+     font-family="sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     text-anchor="middle"
+     fill="url(#tawc_on_tonal_light)"
+     id="text35">CANCEL</text>
+  <rect
+     x="96"
+     y="710"
+     width="328"
+     height="48"
+     rx="6"
+     ry="6"
+     fill="url(#tawc_danger)"
+     id="rect35"
+     clip-path="url(#clipPath77)" />
+  <text
+     x="260"
+     y="740"
+     font-family="sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     text-anchor="middle"
+     fill="url(#tawc_on_danger)"
+     id="text36">DELETE</text>
+  <!-- ========================================================================
+       DARK phone mockup (mirror layout, dark swatches)
+       ======================================================================== -->
+  <text
+     x="700"
+     y="70"
+     font-family="sans-serif"
+     font-size="14px"
+     text-anchor="middle"
+     fill="#ffffff"
+     font-weight="bold"
+     id="text37">Dark</text>
+  <rect
+     x="520"
+     y="80"
+     width="360"
+     height="720"
+     fill="url(#tawc_window_bg_dark)"
+     id="rect37"
+     clip-path="url(#clipPath88)" />
+  <path
+     d="m 548,108 -10,8 10,8 m -10,-8 h 22"
+     stroke="url(#tawc_on_tonal_dark)"
+     stroke-width="2"
+     fill="none"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     id="path37"
+     clip-path="url(#clipPath87)" />
+  <text
+     x="576"
+     y="122"
+     font-family="sans-serif"
+     font-size="18px"
+     font-weight="500"
+     fill="url(#tawc_on_tonal_dark)"
+     id="text38">Debian (arm64)</text>
+  <g
+     font-family="sans-serif"
+     font-size="13px"
+     fill="url(#tawc_on_tonal_dark)"
+     id="g50"
+     transform="translate(520,80)">
+    <text
+       x="16"
+       y="100"
+       id="text39">ID</text>
+    <text
+       x="128"
+       y="100"
+       font-family="monospace"
+       id="text40">deb-arm64</text>
+    <text
+       x="16"
+       y="128"
+       id="text41">Distro</text>
+    <text
+       x="128"
+       y="128"
+       font-family="monospace"
+       id="text42">Debian</text>
+    <text
+       x="16"
+       y="156"
+       id="text43">Architecture</text>
+    <text
+       x="128"
+       y="156"
+       font-family="monospace"
+       id="text44">arm64</text>
+    <text
+       x="16"
+       y="184"
+       id="text45">Method</text>
+    <text
+       x="128"
+       y="184"
+       font-family="monospace"
+       id="text46">tawcroot</text>
+    <text
+       x="16"
+       y="212"
+       id="text47">State</text>
+    <text
+       x="128"
+       y="212"
+       font-family="monospace"
+       fill="url(#tawc_success_dark)"
+       font-weight="bold"
+       id="text48">READY</text>
+    <text
+       x="16"
+       y="240"
+       id="text49">Size</text>
+    <text
+       x="128"
+       y="240"
+       font-family="monospace"
+       id="text50">412 MB</text>
+  </g>
+  <rect
+     x="536"
+     y="350"
+     width="328"
+     height="150"
+     rx="12"
+     ry="12"
+     fill="url(#tawc_card_bg_dark)"
+     id="rect50"
+     clip-path="url(#clipPath86)" />
+  <text
+     x="552"
+     y="380"
+     font-family="sans-serif"
+     font-size="15px"
+     font-weight="bold"
+     fill="url(#tawc_on_tonal_dark)"
+     id="text51">Run a command</text>
+  <text
+     x="552"
+     y="404"
+     font-family="sans-serif"
+     font-size="13px"
+     fill="url(#tawc_on_tonal_dark)"
+     id="text52">Choose a command to launch in the rootfs.</text>
+  <text
+     x="552"
+     y="444"
+     font-family="monospace"
+     font-size="13px"
+     fill="url(#tawc_on_tonal_dark)"
+     id="text53">$ firefox --no-remote</text>
+  <text
+     x="552"
+     y="468"
+     font-family="monospace"
+     font-size="13px"
+     fill="url(#tawc_on_tonal_dark)"
+     id="text54">$ lxterminal</text>
+  <rect
+     x="536"
+     y="590"
+     width="328"
+     height="48"
+     rx="6"
+     ry="6"
+     fill="url(#tawc_accent_dark)"
+     id="rect54"
+     clip-path="url(#clipPath85)" />
+  <text
+     x="700"
+     y="620"
+     font-family="sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     text-anchor="middle"
+     fill="url(#tawc_on_tonal_dark)"
+     id="text55">INSTALL</text>
+  <rect
+     x="536"
+     y="650"
+     width="328"
+     height="48"
+     rx="6"
+     ry="6"
+     fill="url(#tawc_tonal_bg_dark)"
+     id="rect55"
+     clip-path="url(#clipPath84)" />
+  <text
+     x="700"
+     y="680"
+     font-family="sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     text-anchor="middle"
+     fill="url(#tawc_on_tonal_dark)"
+     id="text56">CANCEL</text>
+  <rect
+     x="536"
+     y="710"
+     width="328"
+     height="48"
+     rx="6"
+     ry="6"
+     fill="url(#tawc_danger)"
+     id="rect56"
+     clip-path="url(#clipPath83)" />
+  <text
+     x="700"
+     y="740"
+     font-family="sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     text-anchor="middle"
+     fill="url(#tawc_on_danger)"
+     id="text57">DELETE</text>
+  <!-- ========================================================================
+       Palette legend. Each tile is a clone (fill=url(#...)) of one swatch;
+       clicking a tile in Inkscape selects it and shows the swatch in the
+       fill/stroke dialog, where you can edit the colour. ID + sticker
+       label show which Android resource it maps to.
+       ======================================================================== -->
+  <text
+     x="16"
+     y="830"
+     font-family="sans-serif"
+     font-size="14px"
+     font-weight="bold"
+     fill="#ffffff"
+     id="text58">Palette — click a tile to pick that swatch, then edit its colour</text>
+  <g
+     transform="translate(16,846)"
+     id="g66">
+    <text
+       x="0"
+       y="28"
+       font-family="sans-serif"
+       font-size="13px"
+       font-weight="bold"
+       fill="#ffffff"
+       id="text59">Light</text>
+    <g
+       transform="translate(56)"
+       id="g60">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_accent_light)"
+         id="rect59" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text60">tawc_accent</text>
+    </g>
+    <g
+       transform="translate(203)"
+       id="g61">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_success_light)"
+         id="rect60" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text61">tawc_success</text>
+    </g>
+    <g
+       transform="translate(350)"
+       id="g62">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_window_bg_light)"
+         id="rect61" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text62">tawc_window_bg</text>
+    </g>
+    <g
+       transform="translate(497)"
+       id="g63">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_card_bg_light)"
+         id="rect62" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text63">tawc_card_bg</text>
+    </g>
+    <g
+       transform="translate(644)"
+       id="g64">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_tonal_bg_light)"
+         id="rect63" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text64">tawc_tonal_bg</text>
+    </g>
+    <g
+       transform="translate(791)"
+       id="g65">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_on_tonal_light)"
+         id="rect64" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text65">tawc_on_tonal</text>
+    </g>
+  </g>
+  <g
+     transform="translate(16,916)"
+     id="g73">
+    <text
+       x="0"
+       y="28"
+       font-family="sans-serif"
+       font-size="13px"
+       font-weight="bold"
+       fill="#ffffff"
+       id="text66">Dark</text>
+    <g
+       transform="translate(56)"
+       id="g67">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_accent_dark)"
+         id="rect66" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text67">tawc_accent</text>
+    </g>
+    <g
+       transform="translate(203)"
+       id="g68">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_success_dark)"
+         id="rect67" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text68">tawc_success</text>
+    </g>
+    <g
+       transform="translate(350)"
+       id="g69">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_window_bg_dark)"
+         id="rect68" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text69">tawc_window_bg</text>
+    </g>
+    <g
+       transform="translate(497)"
+       id="g70">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_card_bg_dark)"
+         id="rect69" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text70">tawc_card_bg</text>
+    </g>
+    <g
+       transform="translate(644)"
+       id="g71">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_tonal_bg_dark)"
+         id="rect70" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text71">tawc_tonal_bg</text>
+    </g>
+    <g
+       transform="translate(791)"
+       id="g72">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_on_tonal_dark)"
+         id="rect71" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text72">tawc_on_tonal</text>
+    </g>
+  </g>
+  <g
+     transform="translate(16,986)"
+     id="g76">
+    <text
+       x="0"
+       y="28"
+       font-family="sans-serif"
+       font-size="13px"
+       font-weight="bold"
+       fill="#ffffff"
+       id="text73">Shared</text>
+    <g
+       transform="translate(56)"
+       id="g74">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_danger)"
+         id="rect73" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text74">tawc_danger</text>
+    </g>
+    <g
+       transform="translate(203)"
+       id="g75">
+      <rect
+         x="0"
+         y="0"
+         width="137"
+         height="36"
+         fill="url(#tawc_on_danger)"
+         id="rect74" />
+      <text
+         x="68"
+         y="54"
+         font-family="monospace"
+         font-size="11px"
+         text-anchor="middle"
+         fill="#ffffff"
+         id="text75">tawc_on_danger</text>
+    </g>
+  </g>
+</svg>

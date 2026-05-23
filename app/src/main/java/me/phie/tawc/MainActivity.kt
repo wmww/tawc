@@ -1,6 +1,7 @@
 package me.phie.tawc
 
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -10,6 +11,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.button.MaterialButton
 import me.phie.tawc.compositor.CompositorService
 import me.phie.tawc.install.DistroInfoActivity
 import me.phie.tawc.install.InstallActivity
@@ -19,7 +21,6 @@ import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.launcher.LauncherActivity
 import me.phie.tawc.tasks.TaskManagerActivity
 import me.phie.tawc.ui.buildHomeScreen
-import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
@@ -40,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private val cardPad by lazy { (16 * resources.displayMetrics.density).toInt() }
 
     private lateinit var listContainer: LinearLayout
+    private lateinit var installButton: MaterialButton
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,12 +69,10 @@ class MainActivity : AppCompatActivity() {
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin),
         )
 
-        scaffold.content.addView(
-            primaryButton(getString(R.string.action_install_new_distro)) {
-                startActivity(Intent(this@MainActivity, InstallActivity::class.java))
-            },
-            verticalLp(MATCH_PARENT, WRAP_CONTENT),
-        )
+        installButton = tonalButton(getString(R.string.action_install_new_distro)) {
+            startActivity(Intent(this@MainActivity, InstallActivity::class.java))
+        }
+        scaffold.content.addView(installButton, verticalLp(MATCH_PARENT, WRAP_CONTENT))
 
         setContentView(scaffold.root)
     }
@@ -85,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     private fun refresh() {
         listContainer.removeAllViews()
         val installations = store.list()
+        styleInstallButton(isPrimary = installations.isEmpty())
         if (installations.isEmpty()) {
             listContainer.addView(TextView(this).apply {
                 text = getString(R.string.home_empty_no_distros)
@@ -97,6 +98,14 @@ class MainActivity : AppCompatActivity() {
         for (inst in installations) {
             listContainer.addView(buildCard(inst), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = cardMargin))
         }
+    }
+
+    private fun styleInstallButton(isPrimary: Boolean) {
+        val background = if (isPrimary) R.color.tawc_accent else R.color.tawc_tonal_bg
+        val foreground = getColor(R.color.tawc_on_tonal)
+        installButton.backgroundTintList = ColorStateList.valueOf(getColor(background))
+        installButton.setTextColor(foreground)
+        installButton.iconTint = ColorStateList.valueOf(foreground)
     }
 
     private fun buildCard(inst: Installation): View {
@@ -146,6 +155,8 @@ class MainActivity : AppCompatActivity() {
             isSingleLine = true
             isFocusable = false
             isClickable = true
+            backgroundTintList = ColorStateList.valueOf(getColor(R.color.tawc_accent))
+            setTextColor(getColor(R.color.tawc_on_tonal))
             setOnClickListener {
                 val i = Intent(this@MainActivity, LauncherActivity::class.java)
                     .putExtra(LauncherActivity.EXTRA_ID, inst.id)

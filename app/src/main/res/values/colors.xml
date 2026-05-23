@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  App accent + danger colors. The accent is a yellow-orange ("amber")
+  App accent + danger colors. The accent is a warm orange
   used for primary actions (Install, Open, etc.). Danger is a saturated
   red used for destructive actions (Uninstall). Both have day/night
   variants — see values-night/colors.xml.
 -->
 <resources>
-    <color name="tawc_accent">#C2410C</color>
-    <color name="tawc_on_accent">#FFFFFF</color>
+    <color name="tawc_accent">#FF621F</color>
 
     <color name="tawc_danger">#C62828</color>
     <color name="tawc_on_danger">#FFFFFF</color>
@@ -17,21 +16,18 @@
          as a clear positive on both the light and dark surfaces without
          shouting. The dark-theme override in values-night brightens it
          for contrast against the dark background. -->
-    <color name="tawc_success">#2E7D32</color>
+    <color name="tawc_success">#149519</color>
 
-    <!-- Window background. Slightly grey rather than near-white so
-         cards (which are pure white) lift off the page without needing
-         a stroke or shadow. -->
-    <color name="tawc_window_bg">#EDE7EF</color>
+    <!-- Window background. Light neutral page behind white cards. -->
+    <color name="tawc_window_bg">#F3F3F3</color>
 
-    <!-- Card / panel surface. Lighter than the window background — the
-         iOS settings-style "white card on grey page" look. -->
+    <!-- Card / panel surface. White surface from the mockup. -->
     <color name="tawc_card_bg">#FFFFFF</color>
 
     <!-- Tonal (subdued) button colors — Cancel, Manage, Task manager.
-         Plain mid-grey in the same family as the surfaces, white text;
+         Light neutral grey in the same family as the surfaces, black text;
          visually subordinate to the accent (which is the only chromatic
          button on the page). -->
-    <color name="tawc_tonal_bg">#7C7783</color>
-    <color name="tawc_on_tonal">#FFFFFF</color>
+    <color name="tawc_tonal_bg">#D5D4D2</color>
+    <color name="tawc_on_tonal">#000000</color>
 </resources>

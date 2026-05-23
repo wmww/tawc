@@ -69,7 +69,7 @@ Kotlin side (`app/src/main/java/me/phie/tawc/`):
   typing) doesn't slam the wrong bitmap into a recycled view.
 - **ui/Scaffold.kt** -- Helpers shared by the non-compositor activities — builds the
   `MaterialToolbar` (with back/up arrow on child screens) plus the content column, and
-  exposes `primaryButton` (yellow-orange accent) / `destructiveButton` (red) factories.
+  exposes `primaryButton` (accent) / `destructiveButton` (red) factories.
 - **compositor/CompositorService.kt** -- Foreground service (`specialUse` type) that owns
   the Rust compositor thread. Activities bind to it; it tracks them by `activityId` so
   reverse-JNI calls can find the right Activity.

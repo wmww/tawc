@@ -200,9 +200,9 @@ class DistroInfoActivity : AppCompatActivity() {
                 if (cmd.isNotEmpty()) RunCommandOp.start(this, installation, cmd)
             }
             .show()
-        // Default Material3 paints both buttons in colorPrimary (yellow-
-        // orange), which makes Cancel look like a recommended path. Tone
-        // it down to colorOnSurfaceVariant so Run reads as the action.
+        // Default Material3 paints both buttons in colorPrimary, which
+        // makes Cancel look like a recommended path. Tone it down to
+        // colorOnSurfaceVariant so Run reads as the action.
         dialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { btn ->
             btn.setTextColor(
                 MaterialColors.getColor(btn, com.google.android.material.R.attr.colorOnSurfaceVariant)
@@ -231,8 +231,8 @@ class DistroInfoActivity : AppCompatActivity() {
             .show()
         // Tint the destructive action red so it pops, and the Cancel
         // neutral so it doesn't compete with it. Default Material3 uses
-        // colorPrimary (yellow-orange) for both, which made Cancel look
-        // like the recommended path next to a red Delete.
+        // colorPrimary for both, which made Cancel look like the
+        // recommended path next to a red Delete.
         dialog.getButton(DialogInterface.BUTTON_POSITIVE)?.setTextColor(getColor(R.color.tawc_danger))
         dialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { btn ->
             btn.setTextColor(

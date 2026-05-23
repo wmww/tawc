@@ -1,23 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Dark-theme overrides. Only the accent shifts in night mode (a
-     darker, more saturated burnt-orange that reads as a deliberate
-     accent rather than an amber pill); danger stays the same deep red
-     because white-on-deep-red works on both light and dark surfaces. -->
+<!-- Dark-theme overrides. The accent shifts to a deeper orange in night mode;
+     danger stays the same deep red because white-on-deep-red works on
+     both light and dark surfaces. -->
 <resources>
-    <color name="tawc_accent">#E04410</color>
+    <color name="tawc_accent">#B93710</color>
     <!-- Brighter green for dark mode so the "Installed" / "Deleted"
          status reads cleanly on the dark surface. -->
-    <color name="tawc_success">#66BB6A</color>
+    <color name="tawc_success">#3BE646</color>
 
     <!-- Window background. Lifted off pure-black towards a neutral
          dark grey so cards (which are darker) recess into the page.
          Compositor's BACKGROUND_COLOR mirrors this — keep them in
          sync. -->
-    <color name="tawc_window_bg">#1F1B22</color>
+    <color name="tawc_window_bg">#1B1B22</color>
 
     <!-- Card / panel surface. Darker than the window background — the
          page is the "elevated" surface; cards are wells in it. -->
-    <color name="tawc_card_bg">#0F0D13</color>
+    <color name="tawc_card_bg">#0D0D13</color>
 
     <!-- Tonal (subdued) button colors — Cancel, Manage, Task manager.
          Plain mid-grey, white text; visually subordinate to the accent

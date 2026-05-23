@@ -4,15 +4,15 @@
     <!-- Default theme for Activities that show normal Android UI (home,
          install, uninstall, distro info). Material3 DayNight gives us
          automatic light/dark theming; the accent (colorPrimary) is a
-         yellow-orange that drives Install/Open buttons. Destructive
+         warm orange that drives Install/Open buttons. Destructive
          actions opt out of the accent and use @color/tawc_danger. -->
     <style name="Theme.Tawc" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowNoTitle">true</item>
 
         <item name="colorPrimary">@color/tawc_accent</item>
-        <item name="colorOnPrimary">@color/tawc_on_accent</item>
+        <item name="colorOnPrimary">@color/tawc_on_tonal</item>
         <item name="colorPrimaryContainer">@color/tawc_accent</item>
-        <item name="colorOnPrimaryContainer">@color/tawc_on_accent</item>
+        <item name="colorOnPrimaryContainer">@color/tawc_on_tonal</item>
 
         <item name="colorError">@color/tawc_danger</item>
         <item name="colorOnError">@color/tawc_on_danger</item>
@@ -24,7 +24,7 @@
         <item name="android:windowBackground">@color/tawc_window_bg</item>
         <item name="colorSurface">@color/tawc_window_bg</item>
 
-        <!-- Tint the system bars to the window surface so the yellow
+        <!-- Tint the system bars to the window surface so the
              accent doesn't bleed into the status bar. windowLightStatusBar
              flips icons to dark for light mode; values-night/styles.xml
              overrides it back to false for dark mode. -->

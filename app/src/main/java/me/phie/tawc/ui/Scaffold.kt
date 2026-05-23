@@ -96,7 +96,7 @@ private fun AppCompatActivity.applyNearSquareCorners(btn: MaterialButton) {
 
 /**
  * Filled accent-colored button for primary actions (Install, Open).
- * Inherits `colorPrimary` (yellow-orange) from the theme.
+ * Inherits `colorPrimary` from the theme.
  */
 fun AppCompatActivity.primaryButton(label: CharSequence, onClick: () -> Unit): MaterialButton =
     MaterialButton(this).apply {
@@ -122,8 +122,7 @@ fun AppCompatActivity.destructiveButton(label: CharSequence, onClick: () -> Unit
 
 /**
  * Tonal Material button for secondary / subdued actions (Manage,
- * Cancel, Task manager). Faintly orange-tinted fill in the same hue
- * family as the accent but much desaturated, no border, same
+ * Cancel, Task manager). Muted fill, no border, same
  * near-square corners as [primaryButton] — reads clearly as "a button,
  * but not the headline action." Context-bound so non-Activity UI
  * surfaces (e.g. `OperationLogPanel`) can use it too.

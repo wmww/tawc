@@ -41,11 +41,11 @@ use crate::host::OutputHost;
 use crate::scale::OutputScale;
 use crate::wlegl::{wlegl_buffer_data, BufferOrigin};
 
-/// Tawc dark window surface (#1F1B22) — matches the home/install/distro-info
+/// Tawc dark window surface (#1B1B22) — matches the home/install/distro-info
 /// activities so the compositor's empty space looks like the rest of the app.
 /// Mirror any change here in `app/src/main/res/values-night/colors.xml`'s
 /// `tawc_window_bg`.
-const BACKGROUND_COLOR: Color32F = Color32F::new(0.1216, 0.1059, 0.1333, 1.0);
+const BACKGROUND_COLOR: Color32F = Color32F::new(0.1059, 0.1059, 0.1333, 1.0);
 
 /// Whether to wash each surface in a debug colour identifying its
 /// buffer source (libhybris-AHB → lime, gfxstream-AHB → cyan,

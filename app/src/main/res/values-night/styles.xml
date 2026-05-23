@@ -8,9 +8,9 @@
         <item name="android:windowNoTitle">true</item>
 
         <item name="colorPrimary">@color/tawc_accent</item>
-        <item name="colorOnPrimary">@color/tawc_on_accent</item>
+        <item name="colorOnPrimary">@color/tawc_on_tonal</item>
         <item name="colorPrimaryContainer">@color/tawc_accent</item>
-        <item name="colorOnPrimaryContainer">@color/tawc_on_accent</item>
+        <item name="colorOnPrimaryContainer">@color/tawc_on_tonal</item>
 
         <item name="colorError">@color/tawc_danger</item>
         <item name="colorOnError">@color/tawc_on_danger</item>

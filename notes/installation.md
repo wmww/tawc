@@ -237,7 +237,7 @@ The non-compositor activities (`MainActivity`, `InstallActivity`,
 and share a small `me.phie.tawc.ui.Scaffold` helper that builds a
 `MaterialToolbar` (with a back/up arrow on child screens) plus a
 content column. The theme is `Theme.Material3.DayNight.NoActionBar`
-with a yellow-orange `colorPrimary` (`@color/tawc_accent`) for primary
+with a warm orange `colorPrimary` (`@color/tawc_accent`) for primary
 buttons and `@color/tawc_danger` (red) for destructive ones; both have
 night-mode variants in `res/values-night/`. The compositor activity
 keeps the device-default theme — it draws its own surface and never
