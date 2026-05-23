@@ -701,16 +701,29 @@ fn test_diverged_cursor_no_byte_slicing() {
         thread::sleep(Duration::from_millis(200));
 
         adb::ic_set_composing_region(0, 5).expect("setComposingRegion 0..5");
-        adb::ic_set_selection(5, 5).expect("setSelection 5..5 (diverge Editable cursor)");
-        let change_count = app.text_changed_count();
-        adb::ic_commit_text("X").expect("commitText after divergence");
-        app.wait_for_text_change(change_count, TIMEOUT)
-            .expect("text change after diverged commit");
-        thread::sleep(Duration::from_millis(300));
+        let rejected_selection = adb::ic_set_selection_raw(5, 5)
+            .expect("setSelection 5..5 should be rejected");
         assert!(
-            app.last_text().unwrap_or_default().contains("world"),
-            "diverged cursor propagated a byte-slicing delete: {:?}",
-            app.last_text()
+            !rejected_selection.status.success(),
+            "setSelection must reject unforwardable cursor movement"
+        );
+        let change_count = app.text_changed_count();
+        let rejected_commit = adb::ic_commit_text_raw("X")
+            .expect("commitText with unrepresentable composing region");
+        assert!(
+            !rejected_commit.status.success(),
+            "commitText must reject unrepresentable composing-region replacement"
+        );
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            app.text_changed_count(),
+            change_count,
+            "rejected replacement should not change client-visible text"
+        );
+        assert_eq!(
+            app.last_text().as_deref(),
+            Some("hello world"),
+            "rejected replacement should leave the client buffer unchanged"
         );
     });
 }
@@ -774,19 +787,21 @@ fn test_stale_newline_context_editing_paths() {
 
     build_stale_newline_context(&app, "hello", 5);
 
-    adb::ic_set_selection(5, 5).expect("ic setSelection to stale cursor");
+    adb::ic_set_selection(5, 5).expect("no-op setSelection at stale reported cursor");
     adb::ic_set_composing_region(0, 5).expect("ic setComposingRegion 0..5");
-    adb::ic_commit_text("HELLO").expect("ic commitText replacement");
+    let rejected_commit = adb::ic_commit_text_raw("HELLO").expect("ic commitText replacement");
+    assert!(
+        !rejected_commit.status.success(),
+        "commitText should reject stale-context replacement instead of falling back"
+    );
 
-    let expected = "hello\\n\\n\\nHELLO";
-    app.wait_for_text(expected, TIMEOUT).unwrap_or_else(|e| {
-        panic!(
-            "stale context replacement should fall back to insertion, not slice wire bytes; \
-             last={:?}: {}",
-            app.last_text(),
-            e
-        )
-    });
+    let expected = "hello\\n\\n\\n";
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        app.last_text().as_deref(),
+        Some(expected),
+        "stale context replacement should be rejected before touching client text"
+    );
 
     app.stop()
         .expect("stale-newline debug app failed to stop cleanly");

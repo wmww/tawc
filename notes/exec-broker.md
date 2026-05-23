@@ -314,7 +314,7 @@ before any client connection arrives.
 | `ic-set-composing-text` (`text`) | InputActions | `TawcInputConnection.setComposingText(text, 1)`. |
 | `ic-set-composing-region` (`start`, `end`) | InputActions | `TawcInputConnection.setComposingRegion(start, end)`. |
 | `ic-finish-composing` | InputActions | `TawcInputConnection.finishComposingText()`. |
-| `ic-set-selection` (`start`, `end`) | InputActions | `TawcInputConnection.setSelection(start, end)`. |
+| `ic-set-selection` (`start`, `end`) | InputActions | `TawcInputConnection.setSelection(start, end)`; currently succeeds only for no-op selection requests because text-input-v3 cannot move the client cursor. |
 | `ic-delete-surrounding-text` (`before`, `after`) | InputActions | `TawcInputConnection.deleteSurroundingText(before, after)`. |
 | `ic-delete-surrounding-text-codepoints` (`before`, `after`) | InputActions | `TawcInputConnection.deleteSurroundingTextInCodePoints(before, after)`. |
 | `ic-send-key-event` (`keycode`) | InputActions | `TawcInputConnection.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode))`. |

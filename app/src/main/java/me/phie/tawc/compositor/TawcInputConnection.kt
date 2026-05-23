@@ -68,22 +68,19 @@ import android.util.Log
  * Wayland buffer's cursor; the two are supposed to match (`updateFromCompositor`
  * mirrors them on every round-trip).
  *
- * They desync when the IME moves the Editable's cursor *without* going
- * through any IC method we forward: most importantly `setSelection`.
- * Wayland text-input-v3 has no "move the cursor" request, so we can't
- * push that change to the client; the Editable says cursor=N while the
- * client still has cursor=M. Computing deltas against N and applying
- * them at M slices the wrong bytes — the "extra h prepended on each
- * Enter" bug observed with OpenBoard's Enter handler, which moves the
- * Editable cursor back into the just-committed word's region before
- * doing a `commitText`.
+ * Wayland text-input-v3 has no "move the cursor" request, so
+ * `setSelection` is rejected unless it is already a no-op. Accepting it
+ * would make the Editable say cursor=N while the client still has cursor=M.
+ * Computing deltas against N and applying them at M slices the wrong bytes
+ * — the "extra h prepended on each Enter" bug observed with OpenBoard's
+ * Enter handler, which moves the Editable cursor back into the
+ * just-committed word's region before doing a `commitText`.
  *
  * `lastSyncedCursor` tracks the cursor position the Wayland client most
  * recently told us about (via `set_surrounding_text` ⇒ `updateFromCompositor`).
- * When `computeReplaceDeltas` sees the Editable's current cursor differ
- * from this baseline, it refuses to propagate deltas — the safe fallback
- * is to skip the delete and let `super.commitText` update the Editable;
- * the next round-trip from the client reconciles the buffer.
+ * When `computeReplaceDeltas` sees that a replacement cannot be expressed
+ * at the current wire cursor, the IC rejects the edit before touching the
+ * Editable. There is no mirror-only fallback for text mutations.
  *
  * `wireCursor` tracks cursor movement caused by our outbound operations
  * even when the next client `set_surrounding_text` omits that movement —
@@ -129,6 +126,8 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
 
     /** UTF-16 length of the current Wayland preedit overlay, if any. */
     private var activePreeditUtf16Length: Int = 0
+
+    private data class ReplaceDeltas(val before: Int, val after: Int)
 
     /**
      * Set after we commit a trailing newline. Some clients echo that change
@@ -190,13 +189,15 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
                 if (composingStart >= 0 && composingEnd > composingStart &&
                     str == ed.subSequence(composingStart, composingEnd).toString()) {
                     Log.d(TAG, "InputConnection.commitText: \"$str\" no-op (matches composing region)")
-                    super.commitText(text, newCursorPosition)
+                    BaseInputConnection.removeComposingSpans(ed)
                     composingRegionIsPreedit = false
                     return true
                 }
             }
         }
-        val (before, after) = computeReplaceDeltas()
+        if (newCursorPosition != 1) return false
+        val deltas = computeReplaceDeltas() ?: return false
+        val (before, after) = deltas
         Log.d(TAG, "InputConnection.commitText: \"$str\" cursorPos=$newCursorPosition delete=$before/$after")
         super.commitText(text, newCursorPosition)
         // Pass the delete deltas (if any) through to the compositor so the
@@ -283,7 +284,9 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
 
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val str = text?.toString() ?: ""
-        val (before, after) = computeReplaceDeltas()
+        if (newCursorPosition != 1) return false
+        val deltas = computeReplaceDeltas() ?: return false
+        val (before, after) = deltas
         Log.d(TAG, "InputConnection.setComposingText: \"$str\" cursorPos=$newCursorPosition delete=$before/$after")
         super.setComposingText(text, newCursorPosition)
         NativeBridge.nativeSetComposingText(str, before, after)
@@ -396,29 +399,28 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
      * Returns (0, 0) when:
      *  - the region IS the Wayland preedit (the protocol's done-ordering
      *    already replaces existing preedit on the next replace), or
-     *  - there is no composing region, or
-     *  - the cursor sits outside the region (Wayland's
-     *    `delete_surrounding_text` is "around the cursor", so we can't
-     *    represent a range that doesn't contain it; in practice IMEs
-     *    always pick regions containing the cursor).
+     *  - there is no composing region.
+     *
+     * Returns null when a committed composing region exists but cannot be
+     * represented at the current Wayland cursor. Callers must reject the IC
+     * mutation before touching the Editable in that case.
      */
-    private fun computeReplaceDeltas(): Pair<Int, Int> {
-        if (composingRegionIsPreedit) return Pair(0, 0)
-        val ed = editable ?: return Pair(0, 0)
+    private fun computeReplaceDeltas(): ReplaceDeltas? {
+        if (composingRegionIsPreedit) return ReplaceDeltas(0, 0)
+        val ed = editable ?: return ReplaceDeltas(0, 0)
         val start = BaseInputConnection.getComposingSpanStart(ed)
         val end = BaseInputConnection.getComposingSpanEnd(ed)
-        if (start < 0 || end < 0 || start >= end) return Pair(0, 0)
+        if (start < 0 || end < 0 || start >= end) return ReplaceDeltas(0, 0)
         val cursor = Selection.getSelectionStart(ed).coerceAtLeast(0)
-        if (cursor < start || cursor > end) return Pair(0, 0)
+        if (cursor < start || cursor > end) return null
         // The wire delete is relative to the Wayland client's cursor, not
         // the Editable's. They match as long as nothing has moved the
         // Editable cursor under us since the last round-trip. If they
         // diverge (the IME called setSelection, or the client reported a
         // stale context cursor while our wire model kept advancing), our
-        // deltas would slice the wrong bytes — refuse to propagate them
-        // and let the round-trip reconcile.
-        if (cursor != lastSyncedCursor || cursor != wireCursor) return Pair(0, 0)
-        return Pair(cursor - start, end - cursor)
+        // deltas would slice the wrong bytes.
+        if (cursor != lastSyncedCursor || cursor != wireCursor) return null
+        return ReplaceDeltas(cursor - start, end - cursor)
     }
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
@@ -483,8 +485,10 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
     override fun setSelection(start: Int, end: Int): Boolean {
         val ed = editable ?: return false
         if (start < 0 || end < 0 || start > ed.length || end > ed.length) return false
-        Log.d(TAG, "InputConnection.setSelection: $start..$end")
-        return super.setSelection(start, end)
+        val curStart = Selection.getSelectionStart(ed)
+        val curEnd = Selection.getSelectionEnd(ed)
+        if (start != curStart || end != curEnd) return false
+        return true
     }
 
     override fun reportFullscreenMode(enabled: Boolean): Boolean {

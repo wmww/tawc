@@ -281,6 +281,13 @@ pub fn ic_commit_text(text: &str) -> io::Result<Output> {
     broker_action("ic-commit-text", &[("text", text)])
 }
 
+/// Try `TawcInputConnection.commitText(text, 1)` and return the raw broker
+/// result so tests can assert Android-contract rejection without treating
+/// the expected `false` as a harness failure.
+pub fn ic_commit_text_raw(text: &str) -> io::Result<Output> {
+    broker_action_raw("ic-commit-text", &[("text", text)])
+}
+
 /// Call `TawcInputConnection.commitCompletion(...)` on the active IC.
 /// Equivalent of tapping a suggestion from an IME completion row such as
 /// Gboard's center autocomplete candidate.
@@ -349,15 +356,20 @@ pub fn ic_finish_hidden_composing() -> io::Result<Output> {
 }
 
 /// Call `TawcInputConnection.setSelection(start, end)` on the active
-/// IC. Moves the Editable's cursor without any wayland-side equivalent
-/// — there's no `set_selection` in text-input-v3, so this simulates an
-/// IME that "thinks" the cursor is somewhere different from where the
-/// Wayland client has it. The IC's `lastSyncedCursor` divergence guard
-/// is the production code path that handles this.
+/// IC. text-input-v3 has no wayland-side equivalent, so tawc rejects
+/// cursor movement unless the request is already a no-op.
 pub fn ic_set_selection(start: u32, end: u32) -> io::Result<Output> {
     let s = start.to_string();
     let e = end.to_string();
     broker_action("ic-set-selection", &[("start", &s), ("end", &e)])
+}
+
+/// Try `TawcInputConnection.setSelection(start, end)` and return the raw
+/// broker result so tests can assert expected rejection.
+pub fn ic_set_selection_raw(start: u32, end: u32) -> io::Result<Output> {
+    let s = start.to_string();
+    let e = end.to_string();
+    broker_action_raw("ic-set-selection", &[("start", &s), ("end", &e)])
 }
 
 /// Call `TawcInputConnection.deleteSurroundingText(before, after)` on

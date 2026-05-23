@@ -61,7 +61,7 @@ import me.phie.tawc.compositor.TawcInputConnection
  * | `ic-set-composing-text` | `text` | `IC.setComposingText(text, 1)` |
  * | `ic-set-composing-region` | `start`, `end` | `IC.setComposingRegion(start, end)` |
  * | `ic-finish-composing` | — | `IC.finishComposingText()` |
- * | `ic-set-selection` | `start`, `end` | `IC.setSelection(start, end)` |
+ * | `ic-set-selection` | `start`, `end` | `IC.setSelection(start, end)` (no-op only) |
  * | `ic-delete-surrounding-text` | `before`, `after` | `IC.deleteSurroundingText(before, after)` |
  * | `ic-delete-surrounding-text-codepoints` | `before`, `after` | `IC.deleteSurroundingTextInCodePoints(before, after)` |
  * | `ic-send-key-event` | `keycode` | `IC.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode))` |

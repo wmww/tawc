@@ -82,17 +82,17 @@ together when the SDK changes.
 | `commitCompletion(info)` | text mutation | If `info.text` exists, delegates to `commitText(text, 1)`. Null text returns `false`. |
 | `commitContent(info, flags, opts)` | rich content | Rejected (`false`). No text-input-v3 equivalent. |
 | `commitCorrection(info)` | text mutation | Requires valid offset, old text, and mirror old-text match; delegates to `replaceText`. |
-| `commitText(text, pos)` | text mutation | Emits optional atomic delete for marked committed regions, then `commit_string(text)` + `done`. Null text returns `false`. |
+| `commitText(text, pos)` | text mutation | Emits optional atomic delete for marked committed regions, then `commit_string(text)` + `done`. Null text, unsupported cursor positions, or unrepresentable composing-region replacements return `false` before base mutation. |
 | `commitText(text, pos, attr)` | text mutation | Delegates to `commitText(text, pos)`; tawc ignores styling attributes. |
 | `deleteSurroundingText(before, after)` | text mutation | Negative counts return `false`; otherwise updates base Editable and emits Backspace/Delete `wl_keyboard` events. |
 | `deleteSurroundingTextInCodePoints(before, after)` | text mutation | Negative counts or missing Editable return `false`; converts code point counts to UTF-16 counts around the wire cursor, then uses `deleteSurroundingText`. |
 | `finishComposingText()` | text mutation | Delegates to base, emits `nativeFinishComposingText`; compositor commits tracked preedit or no-ops if none. |
 | `setComposingRegion(start, end)` | local annotation | Delegates to base. Marks committed mirror text so the next commit/preedit can emit an atomic delete if representable. |
 | `setComposingRegion(start, end, attr)` | local annotation | Delegates to `setComposingRegion(start, end)`; tawc ignores styling attributes. |
-| `setComposingText(text, pos)` | text mutation | Delegates to base, then emits optional atomic delete plus `preedit_string(text)` + `done`. Null text is treated as empty preedit. |
+| `setComposingText(text, pos)` | text mutation | Delegates to base, then emits optional atomic delete plus `preedit_string(text)` + `done`. Null text is treated as empty preedit. Unsupported cursor positions or unrepresentable composing-region replacements return `false` before base mutation. |
 | `setComposingText(text, pos, attr)` | text mutation | Delegates to `setComposingText(text, pos)`; tawc ignores styling attributes. |
 | `replaceText(start, end, text, pos, attr)` | text mutation | Requires an in-bounds range containing the wire cursor; emits atomic delete plus `commit_string(text)`. Non-representable ranges return `false` before base mutation. |
-| `setSelection(start, end)` | local cursor | Explicitly accepted only for the Android-side mirror. text-input-v3 cannot move the client cursor; later replacements are guarded so stale mirror cursor movement cannot slice arbitrary client bytes. |
+| `setSelection(start, end)` | local cursor | Rejected (`false`) unless the requested selection already matches the Editable selection. text-input-v3 cannot move the client cursor, so tawc must not accept mirror-only cursor movement. |
 | `performEditorAction(action)` | non-text action | Emits Enter as a `wl_keyboard` key. |
 | `sendKeyEvent(event)` | non-text action | Key-down events become `wl_keyboard` key events; key-up events return `true` and are ignored to avoid double processing. |
 | `performContextMenuAction(id)` | editor command | Rejected (`false`). Cut/copy/paste/select-all would otherwise be mirror-only or incomplete. |
@@ -249,7 +249,7 @@ Wayland's text-input-v3 has no equivalent — preedit is overlay, not a span ove
 
 When the next `setComposingText` or `commitText` runs and the flag is `false`, the IC computes (before, after) UTF-16 unit deltas around the cursor that span the existing composing region. These deltas travel as extra parameters on `nativeSetComposingText` / `nativeCommitText`. The compositor emits `delete_surrounding_text(before_bytes, after_bytes)` first, then the new preedit/commit string, all in one `done()` cycle. Without this delete the original word stays in committed text and the replacement becomes a duplicate.
 
-This only works when the cursor is *inside* the composing region — Wayland's `delete_surrounding_text` deletes around the cursor. IMEs typically pick a region that contains the cursor (the word at the click location), so the constraint is rarely violated. When the cursor sits outside the region, the IC falls back to plain preedit_string and accepts the divergence — `set_surrounding_text` from the client will reconcile the Editable.
+This only works when the cursor is *inside* the composing region — Wayland's `delete_surrounding_text` deletes around the cursor. IMEs typically pick a region that contains the cursor (the word at the click location), so the constraint is rarely violated. When the cursor sits outside the region, the IC rejects the edit before mutating the Editable; there is no mirror-only fallback.
 
 Standalone `deleteSurroundingText` (Gboard's plain Backspace) does NOT come through this path — see "Why standalone deletion is a key event" above.
 
@@ -259,13 +259,13 @@ The wire-side `delete_surrounding_text` is relative to the *Wayland client's cur
 
 They desync in two ways:
 
-**1. The IME moves the Editable cursor under us via `setSelection`.** Wayland text-input-v3 has no "move the cursor" request, so we can't push a cursor change to the client; the Editable says cursor=N while the client still has cursor=M. The IC tracks `lastSyncedCursor`, set on every `updateFromCompositor` from the Wayland client. `computeReplaceDeltas` returns `(0, 0)` whenever the Editable's current cursor differs from either `lastSyncedCursor` or `wireCursor`. Trade-off: a tap-to-retype flow that moves the cursor (rare; IMEs usually mark the region without moving the cursor) won't get its delete propagated. The next round-trip recovers state, possibly leaving a transient duplicate; this is strictly better than slicing arbitrary bytes off the buffer.
+**1. The IME tries to move the Editable cursor via `setSelection`.** Wayland text-input-v3 has no "move the cursor" request, so tawc rejects `setSelection` unless it is already a no-op. Accepting it would make the Editable say cursor=N while the client still has cursor=M. If a committed composing region later cannot be represented around the current wire cursor, `commitText` / `setComposingText` return `false` before mutating the Editable. There is no fallback insertion path.
 
 **2. The Wayland buffer's cursor moves past the client's reported context.** GTK's `set_surrounding_text` is allowed to be a "context window" — it can report the full text with a cursor before trailing newlines when the real cursor is on a fresh empty line. After we send `commit_string("\n")`, the wire cursor advances by one but GTK's next `set_surrounding_text` may report the old line cursor. The IC tracks `wireCursor` separately from `lastSyncedCursor`: it is reset from client reports, except for the immediate echo of a trailing-newline commit where the reported cursor is behind only by newline characters, then advanced by outbound commits, committed preedits, and standalone deletes. `deleteSurroundingText` translates key counts around `wireCursor`, so broad deletes after stale newline context land at the client's actual cursor while still counting surrogate pairs as one key.
 
 OpenBoard's per-Enter handler trips this shape: after the user types `<word><space><backspace><enter>`, on each subsequent Enter it fires `setComposingRegion(0, len(word))` + `commitText(word, 1)` + `commitText("\n", 1)`. The first `commitText` would normally translate to `delete_surrounding_text(len(word))` + `commit_string(word)` — a "replace the marked region with itself" no-op. `commitText` short-circuits that no-op. The following newline advances `wireCursor` even if the next surrounding-text report hides the trailing newline, so a later standalone `deleteSurroundingText` does not compute Backspaces from the stale Editable selection.
 
-`commitText` short-circuits when the new text equals the marked composing region's content: skip the wire `delete_surrounding_text` + `commit_string` entirely. The bytes are already on the buffer; nothing needs to travel. Real tap-to-retype with different text falls through to the normal delta-propagating path, gated by `lastSyncedCursor` for the divergence case.
+`commitText` short-circuits when the new text equals the marked composing region's content: remove the local composing span and skip the wire `delete_surrounding_text` + `commit_string` entirely. The bytes are already on the buffer; nothing needs to travel. Real tap-to-retype with different text falls through to the normal delta-propagating path, gated by the current wire cursor and rejected if it cannot be represented exactly.
 
 ### UTF-8 bytes vs UTF-16 code units vs Unicode chars
 
