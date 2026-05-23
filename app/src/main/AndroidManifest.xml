@@ -60,7 +60,8 @@
             android:theme="@style/Theme.Tawc.Compositor"
             android:documentLaunchMode="intoExisting"
             android:taskAffinity=""
-            android:configChanges="orientation|screenSize|keyboardHidden" />
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
 
         <service
             android:name=".compositor.CompositorService"

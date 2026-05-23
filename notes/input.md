@@ -130,6 +130,6 @@ Back is host-scoped. The `activityId` must still be the foreground host; stale
 events for destroyed/backgrounded Activities are ignored. A popup must belong
 to the Activity that received Back before it is dismissed; otherwise the policy
 falls through to that host's fullscreen/Escape behavior. `CompositorActivity`
-uses an overlay-priority `OnBackInvokedCallback` on API 33+ so the Wayland
-policy wins over transient Android UI such as the IME, and the legacy
-`onBackPressed` override on older supported Android versions.
+uses a default-priority `OnBackInvokedCallback` on API 33+ so transient Android
+UI such as the IME can consume Back first, and the legacy `onBackPressed`
+override on older supported Android versions.

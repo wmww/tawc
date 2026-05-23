@@ -297,12 +297,20 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         if (::rootView.isInitialized) ViewCompat.requestApplyInsets(rootView)
     }
 
-    private fun surfaceInsets(insets: WindowInsetsCompat): Insets =
-        if (compositorFullscreen) {
+    private fun surfaceInsets(insets: WindowInsetsCompat): Insets {
+        val system = if (compositorFullscreen) {
             Insets.NONE
         } else {
             insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
         }
+        val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+        return Insets.of(
+            maxOf(system.left, ime.left),
+            maxOf(system.top, ime.top),
+            maxOf(system.right, ime.right),
+            maxOf(system.bottom, ime.bottom),
+        )
+    }
 
     private fun taskIconSizePx(): Int = (TASK_ICON_SIZE_DP * resources.displayMetrics.density).toInt()
 
@@ -322,7 +330,7 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         }
         backCallback = callback
         onBackInvokedDispatcher.registerOnBackInvokedCallback(
-            OnBackInvokedDispatcher.PRIORITY_OVERLAY,
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT,
             callback,
         )
     }

@@ -162,6 +162,11 @@ With `fullEditor=true`, `mFallbackMode=false`, so `sendCurrentText()` is a no-op
   not as a process-global boolean. Retargeting from one Android task to
   another emits `hide(old)` + `show(new)` even if text input remains
   logically enabled.
+- `CompositorActivity` opts into edge-to-edge drawing, so it must apply
+  `WindowInsetsCompat.Type.ime()` itself. The IME inset is folded into the
+  `SurfaceView` padding even in compositor fullscreen mode; that shrinks the
+  Android surface and sends a Wayland configure instead of letting clients draw
+  under the soft keyboard.
 - `NativeBridge.pendingKeyboardShownByActivity` is sticky by Activity:
   it records show/hide requests that arrive before that exact
   `CompositorActivity` registers with `CompositorService`, then replays
