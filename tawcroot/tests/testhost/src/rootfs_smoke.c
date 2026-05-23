@@ -1236,6 +1236,27 @@ static int test_fchownat_fake_root(void)
 	return fails;
 }
 
+/* fd-only fchown: GNU tar uses this while dpkg-deb extracts control
+ * files. Same fake-root no-op semantics as fchownat. */
+static int test_fchown_fake_root(void)
+{
+	int fails = 0;
+	long fd = inline_openat(AT_FDCWD, "/etc/probe", O_RDONLY, 0);
+	fails += tawc_io_step("open /etc/probe for fchown", fd >= 0);
+	if (fd < 0) {
+		tawc_io_kv_dec("    fd", fd);
+		return fails;
+	}
+	long rv;
+	INLINE_SYS6(TAWC_SYS_fchown, fd, 0 /*uid*/, 0 /*gid*/, 0, 0, 0, rv);
+	fails += tawc_io_step(
+		"fchown(fd, 0, 0) -> 0 (fake-root no-op)",
+		rv == 0);
+	tawc_io_kv_dec("    rv", rv);
+	INLINE_SYS6(TAWC_SYS_close, fd, 0, 0, 0, 0, 0, rv);
+	return fails;
+}
+
 /* fstatat AT_EMPTY_PATH with NON-NULL empty string ("" not NULL).
  * glibc's fstat() implements `fstat(fd, &st)` as
  * `fstatat(fd, "", &st, AT_EMPTY_PATH)` with a non-NULL pointer to
@@ -3869,6 +3890,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_statfs_in_rootfs();
 	fails += test_xattr_dispatch();
 	fails += test_fchownat_fake_root();
+	fails += test_fchown_fake_root();
 	fails += test_fstatat_at_empty_path();
 	fails += test_statx_fake_root_decoration();
 	fails += test_linkat_happy_path();

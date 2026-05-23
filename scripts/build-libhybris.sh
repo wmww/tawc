@@ -355,9 +355,11 @@ patchelf --set-soname libGLESv2_hybris.so "$SHIM_DIR/libGLESv2_hybris.so"
 "$CC_BIN" -shared -fPIC \
     -o "$SHIM_DIR/libGLESv2.so.2" \
     "$REPO_DIR/deps/libhybris-shims/libglesv2-shim.c" \
+    "$REPO_DIR/deps/libhybris-shims/glx-stubs.c" \
     -L"$SHIM_DIR" -l:libGLESv2_hybris.so \
     -Wl,-rpath,/usr/lib/hybris/gl-shims \
     -Wl,--no-as-needed \
+    -Wl,--version-script="$REPO_DIR/deps/libhybris-shims/glx-stubs.map" \
     -Wl,-soname,libGLESv2.so.2
 ln -sf libGLESv2.so.2 "$SHIM_DIR/libGLESv2.so"
 
@@ -369,9 +371,30 @@ ln -sf libGLESv2.so.2 "$SHIM_DIR/libGL.so.1"
 "$CC_BIN" -shared -fPIC \
     -o "$SHIM_DIR/libGL.so" \
     "$REPO_DIR/deps/libhybris-shims/libgl-shim.c" \
+    "$REPO_DIR/deps/libhybris-shims/glx-stubs.c" \
     -L"$SHIM_DIR" -l:libGL.so.1 \
     -Wl,-rpath,/usr/lib/hybris/gl-shims \
     -Wl,--no-as-needed \
+    -Wl,--version-script="$REPO_DIR/deps/libhybris-shims/glx-stubs.map" \
     -Wl,-soname,libGL.so.1
+
+check_glx_export() {
+    local so="$1"
+    local sym="$2"
+    if ! "${HOST_TRIPLE}-readelf" -Ws "$so" | awk -v sym="$sym" '
+        $4 == "FUNC" && $5 == "GLOBAL" && $8 ~ ("^" sym "(@@|$)") { found = 1 }
+        END { exit found ? 0 : 1 }
+    '; then
+        echo "ERROR: $so does not export $sym" >&2
+        exit 1
+    fi
+}
+
+for shim in "$SHIM_DIR/libGLESv2.so.2" "$SHIM_DIR/libGL.so"; do
+    check_glx_export "$shim" glXGetCurrentContext
+    check_glx_export "$shim" glXGetCurrentDisplay
+    check_glx_export "$shim" glXChooseFBConfig
+    check_glx_export "$shim" glXGetProcAddressARB
+done
 
 echo "==> done. Output in $LIB_DIR"

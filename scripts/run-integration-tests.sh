@@ -125,8 +125,19 @@ set_required_packages() {
             PACKAGE_CHECK_CMD="for p in ${REQUIRED_PKGS[*]}; do xbps-query -p pkgver \"\$p\" >/dev/null 2>&1 || exit 1; done"
             INSTALL_CMD="xbps-install -Suy && xbps-install -y ${REQUIRED_PKGS[*]}"
             ;;
+        debian-sid)
+            REQUIRED_PKGS=(
+                libgtk-4-1 libcairo2 libwayland-client0 libx11-6 libxcb1 libglvnd0
+                libgtk-3-0 gtk-3-examples gtk-4-examples firefox supertuxkart
+                mesa-utils mesa-utils-extra weston vulkan-tools gstreamer1.0-plugins-base
+                x11-apps dbus-x11
+                libgl1-mesa-dri mesa-vulkan-drivers fonts-dejavu-core
+            )
+            PACKAGE_CHECK_CMD="dpkg-query -W ${REQUIRED_PKGS[*]} >/dev/null 2>&1"
+            INSTALL_CMD="apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends ${REQUIRED_PKGS[*]}"
+            ;;
         *)
-            echo "ERROR: unsupported distro '$distro_key' (expected arch / manjaro / void)" >&2
+            echo "ERROR: unsupported distro '$distro_key' (expected arch / manjaro / void / debian-sid)" >&2
             exit 1
             ;;
     esac
@@ -219,7 +230,19 @@ copy_test_app() {
 build_and_deploy_test_apps() {
     local distro_key="$1"
     BUILD_ABI="$(detect_rootfs_abi)"
-    BUILD_DISTRO="${TAWC_SYSROOT_DISTRO:-$distro_key}"
+    if [ -n "${TAWC_SYSROOT_DISTRO:-}" ]; then
+        BUILD_DISTRO="$TAWC_SYSROOT_DISTRO"
+    else
+        BUILD_DISTRO="$distro_key"
+        case "$BUILD_DISTRO" in
+            debian-sid)
+                # build-host-sysroot.sh has pacman/xbps resolvers today. The
+                # test clients only need a glibc sysroot with the same core
+                # Wayland/X11/GL ABI, so reuse the existing Arch sysroot.
+                BUILD_DISTRO=arch
+                ;;
+        esac
+    fi
 
     echo "=== Building test apps if needed ($BUILD_DISTRO/$BUILD_ABI) ==="
     make -C "$ROOT_DIR/tests/apps" -j"$(nproc)" "DISTRO=$BUILD_DISTRO" "ABI=$BUILD_ABI" all

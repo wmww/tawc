@@ -12,7 +12,9 @@ import me.phie.tawc.Settings
  * before `/etc/profile` runs. Distro `/etc/profile` files set their own
  * `PATH` unconditionally, so the in-rootfs PATH ultimately comes from
  * the distro — we set it here as well only to give scripts that read
- * `$PATH` before profile.d completes a sane fallback.
+ * `$PATH` before profile.d completes a sane fallback. `/usr/games` is
+ * included because Debian installs graphical games such as SuperTuxKart
+ * there while Arch puts them under the usual sbin/bin paths.
  *
  * Per-method tweak: `MOZ_DISABLE_*_SANDBOX` is set under proot only.
  * Firefox's per-subprocess sandboxes SIGSEGV under proot's ptrace
@@ -43,7 +45,7 @@ internal object RootfsEnv {
         build(method, Settings.graphicsBackend)
 
     fun build(method: Method, backend: GraphicsBackend): Map<String, String> = buildMap {
-        put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games")
         put("HOME", "/root")
         put("TMPDIR", "/tmp")
         // Wayland socket is exposed inside the rootfs at /usr/share/tawc/

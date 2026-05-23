@@ -13,16 +13,8 @@
  * in turn aborts is worse than `dlsym` finding a stub that returns NULL.
  *
  * This shim:
- *   - Exports GLX stubs (return NULL) so probes detect "no GLX, use EGL"
+ *   - Exports GLX stubs so probes detect "no GLX, use EGL"
  *   - Links against libGL.so.1 (which in /tmp/gl-shims is a symlink to the
  *     libhybris GLES library) via DT_NEEDED, so `dlsym(handle, "glBindTexture")`
  *     resolves GLES symbols through the dependency chain.
  */
-
-#include <stddef.h>
-
-/* GLX stubs -- probes that return NULL mean "no GLX context, use EGL". */
-void *glXGetCurrentContext(void)             { return NULL; }
-void *glXGetCurrentDisplay(void)             { return NULL; }
-void *glXGetProcAddress(const char *name)    { (void)name; return NULL; }
-void *glXGetProcAddressARB(const char *name) { (void)name; return NULL; }

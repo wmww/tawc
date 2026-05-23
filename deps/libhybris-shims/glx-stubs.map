@@ -1,0 +1,83 @@
+GLX_1.0 {
+    global:
+        glXChooseVisual;
+        glXCopyContext;
+        glXCreateContext;
+        glXDestroyContext;
+        glXGetConfig;
+        glXGetCurrentContext;
+        glXGetCurrentDrawable;
+        glXIsDirect;
+        glXMakeCurrent;
+        glXQueryExtension;
+        glXQueryVersion;
+        glXSwapBuffers;
+        glXUseXFont;
+        glXWaitGL;
+        glXWaitX;
+    local: *;
+};
+
+GLX_1.1 {
+    global:
+        glXGetClientString;
+        glXQueryExtensionsString;
+        glXQueryServerString;
+} GLX_1.0;
+
+GLX_1.2 {
+    global:
+        glXGetCurrentDisplay;
+} GLX_1.1;
+
+GLX_1.3 {
+    global:
+        glXChooseFBConfig;
+        glXCreateNewContext;
+        glXCreatePbuffer;
+        glXCreatePixmap;
+        glXCreateWindow;
+        glXDestroyPbuffer;
+        glXDestroyPixmap;
+        glXDestroyWindow;
+        glXGetCurrentReadDrawable;
+        glXGetFBConfigAttrib;
+        glXGetFBConfigs;
+        glXGetSelectedEvent;
+        glXGetVisualFromFBConfig;
+        glXMakeContextCurrent;
+        glXQueryContext;
+        glXQueryDrawable;
+        glXSelectEvent;
+} GLX_1.2;
+
+GLX_1.4 {
+    global:
+        glXGetProcAddress;
+} GLX_1.3;
+
+GLX_ARB_create_context {
+    global:
+        glXCreateContextAttribsARB;
+} GLX_1.4;
+
+GLX_ARB_get_proc_address {
+    global:
+        glXGetProcAddressARB;
+} GLX_1.4;
+
+GLX_EXT_swap_control {
+    global:
+        glXSwapIntervalEXT;
+} GLX_1.4;
+
+GLX_MESA_swap_control {
+    global:
+        glXGetSwapIntervalMESA;
+        glXSwapIntervalMESA;
+} GLX_1.4;
+
+GLX_SGI_swap_control {
+    global:
+        glXSwapIntervalSGI;
+} GLX_1.4;

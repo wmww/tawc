@@ -91,9 +91,10 @@ name, it picks up the distro's libglvnd dispatcher. libglvnd routes
   detect context type, and `abort()`s if the symbol is found in a
   vendor that doesn't actually serve GLX.
 
-The shims (`deps/libhybris-shims/libgl-shim.c`, `deps/libhybris-shims/libglesv2-shim.c`) export
-NULL-returning `glX*` stubs and DT_NEEDED-link to a renamed copy of
-libhybris's GLES (`libGLESv2_hybris.so`) so `dlsym(handle,
+The shims (`deps/libhybris-shims/libgl-shim.c`, `deps/libhybris-shims/libglesv2-shim.c`)
+compile in `glx-stubs.c`, which exports common versioned `glX*`
+entry points that fail softly, plus DT_NEEDED-link to a renamed copy
+of libhybris's GLES (`libGLESv2_hybris.so`) so `dlsym(handle,
 "glBindTexture")` still resolves through the dependency chain. Built
 host-side by `scripts/build-libhybris.sh`; ship as part of the
 APK's `libhybris/<abi>.tar` asset, extracted at runtime, and exposed

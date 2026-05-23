@@ -51,7 +51,7 @@ Everything lives under the app's private data dir:
     /data/data/me.phie.tawc/
       cache/install/                 # owned by BootstrapCache (see below):
       cache/install/bootstrap-<cacheKey>.tar.zst    # canonical Arch x86_64 bootstrap (7-day TTL); cacheKey="arch-x86_64"
-      cache/install/bootstrap-<cacheKey>.tar.gz     # canonical ALARM / Manjaro ARM bootstrap (7-day TTL); cacheKey="arch-aarch64" / "manjaro-aarch64"
+      cache/install/bootstrap-<cacheKey>.tar.gz     # canonical ALARM / Manjaro / Debian bootstrap (7-day TTL); cacheKey="arch-aarch64" / "manjaro-aarch64" / "debian-sid-aarch64"
       cache/install/bootstrap-<cacheKey>.tar.fifo                 # transient zstd→tar streaming pipe (Archive owns lifecycle; sweep evicts unconditionally)
       cache/install/bootstrap-<cacheKey>.tar.{zst,gz}.part        # transient Downloader in-flight file (sweep evicts unconditionally)
       distros/
@@ -198,13 +198,13 @@ The package is split into three layers:
 | `InstallationStore.kt`         | Filesystem layout + JSON metadata I/O. `setState` is the one entry point that writes the state field. |
 | `Su.kt`                        | Wrapper around Magisk `su`. Pipes the script via stdin (no shell-quoting headaches), streams combined stdout/stderr line-by-line via a callback. |
 | `Downloader.kt`                | HTTP downloader for bootstrap tarballs. Caches by content length. |
-| `SignatureVerifier.kt`         | Sealed `BootstrapVerification` (`None` / `Pgp` / `CrossMirrorMd5`) and `verify(...)`. Called from [Installer] between download and extract — see *Bootstrap integrity* below. Uses BouncyCastle (`bcpg-jdk18on` + `bcprov-jdk18on`) for the OpenPGP layer. Treat as load-bearing security code. |
+| `SignatureVerifier.kt`         | Sealed `BootstrapVerification` (`None` / `Pgp` / `CrossMirrorMd5` / `Sha256`) and `verify(...)`. Called from [Installer] between download and extract — see *Bootstrap integrity* below. Uses BouncyCastle (`bcpg-jdk18on` + `bcprov-jdk18on`) for the OpenPGP layer. Treat as load-bearing security code. |
 | `BootstrapCache.kt`            | Sole owner of `<cacheDir>/install/`. `download(arch, url, format, …)` is the single entry point: it mkdirs, fetches via [Downloader], and refreshes the file's mtime so the TTL counts from "last used" rather than "first downloaded". Also exposes `tempFifoFor(arch)` for [Archive]'s zstd→tar streaming FIFO so the transient lives in the cache dir under one owner. `sweepStale` runs a two-pass janitor: TTL eviction (7 days) for canonical `bootstrap-<cacheKey>.tar.{zst,gz}`; unconditional deletion of `*.fifo`, legacy `*.tmp`, and `*.part` (transients are never valid across processes). Also defines the `BootstrapFormat` enum. |
 | `Archive.kt`                   | Tar extraction. Plain `.tar` / `.tar.gz` get handed to `toybox tar` directly; `.tar.zst` is streamed in-process through a named pipe (`bootstrap-<cacheKey>.tar.fifo`) so the ~700 MB plaintext never lands on disk. Never wipes — install only runs against an empty slot. |
 | `RootfsCleaner.kt`             | The one and only delete path: kill chroot processes → unmount strictly → `find -xdev -depth -delete`. Used by uninstall; never by install. |
 | `ChrootMounter.kt`             | Builds the bind-mount shell snippet (`mountScript`) used by [ChrootMethod.startInside], and provides defensive-cleanup `unmount` (used by [RootfsCleaner]). Mounts live inside a single `su` invocation's private namespace, not globally. |
 | `Installer.kt`                 | Generic install/uninstall orchestrator. Drives `setState(INSTALLING) → BootstrapCache.download → Archive.extractAsRoot → distro.configure → distro.initPackageManager → distro.installBasePackages → setState(READY)`. Distro-agnostic; per-distro behaviour comes from the [Distro] passed in. |
-| `distro/Distro.kt`             | Interface for a (distro × Linux arch). Owns `bootstrap` (URL/format/stripPrefix/verification), `cacheKey`, `basePackages`, the three policy hooks (`configure`, `initPackageManager`, `installBasePackages`), and `resolveBootstrap()` for distros with install-time URL/digest lookup (Manjaro). Also defines `DistroBootstrap`. |
+| `distro/Distro.kt`             | Interface for a (distro × Linux arch). Owns `bootstrap` (URL/format/stripPrefix/verification), `cacheKey`, `basePackages`, the three policy hooks (`configure`, `initPackageManager`, `installBasePackages`), and `resolveBootstrap()` for distros with install-time URL/digest lookup (Manjaro/Void/Debian). Also defines `DistroBootstrap`. |
 | `distro/DistroRegistry.kt`     | The only place that maps `(metadata.distro, metadata.arch)` → [Distro], `Build.SUPPORTED_ABIS` → installable [Distro] list, and the install activity's distro radio key → [Distro]. `availableForHost()` / `defaultForHost()` / `forKey()`. |
 | `distro/arch/ArchPacmanCommon.kt` | Helpers shared by every Arch / Manjaro flavour: pacman.conf munging (SigLevel/DisableSandbox/CheckSpace/IgnorePkg), mirrorlist write, the `pacman-key --init` boilerplate, and `pacman -Syu` / `pacman -S --needed`. Also exports the canonical `DEFAULT_BASE_PACKAGES` list. |
 | `distro/arch/ArchLinuxX86_64.kt` | Arch Linux x86_64 (`pkgbuild.com` zstd bootstrap, `archlinux` keyring, geo-redirector mirrorlist). |
@@ -215,6 +215,9 @@ The package is split into three layers:
 | `distro/voidlinux/VoidSha256Resolver.kt` | Fetches `sha256sum.txt` from `repo-default.voidlinux.org/live/current/` over HTTPS at install time, parses out the latest `void-<arch>-ROOTFS-YYYYMMDD.tar.xz` filename + SHA-256, and hands them to the installer as a [BootstrapVerification.Sha256]. |
 | `distro/voidlinux/VoidLinuxX86_64.kt` | Void Linux x86_64 (glibc). Bootstrap is the dated `tar.xz` ROOTFS published under `live/current/`. |
 | `distro/voidlinux/VoidLinuxAarch64.kt` | Void Linux aarch64 (glibc). Same flow as the x86_64 flavour, different bootstrap URL and ABI. |
+| `distro/apt/AptCommon.kt`      | Shared apt-family helpers: deb822 sources, apt.conf, dpkg `path-exclude`, apt-family `/etc/profile.d/tawc.sh`, `apt-get update`, `apt-get dist-upgrade`, and base package install. |
+| `distro/debian/DebianDockerResolver.kt` | Fetches the Debian debuerreotype Docker artifact OCI manifest from the `dist-amd64` / `dist-arm64v8` branches and returns the `rootfs.tar.gz` URL plus layer SHA-256. |
+| `distro/debian/DebianSid.kt`   | Debian sid x86_64 / aarch64. Suite-driven apt-family implementation; future Debian suites should mostly be additional data objects. |
 | `util/HostArch.kt`             | `primaryAbi()` and `linuxArchFor(abi)` — the only place that knows the Android ABI ↔ Linux `uname -m` mapping. |
 | `util/HumanSize.kt`            | Byte-count → "1.2 MiB" formatter for download progress. |
 | `util/AppOwnership.kt`         | `chownAppDirNonRecursive` — resets a freshly-mkdir'd dir to app uid:gid so subsequent app-uid writes succeed. |
@@ -633,6 +636,7 @@ Hard rules:
 | ALARM aarch64 (`fl.us.mirror.archlinuxarm.org`, HTTPS) | Cross-mirror MD5 cross-check: `.md5` fetched over HTTPS from `fl.us.` and `ca.us.` (independently-operated mirrors with their own valid certs), digests must agree byte-for-byte, then the tarball's MD5 must match | `BootstrapVerification.CrossMirrorMd5` in `ArchLinuxArm.kt` |
 | Manjaro ARM aarch64 (`github.com/manjaro-arm/rootfs/releases`, HTTPS) | SHA-256 from the GitHub Releases REST API: `api.github.com/repos/manjaro-arm/rootfs/releases/latest` returns the asset's server-computed `digest: sha256:<hex>`. We fetch that JSON over HTTPS in `ManjaroArm.resolveBootstrap`, then verify the downloaded tarball's SHA-256 matches before extract | `BootstrapVerification.Sha256` (Manjaro path) in `ManjaroArm.kt` |
 | Void Linux x86_64 / aarch64 glibc (`repo-default.voidlinux.org/live/current/`, HTTPS) | SHA-256 from upstream `sha256sum.txt`. We fetch the manifest over HTTPS in `VoidSha256Resolver.resolveLatest`, parse out the matching `void-<arch>-ROOTFS-*.tar.xz` line, and verify the downloaded tarball's SHA-256 matches before extract. Trust profile is the same single-HTTPS-endpoint stance as Manjaro ARM | `BootstrapVerification.Sha256` (Void path) in `VoidLinux{X86_64,Aarch64}.kt` |
+| Debian sid x86_64 / aarch64 (`raw.githubusercontent.com/debuerreotype/docker-debian-artifacts`, HTTPS) | SHA-256 from the official debuerreotype Docker artifact OCI manifest. We fetch `image-manifest.json` from the moving `dist-amd64` / `dist-arm64v8` branches, read the single gzip layer digest, then verify `rootfs.tar.gz` against it before extract. Trust profile is a single HTTPS endpoint plus OCI digest sanity check | `BootstrapVerification.Sha256` (Debian path) in `DebianSid.kt` / `DebianDockerResolver.kt` |
 | In-chroot pacman packages | Default `SigLevel = Required DatabaseOptional`, against the keyring populated by `pacman-key --populate archlinux` / `archlinuxarm` / `archlinuxarm manjaro manjaro-arm` | `ArchPacmanCommon.kt` (the `Never` line was removed, `--populate` is no longer `\|\| true`'d) |
 
 ### Manjaro ARM bootstrap: trust profile
@@ -692,18 +696,18 @@ PGP would defeat all three: the signature is bound to a key whose
 fingerprint we ship with the app, independent of mirror infra entirely.
 
 **The plan is not to bolt PGP onto ALARM** — upstream doesn't sign
-the tarball and isn't likely to start. The real fix is to **switch
-the aarch64 chroot off ALARM entirely** to a distro with a stronger
-upstream trust path (Debian's `debootstrap` against the Debian
-archive keyring is the leading candidate; see
-[distro-options.md](distro-options.md)). Until that migration
-happens, the cross-mirror MD5 over HTTPS is the floor and must not
-be weakened.
+the tarball and isn't likely to start. New installs can use Debian
+Sid, whose debuerreotype rootfs is verified against the OCI layer
+SHA-256 before extraction and whose packages are then verified by apt
+against the Debian archive keyring. ALARM remains available, so the
+cross-mirror MD5 over HTTPS is still its floor and must not be
+weakened.
 
 ### Verifier code
 
 - `SignatureVerifier.kt` — sealed `BootstrapVerification` (`None`,
-  `Pgp`, `CrossMirrorMd5`) and `verify(context, tarball, verification)`.
+  `Pgp`, `CrossMirrorMd5`, `Sha256`) and
+  `verify(context, tarball, verification)`.
   Called from `Installer.install` between [BootstrapCache.download]
   and [Archive.extractAsRoot]. Throws `IOException` on any failure
   and the install is parked in `FAILED` before any byte hits the

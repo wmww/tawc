@@ -5,8 +5,9 @@ Companion to [distro-abstraction.md](distro-abstraction.md), which
 documents the code-level abstraction that lets us add new families.
 
 We currently ship **Arch Linux ARM** (aarch64), **Arch Linux**
-(x86_64, for the emulator), **Manjaro ARM** (aarch64), and **Void
-Linux** glibc (x86_64 and aarch64). This note exists because ALARM is
+(x86_64, for the emulator), **Manjaro ARM** (aarch64), **Void
+Linux** glibc (x86_64 and aarch64), and **Debian sid** (x86_64 and
+aarch64). This note exists because ALARM is
 under-maintained and somewhat bloated for our needs, and we keep
 getting asked "what about $distro?".
 
@@ -64,7 +65,7 @@ toolchain for that.
 Criteria: glibc, well-maintained on aarch64 + x86_64, small base
 suitable for a chroot, fresh-enough packages for a desktop browser.
 
-### Debian (recommended default)
+### Debian
 
 - arm64 is a **first-class release architecture**, not a port.
 - `debootstrap --variant=minbase` produces a ~120-150 MB rootfs.
@@ -76,6 +77,13 @@ suitable for a chroot, fresh-enough packages for a desktop browser.
 - Downside: stable's packages are old by design. For a Wayland
   compositor target this is mostly fine; for Firefox you'll want
   `testing` or upstream.
+- **Currently shipped as sid** for the rolling/fresh package path.
+  Bootstrap comes from Debian's official debuerreotype Docker
+  artifacts (`dist-amd64` / `dist-arm64v8` branches), resolving the
+  OCI `rootfs.tar.gz` layer digest at install time and verifying the
+  downloaded tarball with SHA-256. The apt-family code is suite-driven,
+  so adding `testing`, `stable`, or Ubuntu-style variants should mostly
+  be a data-object addition.
 
 ### Void Linux (glibc flavor)
 
@@ -134,8 +142,10 @@ suitable for a chroot, fresh-enough packages for a desktop browser.
 | Stay in pacman-land, better ARM   | Manjaro ARM    |
 | Fresh + heavy + enterprise feel   | Fedora         |
 
-Recommended: **Debian stable**, with `testing` or upstream Mozilla repo
-for Firefox. Boring, correct, biggest community on arm64.
+Recommended stable-style option: **Debian stable**, with `testing` or
+upstream Mozilla repo for Firefox. Boring, correct, biggest community
+on arm64. For rolling/fresh packages, use the shipped **Debian sid** or
+Void glibc.
 
 ## Other options (and why they're worse)
 
@@ -257,8 +267,8 @@ to rely on. Mentioned only because people ask.
 
 For a glibc chroot on Android:
 
-- **Default to Debian.** Best ARM support outside ALARM, biggest repo,
-  smallest credible base, boring tooling.
+- **Debian sid is now shipped** for rolling/fresh packages with apt.
+- **Default stable-style Debian** remains the conservative future pick.
 - **Void glibc** if you want minimal + rolling.
 - **Manjaro ARM** if you want to keep `pacman` and reuse most of the
   current Arch code.

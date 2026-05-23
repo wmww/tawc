@@ -1213,6 +1213,17 @@ static long handle_fchownat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	return 0;
 }
 
+/* fd-only fchown, used by GNU tar when dpkg-deb extracts package
+ * control files. Same fake-root contract as fchownat: report success
+ * without touching host ownership, which Android app UIDs cannot
+ * change anyway. */
+static long handle_fchown(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)args;
+	(void)uc;
+	return 0;
+}
+
 /* symlinkat: translate the destination only (the source is the
  * symlink's literal target string, NOT a host path — the kernel writes
  * those bytes into the new inode and validates EFAULT on its end).
@@ -1964,6 +1975,7 @@ void tawcroot_fs_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_unlinkat,    handle_unlinkat);
 	tawcroot_dispatch_install(TAWC_SYS_symlinkat,   handle_symlinkat);
 	tawcroot_dispatch_install(TAWC_SYS_fchmodat,    handle_fchmodat);
+	tawcroot_dispatch_install(TAWC_SYS_fchown,      handle_fchown);
 	tawcroot_dispatch_install(TAWC_SYS_fchownat,    handle_fchownat);
 	tawcroot_dispatch_install(TAWC_SYS_utimensat,   handle_utimensat);
 	tawcroot_dispatch_install(TAWC_SYS_statx,       handle_statx);

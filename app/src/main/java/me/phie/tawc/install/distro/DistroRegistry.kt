@@ -3,6 +3,8 @@ package me.phie.tawc.install.distro
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.distro.arch.ArchLinuxArm
 import me.phie.tawc.install.distro.arch.ArchLinuxX86_64
+import me.phie.tawc.install.distro.debian.DebianSidAarch64
+import me.phie.tawc.install.distro.debian.DebianSidX86_64
 import me.phie.tawc.install.distro.manjaro.ManjaroArm
 import me.phie.tawc.install.distro.voidlinux.VoidLinuxAarch64
 import me.phie.tawc.install.distro.voidlinux.VoidLinuxX86_64
@@ -22,6 +24,8 @@ object DistroRegistry {
         ManjaroArm,
         VoidLinuxX86_64,
         VoidLinuxAarch64,
+        DebianSidX86_64,
+        DebianSidAarch64,
     )
 
     /**

@@ -66,6 +66,13 @@ me.phie.tawc.install/
                                   #   latest tag's URL+SHA256 via the GitHub API;
                                   #   reuses ArchPacmanCommon for everything else
                                   #   (3 keyrings: archlinuxarm, manjaro, manjaro-arm)
+    apt/
+      AptCommon.kt                # shared apt/deb822 sources, apt.conf, dpkg
+                                  #   path-exclude, apt-get update/install helpers
+    debian/
+      DebianDockerResolver.kt     # debuerreotype docker artifact manifest ->
+                                  #   rootfs.tar.gz URL + OCI layer SHA-256
+      DebianSid.kt                # sid on x86_64/aarch64; apt-family hooks
 ```
 
 `MainActivity` also gained a `DistroRegistry` import so the home-row
@@ -115,7 +122,15 @@ PGP / cross-mirror-MD5 verification.
 
 ```kotlin
 object DistroRegistry {
-    val all: List<Distro> = listOf(ArchLinuxX86_64, ArchLinuxArm, ManjaroArm)
+    val all: List<Distro> = listOf(
+        ArchLinuxX86_64,
+        ArchLinuxArm,
+        ManjaroArm,
+        VoidLinuxX86_64,
+        VoidLinuxAarch64,
+        DebianSidX86_64,
+        DebianSidAarch64,
+    )
 
     fun forInstallation(inst: Installation): Distro? =
         all.firstOrNull { it.key == inst.distro && it.androidAbi == inst.arch }

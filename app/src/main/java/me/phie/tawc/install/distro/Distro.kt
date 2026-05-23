@@ -12,10 +12,10 @@ import me.phie.tawc.install.MirrorProxy
  * (`download → extract → configure → init pkgmgr → install pkgs`)
  * and one `Distro` per (distro family × Linux arch) plugs in here.
  *
- * Today's set: [me.phie.tawc.install.distro.arch.ArchLinuxX86_64],
- * [me.phie.tawc.install.distro.arch.ArchLinuxArm]. Adding e.g. Ubuntu
- * is a fresh file in `distro/ubuntu/`; nothing in `Installer` /
- * `InstallationService` cares.
+ * Today's set includes Arch, Manjaro ARM, Void glibc, and Debian sid.
+ * Adding e.g. Ubuntu is a fresh file in `distro/ubuntu/` plus shared
+ * apt-family helpers; nothing in `Installer` / `InstallationService`
+ * cares.
  */
 interface Distro {
     /**
