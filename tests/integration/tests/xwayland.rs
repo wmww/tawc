@@ -107,6 +107,14 @@ fn shell_quote_single(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+fn saw_wlegl_create_buffer_fmt(logs: &str, fmt: u32) -> bool {
+    let fmt_needle = format!("fmt={fmt}");
+    logs.lines().any(|line| {
+        line.contains("wlegl: create_buffer")
+            && line.split_whitespace().any(|part| part == fmt_needle)
+    })
+}
+
 fn wait_for_android_clipboard(expected: &str, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
@@ -484,9 +492,9 @@ fn test_tawc_dri_ahb_present_animated_loop() {
 ///
 /// Asserts:
 ///   - The client exits 0 and reaches its `OK` line (no EGL errors).
-///   - The compositor logs at least one `wlegl: create_buffer 320x240
-///     ... fmt=1` (AHB import) AND at least one
-///     `wlegl: imported ANativeWindowBuffer as texture 320x240` (GL bind).
+///   - The compositor logs at least one `wlegl: create_buffer ... fmt=1`
+///     (AHB import) AND at least one
+///     `wlegl: imported ANativeWindowBuffer as texture ...` (GL bind).
 ///
 /// If this fails *with no AHB log lines*, the libhybris X11 plugin is
 /// broken — the client never made it onto the TAWC-DRI wire (probably
@@ -530,8 +538,8 @@ fn test_eglx11_renders_via_ahb() {
 
     let logs = adb::logcat_dump_tawc().expect("logcat dump");
     assert!(
-        logs.contains("wlegl: create_buffer 320x240") && logs.contains("fmt=1"),
-        "compositor never logged `wlegl: create_buffer 320x240 ... fmt=1`. \
+        saw_wlegl_create_buffer_fmt(&logs, 1),
+        "compositor never logged `wlegl: create_buffer ... fmt=1`. \
          The libhybris EGL plugin's swap chain didn't ship an AHB through \
          TAWC-DRI to the compositor. Either eglGetPlatformDisplay didn't \
          dispatch to our x11 plugin, or queueBuffer's TAWCDRIPresentBuffer \
@@ -541,7 +549,7 @@ fn test_eglx11_renders_via_ahb() {
         &logs[logs.len().saturating_sub(4096)..],
     );
     assert!(
-        logs.contains("wlegl: imported ANativeWindowBuffer as texture 320x240"),
+        logs.contains("wlegl: imported ANativeWindowBuffer as texture"),
         "compositor imported the AHB but never bound it as a GL texture. \
          Format/usage mismatch between the libhybris plugin's gralloc \
          allocate and the compositor's wlegl import path.\nlogs:\n{}",

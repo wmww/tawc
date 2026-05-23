@@ -115,9 +115,9 @@ of the box.
   chroot-side EGL-on-X11 client (`tests/apps/eglx11-test/`) for 30
   frames; the test asserts `eglGetPlatformDisplay(EGL_PLATFORM_X11_KHR)`
   succeeds, GL_VENDOR=Qualcomm, and the compositor logs both
-  `wlegl: create_buffer 320x240 ... fmt=1` (AHB import via
+  `wlegl: create_buffer ... fmt=1` (AHB import via
   TAWC-DRI, not SHM) AND
-  `wlegl: imported ANativeWindowBuffer as texture 320x240`
+  `wlegl: imported ANativeWindowBuffer as texture ...`
   (full GL bind). On OnePlus 9 (Adreno 660) the client picks up the
   vendor GLES driver via libhybris's TLS thunks and ships frames
   end-to-end with no CPU readback.
