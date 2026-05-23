@@ -61,7 +61,7 @@
             android:documentLaunchMode="intoExisting"
             android:taskAffinity=""
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize" />
+            android:windowSoftInputMode="stateHidden|adjustResize" />
 
         <service
             android:name=".compositor.CompositorService"

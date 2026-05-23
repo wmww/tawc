@@ -166,7 +166,10 @@ With `fullEditor=true`, `mFallbackMode=false`, so `sendCurrentText()` is a no-op
   `WindowInsetsCompat.Type.ime()` itself. The IME inset is folded into the
   `SurfaceView` padding even in compositor fullscreen mode; that shrinks the
   Android surface and sends a Wayland configure instead of letting clients draw
-  under the soft keyboard.
+  under the soft keyboard. The Activity also sets `stateHidden|adjustResize`:
+  the compositor asks for the keyboard explicitly when a Wayland text-input
+  instance enables, so Android should not auto-show it merely because the
+  focused `SurfaceView` is an IME-capable editor.
 - `NativeBridge.pendingKeyboardShownByActivity` is sticky by Activity:
   it records show/hide requests that arrive before that exact
   `CompositorActivity` registers with `CompositorService`, then replays
