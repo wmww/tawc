@@ -30,6 +30,7 @@ object Settings {
     const val MAX_OUTPUT_SCALE = 4.0f
     const val OUTPUT_SCALE_STEP = 0.25f
     const val DEFAULT_OUTPUT_SCALE = 2.0f
+    val DEFAULT_TINT_BUFFERS_BY_TYPE = BuildConfig.TINT_BUFFERS_BY_TYPE_DEFAULT
 
     private interface Store {
         var graphicsBackend: GraphicsBackend
@@ -50,7 +51,7 @@ object Settings {
             }
 
         override var tintBuffersByType: Boolean
-            get() = prefs.getBoolean(KEY_TINT_BUFFERS_BY_TYPE, true)
+            get() = prefs.getBoolean(KEY_TINT_BUFFERS_BY_TYPE, DEFAULT_TINT_BUFFERS_BY_TYPE)
             set(value) {
                 prefs.edit { putBoolean(KEY_TINT_BUFFERS_BY_TYPE, value) }
             }
@@ -76,7 +77,7 @@ object Settings {
 
     private class TestStore : Store {
         @Volatile override var graphicsBackend: GraphicsBackend = GraphicsBackend.DEFAULT
-        @Volatile override var tintBuffersByType: Boolean = true
+        @Volatile override var tintBuffersByType: Boolean = DEFAULT_TINT_BUFFERS_BY_TYPE
         @Volatile override var outputScale: Float = DEFAULT_OUTPUT_SCALE
             set(value) { field = snapOutputScale(value) }
         @Volatile override var xwayland: Boolean = true
@@ -114,9 +115,9 @@ object Settings {
     /**
      * Whether the compositor tints surfaces by buffer type so the
      * fallback path is visually obvious — today this means SHM
-     * surfaces get a magenta wash. Default on; useful to disable when
-     * showing the app off or when the tint clashes with what's being
-     * debugged. Read live by the renderer (no restart required).
+     * surfaces get a magenta wash. Debug builds default on; release
+     * builds default off. Read live by the renderer (no restart
+     * required).
      */
     var tintBuffersByType: Boolean
         get() = requireStore().tintBuffersByType

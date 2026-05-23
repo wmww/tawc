@@ -96,6 +96,7 @@ android {
             buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_CPU_ENABLED",            "${"cpu" in enabledGraphics}")
             buildConfigField("boolean", "XWAYLAND_ENABLED", "$xwaylandPackaged")
+            buildConfigField("boolean", "TINT_BUFFERS_BY_TYPE_DEFAULT", "true")
         }
         getByName("release") {
             isMinifyEnabled = false
@@ -112,6 +113,7 @@ android {
             buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_CPU_ENABLED",            "${"cpu" in enabledGraphics}")
             buildConfigField("boolean", "XWAYLAND_ENABLED", "$xwaylandPackaged")
+            buildConfigField("boolean", "TINT_BUFFERS_BY_TYPE_DEFAULT", "false")
         }
     }
 
