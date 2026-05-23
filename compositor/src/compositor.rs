@@ -612,6 +612,25 @@ impl TawcState {
         closed
     }
 
+    pub fn request_close_all_client_windows_for_test(&mut self) -> usize {
+        let mut closed = 0;
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            if toplevel.alive() {
+                toplevel.send_close();
+                closed += 1;
+            }
+        }
+
+        let x11_surfaces = self.x11_surfaces.clone();
+        for surface in x11_surfaces {
+            if let Err(e) = surface.close() {
+                warn!("xwayland: failed to close window {}: {}", surface.window_id(), e);
+            }
+            closed += 1;
+        }
+        closed
+    }
+
     pub fn update_host_window_metadata(
         &mut self,
         host_id: &ActivityId,

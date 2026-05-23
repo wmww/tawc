@@ -35,6 +35,7 @@ const GTK_LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// hitting a hardware path the user explicitly opted out of.
 #[test]
 fn test_eglinfo_reports_software_renderer() {
+    tawc_integration::helpers::test_init();
     require_compositor();
 
     let out = adb::rootfs_run_with(BACKEND, "eglinfo -B")
@@ -70,6 +71,7 @@ fn test_eglinfo_reports_software_renderer() {
 /// regardless of what GTK/Firefox do.
 #[test]
 fn test_weston_simple_shm_renders_via_shm() {
+    tawc_integration::helpers::test_init();
     require_compositor();
     adb::logcat_clear().expect("Failed to clear logcat");
 
@@ -135,6 +137,7 @@ fn test_weston_simple_shm_renders_via_shm() {
 /// but the env override is itself worth regression-guarding.
 #[test]
 fn test_gtk3_renders_via_shm() {
+    tawc_integration::helpers::test_init();
     assert_renders_via_shm(
         BACKEND,
         "GDK_GL=disabled gtk3-demo-application",
@@ -150,6 +153,7 @@ fn test_gtk3_renders_via_shm() {
 /// SHM buffers will crash GTK4 here while leaving GTK3 working).
 #[test]
 fn test_gtk4_renders_via_shm() {
+    tawc_integration::helpers::test_init();
     assert_renders_via_shm(
         BACKEND,
         "GSK_RENDERER=cairo gtk4-widget-factory",

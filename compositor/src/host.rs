@@ -6,7 +6,7 @@
 //! See `notes/multi-activity.md` for the full design.
 
 use std::ffi::c_void;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 
 use log::info;
 use smithay::backend::egl::EGLSurface;
@@ -184,6 +184,8 @@ pub enum SurfaceEvent {
     FullscreenChanged { activity_id: ActivityId, fullscreen: bool },
     /// Android Back was pressed while this host's Activity was active.
     BackPressed { activity_id: ActivityId },
+    /// Test hook: ask every attached client window to close.
+    CloseAllClientsForTest { response: mpsc::Sender<usize> },
 }
 
 // SAFETY: `native_window` is stored as `usize` to keep `SurfaceEvent: Send`;
@@ -206,15 +208,16 @@ pub fn clear_surface_event_sender() {
     }
 }
 
-/// Send a surface event from the JNI thread. Drops the event silently if
-/// no compositor is currently running (e.g. between `nativeStopCompositor`
-/// and `nativeStartCompositor`).
-pub fn send_surface_event(event: SurfaceEvent) {
+/// Send a surface event from the JNI thread. Returns false if no compositor
+/// is currently running (e.g. between `nativeStopCompositor` and
+/// `nativeStartCompositor`) or the event loop has gone away.
+pub fn send_surface_event(event: SurfaceEvent) -> bool {
     if let Some(cell) = SURFACE_EVENT_SENDER.get() {
         if let Some(sender) = cell.lock().unwrap().as_ref() {
-            let _ = sender.send(event);
+            return sender.send(event).is_ok();
         }
     }
+    false
 }
 
 /// Build a fresh `(Sender, Channel)` for surface events. The sender is

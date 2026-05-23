@@ -45,6 +45,7 @@ const WESTON_LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
     ignore = "libhybris-zink skipped on x86 device"
 )]
 fn test_vulkaninfo_loads_android_driver() {
+    tawc_integration::helpers::test_init();
     require_compositor();
 
     let out = adb::rootfs_run_with(BACKEND, "vulkaninfo --summary")
@@ -83,6 +84,7 @@ fn test_vulkaninfo_loads_android_driver() {
 #[test]
 #[ignore = "libhybris+zink not yet working"]
 fn test_eglinfo_reports_zink_renderer() {
+    tawc_integration::helpers::test_init();
     require_compositor();
 
     let out = adb::rootfs_run_with(BACKEND, "eglinfo -B")
@@ -134,6 +136,7 @@ fn test_eglinfo_reports_zink_renderer() {
 #[test]
 #[ignore = "libhybris+zink not yet working"]
 fn test_weston_simple_egl_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     let mut app = launch_and_wait_for_ahb(
         BACKEND,
         "weston-simple-egl",

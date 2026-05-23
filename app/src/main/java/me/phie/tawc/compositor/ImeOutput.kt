@@ -7,7 +7,7 @@ import android.view.inputmethod.InputMethodManager
 /**
  * Outbound calls into [InputMethodManager] from the compositor and from
  * [TawcInputConnection]. Extracted so tests can swap a recording impl in
- * via the broker `enable-test-input` action — that replaces the production
+ * via the broker `test-init` action — that replaces the production
  * [RealImeOutput] (which wakes up Gboard / OpenBoard / AOSP-latin / …) with
  * one that never touches the system IME.
  *
@@ -68,8 +68,8 @@ object RealImeOutput : ImeOutput {
  * Test [ImeOutput]. Records every call without ever hitting the real
  * [InputMethodManager], so the system IME never sees `updateSelection`
  * (and therefore never fires defensive `finishComposingText` reactions
- * mid-test). Installed by the broker `enable-test-input` action; removed
- * by `disable-test-input`.
+ * mid-test). Installed by the broker `test-init` action; process death
+ * restores [RealImeOutput].
  *
  * Records are append-only and exposed for assertions, but the primary
  * value of this impl is what it *prevents* (IME reactivity), not what it

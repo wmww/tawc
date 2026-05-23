@@ -6,17 +6,17 @@ import android.os.Build
 import androidx.core.content.edit
 
 /**
- * Process-global settings backed by [SharedPreferences].
+ * Process-global settings facade. Production uses [SharedPreferences];
+ * integration tests can swap in an in-memory store with factory defaults.
  *
  * Initialised once from [TawcApplication.onCreate] so non-Activity code
  * (e.g. [me.phie.tawc.install.RootfsEnv], which runs on the broker
  * thread without a Context) can read settings without threading a
  * Context through every call site.
  *
- * All values are stored as **strings**. Enum-like settings (e.g.
- * [GraphicsBackend]) keep their wire-format key in code so adding a new
- * variant later doesn't break installs that already chose one of the
- * existing values.
+ * Enum-like persisted settings (e.g. [GraphicsBackend]) keep their
+ * wire-format key in code so adding a new variant later doesn't break
+ * installs that already chose one of the existing values.
  */
 object Settings {
     private const val PREFS_NAME = "tawc-settings"
@@ -30,27 +30,77 @@ object Settings {
     const val OUTPUT_SCALE_STEP = 0.25f
     const val DEFAULT_OUTPUT_SCALE = 2.0f
 
-    @Volatile private var prefs: SharedPreferences? = null
+    private interface Store {
+        var graphicsBackend: GraphicsBackend
+        var tintBuffersByType: Boolean
+        var outputScale: Float
+        var gtk3BrokenMenusWorkaround: Boolean
+    }
+
+    private class SharedPreferencesStore(private val prefs: SharedPreferences) : Store {
+        override var graphicsBackend: GraphicsBackend
+            get() {
+                val raw = prefs.getString(KEY_GRAPHICS_BACKEND, null)
+                return GraphicsBackend.fromKeyOrDefault(raw)
+            }
+            set(value) {
+                prefs.edit { putString(KEY_GRAPHICS_BACKEND, value.key) }
+            }
+
+        override var tintBuffersByType: Boolean
+            get() = prefs.getBoolean(KEY_TINT_BUFFERS_BY_TYPE, true)
+            set(value) {
+                prefs.edit { putBoolean(KEY_TINT_BUFFERS_BY_TYPE, value) }
+            }
+
+        override var outputScale: Float
+            get() = snapOutputScale(prefs.getFloat(KEY_OUTPUT_SCALE, DEFAULT_OUTPUT_SCALE))
+            set(value) {
+                prefs.edit { putFloat(KEY_OUTPUT_SCALE, snapOutputScale(value)) }
+            }
+
+        override var gtk3BrokenMenusWorkaround: Boolean
+            get() = prefs.getBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, true)
+            set(value) {
+                prefs.edit { putBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, value) }
+            }
+    }
+
+    private class TestStore : Store {
+        @Volatile override var graphicsBackend: GraphicsBackend = GraphicsBackend.DEFAULT
+        @Volatile override var tintBuffersByType: Boolean = true
+        @Volatile override var outputScale: Float = DEFAULT_OUTPUT_SCALE
+            set(value) { field = snapOutputScale(value) }
+        @Volatile override var gtk3BrokenMenusWorkaround: Boolean = true
+    }
+
+    @Volatile private var store: Store? = null
 
     /** Called from [TawcApplication.onCreate]. Idempotent. */
     fun init(context: Context) {
-        if (prefs == null) {
-            prefs = context.applicationContext
+        if (store == null) {
+            store = SharedPreferencesStore(context.applicationContext
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            )
         }
     }
 
-    private fun requirePrefs(): SharedPreferences =
-        prefs ?: error("Settings.init(context) was not called — see TawcApplication.onCreate")
+    private fun requireStore(): Store =
+        store ?: error("Settings.init(context) was not called — see TawcApplication.onCreate")
+
+    /**
+     * Swap all settings reads/writes to in-memory factory defaults. Debug
+     * broker tests use this so no persisted user setting can leak into a
+     * test, and no test mutation can survive app process death.
+     */
+    fun enterTestMode() {
+        requireStore()
+        store = TestStore()
+    }
 
     var graphicsBackend: GraphicsBackend
-        get() {
-            val raw = requirePrefs().getString(KEY_GRAPHICS_BACKEND, null)
-            return GraphicsBackend.fromKeyOrDefault(raw)
-        }
-        set(value) {
-            requirePrefs().edit { putString(KEY_GRAPHICS_BACKEND, value.key) }
-        }
+        get() = requireStore().graphicsBackend
+        set(value) { requireStore().graphicsBackend = value }
 
     /**
      * Whether the compositor tints surfaces by buffer type so the
@@ -60,20 +110,16 @@ object Settings {
      * debugged. Read live by the renderer (no restart required).
      */
     var tintBuffersByType: Boolean
-        get() = requirePrefs().getBoolean(KEY_TINT_BUFFERS_BY_TYPE, true)
-        set(value) {
-            requirePrefs().edit { putBoolean(KEY_TINT_BUFFERS_BY_TYPE, value) }
-        }
+        get() = requireStore().tintBuffersByType
+        set(value) { requireStore().tintBuffersByType = value }
 
     /**
      * Physical pixels per Wayland logical pixel. Stored as a snapped float so
      * the UI, broker, and compositor all speak the same 0.25x grid.
      */
     var outputScale: Float
-        get() = snapOutputScale(requirePrefs().getFloat(KEY_OUTPUT_SCALE, DEFAULT_OUTPUT_SCALE))
-        set(value) {
-            requirePrefs().edit { putFloat(KEY_OUTPUT_SCALE, snapOutputScale(value)) }
-        }
+        get() = requireStore().outputScale
+        set(value) { requireStore().outputScale = snapOutputScale(value) }
 
     /**
      * Workaround for GTK3 native Wayland menubars on touch-only seats. When
@@ -82,10 +128,8 @@ object Settings {
      * state before the first touch on a server-side-decorated menubar.
      */
     var gtk3BrokenMenusWorkaround: Boolean
-        get() = requirePrefs().getBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, true)
-        set(value) {
-            requirePrefs().edit { putBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, value) }
-        }
+        get() = requireStore().gtk3BrokenMenusWorkaround
+        set(value) { requireStore().gtk3BrokenMenusWorkaround = value }
 
     fun snapOutputScale(value: Float): Float {
         if (!value.isFinite()) return DEFAULT_OUTPUT_SCALE

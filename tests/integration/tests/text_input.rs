@@ -28,12 +28,11 @@
 //! scenario through IC closes that hole and turns wayland-side
 //! assertions into a real integration check.
 //!
-//! [`crate::helpers::start_wayland_debug_text_input`] calls
-//! `enable-test-input` on
-//! every test so the system IME (a third-party at the OS boundary) is
-//! removed from the loop — that's not "in the middle of the state
-//! machine", it's removing a non-deterministic external actor that
-//! would otherwise amplify our IC calls back at us.
+//! Every test starts with `test-init`, which installs RecordingImeOutput
+//! so the system IME (a third-party at the OS boundary) is removed from
+//! the loop — that's not "in the middle of the state machine", it's
+//! removing a non-deterministic external actor that would otherwise
+//! amplify our IC calls back at us.
 //!
 //! Related real GTK coverage lives in
 //! `apps::test_gtk4_widget_factory_copy_paste_and_text_input`; this module
@@ -362,6 +361,7 @@ fn with_wayland_text_input(run: impl FnOnce(&DebugApp)) {
 /// directions around the cursor.
 #[test]
 fn test_basic_editing_and_delete() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         adb::ic_commit_text("hello world").expect("commit 'hello world'");
         app.wait_for_text("hello world", TIMEOUT)
@@ -401,6 +401,7 @@ fn test_basic_editing_and_delete() {
 
 #[test]
 fn test_preedit_lifecycle_and_autocorrect_commit() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         adb::ic_commit_text("hello ").expect("commit 'hello '");
         app.wait_for_text("hello ", TIMEOUT).expect("'hello '");
@@ -450,6 +451,7 @@ fn test_preedit_lifecycle_and_autocorrect_commit() {
 
 #[test]
 fn test_direct_replacement_apis() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         adb::ic_commit_text("abc").expect("commit 'abc'");
         app.wait_for_text("abc", TIMEOUT).expect("'abc'");
@@ -479,6 +481,7 @@ fn test_direct_replacement_apis() {
 /// finishComposingText commit it at the new cursor.
 #[test]
 fn test_cursor_positioning_from_tap() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         scene_click_cursor_positioning(app, WAYLAND_TAP_COORDS);
     });
@@ -486,6 +489,7 @@ fn test_cursor_positioning_from_tap() {
 
 #[test]
 fn test_full_compose_loop_with_click_in_middle() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         scene_full_compose_loop_with_click_in_middle(app, WAYLAND_TAP_COORDS);
     });
@@ -493,6 +497,7 @@ fn test_full_compose_loop_with_click_in_middle() {
 
 #[test]
 fn test_tap_clears_pending_preedit_without_committing() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         adb::ic_commit_text("anchor").expect("commit 'anchor'");
         app.wait_for_text("anchor", TIMEOUT).expect("'anchor'");
@@ -528,6 +533,7 @@ fn test_tap_clears_pending_preedit_without_committing() {
 
 #[test]
 fn test_focus_leave_clears_pending_preedit_without_committing() {
+    tawc_integration::helpers::test_init();
     let mut text_app = start_wayland_debug_text_input(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
 
     adb::ic_commit_text("anchor").expect("commit 'anchor'");
@@ -581,6 +587,7 @@ fn test_focus_leave_clears_pending_preedit_without_committing() {
 /// on a real marked committed region without paying two app launches.
 #[test]
 fn test_composing_region_replacement_paths() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         adb::ic_commit_text("hello world").expect("commit 'hello world'");
         app.wait_for_text("hello world", TIMEOUT)
@@ -647,6 +654,7 @@ fn test_composing_region_replacement_paths() {
 
 #[test]
 fn test_space_backspace_space_no_duplicate() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         scene_space_backspace_space_no_duplicate(app);
     });
@@ -654,6 +662,7 @@ fn test_space_backspace_space_no_duplicate() {
 
 #[test]
 fn test_diverged_cursor_no_byte_slicing() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         adb::ic_commit_text("hello ").expect("commit 'hello '");
         app.wait_for_text("hello ", TIMEOUT).expect("'hello '");
@@ -679,6 +688,7 @@ fn test_diverged_cursor_no_byte_slicing() {
 
 #[test]
 fn test_recommit_word_then_newline_no_h_prepend() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         scene_recommit_word_then_newline_no_h_prepend(app);
     });
@@ -701,6 +711,7 @@ fn build_stale_newline_context(app: &DebugApp, word: &str, word_utf16_len: u32) 
 
 #[test]
 fn test_stale_newline_context_editing_paths() {
+    tawc_integration::helpers::test_init();
     let mut app = start_wayland_debug_text_input_stale_newline(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
 
     build_stale_newline_context(&app, "hello", 5);
@@ -755,6 +766,7 @@ fn test_stale_newline_context_editing_paths() {
 
 #[test]
 fn test_update_from_compositor_clears_composing_spans() {
+    tawc_integration::helpers::test_init();
     with_wayland_text_input(|app| {
         scene_update_from_compositor_clears_composing_spans(app);
     });
@@ -763,6 +775,7 @@ fn test_update_from_compositor_clears_composing_spans() {
 /// Toolkitless mirror of the surrounding-less GTK/VTE-shaped input case.
 #[test]
 fn test_surroundingless_client_uses_keyboard_for_backspace() {
+    tawc_integration::helpers::test_init();
     let mut app = start_wayland_debug_text_input_no_surrounding(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
 
     assert_eq!(
@@ -792,6 +805,7 @@ fn test_surroundingless_client_uses_keyboard_for_backspace() {
 
 #[test]
 fn test_android_clipboard_text_to_client() {
+    tawc_integration::helpers::test_init();
     let android_text = "android clipboard to wayland";
     adb::clipboard_set_text(android_text).expect("set Android clipboard");
 
@@ -806,6 +820,7 @@ fn test_android_clipboard_text_to_client() {
 
 #[test]
 fn test_client_clipboard_text_to_android() {
+    tawc_integration::helpers::test_init();
     let wayland_text = "wayland clipboard to android";
     let mut copy_app =
         start_wayland_debug_clipboard_copy(INPUT_BACKEND, WAYLAND_DEBUG_ENV, wayland_text);
@@ -884,6 +899,7 @@ fn wait_for_clipboard_timeout_without_android_replace(expected: &str, timeout: D
 
 #[test]
 fn test_client_clipboard_over_cap_does_not_replace_android() {
+    tawc_integration::helpers::test_init();
     let sentinel = "android clipboard before overcap";
     adb::clipboard_set_text(sentinel).expect("set Android clipboard sentinel");
     wait_for_android_clipboard(sentinel, TIMEOUT);
@@ -899,6 +915,7 @@ fn test_client_clipboard_over_cap_does_not_replace_android() {
 
 #[test]
 fn test_client_clipboard_timeout_does_not_replace_android() {
+    tawc_integration::helpers::test_init();
     let sentinel = "android clipboard before timeout";
     adb::clipboard_set_text(sentinel).expect("set Android clipboard sentinel");
     wait_for_android_clipboard(sentinel, TIMEOUT);

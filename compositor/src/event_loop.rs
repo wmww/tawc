@@ -874,6 +874,13 @@ fn handle_surface_event(data: &mut TawcState, evt: SurfaceEvent) {
         SurfaceEvent::BackPressed { activity_id } => {
             handle_back_pressed(data, &activity_id);
         }
+        SurfaceEvent::CloseAllClientsForTest { response } => {
+            let closed = data.request_close_all_client_windows_for_test();
+            if closed > 0 {
+                info!("test-init requested close for {} client windows", closed);
+            }
+            let _ = response.send(closed);
+        }
     }
 }
 

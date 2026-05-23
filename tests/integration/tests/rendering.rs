@@ -83,6 +83,7 @@ fn parse_popup_layout(payload: &str) -> PopupLayout {
 
 #[test]
 fn test_shm_render_pattern_orientation_pixels() {
+    tawc_integration::helpers::test_init();
     let mut app = start_wayland_debug_render_pattern(BACKEND, WAYLAND_DEBUG_ENV);
     compositor::wait_for_rendered_toplevels(1, TIMEOUT).expect("render-pattern visible");
     std::thread::sleep(Duration::from_millis(250));
@@ -128,6 +129,7 @@ fn test_shm_render_pattern_orientation_pixels() {
 
 #[test]
 fn test_shm_xdg_popup_position_pixels() {
+    tawc_integration::helpers::test_init();
     let mut app = start_wayland_debug_popup(BACKEND, WAYLAND_DEBUG_ENV);
     app.wait_for_tag_value("SURFACE_READY", "popup", TIMEOUT)
         .expect("popup ready");

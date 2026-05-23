@@ -157,8 +157,9 @@ failures abort the process instead of being tolerated.
 Tests inject input by acting as a **keyboard**: every input action calls a method on the active `TawcInputConnection` via the broker `ic-*` actions. There is intentionally no test path that pokes `NativeBridge.native*` directly — see `notes/text-input.md` "Test infrastructure note" for the rationale.
 
 ```bash
-# Stop the system IME from reacting to updateSelection / showSoftInput.
-scripts/tawc-exec.sh --action enable-test-input
+# Per-test reset: in-memory factory settings, RecordingImeOutput,
+# active-IC cleanup, and Wayland client close requests.
+scripts/tawc-exec.sh --action test-init
 
 # Drive the IC: commit text, set preedit, send a key, etc.
 scripts/tawc-exec.sh --action ic-commit-text --arg text=hello
@@ -200,7 +201,7 @@ Host (cargo test)                    Phone
 
 ### Key Modules
 
-- **`adb.rs`**: Shell commands, chroot execution, broker-action-based input injection (`input_text`, `ic_commit_text`, `enable_test_input`, …; all routed through `tawc-exec --action`)
+- **`adb.rs`**: Shell commands, chroot execution, broker-action-based test reset and input injection (`test_init`, `ic_commit_text`, …; all routed through `tawc-exec --action`)
 - **`rootfs.rs`**: `ensure_wayland_debug_app` / `ensure_tawc_dri_test` /
   `ensure_eglx11_test` — each one just probes for `/usr/local/bin/<name>`
   inside the rootfs and returns its path. Tests do **not** compile

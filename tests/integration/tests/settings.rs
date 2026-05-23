@@ -54,50 +54,6 @@ struct Gtk3MenuObservation {
     relevant_lines: Vec<String>,
 }
 
-struct OutputScaleGuard {
-    previous: f32,
-}
-
-impl OutputScaleGuard {
-    fn set(scale: f32) -> Self {
-        let previous = adb::get_output_scale().expect("get output scale");
-        assert_broker_ok(
-            adb::set_output_scale(scale).unwrap_or_else(|e| panic!("set output scale: {e}")),
-            "set-output-scale",
-        );
-        Self { previous }
-    }
-}
-
-impl Drop for OutputScaleGuard {
-    fn drop(&mut self) {
-        let _ = adb::set_output_scale(self.previous);
-    }
-}
-
-struct Gtk3BrokenMenusWorkaroundGuard {
-    previous: bool,
-}
-
-impl Gtk3BrokenMenusWorkaroundGuard {
-    fn set(enabled: bool) -> Self {
-        let previous = adb::get_gtk3_broken_menus_workaround()
-            .expect("get gtk3 broken menus workaround setting");
-        assert_broker_ok(
-            adb::set_gtk3_broken_menus_workaround(enabled)
-                .unwrap_or_else(|e| panic!("set gtk3 broken menus workaround: {e}")),
-            "set-gtk3-broken-menus-workaround",
-        );
-        Self { previous }
-    }
-}
-
-impl Drop for Gtk3BrokenMenusWorkaroundGuard {
-    fn drop(&mut self) {
-        let _ = adb::set_gtk3_broken_menus_workaround(self.previous);
-    }
-}
-
 fn payload_for_line<'a>(line: &'a str, tag: &str) -> Option<&'a str> {
     if line == tag {
         Some("")
@@ -261,8 +217,12 @@ fn launch_gtk3_demo_application_with_wayland_debug() -> (RootfsProcess, mpsc::Re
 }
 
 fn observe_gtk3_demo_application_menu_tap(workaround_enabled: bool) -> Gtk3MenuObservation {
-    let _scale_guard = OutputScaleGuard::set(2.0);
-    let _workaround_guard = Gtk3BrokenMenusWorkaroundGuard::set(workaround_enabled);
+    assert_broker_ok(adb::set_output_scale(2.0).expect("set output scale"), "set-output-scale");
+    assert_broker_ok(
+        adb::set_gtk3_broken_menus_workaround(workaround_enabled)
+            .unwrap_or_else(|e| panic!("set gtk3 broken menus workaround: {e}")),
+        "set-gtk3-broken-menus-workaround",
+    );
     adb::logcat_clear().expect("Failed to clear logcat");
 
     let (mut app, rx) = launch_gtk3_demo_application_with_wayland_debug();
@@ -349,8 +309,42 @@ fn assert_gtk3_demo_application_menu_tap(
 }
 
 #[test]
+fn test_test_init_resets_settings_and_closes_existing_clients() {
+    tawc_integration::helpers::test_init();
+
+    assert_broker_ok(adb::set_output_scale(3.25).expect("set output scale"), "set-output-scale");
+    assert_broker_ok(
+        adb::set_gtk3_broken_menus_workaround(false)
+            .expect("set gtk3 broken menus workaround"),
+        "set-gtk3-broken-menus-workaround",
+    );
+    assert_eq!(adb::get_output_scale().expect("get output scale"), 3.25);
+    assert!(
+        !adb::get_gtk3_broken_menus_workaround()
+            .expect("get gtk3 broken menus workaround")
+    );
+
+    let leaked = start_wayland_debug_scale(BACKEND, "");
+    tawc_integration::helpers::test_init();
+    drop(leaked);
+
+    assert_eq!(adb::get_output_scale().expect("get reset output scale"), 2.0);
+    assert!(
+        adb::get_gtk3_broken_menus_workaround()
+            .expect("get reset gtk3 broken menus workaround")
+    );
+
+    let mut app = start_wayland_debug_scale(BACKEND, "");
+    app.wait_for_tag_value("SCALE_CHANGED", "2.00", TIMEOUT)
+        .expect("new client should observe reset factory output scale");
+    app.stop().expect("scale debug app failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+#[test]
 fn test_fractional_scale_updates_reach_wayland_client() {
-    let _restore = OutputScaleGuard::set(2.25);
+    tawc_integration::helpers::test_init();
+    assert_broker_ok(adb::set_output_scale(2.25).expect("set output scale"), "set-output-scale");
 
     let mut app = start_wayland_debug_scale(BACKEND, "");
     app.wait_for("SCALE_CHANGED", TIMEOUT)
@@ -367,7 +361,8 @@ fn test_fractional_scale_updates_reach_wayland_client() {
 
 #[test]
 fn test_initial_configure_waits_for_real_host_size() {
-    let _restore = OutputScaleGuard::set(2.0);
+    tawc_integration::helpers::test_init();
+    assert_broker_ok(adb::set_output_scale(2.0).expect("set output scale"), "set-output-scale");
     let binary = ensure_wayland_debug_app();
     let state_before = compositor::query_state(TIMEOUT)
         .expect("query compositor state before initial configure test");
@@ -451,6 +446,7 @@ fn set_scale_and_expect(app: &tawc_integration::debug_app::DebugApp, scale: f32)
 
 #[test]
 fn test_xdg_configure_state_maximized_vs_fullscreen() {
+    tawc_integration::helpers::test_init();
     let binary = ensure_wayland_debug_app();
 
     let mut normal = DebugApp::start(BACKEND, &binary, "scale", "")
@@ -485,10 +481,12 @@ fn test_xdg_configure_state_maximized_vs_fullscreen() {
 
 #[test]
 fn test_gtk3_demo_application_menu_opens_leftmost_without_workaround() {
+    tawc_integration::helpers::test_init();
     assert_gtk3_demo_application_menu_tap(false, Gtk3Menu::Leftmost);
 }
 
 #[test]
 fn test_gtk3_demo_application_menu_opens_tapped_menu_with_workaround() {
+    tawc_integration::helpers::test_init();
     assert_gtk3_demo_application_menu_tap(true, Gtk3Menu::Tapped);
 }

@@ -24,6 +24,17 @@ pub fn require_compositor() {
     compositor::assert_running();
 }
 
+/// Reset app-side mutable test state. Call this at the start of every
+/// integration test so persisted device settings and previous test input
+/// state cannot leak in.
+pub fn test_init() {
+    require_compositor();
+    let closed = adb::test_init().expect("test-init action");
+    if closed > 0 {
+        assert_compositor_clean();
+    }
+}
+
 /// Return the toolkitless Wayland debug app path, verifying that
 /// the integration runner copied it into the rootfs. Memoized per test binary.
 pub fn ensure_wayland_debug_app() -> String {
@@ -57,7 +68,6 @@ pub fn wait_for_keyboard_shown(timeout: Duration) {
 pub fn start_wayland_debug_text_input(backend: GraphicsBackend, env: &str) -> DebugApp {
     let binary = ensure_wayland_debug_app();
     adb::logcat_clear().expect("Failed to clear logcat");
-    adb::enable_test_input().expect("enable-test-input action");
     let app = DebugApp::start(backend, &binary, "text-input", env)
         .expect("Failed to start wayland debug app");
     app.wait_ready()
@@ -75,7 +85,6 @@ pub fn start_wayland_debug_text_input_no_surrounding(
 ) -> DebugApp {
     let binary = ensure_wayland_debug_app();
     adb::logcat_clear().expect("Failed to clear logcat");
-    adb::enable_test_input().expect("enable-test-input action");
     let app = DebugApp::start(backend, &binary, "text-input-no-surrounding", env)
         .expect("Failed to start surrounding-less wayland debug app");
     app.wait_ready()
@@ -94,7 +103,6 @@ pub fn start_wayland_debug_text_input_stale_newline(
 ) -> DebugApp {
     let binary = ensure_wayland_debug_app();
     adb::logcat_clear().expect("Failed to clear logcat");
-    adb::enable_test_input().expect("enable-test-input action");
     let app = DebugApp::start(backend, &binary, "text-input-stale-newline", env)
         .expect("Failed to start stale-newline wayland debug app");
     app.wait_ready()

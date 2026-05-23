@@ -59,9 +59,9 @@ object NativeBridge {
 
     /** Outbound calls to the system IME (showSoftInput, updateSelection,
      *  …) go through this. Default is the production [RealImeOutput];
-     *  the dev `enable-test-input` broker action swaps in a
-     *  [RecordingImeOutput] so input integration tests don't race the
-     *  system IME's reaction to `updateSelection`. See [ImeOutput] kdoc. */
+     *  the dev `test-init` broker action swaps in a [RecordingImeOutput]
+     *  so input integration tests don't race the system IME's reaction
+     *  to `updateSelection`. See [ImeOutput] kdoc. */
     @Volatile var imeOutput: ImeOutput = RealImeOutput
 
     /** `(EditorInfo.inputType, extraImeOptionsFlags)` for the focused
@@ -222,6 +222,9 @@ object NativeBridge {
 
     /** Toggle the contained GTK3 broken menubar workaround. */
     external fun nativeSetGtk3BrokenMenusWorkaround(enabled: Boolean)
+
+    /** Test hook: ask every attached Wayland/XWayland client window to close. */
+    external fun nativeCloseAllClientsForTest(): Int
 
     /** Forward Android ClipboardManager text changes into the compositor. */
     external fun nativeOnAndroidClipboardText(text: String)

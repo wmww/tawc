@@ -35,6 +35,7 @@ fn press_back(label: &str) {
 
 #[test]
 fn test_xdg_configure_state_maximized_vs_fullscreen() {
+    tawc_integration::helpers::test_init();
     let binary = ensure_wayland_debug_app();
 
     let mut normal = DebugApp::start(BACKEND, &binary, "scale", "")
@@ -64,6 +65,7 @@ fn test_xdg_configure_state_maximized_vs_fullscreen() {
 
 #[test]
 fn test_back_restores_fullscreen_then_sends_escape() {
+    tawc_integration::helpers::test_init();
     let mut app = start_wayland_debug_touch(BACKEND, WAYLAND_DEBUG_ENV);
     app.wait_for_tag_value("CONFIGURE_STATE", "fullscreen", TIMEOUT)
         .expect("fullscreen-requesting app should be configured fullscreen");
@@ -87,6 +89,7 @@ fn test_back_restores_fullscreen_then_sends_escape() {
 
 #[test]
 fn test_back_dismisses_grabbed_popup_before_restoring_fullscreen() {
+    tawc_integration::helpers::test_init();
     let mut app = start_wayland_debug_popup_switch(BACKEND, WAYLAND_DEBUG_ENV);
     inject_touch("tap-menu-a");
     app.wait_for_tag_value("CONFIGURE_STATE", "fullscreen", TIMEOUT)

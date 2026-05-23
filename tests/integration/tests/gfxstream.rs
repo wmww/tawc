@@ -52,6 +52,7 @@ const FIREFOX_CMD: &str = "firefox --no-remote";
 #[test]
 #[ignore = "gfxstream not yet working"]
 fn test_eglinfo_loads_mesa_via_gfxstream() {
+    tawc_integration::helpers::test_init();
     require_compositor();
 
     let out = adb::rootfs_run_with(BACKEND, "eglinfo -B")
@@ -96,6 +97,7 @@ fn test_eglinfo_loads_mesa_via_gfxstream() {
 #[test]
 #[ignore = "gfxstream not yet working"]
 fn test_weston_simple_egl_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     let mut app = launch_and_wait_for_ahb(
         BACKEND,
         "weston-simple-egl",
@@ -130,6 +132,7 @@ fn test_weston_simple_egl_renders_via_ahb() {
     ignore = "gfxstream skipped on emulator target"
 )]
 fn test_vkcube_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     let mut app = launch_and_wait_for_ahb(
         BACKEND,
         "vkcube --wsi wayland",
@@ -156,6 +159,7 @@ fn test_vkcube_renders_via_ahb() {
 #[test]
 #[ignore = "gfxstream not yet working"]
 fn test_gtk3_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     assert_renders_via_ahb(
         BACKEND,
         "gtk3-demo-application",
@@ -169,6 +173,7 @@ fn test_gtk3_renders_via_ahb() {
 #[test]
 #[ignore = "gfxstream not yet working"]
 fn test_gtk4_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     assert_renders_via_ahb(
         BACKEND,
         "gtk4-widget-factory",
@@ -184,6 +189,7 @@ fn test_gtk4_renders_via_ahb() {
 #[test]
 #[ignore = "gfxstream not yet working"]
 fn test_firefox_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     let _ = adb::rootfs_run_with(
         BACKEND,
         "rm -f ~/.config/mozilla/firefox/*/.parentlock \
@@ -231,6 +237,7 @@ fn test_firefox_renders_via_ahb() {
 #[test]
 #[ignore = "gfxstream not yet working"]
 fn test_supertuxkart_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     let mut stk = launch_and_wait_for_ahb(
         BACKEND,
         "supertuxkart",

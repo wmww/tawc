@@ -8,9 +8,9 @@ import android.view.inputmethod.CompletionInfo
 import android.view.inputmethod.CorrectionInfo
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import me.phie.tawc.Settings
 import me.phie.tawc.compositor.ClipboardBridge
 import me.phie.tawc.compositor.NativeBridge
-import me.phie.tawc.compositor.RealImeOutput
 import me.phie.tawc.compositor.RecordingImeOutput
 import me.phie.tawc.compositor.TawcInputConnection
 
@@ -35,8 +35,8 @@ import me.phie.tawc.compositor.TawcInputConnection
  * actions (`inject-text`, `set-composing`, `key-event`, …) that called
  * native trampolines directly. They were originally added because the
  * system IME amplified test broadcasts in non-deterministic ways. Once
- * [enable-test-input] / [disable-test-input] swap [NativeBridge.imeOutput]
- * to a [RecordingImeOutput], the IME is no longer in the loop, and the
+ * [test-init] swaps [NativeBridge.imeOutput] to a [RecordingImeOutput],
+ * the IME is no longer in the loop, and the
  * justification disappears — the bypass became dead weight that hid
  * IC regressions behind a wayland-side fallback (text-input-v3 done
  * ordering produces the right *observable* even when IC's
@@ -74,9 +74,8 @@ import me.phie.tawc.compositor.TawcInputConnection
  *
  * | Action | Calls |
  * |--------|-------|
- * | `enable-test-input` | swap [NativeBridge.imeOutput] to a fresh [RecordingImeOutput] |
  * | `input-ready` | succeeds only when the focused Activity has an active IC |
- * | `disable-test-input` | restore [RealImeOutput] |
+ * | `test-init` | enter in-memory test settings, enable test input, close current client windows |
  *
  * Observational:
  *
@@ -107,8 +106,7 @@ internal object InputActions {
         ActionRegistry.register("input-ready", InputReadyAction)
         ActionRegistry.register("clipboard-set-text", ClipboardSetTextAction)
         ActionRegistry.register("clipboard-get-text", ClipboardGetTextAction)
-        ActionRegistry.register("enable-test-input", EnableTestInputAction)
-        ActionRegistry.register("disable-test-input", DisableTestInputAction)
+        ActionRegistry.register("test-init", TestInitAction)
     }
 
     // -- Helpers ------------------------------------------------------------
@@ -422,47 +420,26 @@ internal object InputActions {
     }
 
     /**
-     * `enable-test-input` — swap [NativeBridge.imeOutput] to a fresh
-     * [RecordingImeOutput]. Subsequent `updateSelection`, `showSoftInput`,
-     * etc. calls are recorded instead of going to the real
-     * [android.view.inputmethod.InputMethodManager], so the system IME
-     * (Gboard / OpenBoard / AOSP-latin) is removed from the loop entirely.
-     * Idempotent — calling twice in a row replaces the recorder with a
-     * fresh one. Process death resets to production by construction.
-     *
-     * Note: this doesn't bypass anything in our state machine — it stubs
-     * out the *third-party* IME at the boundary. The IC still runs in
-     * full; only its outbound calls into the system IMM go to a no-op
-     * sink. See `notes/text-input.md` for why this is necessary for
-     * deterministic testing.
+     * `test-init` — fast per-test reset. Nothing here writes
+     * SharedPreferences; app process death restores normal persisted
+     * settings and the production ImeOutput.
      */
-    private object EnableTestInputAction : BrokerAction {
+    private object TestInitAction : BrokerAction {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
             val ran = onMainBlocking {
+                Settings.enterTestMode()
+                NativeBridge.nativeSetTintBuffersByType(Settings.tintBuffersByType)
+                NativeBridge.nativeSetOutputScale(Settings.outputScale)
+                NativeBridge.nativeSetGtk3BrokenMenusWorkaround(Settings.gtk3BrokenMenusWorkaround)
                 clearRecordingImeOutput()
                 NativeBridge.activeInputConnection = null
                 NativeBridge.imeOutput = RecordingImeOutput()
             }
-            if (!ran) return ctx.fail("main loop did not run enable-test-input within 5s")
-            Log.i(TAG, "InputAction enable-test-input: swapped ImeOutput to RecordingImeOutput")
-            return 0
-        }
-    }
-
-    /**
-     * `disable-test-input` — restore the production [RealImeOutput].
-     * Tests should call this in teardown so a later non-test launch on
-     * the same process doesn't quietly run with a recorder in place.
-     */
-    private object DisableTestInputAction : BrokerAction {
-        override fun run(args: Map<String, String>, ctx: ActionContext): Int {
-            val ran = onMainBlocking {
-                clearRecordingImeOutput()
-                NativeBridge.activeInputConnection = null
-                NativeBridge.imeOutput = RealImeOutput
-            }
-            if (!ran) return ctx.fail("main loop did not run disable-test-input within 5s")
-            Log.i(TAG, "InputAction disable-test-input: restored ImeOutput to RealImeOutput")
+            if (!ran) return ctx.fail("main loop did not run test-init within 5s")
+            val closed = NativeBridge.nativeCloseAllClientsForTest()
+            if (closed < 0) return ctx.fail("compositor did not process close-all-clients request")
+            ctx.out("closed=$closed")
+            Log.i(TAG, "InputAction test-init: reset in-memory settings and requested close for $closed client windows")
             return 0
         }
     }

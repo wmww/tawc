@@ -18,6 +18,7 @@ use std::process::Command;
 
 #[test]
 fn test_tawcroot_device_suite() {
+    tawc_integration::helpers::test_init();
     let repo_root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()

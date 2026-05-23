@@ -82,6 +82,7 @@ const FIREFOX_CMD: &str = "firefox --no-remote";
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_libhybris_tls_dlclose_does_not_abort() {
+    tawc_integration::helpers::test_init();
     let bin = rootfs::ensure_libhybris_tls_repro().expect("libhybris-tls-repro build");
 
     // Run from inside the companion library dir so the repro's relative
@@ -158,6 +159,7 @@ fn test_libhybris_tls_dlclose_does_not_abort() {
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_vulkaninfo_loads_android_driver() {
+    tawc_integration::helpers::test_init();
     require_compositor();
 
     let out = adb::rootfs_run_with(BACKEND, "vulkaninfo --summary")
@@ -203,6 +205,7 @@ fn test_vulkaninfo_loads_android_driver() {
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_eglinfo_loads_android_driver() {
+    tawc_integration::helpers::test_init();
     require_compositor();
 
     let out = adb::rootfs_run_with(BACKEND, "eglinfo -B")
@@ -239,6 +242,7 @@ fn test_eglinfo_loads_android_driver() {
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_weston_simple_egl_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     let mut app = launch_and_wait_for_ahb(
         BACKEND,
         "weston-simple-egl",
@@ -271,6 +275,7 @@ fn test_weston_simple_egl_renders_via_ahb() {
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_vkcube_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     // `--c` caps the frame count; we still kill via stop() so the value
     // mostly just guards against the test runner hanging if stop() fails.
     let mut app = launch_and_wait_for_ahb(
@@ -303,6 +308,7 @@ fn test_vkcube_renders_via_ahb() {
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_gtk3_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     assert_renders_via_ahb(
         BACKEND,
         "gtk3-demo-application",
@@ -324,6 +330,7 @@ fn test_gtk3_renders_via_ahb() {
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_gtk4_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     assert_renders_via_ahb(
         BACKEND,
         "gtk4-widget-factory",
@@ -363,6 +370,7 @@ fn test_gtk4_renders_via_ahb() {
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_firefox_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     // Remove lock/crash files so Firefox doesn't show the troubleshoot-mode dialog.
     let _ = adb::rootfs_run_with(
         BACKEND,
@@ -417,6 +425,7 @@ fn test_firefox_renders_via_ahb() {
     ignore = "libhybris skipped on x86 device"
 )]
 fn test_supertuxkart_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     let mut stk = launch_and_wait_for_ahb(
         BACKEND,
         "supertuxkart",

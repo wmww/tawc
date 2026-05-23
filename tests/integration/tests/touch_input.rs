@@ -264,6 +264,7 @@ fn assert_popup_shadow_geometry_tap_delivered(app: &DebugApp) {
 
 #[test]
 fn test_touch_tap() {
+    tawc_integration::helpers::test_init();
     with_wayland_touch(|app| {
         inject_touch("tap");
         app.wait_for_tag_count("TOUCH_DOWN", 1, TIMEOUT)
@@ -293,6 +294,7 @@ fn test_touch_tap() {
 /// normalized tap point.
 #[test]
 fn test_touch_subsurface_tap() {
+    tawc_integration::helpers::test_init();
     with_wayland_subsurface(|app| {
         app.wait_for_tag_value("SURFACE_READY", "subsurface", TIMEOUT)
             .expect("subsurface ready");
@@ -305,6 +307,7 @@ fn test_touch_subsurface_tap() {
 /// must stay on the compound window's main surface.
 #[test]
 fn test_touch_subsurface_tap_does_not_move_keyboard_focus_to_subsurface() {
+    tawc_integration::helpers::test_init();
     with_wayland_subsurface(|app| {
         app.wait_for_tag_value("SURFACE_READY", "subsurface", TIMEOUT)
             .expect("subsurface ready");
@@ -333,6 +336,7 @@ fn test_touch_subsurface_tap_does_not_move_keyboard_focus_to_subsurface() {
 /// touch from the browser toplevel.
 #[test]
 fn test_touch_ignores_input_empty_subsurface() {
+    tawc_integration::helpers::test_init();
     with_wayland_subsurface_input_empty(|app| {
         app.wait_for_tag_value("SURFACE_READY", "subsurface", TIMEOUT)
             .expect("subsurface ready");
@@ -346,6 +350,7 @@ fn test_touch_ignores_input_empty_subsurface() {
 /// depend on that `popup_done` before mapping a different menu popup.
 #[test]
 fn test_touch_popup_tap() {
+    tawc_integration::helpers::test_init();
     with_wayland_popup(|app| {
         app.wait_for_tag_value("SURFACE_READY", "popup", TIMEOUT)
             .expect("popup ready");
@@ -362,6 +367,7 @@ fn test_touch_popup_tap() {
 /// item if a touchscreen tap first moves keyboard focus into the popup.
 #[test]
 fn test_touch_popup_tap_does_not_move_keyboard_focus_to_popup() {
+    tawc_integration::helpers::test_init();
     with_wayland_popup(|app| {
         app.wait_for_tag_value("SURFACE_READY", "popup", TIMEOUT)
             .expect("popup ready");
@@ -392,6 +398,7 @@ fn test_touch_popup_tap_does_not_move_keyboard_focus_to_popup() {
 /// `xdg_popup.grab` is rejected as not-topmost.
 #[test]
 fn test_touch_grabbed_popup_switches_to_next_popup() {
+    tawc_integration::helpers::test_init();
     with_wayland_popup_switch(|app| {
         inject_touch("tap-menu-a");
         app.wait_for_tag_value("SURFACE_READY", "popup", TIMEOUT)
@@ -410,6 +417,7 @@ fn test_touch_grabbed_popup_switches_to_next_popup() {
 /// any baked-in screen dimensions or density assumptions.
 #[test]
 fn test_touch_drag() {
+    tawc_integration::helpers::test_init();
     with_wayland_touch(|app| {
         inject_touch("drag");
         app.wait_for_tag_count("TOUCH_DOWN", 1, TIMEOUT)
@@ -446,6 +454,7 @@ fn test_touch_drag() {
 /// stream against the focused SurfaceView; the client verifies both slots.
 #[test]
 fn test_touch_multitouch() {
+    tawc_integration::helpers::test_init();
     with_wayland_touch(|app| {
         inject_touch("multitouch");
         app.wait_for_tag_count("TOUCH_DOWN", 2, TIMEOUT)

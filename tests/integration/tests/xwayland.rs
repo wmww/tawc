@@ -49,6 +49,7 @@ fn wait_for_android_clipboard(expected: &str, timeout: Duration) {
 
 #[test]
 fn test_android_clipboard_text_to_x11() {
+    tawc_integration::helpers::test_init();
     require_compositor();
     let android_text = "android clipboard to x11";
     adb::clipboard_set_text(android_text).expect("set Android clipboard");
@@ -71,6 +72,7 @@ fn test_android_clipboard_text_to_x11() {
 
 #[test]
 fn test_x11_clipboard_text_to_android() {
+    tawc_integration::helpers::test_init();
     require_compositor();
     let x11_text = "x11 clipboard to android";
     let sentinel = "android clipboard before x11";
@@ -105,6 +107,7 @@ fn test_x11_clipboard_text_to_android() {
 /// `notes/xwayland.md`).
 #[test]
 fn test_xwayland_xclock_renders_via_shm() {
+    tawc_integration::helpers::test_init();
     require_compositor();
     adb::logcat_clear().expect("Failed to clear logcat");
 
@@ -174,6 +177,7 @@ fn test_xwayland_xclock_renders_via_shm() {
     ignore = "xwayland skipped on x86 device"
 )]
 fn test_tawc_dri_ahb_present_round_trip() {
+    tawc_integration::helpers::test_init();
     require_compositor();
     adb::logcat_clear().expect("logcat clear");
 
@@ -249,6 +253,7 @@ fn test_tawc_dri_ahb_present_round_trip() {
     ignore = "xwayland skipped on x86 device"
 )]
 fn test_tawc_dri_ahb_present_animated_loop() {
+    tawc_integration::helpers::test_init();
     require_compositor();
     adb::logcat_clear().expect("logcat clear");
 
@@ -347,6 +352,7 @@ fn test_tawc_dri_ahb_present_animated_loop() {
     ignore = "xwayland skipped on x86 device"
 )]
 fn test_eglx11_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     require_compositor();
     adb::logcat_clear().expect("logcat clear");
 
@@ -420,6 +426,7 @@ fn test_eglx11_renders_via_ahb() {
     ignore = "xwayland skipped on x86 device"
 )]
 fn test_es2gears_x11_renders_via_ahb() {
+    tawc_integration::helpers::test_init();
     require_compositor();
     adb::logcat_clear().expect("logcat clear");
 

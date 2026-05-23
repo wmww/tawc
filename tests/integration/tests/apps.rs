@@ -69,6 +69,7 @@ fn wait_for_android_clipboard(expected: &str, timeout: Duration) {
 /// `gfxstream::test_firefox_renders_via_ahb`.
 #[test]
 fn test_firefox_launches() {
+    tawc_integration::helpers::test_init();
     // Remove lock/crash files so Firefox doesn't show the troubleshoot-mode dialog
     // (killall doesn't give Firefox a clean shutdown, leaving these behind)
     let _ = adb::rootfs_run(
@@ -100,6 +101,7 @@ fn test_firefox_launches() {
 /// `gfxstream::test_supertuxkart_renders_via_ahb`.
 #[test]
 fn test_supertuxkart_launches() {
+    tawc_integration::helpers::test_init();
     let mut stk = launch_and_wait_for_toplevel(BACKEND, "supertuxkart", "supertuxkart", STK_LAUNCH_TIMEOUT);
 
     std::thread::sleep(Duration::from_secs(1));
@@ -132,10 +134,8 @@ fn test_supertuxkart_launches() {
 /// rerun needed.
 #[test]
 fn test_lxterminal_input_and_exit() {
-    // Stub out the system IME so it doesn't amplify our `commitText` into
-    // the lxterminal IC and produce extra characters.
+    tawc_integration::helpers::test_init();
     adb::logcat_clear().expect("Failed to clear logcat");
-    adb::enable_test_input().expect("enable-test-input action");
 
     let mut term = launch_and_wait_for_toplevel(
         BACKEND,
@@ -195,11 +195,11 @@ fn test_lxterminal_input_and_exit() {
 ///   - GTK copy (`Ctrl+C`) -> Wayland selection -> Android clipboard
 #[test]
 fn test_gtk4_widget_factory_copy_paste_and_text_input() {
+    tawc_integration::helpers::test_init();
     let paste_text = "gtk4 widget factory paste";
     let expected = "gtk4 widget factory paste edited";
 
     adb::logcat_clear().expect("Failed to clear logcat");
-    adb::enable_test_input().expect("enable-test-input action");
     adb::clipboard_set_text(paste_text).expect("set Android clipboard");
 
     let mut factory = launch_and_wait_for_toplevel(

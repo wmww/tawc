@@ -1,7 +1,8 @@
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, mpsc};
+use std::time::Duration;
 
 use jni::JNIEnv;
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
@@ -460,7 +461,9 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetOutput
     scale: f32,
 ) {
     match sanitize_output_scale(scale as f64) {
-        Some(scale) => host::send_surface_event(SurfaceEvent::OutputScaleChanged { scale }),
+        Some(scale) => {
+            host::send_surface_event(SurfaceEvent::OutputScaleChanged { scale });
+        }
         None => log::error!("Ignoring invalid output scale: {}", scale),
     }
 }
@@ -474,6 +477,21 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetGtk3Br
     host::send_surface_event(SurfaceEvent::Gtk3BrokenMenusWorkaroundChanged {
         enabled: enabled != 0,
     });
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeCloseAllClientsForTest(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    let (tx, rx) = mpsc::channel();
+    if !host::send_surface_event(SurfaceEvent::CloseAllClientsForTest { response: tx }) {
+        return -1;
+    }
+    match rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(closed) => closed.try_into().unwrap_or(jint::MAX),
+        Err(_) => -1,
+    }
 }
 
 #[unsafe(no_mangle)]

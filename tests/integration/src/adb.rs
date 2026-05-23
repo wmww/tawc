@@ -217,23 +217,28 @@ fn broker_action(name: &str, args: &[(&str, &str)]) -> io::Result<Output> {
 
 // ---- Test-mode setup -----------------------------------------------------
 
-/// Swap the production [me.phie.tawc.compositor.RealImeOutput] for a
-/// recording impl so the system IME (Gboard / OpenBoard / AOSP-latin)
-/// never sees `updateSelection` / `showSoftInput` and never reacts. The
-/// recorder is only on the **outbound** boundary IC ⇒ system-IMM — it
-/// doesn't bypass anything in our state machine, it just stops a
-/// third-party from amplifying events into the IC. Pair with
-/// [disable_test_input]; both are no-ops on release builds (no broker).
-/// Called by [`crate::helpers::start_text_input`] on every test.
-pub fn enable_test_input() -> io::Result<Output> {
-    broker_action("enable-test-input", &[])
-}
-
-/// Restore the production ImeOutput. Symmetric counterpart to
-/// [enable_test_input]. Process death also resets, so test crashes
-/// can't leave the recorder pinned in place across `cargo test` runs.
-pub fn disable_test_input() -> io::Result<Output> {
-    broker_action("disable-test-input", &[])
+/// Reset app-side test state before an integration test runs. This enters
+/// in-memory test settings (factory defaults, no SharedPreferences writes),
+/// swaps in RecordingImeOutput, clears the active IC, and asks existing
+/// Wayland clients to close. Returns the number of client windows that were
+/// asked to close.
+pub fn test_init() -> io::Result<usize> {
+    let output = broker_action("test-init", &[])?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "test-init failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("closed=")?.parse::<usize>().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("test-init missing closed count: {stdout:?}")))
 }
 
 /// Wait until the focused compositor activity has an active
@@ -491,7 +496,7 @@ pub fn set_output_scale(scale: f32) -> io::Result<Output> {
     broker_action("set-output-scale", &[("value", &value)])
 }
 
-/// Read the persisted output scale from the app settings.
+/// Read the current output scale from the app settings facade.
 pub fn get_output_scale() -> io::Result<f32> {
     let output = broker_action("get-output-scale", &[])?;
     if !output.status.success() {
@@ -514,7 +519,7 @@ pub fn set_gtk3_broken_menus_workaround(enabled: bool) -> io::Result<Output> {
     broker_action("set-gtk3-broken-menus-workaround", &[("enabled", enabled)])
 }
 
-/// Read the persisted GTK3 broken menus workaround setting.
+/// Read the current GTK3 broken menus workaround setting.
 pub fn get_gtk3_broken_menus_workaround() -> io::Result<bool> {
     let output = broker_action("get-gtk3-broken-menus-workaround", &[])?;
     if !output.status.success() {

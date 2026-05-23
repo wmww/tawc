@@ -305,7 +305,7 @@ before any client connection arrives.
 | `install` | InstallActions | Run the install state machine; mirrors the [Operation] log + progress to host stdout/stderr; cancels on disconnect. Use `--foreground-app`. |
 | `uninstall` | InstallActions | Same shape, opposite direction. Use `--foreground-app`. |
 | `query-state` | InputActions | Calls `NativeBridge.nativeQueryState()` so the compositor logs a `COMPOSITOR_STATE …` line under `tawc-native`. Observational only — doesn't change input state. Needs no focused activity. |
-| `enable-test-input` / `disable-test-input` | InputActions | Swap `NativeBridge.imeOutput` for a `RecordingImeOutput` (or back) on the main thread. Stops the system IME from reacting to `updateSelection` and racing input tests. Doesn't bypass our state machine — stubs out the *third-party* IME at the boundary. Process-global; reset on process death. |
+| `test-init` | InputActions | Per-test reset: swap `Settings` to an in-memory factory-default store, push live runtime settings, swap `NativeBridge.imeOutput` to a fresh `RecordingImeOutput`, clear the active IC, and ask attached Wayland/XWayland client windows to close. Prints `closed=N`; the Rust harness waits for a clean compositor only when `N > 0`, so the normal no-client path stays fast. Does not write `SharedPreferences`; app process death discards it. |
 | `input-ready` | InputActions | Succeeds only when the focused `CompositorActivity` has an active `TawcInputConnection` for its own `SurfaceView`. Used by tests after `onShowKeyboard` so the first `ic-*` action cannot race IC creation. |
 | `ic-commit-text` (`text`) | InputActions | `TawcInputConnection.commitText(text, 1)`. |
 | `ic-commit-completion` (`text`) | InputActions | `TawcInputConnection.commitCompletion(CompletionInfo(..., text))`. |
@@ -319,12 +319,12 @@ before any client connection arrives.
 | `ic-send-key-event` (`keycode`) | InputActions | `TawcInputConnection.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode))`. |
 | `ic-send-modified-key-event` (`keycode`, `ctrl`, `alt`, `shift`) | InputActions | `TawcInputConnection.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode, metaState))`. |
 | `ic-finish-hidden-composing` | InputActions | Test-only stale-callback hook: calls `finishComposingText()` on the hidden test IC retained by `RecordingImeOutput` after keyboard hide. Normal `ic-*` actions still require the current focused IC. |
-| `set-graphics-backend` (`value`) | SettingsActions | Write `Settings.graphicsBackend` to the given `GraphicsBackend.key` (`libhybris` / `gfxstream` / `cpu`). Used by the Settings screen for ad-hoc developer toggling. **Tests do NOT use this** — they pass `--graphics` on each RUNINSIDE spawn so the persisted pref isn't disturbed. |
+| `set-graphics-backend` (`value`) | SettingsActions | Write `Settings.graphicsBackend` to the given `GraphicsBackend.key` (`libhybris` / `gfxstream` / `cpu`). In test mode this only mutates the in-memory store. Tests normally pass `--graphics` on each RUNINSIDE spawn instead. |
 | `get-graphics-backend` | SettingsActions | Print the current backend key on stdout. |
-| `set-output-scale` (`value`) | SettingsActions | Snap to the 0.25x grid, persist `Settings.outputScale`, and push the live compositor output scale. Integration tests restore the previous value after use. |
-| `get-output-scale` | SettingsActions | Print the persisted output scale. |
-| `set-gtk3-broken-menus-workaround` (`enabled`) | SettingsActions | Persist and push the live GTK3 broken menus workaround toggle. Accepts `true` or `false`. |
-| `get-gtk3-broken-menus-workaround` | SettingsActions | Print the persisted GTK3 broken menus workaround setting. |
+| `set-output-scale` (`value`) | SettingsActions | Snap to the 0.25x grid, save `Settings.outputScale`, and push the live compositor output scale. In test mode this only mutates the in-memory store. |
+| `get-output-scale` | SettingsActions | Print the current output scale. |
+| `set-gtk3-broken-menus-workaround` (`enabled`) | SettingsActions | Save and push the live GTK3 broken menus workaround toggle. In test mode this only mutates the in-memory store. |
+| `get-gtk3-broken-menus-workaround` | SettingsActions | Print the current GTK3 broken menus workaround setting. |
 
 **Rule for input actions: every driver goes through `TawcInputConnection`.**
 There is intentionally no broker action that calls `NativeBridge.native*`

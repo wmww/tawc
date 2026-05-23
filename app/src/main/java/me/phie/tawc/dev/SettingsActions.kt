@@ -9,19 +9,18 @@ import me.phie.tawc.compositor.NativeBridge
  * Broker actions that read/write entries in [Settings]. Registered
  * from [me.phie.tawc.TawcApplication.onCreate] (debug builds only).
  *
- * Used for ad-hoc developer toggling that should persist — same code
- * path users hit by toggling the radio on the in-app Settings screen.
- * The integration test suite does NOT use this; tests pass a
- * `GRAPHICS` header on each broker RUNINSIDE spawn so the persisted
- * pref isn't disturbed (see `notes/exec-broker.md`).
+ * Used for ad-hoc developer toggling. In normal app mode this writes
+ * the persisted settings users edit from the in-app Settings screen. In
+ * integration-test mode, `test-init` swaps [Settings] to an in-memory
+ * store, so these actions only mutate that test process state.
  *
  * | Action | Args | Effect |
  * |--------|------|--------|
  * | `set-graphics-backend` | `value` ∈ {"libhybris","gfxstream","cpu"} | `Settings.graphicsBackend = …` |
  * | `get-graphics-backend` | — | prints current backend key on stdout |
- * | `set-output-scale` | `value` ∈ 0.5..4.0, snapped to 0.25 | persist and push live compositor scale |
+ * | `set-output-scale` | `value` ∈ 0.5..4.0, snapped to 0.25 | save current setting and push live compositor scale |
  * | `get-output-scale` | — | prints current output scale |
- * | `set-gtk3-broken-menus-workaround` | `enabled` ∈ true|false | persist and push live workaround toggle |
+ * | `set-gtk3-broken-menus-workaround` | `enabled` ∈ true|false | save current setting and push live workaround toggle |
  * | `get-gtk3-broken-menus-workaround` | — | prints true/false |
  */
 internal object SettingsActions {
