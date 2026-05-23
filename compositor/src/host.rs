@@ -186,6 +186,14 @@ pub enum SurfaceEvent {
     FullscreenChanged { activity_id: ActivityId, fullscreen: bool },
     /// Android Back was pressed while this host's Activity was active.
     BackPressed { activity_id: ActivityId },
+    /// Hardware key event from this host's Activity. The keycode is already
+    /// translated to Linux evdev form by the JNI entry point.
+    HardwareKey {
+        activity_id: ActivityId,
+        evdev_keycode: u32,
+        pressed: bool,
+        repeat_count: u32,
+    },
     /// Test hook: ask every attached client window to close.
     CloseAllClientsForTest { response: mpsc::Sender<usize> },
 }

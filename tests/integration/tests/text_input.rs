@@ -109,6 +109,14 @@ fn wait_for_editor_input_type(expected: i32, label: &str) {
     }
 }
 
+fn depressed_mods(payload: &str) -> u32 {
+    payload
+        .split(',')
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("bad MODIFIERS payload: {payload:?}"))
+}
+
 // --- Scenes -----------------------------------------------------------------
 //
 // Each scene drives the IC with a Gboard-shaped sequence and asserts what
@@ -927,6 +935,82 @@ fn test_surroundingless_client_uses_keyboard_for_backspace() {
         app.count_with_tag("DELETE_SURROUNDING"),
         0,
         "compositor sent delete_surrounding_text to a surrounding-less client"
+    );
+
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
+    assert_compositor_clean();
+}
+
+#[test]
+fn test_hardware_keyboard_dispatches_wl_keyboard() {
+    tawc_integration::helpers::test_init();
+    let mut app = start_wayland_debug_text_input(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+
+    adb::ic_commit_text("ab").expect("commit 'ab'");
+    app.wait_for_text_cursor("ab", TIMEOUT)
+        .expect("'ab' text before hardware backspace");
+
+    adb::hardware_key_down(adb::KEYCODE_DEL).expect("hardware Backspace down");
+    app.wait_for_tag_value("KEY", "BackSpace", TIMEOUT)
+        .expect("hardware Backspace did not arrive as wl_keyboard");
+    app.wait_for_text("a", TIMEOUT)
+        .expect("hardware Backspace did not edit client text");
+    adb::hardware_key_up(adb::KEYCODE_DEL).expect("hardware Backspace up");
+    app.wait_for_tag_value("KEY_RELEASE", "BackSpace", TIMEOUT)
+        .expect("hardware Backspace release did not arrive as wl_keyboard");
+
+    let key_count = app.count_with_tag("KEY");
+    adb::hardware_key_down(adb::KEYCODE_A).expect("hardware A down");
+    app.wait_for_tag_count("KEY", key_count + 1, TIMEOUT)
+        .expect("hardware A did not arrive");
+    assert!(
+        app.payloads_with_tag("KEY")[key_count..]
+            .iter()
+            .any(|payload| payload == "30"),
+        "hardware A should arrive as evdev KEY_A (30); lines={:?}",
+        app.lines()
+    );
+    adb::hardware_key_up(adb::KEYCODE_A).expect("hardware A up");
+    app.wait_for_tag_value("KEY_RELEASE", "30", TIMEOUT)
+        .expect("hardware A release did not arrive as wl_keyboard");
+
+    let modifier_count = app.count_with_tag("MODIFIERS");
+    adb::hardware_key_down(adb::KEYCODE_CTRL_LEFT).expect("hardware Ctrl down");
+    app.wait_for_tag_value("KEY", "29", TIMEOUT)
+        .expect("hardware Ctrl down did not arrive as KEY_LEFTCTRL");
+    app.wait_for_tag_count("MODIFIERS", modifier_count + 1, TIMEOUT)
+        .expect("Ctrl down did not update wl_keyboard.modifiers");
+    assert!(
+        app.payloads_with_tag("MODIFIERS")[modifier_count..]
+            .iter()
+            .any(|payload| depressed_mods(payload) != 0),
+        "Ctrl down should set depressed modifiers; lines={:?}",
+        app.lines()
+    );
+
+    let key_count = app.count_with_tag("KEY");
+    adb::hardware_key_press(adb::KEYCODE_A).expect("hardware Ctrl+A main key");
+    app.wait_for_tag_count("KEY", key_count + 1, TIMEOUT)
+        .expect("hardware A under Ctrl did not arrive");
+    assert!(
+        app.payloads_with_tag("KEY")[key_count..]
+            .iter()
+            .any(|payload| payload == "30"),
+        "Ctrl+A should deliver the main A key; lines={:?}",
+        app.lines()
+    );
+
+    let modifier_count = app.count_with_tag("MODIFIERS");
+    adb::hardware_key_up(adb::KEYCODE_CTRL_LEFT).expect("hardware Ctrl up");
+    app.wait_for_tag_count("MODIFIERS", modifier_count + 1, TIMEOUT)
+        .expect("Ctrl up did not update wl_keyboard.modifiers");
+    assert!(
+        app.payloads_with_tag("MODIFIERS")[modifier_count..]
+            .iter()
+            .any(|payload| depressed_mods(payload) == 0),
+        "Ctrl up should clear depressed modifiers; lines={:?}",
+        app.lines()
     );
 
     app.stop()

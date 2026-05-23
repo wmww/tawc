@@ -84,6 +84,33 @@ settings:
 Convert logical coordinates to physical tap coordinates with
 `physical = logical * current_output_scale`, then verify against the screenshot.
 
+## Hardware Keyboard
+
+Physical USB/Bluetooth/emulator keys enter Android through
+focused `SurfaceView.onKeyDown` / `onKeyUp`, not through `TawcInputConnection`.
+The view forwards mapped `ACTION_DOWN`/`ACTION_UP` events to Rust via
+`nativeOnHardwareKeyEvent(activityId, keycode, pressed, repeatCount)`.
+The JNI layer translates Android `KEYCODE_*` values to Linux evdev keycodes
+with `compositor/src/keymap.rs` and sends host-scoped `SurfaceEvent::HardwareKey`
+events on the surface event channel. Using the surface channel keeps hardware
+keys ordered with Android `FocusChanged` events and lets the compositor ignore
+stale keys from background/destroyed Activities.
+
+The compositor emits real `wl_keyboard` press/release events to the current
+keyboard focus. Printable keys stay key events; clients/toolkits use normal
+XKB handling to turn them into text. Accepted held keys are tracked by Activity
+id so their real Android `ACTION_UP` is forwarded even if Activity foreground
+bookkeeping changes after key-down. Android repeat `ACTION_DOWN`s do not create
+new Wayland presses while the key is already held; Wayland clients repeat from
+`wl_keyboard.repeat_info` until the release arrives. Backspace/Delete/Enter/Tab/
+Escape, arrows, modifiers, letters, digits, punctuation, function keys, and
+numpad keys share the same Android-to-evdev table used by IME-originated key
+events. Unmapped Android/system keys return `false` from JNI so Android can
+keep its normal handling.
+
+Known gap: emulator host Backspace can arrive as an app-visible down event
+without a matching up event; see [hardware-backspace-stuck-down](../issues/hardware-backspace-stuck-down.md).
+
 ## Android Back Button
 
 `CompositorActivity` consumes Android Back for active Wayland windows and

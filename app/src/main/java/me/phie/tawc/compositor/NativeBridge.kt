@@ -163,6 +163,16 @@ object NativeBridge {
     /** Let the compositor consume Android Back using Wayland window state. */
     external fun nativeOnBackPressed(activityId: String)
 
+    /** Forward a hardware key event from the focused compositor view. Returns
+     *  false when the key is intentionally unmapped so Android can continue
+     *  normal system handling (Back, volume, media keys, etc.). */
+    external fun nativeOnHardwareKeyEvent(
+        activityId: String,
+        keycode: Int,
+        pressed: Boolean,
+        repeatCount: Int,
+    ): Boolean
+
     // --- Text input: Android InputConnection → Compositor ---
     //
     // These are the JNI primitives the production [TawcInputConnection]

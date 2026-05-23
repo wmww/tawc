@@ -116,14 +116,22 @@ together when the SDK changes.
 
 ### sendKeyEvent mapping
 
-Every Android `KeyEvent` we recognise becomes a real `wl_keyboard` press+release pair (text-input-v3 has no key-event channel). Translation lives in `compositor/src/keymap.rs::android_to_evdev` and covers:
+Every Android `KeyEvent` we recognise becomes a real `wl_keyboard` event
+(text-input-v3 has no key-event channel). Soft-IME `sendKeyEvent` uses
+`TawcInputConnection` and usually emits a synthesized press+release pair.
+Hardware keys use focused `SurfaceView.onKeyDown` / `onKeyUp` callbacks and preserve real
+down/up state. Translation lives in
+`compositor/src/keymap.rs::android_to_evdev` and covers:
 
 - editing: Backspace, Delete, Enter, Tab, Escape, Space
 - navigation: arrows, Home/End, PageUp/Down, Insert
 - modifiers/locks: Shift/Ctrl/Alt/Meta (L+R), CapsLock, NumLock, ScrollLock, Pause, SysRq
 - F1–F12, A–Z, 0–9, common punctuation, full numpad
 
-`commitText("\n")` is intercepted in `nativeCommitText` and routed through the same `KEY_ENTER` path — Gboard sends Enter that way. Anything outside the table (media keys, gamepad buttons, Android-specific BACK/HOME/MENU) is logged and dropped.
+`commitText("\n")` is intercepted in `nativeCommitText` and routed through
+the same `KEY_ENTER` path — Gboard sends Enter that way. Anything outside the
+table (media keys, gamepad buttons, Android-specific BACK/HOME/MENU) is left
+to Android on the hardware path and logged/dropped on the IME path.
 
 ### BaseInputConnection and Editable
 
@@ -330,13 +338,14 @@ Hints add flags on TEXT-class fields: `auto_capitalization` → `FLAG_CAP_SENTEN
 
 ## Test infrastructure note
 
-**The rule: tests interact with the system as a keyboard or as an app, never inside the compositor.**
+**The rule: tests interact with the system through Android input entry points or as an app, never inside the compositor.**
 
-- **As a keyboard**: every normal test driver call goes through the focused activity's active `TawcInputConnection` via the broker `ic-*` actions (`ic-commit-text`, `ic-replace-text`, `ic-set-composing-text`, `ic-set-composing-region`, `ic-finish-composing`, `ic-set-selection`, `ic-delete-surrounding-text`, `ic-delete-surrounding-text-codepoints`, `ic-send-key-event`) — the same Kotlin entry points the system IMM dispatches Gboard / OpenBoard / AOSP-latin events through. Broker actions fail loudly if there is no matching active IC or if the IC method returns `false`, except for tests that intentionally assert a public Android-contract rejection.
+- **As a soft keyboard**: test driver calls go through the focused activity's active `TawcInputConnection` via broker `ic-*` actions (`ic-commit-text`, `ic-replace-text`, `ic-set-composing-text`, `ic-set-composing-region`, `ic-finish-composing`, `ic-set-selection`, `ic-delete-surrounding-text`, `ic-delete-surrounding-text-codepoints`, `ic-send-key-event`) — the same Kotlin entry points the system IMM dispatches Gboard / OpenBoard / AOSP-latin events through. Broker actions fail loudly if there is no matching active IC or if the IC method returns `false`, except for tests that intentionally assert a public Android-contract rejection.
+- **As a hardware keyboard**: `hardware-key` dispatches `KeyEvent`s through the focused Activity/view path, matching Android's USB/Bluetooth keyboard path before JNI.
 - **As an app**: assertions go through `wayland-debug-app`'s observed `TAWC_DEBUG:…` events — `TEXT_CHANGED`, `PREEDIT`, `CURSOR_POS`, `KEY`, `COMMIT`, `DELETE_SURROUNDING`, `DONE`. That's what a real wayland client running under our compositor sees.
 - Tests must not assert private Rust or Kotlin state such as the Editable contents, composing spans, `wireCursor`, `lastSyncedCursor`, or text-input structs. Mirror drift should be exposed by follow-up IC actions whose client-visible result would land wrong if Android's editor model had diverged.
 
-There is intentionally **no test infra that pokes `NativeBridge.native*` directly**. Earlier versions had a "bypass" channel that did — broadcasts, then later broker actions like `inject-text` — but it was pulled. The reason: `nativeCommitText` / `nativeSetComposingText` / `nativeFinishComposingText` / `nativeSendKeyEvent` are JNI primitives the IC calls into the Rust compositor with after running its state machine. Calling them directly skips the IC entirely. Wayland-side text-input-v3 done-ordering produces the right *observable* (preedit replaces on the next preedit/commit) regardless of what the IC computed, so a buggy IC can produce correct-looking GTK output and a bypass test smiles. Driving every scenario through IC closes that hole — wayland-side assertions become a real integration check rather than a redundant proof of text-input-v3.
+There is intentionally **no test infra that pokes `NativeBridge.native*` directly**. Earlier versions had a "bypass" channel that did — broadcasts, then later broker actions like `inject-text` — but it was pulled. The reason: JNI primitives are called only after Android-side state machines run (`TawcInputConnection` for IME input, focused-view dispatch for hardware input). Calling them directly skips the Android entrypoint entirely. Wayland-side text-input-v3 done-ordering can produce the right *observable* regardless of what the IC computed, so a buggy IC can produce correct-looking GTK output and a bypass test smiles. Driving every scenario through the matching Android entrypoint closes that hole — wayland-side assertions become a real integration check rather than a redundant proof of text-input-v3.
 
 The sanctioned middle-of-the-stack test toggle is `test-init`, which every integration test calls before doing work. It swaps `NativeBridge.imeOutput` to a fresh `RecordingImeOutput`, resets `Settings` to an in-memory factory-default store, clears the active IC, and asks attached Wayland/XWayland client windows to close. If it had to close anything, the Rust harness waits for the compositor to report zero clients/toplevels before the test continues. That's not bypassing anything in our state machine — it removes the *third-party* system IME (Gboard / OpenBoard / AOSP-latin) at the boundary so it doesn't react to our `updateSelection` calls and amplify them back into the IC. The recorder still creates and owns a test `TawcInputConnection` when the compositor requests keyboard show/restart, and tests wait for `input-ready` before driving `ic-*` actions. The special `ic-finish-hidden-composing` action exists only to model stale IME callbacks after keyboard hide/focus leave; normal input actions never target hidden ICs. Process death reverts the swap and discards in-memory settings, so test crashes can't persist test state across app launches.
 

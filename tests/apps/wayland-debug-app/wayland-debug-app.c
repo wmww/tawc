@@ -1909,14 +1909,33 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
                          uint32_t state)
 {
     struct app *app = data;
+    char buf[32];
+    const char *payload = NULL;
     (void)keyboard;
     (void)serial;
     (void)time;
+    if (key == KEY_BACKSPACE) {
+        payload = "BackSpace";
+    } else if (key == KEY_DELETE) {
+        payload = "Delete";
+    } else if (key == KEY_ENTER) {
+        payload = "Return";
+    } else if (key == KEY_TAB) {
+        payload = "Tab";
+    } else {
+        checked_snprintf(buf, sizeof(buf), "%u", key);
+        payload = buf;
+    }
+
+    if (state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+        debug_emit("KEY_RELEASE", payload);
+        return;
+    }
     if (state != WL_KEYBOARD_KEY_STATE_PRESSED)
         return;
 
     if (key == KEY_BACKSPACE) {
-        debug_emit("KEY", "BackSpace");
+        debug_emit("KEY", payload);
         if (!app->editable)
             return;
         if (app->cursor > 0) {
@@ -1925,7 +1944,7 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
             changed_by_input_method(app);
         }
     } else if (key == KEY_DELETE) {
-        debug_emit("KEY", "Delete");
+        debug_emit("KEY", payload);
         if (!app->editable)
             return;
         if (app->cursor < app->text_len) {
@@ -1934,21 +1953,19 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
             changed_by_input_method(app);
         }
     } else if (key == KEY_ENTER) {
-        debug_emit("KEY", "Return");
+        debug_emit("KEY", payload);
         if (!app->editable)
             return;
         insert_text(app, "\n");
         changed_by_input_method(app);
     } else if (key == KEY_TAB) {
-        debug_emit("KEY", "Tab");
+        debug_emit("KEY", payload);
         if (!app->editable)
             return;
         insert_text(app, "\t");
         changed_by_input_method(app);
     } else {
-        char buf[32];
-        checked_snprintf(buf, sizeof(buf), "%u", key);
-        debug_emit("KEY", buf);
+        debug_emit("KEY", payload);
     }
 }
 
@@ -1960,10 +1977,10 @@ static void keyboard_modifiers(void *data, struct wl_keyboard *keyboard,
     (void)data;
     (void)keyboard;
     (void)serial;
-    (void)mods_depressed;
-    (void)mods_latched;
-    (void)mods_locked;
-    (void)group;
+    char buf[64];
+    checked_snprintf(buf, sizeof(buf), "%u,%u,%u,%u",
+                     mods_depressed, mods_latched, mods_locked, group);
+    debug_emit("MODIFIERS", buf);
 }
 
 static void keyboard_repeat_info(void *data, struct wl_keyboard *keyboard,

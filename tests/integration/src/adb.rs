@@ -2,12 +2,12 @@
 //!
 //! # Input rule: tests act as keyboards or apps, never inside the compositor
 //!
-//! Every input helper here drives [`TawcInputConnection`] (via the broker
-//! `ic-*` actions) — the same Kotlin entrypoint Gboard / OpenBoard /
-//! AOSP-latin call into. There is intentionally **no helper that pokes
-//! `NativeBridge.native*` directly** and no broker action that does so
-//! either. Tests act as a keyboard (sending IME methods to the IC) or as
-//! a wayland client (assertions go through `wayland-debug-app`'s observed
+//! Soft-IME helpers drive [`TawcInputConnection`] (via the broker `ic-*`
+//! actions), the same Kotlin entrypoint Gboard / OpenBoard / AOSP-latin call
+//! into. Hardware-key helpers use focused Activity/view key dispatch. There is
+//! intentionally **no helper that pokes `NativeBridge.native*` directly** and
+//! no broker action that does so either. Tests act as a keyboard or as a
+//! wayland client (assertions go through `wayland-debug-app`'s observed
 //! events). Tests assert the two public ends — Android contract results and
 //! client-visible Wayland behavior — not private tawc state. See
 //! `notes/text-input.md` ("Test infrastructure note") for the rationale.
@@ -492,6 +492,35 @@ pub fn ic_send_modified_key_event(
     )
 }
 
+/// Dispatch a hardware-key press through the focused Activity/view path.
+/// This mirrors Android's USB/Bluetooth keyboard path
+/// (`SurfaceView.dispatchKeyEvent`) rather than the soft-IME
+/// `InputConnection` path.
+pub fn hardware_key_press(keycode: u32) -> io::Result<Output> {
+    hardware_key("press", keycode, 0)
+}
+
+pub fn hardware_key_down(keycode: u32) -> io::Result<Output> {
+    hardware_key("down", keycode, 0)
+}
+
+pub fn hardware_key_up(keycode: u32) -> io::Result<Output> {
+    hardware_key("up", keycode, 0)
+}
+
+pub fn hardware_key_down_repeat(keycode: u32, repeat: u32) -> io::Result<Output> {
+    hardware_key("down", keycode, repeat)
+}
+
+fn hardware_key(action: &str, keycode: u32, repeat: u32) -> io::Result<Output> {
+    let kc = keycode.to_string();
+    let repeat = repeat.to_string();
+    broker_action(
+        "hardware-key",
+        &[("action", action), ("keycode", &kc), ("repeat", &repeat)],
+    )
+}
+
 /// Set Android's real ClipboardManager text through tawc's debug broker.
 /// This is intentionally app-side rather than `adb shell` clipboard poking:
 /// Android exposes clipboard APIs to the foreground app, while shell access
@@ -660,3 +689,4 @@ pub const KEYCODE_TAB: u32 = 61;
 pub const KEYCODE_A: u32 = 29;
 pub const KEYCODE_C: u32 = 31;
 pub const KEYCODE_V: u32 = 50;
+pub const KEYCODE_CTRL_LEFT: u32 = 113;

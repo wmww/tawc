@@ -4,7 +4,7 @@
 //! Renderer/EGL details stay grouped in render::RenderState, which is carried
 //! by TawcState because Smithay callbacks use one concrete state type.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use log::{error, info, warn};
@@ -178,6 +178,11 @@ pub struct TawcState {
     /// Text input protocol state.
     pub text_input_state: TextInputState,
 
+    /// Hardware keys accepted from Android and currently held in the Smithay
+    /// seat. Releases must be honored even if Android Activity foreground
+    /// bookkeeping changes between key-down and key-up.
+    pub hardware_keys_down: HashSet<(ActivityId, u32)>,
+
     /// Number of connected Wayland clients. Shared with ClientState instances
     /// so they can increment/decrement from ClientData callbacks.
     pub client_count: Arc<AtomicU32>,
@@ -331,6 +336,7 @@ impl TawcState {
             output_logical_size,
             output_physical_size,
             text_input_state: TextInputState::new(),
+            hardware_keys_down: HashSet::new(),
             client_count: Arc::new(AtomicU32::new(0)),
             client_ids: Arc::new(Mutex::new(Vec::new())),
             toplevels_changed: false,

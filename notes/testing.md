@@ -154,7 +154,12 @@ failures abort the process instead of being tolerated.
 
 ### Test Input Mechanism
 
-Tests inject input by acting as a **keyboard**: every input action calls a method on the active `TawcInputConnection` via the broker `ic-*` actions. There is intentionally no test path that pokes `NativeBridge.native*` directly — see `notes/text-input.md` "Test infrastructure note" for the rationale.
+Tests inject input through Android-facing entry points. Soft-IME scenarios call
+methods on the active `TawcInputConnection` via broker `ic-*` actions. Hardware
+keyboard scenarios dispatch `KeyEvent`s through the focused Activity/view via
+`hardware-key`, matching Android's USB/Bluetooth keyboard path. There is
+intentionally no test path that pokes `NativeBridge.native*` directly — see
+`notes/text-input.md` "Test infrastructure note" for the rationale.
 
 ```bash
 # Per-test reset: in-memory factory settings, RecordingImeOutput,
@@ -166,9 +171,15 @@ scripts/tawc-exec.sh --action ic-commit-text --arg text=hello
 scripts/tawc-exec.sh --action ic-set-composing-text --arg text=wor
 scripts/tawc-exec.sh --action ic-finish-composing
 scripts/tawc-exec.sh --action ic-send-key-event --arg keycode=67  # Backspace
+
+# Drive hardware-key dispatch through the focused view key path.
+scripts/tawc-exec.sh --action hardware-key --arg keycode=67
 ```
 
-Every call goes through the same Kotlin entry points the system IMM uses to dispatch Gboard / OpenBoard / AOSP-latin events. Tests assert Android contract results and `wayland-debug-app` observations, not private tawc Rust/Kotlin state.
+Every call goes through the same Kotlin entry points Android uses to dispatch
+Gboard / OpenBoard / AOSP-latin or physical keyboard events. Tests assert
+Android contract results and `wayland-debug-app` observations, not private
+tawc Rust/Kotlin state.
 
 Broker actions connect to an already-running `LocalServerSocket` and complete in <10ms each, vs. 100–300ms per `am broadcast` JVM cold start (the broadcast channel was retired entirely). More reliable than `adb shell input text` (which gets intercepted by the IME).
 
@@ -270,11 +281,11 @@ text before the compositor accepts it.
   `autotests = false` plus an explicit `[[test]]` entry so the
   per-group files aren't auto-discovered as separate binaries.
 - **C for debug app:** Host-side cross-builds are quick after the sysroot exists; no compiler or `base-devel` is needed in the device rootfs.
-- **Broker `ic-*` actions over `adb shell input text`:** The system IME
+- **Broker input actions over `adb shell input text`:** The system IME
   can intercept `input text` key events and buffer/autocorrect them.
-  Broker actions drive `TawcInputConnection`, the same Kotlin state
-  machine real IME input uses, without starting a broadcast JVM for
-  every operation.
+  Broker actions drive `TawcInputConnection` for soft-IME input and
+  focused-view dispatch for hardware-key input, without starting
+  a broadcast JVM for every operation.
 - **Reader thread + mpsc channel:** adb stdout is a blocking stream.
   Thread drains it continuously, mpsc gives timeout-based waiting.
 - **App-side reset owns guest cleanup:** Per-test isolation goes

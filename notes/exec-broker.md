@@ -322,6 +322,7 @@ before any client connection arrives.
 | `ic-send-key-event` (`keycode`) | InputActions | `TawcInputConnection.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode))`. |
 | `ic-send-modified-key-event` (`keycode`, `ctrl`, `alt`, `shift`) | InputActions | `TawcInputConnection.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode, metaState))`. |
 | `ic-finish-hidden-composing` | InputActions | Test-only stale-callback hook: calls `finishComposingText()` on the hidden test IC retained by `RecordingImeOutput` after keyboard hide. Normal `ic-*` actions still require the current focused IC. |
+| `hardware-key` (`keycode`, optional `action`, `repeat`) | InputActions | Dispatch a `KeyEvent` through the focused Activity/view path; `action` is `press` (default), `down`, or `up`. |
 | `set-graphics-backend` (`value`) | SettingsActions | Write `Settings.graphicsBackend` to the given `GraphicsBackend.key` (`libhybris` / `gfxstream` / `cpu`). In test mode this only mutates the in-memory store. Tests normally pass `--graphics` on each RUNINSIDE spawn instead. |
 | `get-graphics-backend` | SettingsActions | Print the current backend key on stdout. |
 | `set-output-scale` (`value`) | SettingsActions | Snap to the 0.25x grid, save `Settings.outputScale`, and push the live compositor output scale. In test mode this only mutates the in-memory store. |

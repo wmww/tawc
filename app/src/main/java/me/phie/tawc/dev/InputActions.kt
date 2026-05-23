@@ -24,17 +24,17 @@ import me.phie.tawc.tasks.ProcessScanner
  * Broker actions that drive compositor input from host tests, registered
  * from [me.phie.tawc.TawcApplication.onCreate] (debug builds only).
  *
- * # Rule: tests drive input through `TawcInputConnection`, never around it
+ * # Rule: tests drive input through Android's public input entry points
  *
- * Every input action here calls a method on the active
- * [me.phie.tawc.compositor.TawcInputConnection] — the same Kotlin
- * surface the system IMM dispatches Gboard / OpenBoard / AOSP-latin
- * events through. There is intentionally **no broker action that calls
- * `NativeBridge.native*` directly**. The test path = the production
- * path: a "keyboard" sends commits / preedits / key events into the IC,
- * and the wayland client (wayland-debug-app) is the other endpoint.
- * Tests assert Android contract results and what the client sees on the
- * wire, not tawc private state.
+ * Soft-IME actions call methods on the active
+ * [me.phie.tawc.compositor.TawcInputConnection] — the same Kotlin surface
+ * the system IMM dispatches Gboard / OpenBoard / AOSP-latin events through.
+ * Hardware-key actions dispatch [KeyEvent]s through the focused Activity/view
+ * path Android uses for USB/Bluetooth keyboards.
+ * There is intentionally **no broker action that calls `NativeBridge.native*`
+ * directly**. The test path = the production path, and the wayland client
+ * (wayland-debug-app) is the other endpoint. Tests assert Android contract
+ * results and what the client sees on the wire, not tawc private state.
  *
  * Why this matters: an earlier version of this file exposed bypass
  * actions (`inject-text`, `set-composing`, `key-event`, …) that called
@@ -43,15 +43,15 @@ import me.phie.tawc.tasks.ProcessScanner
  * [test-init] swaps [NativeBridge.imeOutput] to a [RecordingImeOutput],
  * the IME is no longer in the loop, and the
  * justification disappears — the bypass became dead weight that hid
- * IC regressions behind a wayland-side fallback (text-input-v3 done
+ * input regressions behind a wayland-side fallback (text-input-v3 done
  * ordering can produce the right *observable* even when the Android
  * entrypoint did not translate the IME request correctly). Driving
- * everything through IC closes that hole.
+ * input through IC or focused-view dispatch closes that hole.
  *
  * Anything that needs to read compositor state without driving input
  * (e.g. [query-state] for `clients` / `toplevels` counts) is allowed —
  * those are observational. Anything that *changes* compositor input
- * state must come in through the IC.
+ * state must come in through Android's public input surface.
  *
  * # Action surface
  *
@@ -73,6 +73,7 @@ import me.phie.tawc.tasks.ProcessScanner
  * | `ic-send-key-event` | `keycode` | `IC.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode))` |
  * | `ic-send-modified-key-event` | `keycode`, `ctrl`, `alt`, `shift` | `IC.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode, metaState))` |
  * | `ic-finish-hidden-composing` | — | `RecordingImeOutput` stale hidden IC `finishComposingText()` |
+ * | `hardware-key` | `keycode`, `action=down|up|press`, `repeat` | focused Activity/view `dispatchKeyEvent(KeyEvent(...))` |
  * | `inject-touch` | `kind=tap|tap-logical|tap-outside-popup|drag|multitouch` | Dispatch MotionEvents to the focused SurfaceView |
  *
  * Test-mode helpers:
@@ -109,6 +110,7 @@ internal object InputActions {
         ActionRegistry.register("ic-send-key-event", IcSendKeyEventAction)
         ActionRegistry.register("ic-send-modified-key-event", IcSendModifiedKeyEventAction)
         ActionRegistry.register("ic-finish-hidden-composing", IcFinishHiddenComposingAction)
+        ActionRegistry.register("hardware-key", HardwareKeyAction)
         ActionRegistry.register("inject-touch", InjectTouchAction)
 
         ActionRegistry.register("query-state", QueryStateAction)
@@ -374,6 +376,36 @@ internal object InputActions {
             }
             if (!ran) return ctx.fail("main loop did not run ic-finish-hidden-composing within 5s")
             return if (ok) 0 else ctx.fail("ic-finish-hidden-composing: no hidden test InputConnection")
+        }
+    }
+
+    private object HardwareKeyAction : BrokerAction {
+        override fun run(args: Map<String, String>, ctx: ActionContext): Int {
+            val keycode = argInt(args, "keycode")
+                ?: return ctx.fail("hardware-key: --arg keycode=... required")
+            if (keycode < 0) return ctx.fail("hardware-key: keycode must be >= 0")
+            val repeat = argInt(args, "repeat", 0)!!
+            if (repeat < 0) return ctx.fail("hardware-key: repeat must be >= 0")
+            val action = args["action"] ?: "press"
+            if (action !in setOf("down", "up", "press")) {
+                return ctx.fail("hardware-key: action must be down, up, or press")
+            }
+
+            var handled = false
+            val status = withFocusedActivity(ctx) { activity ->
+                Log.d(TAG, "InputAction hardware-key $keycode action=$action repeat=$repeat")
+                handled = when (action) {
+                    "down" -> activity.dispatchHardwareKeyForDev(keycode, true, repeat)
+                    "up" -> activity.dispatchHardwareKeyForDev(keycode, false, repeat)
+                    else -> {
+                        val down = activity.dispatchHardwareKeyForDev(keycode, true, repeat)
+                        val up = activity.dispatchHardwareKeyForDev(keycode, false, 0)
+                        down && up
+                    }
+                }
+            }
+            if (status != 0) return status
+            return if (handled) 0 else ctx.fail("hardware-key: keycode $keycode was not handled")
         }
     }
 

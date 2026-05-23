@@ -366,6 +366,33 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnBackPre
     host::send_surface_event(SurfaceEvent::BackPressed { activity_id });
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnHardwareKeyEvent(
+    mut env: JNIEnv,
+    _class: JClass,
+    activity_id: JString,
+    keycode: i32,
+    pressed: bool,
+    repeat_count: i32,
+) -> jboolean {
+    let activity_id = jstring_to_id(&mut env, activity_id);
+    let Some(evdev_keycode) = keymap::android_to_evdev(keycode) else {
+        info!(
+            "Unhandled hardware key event: activity={} keycode={} pressed={}",
+            activity_id, keycode, pressed
+        );
+        return 0;
+    };
+
+    host::send_surface_event(SurfaceEvent::HardwareKey {
+        activity_id,
+        evdev_keycode,
+        pressed,
+        repeat_count: repeat_count.max(0) as u32,
+    });
+    1
+}
+
 // ---------------------------------------------------------------------------
 // JNI: Text input events from Android InputConnection
 // ---------------------------------------------------------------------------

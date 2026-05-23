@@ -15,6 +15,7 @@ import android.os.SystemClock
 import android.os.IBinder
 import android.util.Log
 import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -127,6 +128,7 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         surfaceView.holder.addCallback(this)
         surfaceView.isFocusable = true
         surfaceView.isFocusableInTouchMode = true
+        surfaceView.requestFocus()
         surfaceView.setOnTouchListener { _, event -> dispatchTouchToCompositor(event) }
         applyCompositorFullscreen(NativeBridge.fullscreenForActivity(activityId))
         registerBackCallback()
@@ -188,7 +190,10 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!initialized) return
-        if (hasFocus) applyCompositorFullscreen(compositorFullscreen)
+        if (hasFocus) {
+            surfaceView.requestFocus()
+            applyCompositorFullscreen(compositorFullscreen)
+        }
         compositorService?.setWindowFocused(activityId, hasFocus)
         NativeBridge.nativeOnActivityFocusChanged(activityId, hasFocus)
         if (hasFocus) {
@@ -225,6 +230,17 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
     internal fun restartInputFromCompositor() {
         if (!initialized) return
         NativeBridge.imeOutput.restartInput(surfaceView)
+    }
+
+    internal fun dispatchHardwareKeyForDev(
+        keycode: Int,
+        pressed: Boolean,
+        repeatCount: Int = 0,
+    ): Boolean {
+        val action = if (pressed) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP
+        val now = SystemClock.uptimeMillis()
+        val event = KeyEvent(now, now, action, keycode, repeatCount.coerceAtLeast(0), 0)
+        return dispatchKeyEvent(event)
     }
 
     fun setFullscreenFromCompositor(fullscreen: Boolean) {
@@ -325,6 +341,20 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         context: Context,
         private val activityId: String,
     ) : SurfaceView(context) {
+        override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+            if (dispatchHardwareKeyToCompositor(event)) {
+                return true
+            }
+            return super.onKeyDown(keyCode, event)
+        }
+
+        override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+            if (dispatchHardwareKeyToCompositor(event)) {
+                return true
+            }
+            return super.onKeyUp(keyCode, event)
+        }
+
         override fun onCheckIsTextEditor(): Boolean = true
 
         override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
@@ -333,6 +363,20 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
             outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or
                 EditorInfo.IME_ACTION_NONE or extraFlags
             return TawcInputConnection(this)
+        }
+
+        private fun dispatchHardwareKeyToCompositor(event: KeyEvent): Boolean {
+            val pressed = when (event.action) {
+                KeyEvent.ACTION_DOWN -> true
+                KeyEvent.ACTION_UP -> false
+                else -> return false
+            }
+            return NativeBridge.nativeOnHardwareKeyEvent(
+                activityId,
+                event.keyCode,
+                pressed,
+                event.repeatCount,
+            )
         }
     }
 

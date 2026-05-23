@@ -158,6 +158,54 @@ fn send_keyboard_key_press(data: &mut TawcState, evdev_keycode: u32) {
     }
 }
 
+fn send_keyboard_key_state(data: &mut TawcState, evdev_keycode: u32, pressed: bool) {
+    if let Some(keyboard) = data.seat.get_keyboard() {
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = data.start_time.elapsed().as_millis() as u32;
+        let keycode = Keycode::from(evdev_keycode + 8);
+        let state = if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        };
+        keyboard.input::<(), _>(
+            data, keycode, state, serial, time,
+            |_, _, _| FilterResult::Forward,
+        );
+    }
+}
+
+fn host_can_receive_hardware_key(data: &TawcState, activity_id: &ActivityId) -> bool {
+    data.desktop.foreground_host() == Some(activity_id) && data.hosts.contains_key(activity_id)
+}
+
+fn handle_hardware_key(
+    data: &mut TawcState,
+    activity_id: &ActivityId,
+    evdev_keycode: u32,
+    pressed: bool,
+    repeat_count: u32,
+) {
+    let key = (activity_id.clone(), evdev_keycode);
+    if pressed {
+        if !host_can_receive_hardware_key(data, activity_id) {
+            info!(
+                "Ignoring hardware key for non-foreground/unknown host {} key={} pressed=true repeat={}",
+                activity_id, evdev_keycode, repeat_count
+            );
+            return;
+        }
+        if data.hardware_keys_down.insert(key) {
+            send_keyboard_key_state(data, evdev_keycode, true);
+        }
+        return;
+    }
+
+    if data.hardware_keys_down.remove(&key) {
+        send_keyboard_key_state(data, evdev_keycode, false);
+    }
+}
+
 fn dismiss_topmost_grabbing_popup(data: &mut TawcState, activity_id: &ActivityId) -> bool {
     let Some(grab) = data.active_popup_grab.as_ref() else {
         return false;
@@ -488,20 +536,7 @@ pub fn run(
                 send_keyboard_key_press(data, keycode);
             }
             TextInputEvent::KeyState { keycode, pressed } => {
-                if let Some(keyboard) = data.seat.get_keyboard() {
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let time = data.start_time.elapsed().as_millis() as u32;
-                    let keycode = Keycode::from(keycode + 8); // evdev → XKB offset
-                    let state = if pressed {
-                        KeyState::Pressed
-                    } else {
-                        KeyState::Released
-                    };
-                    keyboard.input::<(), _>(
-                        data, keycode, state, serial, time,
-                        |_, _, _| FilterResult::Forward,
-                    );
-                }
+                send_keyboard_key_state(data, keycode, pressed);
             }
             _ => {
                 data.text_input_state.handle_android_event(evt);
@@ -864,6 +899,8 @@ fn handle_surface_event(
             }
         }
         SurfaceEvent::ActivityDestroyed { activity_id } => {
+            data.hardware_keys_down
+                .retain(|(host, _)| host != &activity_id);
             // Ask every window assigned to this host to close. Well-behaved
             // clients then destroy/unmap their surfaces; the cleanup paths
             // remove the remaining assignments on later events.
@@ -893,6 +930,8 @@ fn handle_surface_event(
                 data.set_input_focus(target.as_ref());
                 data.needs_render = true;
             } else if data.desktop.foreground_host() == Some(&activity_id) {
+                data.hardware_keys_down
+                    .retain(|(host, _)| host != &activity_id);
                 data.desktop.set_foreground_host(None);
                 data.set_input_focus(None);
             }
@@ -913,6 +952,9 @@ fn handle_surface_event(
         }
         SurfaceEvent::BackPressed { activity_id } => {
             handle_back_pressed(data, &activity_id);
+        }
+        SurfaceEvent::HardwareKey { activity_id, evdev_keycode, pressed, repeat_count } => {
+            handle_hardware_key(data, &activity_id, evdev_keycode, pressed, repeat_count);
         }
         SurfaceEvent::CloseAllClientsForTest { response } => {
             let closed = data.request_close_all_client_windows_for_test();

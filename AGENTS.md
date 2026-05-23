@@ -3,6 +3,7 @@ Tess's Android Wayland Compositor (tawc) is an Android app plus rootfs/build scr
 ## Quick Reference
 - Build APK: `scripts/build-app.sh`
 - Build/install/launch: `scripts/app-build-install.sh` (`--no-build`, `--no-launch` supported)
+- Compositor Rust check: use the Android build path (`scripts/build-app.sh` or Gradle app tasks). Do **not** run host `cargo check --manifest-path compositor/Cargo.toml`; `ndk-sys` only compiles for Android.
 - Run in rootfs: `scripts/rootfs-run.sh '<command>'` or interactive with no command
 - Run Firefox: `scripts/rootfs-run.sh 'firefox --no-remote'`
 - Run lxterminal: `scripts/rootfs-run.sh 'lxterminal'`
