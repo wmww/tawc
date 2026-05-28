@@ -1,7 +1,10 @@
 package me.phie.tawc
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -11,6 +14,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import com.google.android.material.button.MaterialButton
 import me.phie.tawc.install.DistroInfoActivity
 import me.phie.tawc.install.InstallActivity
@@ -43,6 +47,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        requestNotificationPermissionIfNeeded()
+
         val scaffold = buildHomeScreen(getString(R.string.app_name))
 
         listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -73,6 +79,16 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refresh()
+    }
+
+    // On API 33+ foreground-service notifications (install progress, the
+    // running compositor) are suppressed unless POST_NOTIFICATIONS is granted.
+    // Best-effort: we don't act on the result, the install still runs either way.
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val perm = Manifest.permission.POST_NOTIFICATIONS
+        if (checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED) return
+        ActivityCompat.requestPermissions(this, arrayOf(perm), REQUEST_NOTIFICATIONS)
     }
 
     private fun refresh() {
@@ -192,5 +208,9 @@ class MainActivity : AppCompatActivity() {
             .filter { it.isNotEmpty() }
             .joinToString(" ${getString(R.string.home_subtitle_separator)} ")
         return title to subtitle
+    }
+
+    private companion object {
+        const val REQUEST_NOTIFICATIONS = 1
     }
 }
