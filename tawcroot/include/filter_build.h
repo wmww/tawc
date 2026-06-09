@@ -20,29 +20,33 @@
 
 /* Build the trap-or-allow cBPF program into `prog` (capacity
  * `prog_cap` instructions). Returns program length on success;
- * -E2BIG when `prog_cap` is too small for the requested trap set,
- * when `n_traps` exceeds the kernel program budget, or when
- * `n_reserved` > 251 (the close block's u8 jump offsets can't encode
- * more); -EINVAL for a NULL / zero-capacity program buffer.
+ * -E2BIG when `prog_cap` is too small for the requested trap set or
+ * when `n_traps` exceeds the kernel program budget; -EINVAL for a
+ * NULL / zero-capacity program buffer.
  *
  * Inputs:
  *   trap_nrs       — syscall numbers to TRAP. Order is preserved.
- *                    `close` (`TAWC_SYS_close`) is special-cased to
- *                    only TRAP when args[0] is in `reserved_fds`.
+ *                    `close` (`TAWC_SYS_close`) is special-cased to a
+ *                    range compare: TRAP only when args[0] is at or
+ *                    above `reserved_fd_floor`.
  *   n_traps        — number of entries in trap_nrs.
  *   stub_ret_addr  — address of the instruction immediately AFTER the
  *                    stub's syscall instruction (matches what the
  *                    kernel reports as `seccomp_data.instruction_pointer`
  *                    for a syscall issued through the stub). The IP
  *                    allowlist compares against this 64-bit value.
- *   reserved_fds   — fd values that, when passed to `close`, must
- *                    TRAP rather than ALLOW. NULL or zero count means
- *                    every close TRAPs (i.e. no fast path).
- *   n_reserved     — number of entries in reserved_fds.
+ *   reserved_fd_floor — fd boundary for the close fast path. A close
+ *                    with args[0] >= this value TRAPs; below it ALLOWs
+ *                    inline. The whole reserved half-space is covered
+ *                    by one range compare, so fds reserved at runtime
+ *                    (shm_open, chroot) are protected even though they
+ *                    weren't known at filter-install time. 0 disables
+ *                    the fast path: close is treated like any other
+ *                    trapped NR (TRAPs unconditionally).
  *   audit_arch     — AUDIT_ARCH_* constant for this build (the
  *                    prologue KILL_PROCESSes any other arch). */
 long tawcroot_build_filter(struct sock_filter *prog, size_t prog_cap,
 			   const int *trap_nrs, size_t n_traps,
 			   uint64_t stub_ret_addr,
-			   const int *reserved_fds, size_t n_reserved,
+			   int reserved_fd_floor,
 			   uint32_t audit_arch);

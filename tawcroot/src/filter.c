@@ -73,14 +73,19 @@ long tawcroot_install_filter(const int *trap_nrs, size_t n_traps)
 	 * is in `filter_build.c` (PROD_C_FOR_TESTS) so unit tests can
 	 * walk the program through a hosted BPF interpreter. */
 	struct sock_filter prog[4096];
-	size_t n_res = tawcroot_n_reserved_fds;
-	if (n_res > TAWCROOT_MAX_RESERVED_FDS) n_res = TAWCROOT_MAX_RESERVED_FDS;
+	/* Trap the entire reserved half-space [BASE, ∞) for close via a
+	 * range compare — covers fds reserved at runtime (shm/chroot), not
+	 * just the install-time set. Disable the fast path (floor 0 → close
+	 * TRAPs unconditionally) only if nothing is reserved yet; in
+	 * production rootfs_fd is always reserved before install. */
+	int floor = (tawcroot_n_reserved_fds > 0)
+		? TAWCROOT_RESERVED_FD_BASE : 0;
 
 	long n = tawcroot_build_filter(prog,
 				       sizeof prog / sizeof prog[0],
 				       trap_nrs, n_traps,
 				       (uint64_t)(uintptr_t)&tawcroot_raw_syscall_ret[0],
-				       tawcroot_reserved_fds, n_res,
+				       floor,
 				       TAWCROOT_AUDIT_ARCH);
 	if (n < 0) return n;
 	size_t i = (size_t)n;

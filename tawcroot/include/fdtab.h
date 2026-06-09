@@ -38,17 +38,18 @@
 extern int    tawcroot_reserved_fds[TAWCROOT_MAX_RESERVED_FDS];
 extern size_t tawcroot_n_reserved_fds;
 
-/* True iff `fd` is one of the specific reserved slots. Earlier revisions
- * checked the entire `fd >= TAWCROOT_RESERVED_FD_BASE` half-space, but
- * that turned out to be a major performance pothole: pacman/gpgme's
- * fork-and-close-all-fds dance hammers `close(fd)` for fd in
- * [3, RLIMIT_NOFILE) — typically ~1M iterations on Android — and we
- * trapped each one in [1000, 1M). The BPF filter bakes in the set as
- * of filter install, so most close-loop iterations skip the handler
- * entirely. CAVEAT: fds reserved AFTER install (shm_open, chroot) are
- * matched by this runtime predicate but NOT by the BPF close trap —
- * a guest close() of those reaches the kernel unmediated. See
- * issues/tawcroot-close-fastpath-misses-runtime-reserved-fds.md. */
+/* True iff `fd` is one of the specific reserved slots. The handler
+ * needs the precise membership test (it must forward a real close for
+ * any non-reserved high fd Android's stacked filter happens to trap).
+ *
+ * Performance: pacman/gpgme's fork-and-close-all-fds dance hammers
+ * `close(fd)` for fd in [3, RLIMIT_NOFILE) — ~1M iterations on Android.
+ * The BPF filter's close fast-path is a RANGE compare: it only TRAPs
+ * close(fd >= TAWCROOT_RESERVED_FD_BASE), so the ~1M low-fd closes skip
+ * the handler entirely and only the ≤64 high fds reach here. Because
+ * the range covers the whole reserved half-space, fds reserved AFTER
+ * filter install (shm_open, post-chroot root fd) are protected too —
+ * the earlier per-fd JEQ list baked in only the install-time set. */
 static inline int tawcroot_fd_is_reserved(int fd)
 {
 	if (fd < TAWCROOT_RESERVED_FD_BASE) return 0;

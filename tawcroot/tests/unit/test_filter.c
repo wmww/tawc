@@ -21,8 +21,8 @@
  *   - wrong arch check (KILL_PROCESS for the right arch)
  *   - IP allowlist truncation (missing high half → wrong-arch stub
  *     address sneaking through ALLOW)
- *   - close fast-path errors: wrong jf skip, wrong per-fd jt offset,
- *     mis-ordered RET ALLOW vs RET TRAP slots
+ *   - close fast-path errors: wrong jf skip, wrong range-compare
+ *     boundary, mis-ordered RET ALLOW vs RET TRAP slots
  *   - reload-of-nr after the close block (subsequent trap_nrs would
  *     compare against args[0] instead of nr)
  */
@@ -77,6 +77,10 @@ static uint32_t run_filter(const struct sock_filter *prog, size_t len,
 			pc += 1 + (size_t)(A == ins.k ? ins.jt : ins.jf);
 			break;
 		}
+		case BPF_JMP | BPF_JGE | BPF_K: {
+			pc += 1 + (size_t)(A >= ins.k ? ins.jt : ins.jf);
+			break;
+		}
 		case BPF_RET | BPF_K:
 			return ins.k;
 		default:
@@ -89,7 +93,7 @@ static uint32_t run_filter(const struct sock_filter *prog, size_t len,
 /* Convenience: build a filter and run it against one input. */
 static uint32_t build_and_run(const int *trap_nrs, size_t n_traps,
 			      uint64_t stub_addr,
-			      const int *reserved_fds, size_t n_reserved,
+			      int reserved_fd_floor,
 			      uint32_t audit_arch,
 			      const struct test_seccomp_data *d)
 {
@@ -97,7 +101,7 @@ static uint32_t build_and_run(const int *trap_nrs, size_t n_traps,
 	long n = tawcroot_build_filter(prog, sizeof prog / sizeof prog[0],
 				       trap_nrs, n_traps,
 				       stub_addr,
-				       reserved_fds, n_reserved,
+				       reserved_fd_floor,
 				       audit_arch);
 	if (n < 0) return BPF_ERR_UNKNOWN_OP;
 	return run_filter(prog, (size_t)n, d);
@@ -127,7 +131,7 @@ test(filter_wrong_arch_returns_kill_process)
 		.nr = 99, .arch = WRONG_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
 	};
-	test_int_eq(build_and_run(traps, 1, STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH, &d),
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 0, TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_KILL_PROCESS);
 }
 
@@ -142,7 +146,7 @@ test(filter_stub_ip_allows_any_trapped_nr)
 		.nr = 99, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = STUB_ADDR,
 	};
-	test_int_eq(build_and_run(traps, 1, STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH, &d),
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 0, TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_ALLOW);
 }
 
@@ -156,7 +160,7 @@ test(filter_allowlist_compares_full_64bit)
 		.nr = 99, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = (STUB_ADDR & 0xffffffffULL) | 0x1234567800000000ULL,
 	};
-	test_int_eq(build_and_run(traps, 1, STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH, &d),
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 0, TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 }
 
@@ -169,7 +173,7 @@ test(filter_traps_listed_nr)
 		.nr = 200, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
 	};
-	test_int_eq(build_and_run(traps, 3, STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH, &d),
+	test_int_eq(build_and_run(traps, 3, STUB_ADDR, 0, TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 }
 
@@ -180,7 +184,7 @@ test(filter_allows_unlisted_nr)
 		.nr = 250, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
 	};
-	test_int_eq(build_and_run(traps, 3, STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH, &d),
+	test_int_eq(build_and_run(traps, 3, STUB_ADDR, 0, TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_ALLOW);
 }
 
@@ -192,10 +196,10 @@ test(filter_traps_first_and_last_nr)
 		.nr = 100, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
 	};
-	test_int_eq(build_and_run(traps, 3, STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH, &d),
+	test_int_eq(build_and_run(traps, 3, STUB_ADDR, 0, TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 	d.nr = 300;
-	test_int_eq(build_and_run(traps, 3, STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH, &d),
+	test_int_eq(build_and_run(traps, 3, STUB_ADDR, 0, TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 }
 
@@ -205,7 +209,7 @@ test(filter_no_traps_default_allows)
 		.nr = 0, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
 	};
-	test_int_eq(build_and_run(NULL, 0, STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH, &d),
+	test_int_eq(build_and_run(NULL, 0, STUB_ADDR, 0, TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_ALLOW);
 }
 
@@ -216,13 +220,12 @@ test(filter_close_with_unreserved_fd_allows)
 	/* The pacman/gpgme closefrom dance: close(fd) for fd not in our
 	 * reserved range must ALLOW inline (no SIGSYS round-trip). */
 	int traps[] = { TAWC_SYS_close };
-	int reserved[] = { 1000, 1001, 1002 };
 	struct test_seccomp_data d = {
 		.nr = TAWC_SYS_close, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
 		.args = { 7, 0, 0, 0, 0, 0 },   /* fd 7 — kernel-allocated */
 	};
-	test_int_eq(build_and_run(traps, 1, STUB_ADDR, reserved, 3,
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_ALLOW);
 }
@@ -230,26 +233,33 @@ test(filter_close_with_unreserved_fd_allows)
 test(filter_close_with_reserved_fd_traps)
 {
 	int traps[] = { TAWC_SYS_close };
-	int reserved[] = { 1000, 1001, 1002 };
 	struct test_seccomp_data d = {
 		.nr = TAWC_SYS_close, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
-		.args = { 1001, 0, 0, 0, 0, 0 },  /* middle of reserved set */
+		.args = { 1001, 0, 0, 0, 0, 0 },  /* above the floor */
 	};
-	test_int_eq(build_and_run(traps, 1, STUB_ADDR, reserved, 3,
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 
-	/* First and last reserved fd — guards against off-by-one in the
-	 * per-fd JEQ landing offset. */
+	/* Exactly at the floor (JGE is inclusive) and far above — both
+	 * trap. The far-above case is the key win over the old per-fd
+	 * list: a runtime-reserved fd (shm/chroot) the filter never saw
+	 * at install time is still covered by the range. */
 	d.args[0] = 1000;
-	test_int_eq(build_and_run(traps, 1, STUB_ADDR, reserved, 3,
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
-	d.args[0] = 1002;
-	test_int_eq(build_and_run(traps, 1, STUB_ADDR, reserved, 3,
+	d.args[0] = 1000000;
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
+
+	/* Just below the floor — ALLOW inline (the closefrom fast path). */
+	d.args[0] = 999;
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 1000,
+				  TEST_AUDIT_ARCH, &d),
+		    SECCOMP_RET_ALLOW);
 }
 
 test(filter_close_block_does_not_eat_following_traps)
@@ -264,33 +274,29 @@ test(filter_close_block_does_not_eat_following_traps)
 	 * close-block ALLOW for fd 7 must not cause nr 200 to fall
 	 * through to ALLOW. */
 	int traps[] = { TAWC_SYS_close, 200 };
-	int reserved[] = { 200 };
 	struct test_seccomp_data d = {
 		.nr = 200, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
 		.args = { 7, 0, 0, 0, 0, 0 },
 	};
-	test_int_eq(build_and_run(traps, 2, STUB_ADDR, reserved, 1,
+	test_int_eq(build_and_run(traps, 2, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 }
 
-test(filter_close_with_no_reserved_fds_falls_through_to_default)
+test(filter_close_with_zero_floor_falls_through_to_default)
 {
-	/* When the caller passes no reserved fds, the close fast-path is
-	 * disabled entirely and the close NR falls through to the
-	 * default ALLOW (we never want to TRAP every close blindly —
-	 * production never installs the filter that way). */
+	/* floor 0 disables the fast path: close is treated like any normal
+	 * trapped NR (TRAPs unconditionally). Production only passes 0 when
+	 * nothing is reserved yet, which never happens after rootfs_fd is
+	 * reserved pre-install. */
 	int traps[] = { TAWC_SYS_close };
 	struct test_seccomp_data d = {
 		.nr = TAWC_SYS_close, .arch = TEST_AUDIT_ARCH,
 		.instruction_pointer = OUT_OF_STUB,
-		.args = { 1000, 0, 0, 0, 0, 0 },
+		.args = { 7, 0, 0, 0, 0, 0 },
 	};
-	/* No reserved fds → close is treated like any normal trap entry,
-	 * i.e. it TRAPs. (filter_build special-cases close ONLY when
-	 * reserved_fds is non-empty.) */
-	test_int_eq(build_and_run(traps, 1, STUB_ADDR, NULL, 0,
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 0,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 }
@@ -305,7 +311,6 @@ test(filter_mixed_set_each_nr_routes_correctly)
 		TAWC_SYS_fstatat,
 		TAWC_SYS_readlinkat,
 	};
-	int reserved[] = { 1000 };
 
 	struct test_seccomp_data d = {
 		.arch = TEST_AUDIT_ARCH,
@@ -313,35 +318,35 @@ test(filter_mixed_set_each_nr_routes_correctly)
 	};
 
 	d.nr = TAWC_SYS_openat;
-	test_int_eq(build_and_run(traps, 4, STUB_ADDR, reserved, 1,
+	test_int_eq(build_and_run(traps, 4, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 
 	d.nr = TAWC_SYS_close;
 	d.args[0] = 7;
-	test_int_eq(build_and_run(traps, 4, STUB_ADDR, reserved, 1,
+	test_int_eq(build_and_run(traps, 4, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_ALLOW);
 	d.args[0] = 1000;
-	test_int_eq(build_and_run(traps, 4, STUB_ADDR, reserved, 1,
+	test_int_eq(build_and_run(traps, 4, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 
 	d.nr = TAWC_SYS_fstatat;
 	d.args[0] = 0;
-	test_int_eq(build_and_run(traps, 4, STUB_ADDR, reserved, 1,
+	test_int_eq(build_and_run(traps, 4, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 
 	d.nr = TAWC_SYS_readlinkat;
-	test_int_eq(build_and_run(traps, 4, STUB_ADDR, reserved, 1,
+	test_int_eq(build_and_run(traps, 4, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_TRAP);
 
 	/* Untrapped NR that's adjacent to a trapped one — catches a
 	 * different-by-one bug. */
 	d.nr = TAWC_SYS_openat + 1;
-	test_int_eq(build_and_run(traps, 4, STUB_ADDR, reserved, 1,
+	test_int_eq(build_and_run(traps, 4, STUB_ADDR, 1000,
 				  TEST_AUDIT_ARCH, &d),
 		    SECCOMP_RET_ALLOW);
 }
@@ -354,7 +359,7 @@ test(filter_too_many_traps_is_e2big)
 	 * instructions, plus prologue and tail; 4096 BPF_MAXINSNS). */
 	struct sock_filter prog[4];   /* deliberately tiny */
 	long rv = tawcroot_build_filter(prog, 4, NULL, 9999,
-					STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH);
+					STUB_ADDR, 0, TEST_AUDIT_ARCH);
 	test_int_eq(rv, -7);  /* E2BIG */
 }
 
@@ -364,22 +369,23 @@ test(filter_capacity_overflow_is_e2big)
 	int traps[] = { 100 };
 	struct sock_filter prog[1];
 	long rv = tawcroot_build_filter(prog, 1, traps, 1,
-					STUB_ADDR, NULL, 0, TEST_AUDIT_ARCH);
+					STUB_ADDR, 0, TEST_AUDIT_ARCH);
 	test_int_eq(rv, -7);
 }
 
-test(filter_reserved_set_too_large_is_e2big)
+test(filter_close_range_block_is_fixed_size)
 {
-	/* cBPF jt/jf are u8: the close block's jf = 4 + n_reserved wraps
-	 * past 251 entries and would silently mis-route. The builder must
-	 * reject rather than emit a wrapped program. */
+	/* The range-compare close block is a fixed 6 instructions
+	 * regardless of how many fds are reserved, so the old per-fd u8
+	 * jump-offset overflow can't happen. Confirm a huge floor value
+	 * still builds (no list to encode) and traps a matching close. */
 	int traps[] = { TAWC_SYS_close };
-	static int reserved[252];
-	for (int i = 0; i < 252; i++) reserved[i] = 1000 + i;
-	struct sock_filter prog[2048];
-	long rv = tawcroot_build_filter(prog,
-	                                sizeof prog / sizeof prog[0],
-	                                traps, 1, STUB_ADDR,
-	                                reserved, 252, TEST_AUDIT_ARCH);
-	test_int_eq(rv, -7 /* E2BIG */);
+	struct test_seccomp_data d = {
+		.nr = TAWC_SYS_close, .arch = TEST_AUDIT_ARCH,
+		.instruction_pointer = OUT_OF_STUB,
+		.args = { 2000000000, 0, 0, 0, 0, 0 },
+	};
+	test_int_eq(build_and_run(traps, 1, STUB_ADDR, 1000,
+				  TEST_AUDIT_ARCH, &d),
+		    SECCOMP_RET_TRAP);
 }

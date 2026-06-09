@@ -35,16 +35,11 @@
 long tawcroot_build_filter(struct sock_filter *prog, size_t prog_cap,
 			   const int *trap_nrs, size_t n_traps,
 			   uint64_t stub_ret_addr,
-			   const int *reserved_fds, size_t n_reserved,
+			   int reserved_fd_floor,
 			   uint32_t audit_arch)
 {
 	if (!prog || prog_cap == 0) return TAWC_EINVAL;
 	if (n_traps > 1900) return TAWC_E2BIG;  /* kernel cap is 4096 */
-	/* cBPF jt/jf are u8. The close block computes jf = 4 + n_reserved
-	 * and jt = n_reserved - rj; anything past 251 would silently wrap
-	 * and mis-route. Production clamps to TAWCROOT_MAX_RESERVED_FDS
-	 * (64); this guards direct callers of the pure builder. */
-	if (n_reserved > 251) return TAWC_E2BIG;
 
 	const uint32_t stub_lo = (uint32_t)(stub_ret_addr & 0xffffffffu);
 	const uint32_t stub_hi = (uint32_t)(stub_ret_addr >> 32);
@@ -70,32 +65,38 @@ long tawcroot_build_filter(struct sock_filter *prog, size_t prog_cap,
 	EMIT_OR_FAIL(TAWC_BPF_S(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
 
 	/* Load syscall_nr once, then linear JEQ + TRAP for each trap_nr.
-	 * `close` is special-cased to only TRAP when args[0] is in the
-	 * reserved fd set — see filter.c's original block comment for
-	 * the perf rationale (pacman/gpgme closefrom dance). */
+	 * `close` is special-cased to a RANGE compare: TRAP only when
+	 * args[0] >= reserved_fd_floor. This covers the entire reserved
+	 * half-space [floor, ∞) in a fixed five-instruction block, so fds
+	 * reserved AFTER filter install (shm_open, post-chroot root fd)
+	 * are protected too — the earlier per-fd JEQ list baked in only
+	 * the install-time set and let a guest close() of a runtime-
+	 * reserved fd through to the kernel (silent state corruption; see
+	 * issues/tawcroot-close-fastpath-misses-runtime-reserved-fds.md).
+	 * The fast path still skips the handler for the common closefrom
+	 * loop's low fds; only the ≤64 high fds in the loop now TRAP.
+	 *
+	 * args[0] is a u64 fd; we compare the low 32 bits only (fds never
+	 * exceed INT_MAX, and a negative fd's 0xFFFF.... low word is ≥
+	 * floor → traps → handler forwards the real close → kernel EBADF,
+	 * which is correct). */
 	EMIT_OR_FAIL(TAWC_BPF_S(BPF_LD | BPF_W | BPF_ABS, 0));
 
 	for (size_t t = 0; t < n_traps; t++) {
-		if (trap_nrs[t] == TAWC_SYS_close && reserved_fds && n_reserved > 0) {
-			size_t n_res = n_reserved;
-			/* JEQ-close jf skips: 1 (LD args) + n_res (JEQs)
-			 * + 1 (RET ALLOW) + 1 (RET TRAP) + 1 (LD nr) = n_res + 4. */
-			uint8_t jf_skip = (uint8_t)(4 + n_res);
+		if (trap_nrs[t] == TAWC_SYS_close && reserved_fd_floor > 0) {
+			/* not-close jf skips: LD args, JGE, RET TRAP,
+			 * RET ALLOW = 4, landing on the LD-nr reload. */
 			EMIT_OR_FAIL(TAWC_BPF_J(BPF_JMP | BPF_JEQ | BPF_K,
-					(uint32_t)trap_nrs[t], 0, jf_skip));
+					(uint32_t)trap_nrs[t], 0, 4));
 			EMIT_OR_FAIL(TAWC_BPF_S(BPF_LD | BPF_W | BPF_ABS, 16));
-			for (size_t rj = 0; rj < n_res; rj++) {
-				uint8_t jt = (uint8_t)(n_res - rj);
-				EMIT_OR_FAIL(TAWC_BPF_J(BPF_JMP | BPF_JEQ | BPF_K,
-						(uint32_t)reserved_fds[rj], jt, 0));
-			}
-			EMIT_OR_FAIL(TAWC_BPF_S(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+			/* args[0] >= floor → fall through to RET TRAP;
+			 * else jump +1 to RET ALLOW. */
+			EMIT_OR_FAIL(TAWC_BPF_J(BPF_JMP | BPF_JGE | BPF_K,
+					(uint32_t)reserved_fd_floor, 0, 1));
 			EMIT_OR_FAIL(TAWC_BPF_S(BPF_RET | BPF_K, SECCOMP_RET_TRAP));
-			/* Re-load nr. Strictly unreachable today (every path
-			 * inside the block ends in a RET, and the not-close
-			 * jf above jumps past this instruction) — kept as a
-			 * defensive invariant so later JEQs still see A == nr
-			 * if the block's jump math ever changes. */
+			EMIT_OR_FAIL(TAWC_BPF_S(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+			/* Re-load nr so subsequent JEQs see A == nr. The
+			 * not-close jf above lands here. */
 			EMIT_OR_FAIL(TAWC_BPF_S(BPF_LD | BPF_W | BPF_ABS, 0));
 			continue;
 		}

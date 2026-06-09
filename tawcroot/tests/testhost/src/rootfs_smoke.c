@@ -3737,6 +3737,56 @@ static int test_dev_shm_emulation(void)
 	return fails;
 }
 
+/* Runtime-reserved fd survives a guest closefrom over the reserved
+ * range. shm_open reserves an INTERNAL fd in [BASE, ∞) that the guest
+ * never sees but its blind close loop (gpgme/pacman fd hygiene) walks.
+ * Pre-fix the BPF close trap baked in only install-time reserved fds,
+ * so a guest close() of a runtime-reserved shm fd reached the kernel
+ * and really closed it — the segment vanished (or, worse, the slot got
+ * recycled). The range-compare fix traps the whole half-space.
+ * Issue: tawcroot-close-fastpath-misses-runtime-reserved-fds.md. */
+static int test_shm_survives_guest_closefrom(void)
+{
+	int fails = 0;
+	long fd = inline_openat(AT_FDCWD, "/dev/shm/tawcroot-closefrom",
+				O_RDWR | 0x40 /*O_CREAT*/, 0600);
+	fails += tawc_io_step("closefrom-shm: create segment", fd >= 0);
+	if (fd < 0) return fails;
+	long tr;
+	INLINE_SYS6(TAWC_SYS_ftruncate, fd, 4096, 0, 0, 0, 0, tr);
+	(void)tr;
+
+	/* Blindly close the whole reserved range via inline asm so each
+	 * close traverses the BPF filter (the stub path is IP-allowlisted
+	 * and wouldn't trap). The internal shm fd lives somewhere in here. */
+	for (int f = TAWCROOT_RESERVED_FD_BASE;
+	     f < TAWCROOT_RESERVED_FD_BASE + 64; f++) {
+		long cr;
+		INLINE_SYS6(TAWC_SYS_close, f, 0, 0, 0, 0, 0, cr);
+		(void)cr;
+	}
+
+	/* Segment must still be alive: reopen without O_CREAT succeeds. */
+	long fd2 = inline_openat(AT_FDCWD, "/dev/shm/tawcroot-closefrom",
+				 O_RDWR, 0);
+	fails += tawc_io_step(
+		"shm segment survives guest closefrom over reserved range",
+		fd2 >= 0);
+	tawc_io_kv_dec("    reopen rv", fd2);
+	if (fd2 >= 0) tawc_close((int)fd2);
+
+	/* rootfs_fd is also in the closed range — path translation must
+	 * still work (its close was trapped + faked too). */
+	long probe = inline_openat(AT_FDCWD, "/etc/probe", O_RDONLY, 0);
+	fails += tawc_io_step(
+		"rootfs path translation survives closefrom", probe >= 0);
+	if (probe >= 0) tawc_close((int)probe);
+
+	(void)inline_unlinkat(AT_FDCWD, "/dev/shm/tawcroot-closefrom", 0);
+	tawc_close((int)fd);
+	return fails;
+}
+
 /* ----- chroot ----------------------------------------------------- */
 
 static long inline_chroot(const char *path)
@@ -4241,6 +4291,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_proc_sys_overflow_id_synthesis();
 	fails += test_proc_bus_pci_devices_synthesis();
 	fails += test_dev_shm_emulation();
+	fails += test_shm_survives_guest_closefrom();
 
 	/* chroot tests. The non-mutating cases run first (NULL, ENOTDIR,
 	 * ENOENT, identity, ..-clamp); the mutating "chroot into /usr"
