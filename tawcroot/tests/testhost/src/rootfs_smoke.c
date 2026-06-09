@@ -216,6 +216,41 @@ static int test_identity_getegid(void)
 	return fails;
 }
 
+/* set*id family must fake success: a guest that believes it is root
+ * calls setuid(0)/setgroups() (daemons dropping privileges, runuser,
+ * maintainer scripts) and aborts on the kernel's real EPERM. */
+static int test_identity_setid_family_fakes_success(void)
+{
+	int fails = 0;
+	long rv;
+	INLINE_SYS6(TAWC_SYS_setuid, 0, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setuid(0) -> 0 (faked)", rv == 0);
+	tawc_io_kv_dec("    rv", rv);
+	INLINE_SYS6(TAWC_SYS_setgid, 0, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setgid(0) -> 0 (faked)", rv == 0);
+	INLINE_SYS6(TAWC_SYS_setresuid, 0, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setresuid(0,0,0) -> 0 (faked)", rv == 0);
+	INLINE_SYS6(TAWC_SYS_setresgid, 0, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setresgid(0,0,0) -> 0 (faked)", rv == 0);
+	INLINE_SYS6(TAWC_SYS_setreuid, 0, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setreuid(0,0) -> 0 (faked)", rv == 0);
+	INLINE_SYS6(TAWC_SYS_setregid, 0, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setregid(0,0) -> 0 (faked)", rv == 0);
+	INLINE_SYS6(TAWC_SYS_setfsuid, 0, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setfsuid(0) -> 0 (prev fsuid faked)", rv == 0);
+	INLINE_SYS6(TAWC_SYS_setfsgid, 0, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setfsgid(0) -> 0 (prev fsgid faked)", rv == 0);
+	/* Non-trivial setgroups: a real kernel call from the app uid would
+	 * EPERM; the dropped-groups list content is irrelevant to us. */
+	unsigned int one_group[1] = { 0 };
+	INLINE_SYS6(TAWC_SYS_setgroups, 1, one_group, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("setgroups(1, [0]) -> 0 (faked)", rv == 0);
+	/* And the guest still sees uid 0 afterwards. */
+	fails += tawc_io_step("getuid still 0 after set*id dance",
+			      inline_getuid() == 0);
+	return fails;
+}
+
 /* openat absolute path -> handler should translate to rootfs-rel. */
 static int test_openat_absolute_translates(void)
 {
@@ -3849,6 +3884,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_identity_geteuid();
 	fails += test_identity_getgid();
 	fails += test_identity_getegid();
+	fails += test_identity_setid_family_fakes_success();
 	fails += test_openat_absolute_translates();
 	fails += test_openat_null_efault();
 	fails += test_openat_unmapped_efault();

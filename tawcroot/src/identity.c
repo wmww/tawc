@@ -52,4 +52,21 @@ void tawcroot_identity_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_getegid,    fake_zero);
 	tawcroot_dispatch_install(TAWC_SYS_getresuid,  fake_zero_resuid);
 	tawcroot_dispatch_install(TAWC_SYS_getresgid,  fake_zero_resuid);
+
+	/* set*id family: fake success, mirroring proot -0. The guest
+	 * believes it is root; the kernel would return EPERM from the
+	 * unprivileged app uid, aborting daemons that drop privileges and
+	 * package maintainer scripts (runuser, setpriv). Unconditional 0 —
+	 * proot does the same and the get* side keeps reporting 0
+	 * regardless of what was "set". setfsuid/setfsgid return the
+	 * PREVIOUS fs id, which under fake-root is also 0. */
+	tawcroot_dispatch_install(TAWC_SYS_setuid,     fake_zero);
+	tawcroot_dispatch_install(TAWC_SYS_setgid,     fake_zero);
+	tawcroot_dispatch_install(TAWC_SYS_setreuid,   fake_zero);
+	tawcroot_dispatch_install(TAWC_SYS_setregid,   fake_zero);
+	tawcroot_dispatch_install(TAWC_SYS_setresuid,  fake_zero);
+	tawcroot_dispatch_install(TAWC_SYS_setresgid,  fake_zero);
+	tawcroot_dispatch_install(TAWC_SYS_setfsuid,   fake_zero);
+	tawcroot_dispatch_install(TAWC_SYS_setfsgid,   fake_zero);
+	tawcroot_dispatch_install(TAWC_SYS_setgroups,  fake_zero);
 }

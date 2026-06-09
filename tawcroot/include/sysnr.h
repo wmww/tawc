@@ -86,6 +86,17 @@
 # define TAWC_SYS_io_uring_register 427
 # define TAWC_SYS_getresuid       148
 # define TAWC_SYS_getresgid       150
+/* set*id family — faked to success under fake-root (identity.c).
+ * There is no seteuid/setegid syscall; libc routes through setres*id. */
+# define TAWC_SYS_setregid        143
+# define TAWC_SYS_setgid          144
+# define TAWC_SYS_setreuid        145
+# define TAWC_SYS_setuid          146
+# define TAWC_SYS_setresuid       147
+# define TAWC_SYS_setresgid       149
+# define TAWC_SYS_setfsuid        151
+# define TAWC_SYS_setfsgid        152
+# define TAWC_SYS_setgroups       159
 # define TAWC_SYS_clone3          435
 # define TAWC_SYS_clone           220
 # define TAWC_SYS_bind            200
@@ -198,6 +209,16 @@
 # define TAWC_SYS_io_uring_register 427
 # define TAWC_SYS_getresuid       118
 # define TAWC_SYS_getresgid       120
+/* set*id family — faked to success under fake-root (identity.c). */
+# define TAWC_SYS_setuid          105
+# define TAWC_SYS_setgid          106
+# define TAWC_SYS_setreuid        113
+# define TAWC_SYS_setregid        114
+# define TAWC_SYS_setgroups       116
+# define TAWC_SYS_setresuid       117
+# define TAWC_SYS_setresgid       119
+# define TAWC_SYS_setfsuid        122
+# define TAWC_SYS_setfsgid        123
 # define TAWC_SYS_clone3          435
 # define TAWC_SYS_bind             49
 # define TAWC_SYS_connect          42
