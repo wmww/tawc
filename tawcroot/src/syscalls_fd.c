@@ -228,9 +228,21 @@ static long handle_getdents64(const tawcroot_syscall_args *args,
 	if (ln <= 0) return n;
 	if (!tawcroot_dirent_filter_is_proc_fd_link(proc_link, ln)) return n;
 
-	return tawcroot_dirent_filter_compact(buf, n,
-	                                      tawcroot_reserved_fds,
-	                                      tawcroot_n_reserved_fds);
+	/* Re-issue until a batch survives filtering or the kernel truly
+	 * EOFs. A batch containing ONLY reserved-fd entries (tiny guest
+	 * buffer, or a dir of mostly our fds) compacts to 0 — returning
+	 * that to the guest is a false end-of-directory, hiding the real
+	 * entries in later batches. Loop instead. */
+	for (;;) {
+		long compacted = tawcroot_dirent_filter_compact(
+			buf, n, tawcroot_reserved_fds,
+			tawcroot_n_reserved_fds);
+		if (compacted > 0) return compacted;
+		/* Whole batch filtered away — pull the next one. */
+		n = TAWC_RAW(TAWC_SYS_getdents64, fd, (long)buf,
+		             (long)count, 0, 0, 0);
+		if (n <= 0) return n;  /* true EOF (0) or error */
+	}
 }
 
 #if defined(__x86_64__)

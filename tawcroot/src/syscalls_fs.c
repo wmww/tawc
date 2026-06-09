@@ -193,16 +193,23 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		long pn = tawc_copy_string_from_guest(tmp, sizeof tmp, gpath);
 		if (pn >= 0) {
 			long shadow;
-			if (try_proc_shadow(tmp, &shadow))
-				return shadow;
-			if (dirfd != AT_FDCWD && tmp[0] != '/' &&
+			int hit = try_proc_shadow(tmp, &shadow);
+			if (!hit && dirfd != AT_FDCWD && tmp[0] != '/' &&
 			    could_be_proc_relative(tmp)) {
 				char *composed = scratch->buf[2];
 				if (compose_fd_relative(dirfd, tmp,
 							composed,
-							TAWCROOT_PATH_SCRATCH_SIZE) > 0 &&
-				    try_proc_shadow(composed, &shadow))
-					return shadow;
+							TAWCROOT_PATH_SCRATCH_SIZE) > 0)
+					hit = try_proc_shadow(composed, &shadow);
+			}
+			if (hit) {
+				/* The shadow memfds are created MFD_CLOEXEC.
+				 * If the guest didn't ask for O_CLOEXEC, clear
+				 * FD_CLOEXEC so the fd survives the guest's next
+				 * exec like a real /proc file would. */
+				if (shadow >= 0 && (flags & O_CLOEXEC) == 0)
+					(void)tawc_fcntl((int)shadow, F_SETFD, 0);
+				return shadow;
 			}
 		}
 	}
@@ -1174,8 +1181,12 @@ static long handle_unlinkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 					&base_fd, &use_empty,
 					TAWCROOT_PATH_PARENT_REMOVE);
 	if (e) return e;
-	const char *p = use_empty ? "." : suffix;
-	return TAWC_RAW(TAWC_SYS_unlinkat, base_fd, (long)p, flag, 0, 0, 0);
+	/* Path resolved to the rootfs/bind root itself: match kernel
+	 * errno for operating on "/". rmdir("/") → EBUSY, unlink("/") →
+	 * EISDIR (not the EINVAL an empty suffix would otherwise yield). */
+	if (use_empty)
+		return (flag & AT_REMOVEDIR) ? TAWC_EBUSY : TAWC_EISDIR;
+	return TAWC_RAW(TAWC_SYS_unlinkat, base_fd, (long)suffix, flag, 0, 0, 0);
 }
 
 /* utimensat: translate path and pass through. Two special cases:
@@ -1224,25 +1235,70 @@ static long handle_utimensat(const tawcroot_syscall_args *args,
 			args->c, flags, 0, 0);
 }
 
-/* fchownat: translate path, but DON'T issue the host syscall (Android
- * untrusted_app uid can't chown anyway). proot `-0` semantics: report
- * success and lie. The on-disk file remains app-owned; guest sees what
- * it expected. */
+/* fchownat: translate path, validate it exists, then fake success
+ * (Android untrusted_app uid can't chown; the on-disk file stays
+ * app-owned and the guest sees what it expected — proot `-0`). The
+ * existence probe is what keeps us honest: `chown("/nope", ...)` must
+ * ENOENT like the kernel, not fake-succeed. Mirrors the validation
+ * handle_chown_legacy already does. */
 static long handle_fchownat(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
-	(void)args;
 	(void)uc;
-	return 0;
+	int dirfd = (int)args->a;
+	const char *gpath = (const char *)(uintptr_t)args->b;
+	int flags = (int)args->e;
+
+	/* AT_EMPTY_PATH (with NULL or empty path) operates on dirfd
+	 * directly — validate the fd. */
+	if (flags & AT_EMPTY_PATH) {
+		int empty = (gpath == 0);
+		if (!empty) {
+			char first = -1;
+			long pe = tawc_copy_from_guest(&first, 1, gpath);
+			if (pe < 0) return pe;
+			if (first == 0) empty = 1;
+		}
+		if (empty) {
+			if (tawcroot_fd_is_reserved(dirfd)) return TAWC_EBADF;
+			struct stat probe;
+			long rv = TAWC_RAW(TAWC_SYS_fstatat, dirfd, (long)"",
+					   (long)&probe, AT_EMPTY_PATH, 0, 0);
+			return rv < 0 ? rv : 0;
+		}
+	}
+	if (!gpath) return TAWC_EFAULT;
+
+	tawcroot_path_mode pmode = (flags & AT_SYMLINK_NOFOLLOW)
+		? TAWCROOT_PATH_NOFOLLOW
+		: TAWCROOT_PATH_FOLLOW;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
+	int  base_fd, use_empty;
+	long e = fetch_and_translate_at(dirfd, gpath,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
+					&base_fd, &use_empty, pmode);
+	if (e) return e;
+	const char *p = use_empty ? "" : suffix;
+	int sflags = (flags & AT_SYMLINK_NOFOLLOW) | (use_empty ? AT_EMPTY_PATH : 0);
+	struct stat probe;
+	long rv = TAWC_RAW(TAWC_SYS_fstatat, base_fd, (long)p,
+			   (long)&probe, sflags, 0, 0);
+	return rv < 0 ? rv : 0;  /* exists → fake-root no-op */
 }
 
 /* fd-only fchown, used by GNU tar when dpkg-deb extracts package
- * control files. Same fake-root contract as fchownat: report success
- * without touching host ownership, which Android app UIDs cannot
- * change anyway. */
+ * control files. Same fake-root contract as fchownat, but validate the
+ * fd first: fchown(-1)/fchown(closed) must EBADF like the kernel, and
+ * a reserved fd answers EBADF per the fdtab.h contract. */
 static long handle_fchown(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
-	(void)args;
 	(void)uc;
+	int fd = (int)args->a;
+	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
+	long r = tawc_fcntl(fd, F_GETFD, 0);
+	if (r < 0) return r;  /* -EBADF for a bad/closed fd */
 	return 0;
 }
 
@@ -1495,7 +1551,9 @@ static long handle_linkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 					 &new_fd, &new_empty,
 					 TAWCROOT_PATH_PARENT_CREATE);
 	if (e2) return e2;
-	if (old_empty || new_empty) return TAWC_EINVAL;
+	/* Kernel: a root/empty operand to link is ENOENT (the empty-name
+	 * lookup), not EINVAL. */
+	if (old_empty || new_empty) return TAWC_ENOENT;
 
 	return link_with_symlink_fallback(old_fd, old_suf, new_fd, new_suf,
 					  flags);
@@ -1813,7 +1871,9 @@ static long handle_unlink_or_rmdir(const tawcroot_syscall_args *args,
 				     &base_fd, &use_empty,
 				     TAWCROOT_PATH_PARENT_REMOVE);
 	if (e) return e;
-	if (use_empty) return TAWC_EINVAL;
+	/* Operating on "/": rmdir("/") → EBUSY, unlink("/") → EISDIR. */
+	if (use_empty)
+		return rmdir_flag ? TAWC_EBUSY : TAWC_EISDIR;
 	return TAWC_RAW(TAWC_SYS_unlinkat, base_fd, (long)suffix,
 			rmdir_flag, 0, 0, 0);
 }
@@ -1865,7 +1925,7 @@ static long handle_link_legacy(const tawcroot_syscall_args *args,
 				      &new_fd, &new_empty,
 				      TAWCROOT_PATH_PARENT_CREATE);
 	if (e2) return e2;
-	if (old_empty || new_empty) return TAWC_EINVAL;
+	if (old_empty || new_empty) return TAWC_ENOENT;  /* match linkat */
 
 	return link_with_symlink_fallback(old_fd, old_suf, new_fd, new_suf, 0);
 }

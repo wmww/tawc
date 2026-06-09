@@ -1487,6 +1487,14 @@ static int test_fchownat_fake_root(void)
 		"fchownat(\"/etc/probe\", 0, 0) -> 0 (fake-root no-op)",
 		rv == 0);
 	tawc_io_kv_dec("    rv", rv);
+	/* But a missing path must ENOENT, not fake-succeed (the
+	 * existence probe). Pre-fix this returned 0 unconditionally. */
+	INLINE_SYS6(TAWC_SYS_fchownat, AT_FDCWD, "/does/not/exist",
+		    0, 0, 0, 0, rv);
+	fails += tawc_io_step(
+		"fchownat(\"/does/not/exist\") -> ENOENT (not fake 0)",
+		rv == TAWC_ENOENT);
+	tawc_io_kv_dec("    rv", rv);
 	return fails;
 }
 
@@ -1508,6 +1516,27 @@ static int test_fchown_fake_root(void)
 		rv == 0);
 	tawc_io_kv_dec("    rv", rv);
 	INLINE_SYS6(TAWC_SYS_close, fd, 0, 0, 0, 0, 0, rv);
+	/* A bad fd must EBADF, not fake-succeed. */
+	INLINE_SYS6(TAWC_SYS_fchown, -1, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("fchown(-1) -> EBADF (not fake 0)",
+			      rv == TAWC_EBADF);
+	tawc_io_kv_dec("    rv", rv);
+	return fails;
+}
+
+/* Errno shapes for operating on the rootfs root "/" — they must match
+ * the kernel, not the catch-all EINVAL an empty-suffix used to give. */
+static int test_root_op_errno_shapes(void)
+{
+	int fails = 0;
+	long rv;
+	INLINE_SYS6(TAWC_SYS_unlinkat, AT_FDCWD, "/", 0 /*flag*/, 0, 0, 0, rv);
+	fails += tawc_io_step("unlink(\"/\") -> EISDIR", rv == TAWC_EISDIR);
+	tawc_io_kv_dec("    rv", rv);
+	INLINE_SYS6(TAWC_SYS_unlinkat, AT_FDCWD, "/",
+		    0x200 /*AT_REMOVEDIR*/, 0, 0, 0, rv);
+	fails += tawc_io_step("rmdir(\"/\") -> EBUSY", rv == TAWC_EBUSY);
+	tawc_io_kv_dec("    rv", rv);
 	return fails;
 }
 
@@ -4314,6 +4343,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_xattr_dispatch();
 	fails += test_fchownat_fake_root();
 	fails += test_fchown_fake_root();
+	fails += test_root_op_errno_shapes();
 	fails += test_fstatat_at_empty_path();
 	fails += test_statx_fake_root_decoration();
 	fails += test_linkat_happy_path();
