@@ -122,6 +122,7 @@ PROD_C := \
     $(SRC_T)/src/path_orchestrate.c \
     $(SRC_T)/src/path_resolve.c \
     $(SRC_T)/src/proc_rewrite.c \
+    $(SRC_T)/src/proc_shadow.c \
     $(SRC_T)/src/identity.c \
     $(SRC_T)/src/syscalls_fs.c \
     $(SRC_T)/src/syscalls_fd.c \

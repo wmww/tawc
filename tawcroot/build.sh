@@ -178,6 +178,7 @@ SRC_C_PROD=(
     "$TAWCROOT_DIR/src/path_orchestrate.c"
     "$TAWCROOT_DIR/src/path_resolve.c"
     "$TAWCROOT_DIR/src/proc_rewrite.c"
+    "$TAWCROOT_DIR/src/proc_shadow.c"
     "$TAWCROOT_DIR/src/identity.c"
     "$TAWCROOT_DIR/src/syscalls_fs.c"
     "$TAWCROOT_DIR/src/syscalls_fd.c"
