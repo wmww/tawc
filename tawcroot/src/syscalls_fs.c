@@ -23,7 +23,7 @@
  *
  * Dirfd handling: for *at variants with a non-AT_FDCWD `dirfd` and a
  * relative path, we pass `dirfd` through to the kernel verbatim
- * (see fetch_and_translate_at) so resolution honours the dirfd's
+ * (see translate_at) so resolution honours the dirfd's
  * inode — needed for gpg/pacman-key-style openat(homedir_fd, "name").
  * Relative paths containing `..` are first lifted to guest-absolute
  * via /proc/self/fd/<dirfd> so the rootfs prefix clamps the escape.
@@ -69,17 +69,35 @@ static int peek_shm(const char *gpath, char *buf, size_t cap,
 	return SHM_PEEK_NONE;
 }
 
-/* Forward decls — bodies later in the file. */
-static long fetch_and_translate(const char *guest_path,
-				char *path_buf, size_t path_cap,
-				char *suffix,   size_t suffix_cap,
-				int  *base_fd_out, int *use_empty_path,
-				tawcroot_path_mode mode);
-static long fetch_and_translate_at(int dirfd, const char *guest_path,
-				   char *path_buf, size_t path_cap,
-				   char *suffix,   size_t suffix_cap,
-				   int  *base_fd_out, int *use_empty_path,
-				   tawcroot_path_mode mode);
+/* AT_EMPTY_PATH support: returns 1 when `gpath` is NULL or "", 0 when
+ * non-empty, -EFAULT on an unreadable guest pointer. Peeks a single
+ * byte — tawc_copy_string_from_guest with a tiny cap would return
+ * -ENAMETOOLONG for any real path, mis-firing on legitimate input. */
+static long guest_path_is_empty(const char *gpath)
+{
+	if (!gpath) return 1;
+	char first = -1;
+	long pe = tawc_copy_from_guest(&first, 1, gpath);
+	if (pe < 0) return pe;
+	return first == 0;
+}
+
+/* A translated guest path, ready to issue against the host: pass `fd`
+ * as the *at dirfd and `path` as the pathname. `is_root` is set when
+ * the guest path resolved to the directory `fd` itself; `path` is then
+ * "" and the caller picks its syscall's semantics for that case ("."
+ * for most, AT_EMPTY_PATH, or a direct errno). */
+struct fs_path {
+	int         fd;
+	int         is_root;
+	const char *path;
+};
+
+/* Forward decl — body later in the file. Uses scratch buffers `slot`
+ * and `slot + 1`; `out->path` points into `slot + 1`. */
+static long translate_at(struct tawcroot_path_scratch *scratch, int slot,
+			 int dirfd, const char *guest_path,
+			 tawcroot_path_mode mode, struct fs_path *out);
 static void decorate_stat(struct stat *st);
 
 /* Pick the resolution mode for an openat based on the kernel flags.
@@ -223,37 +241,32 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		 * /dev/shm dir would do. */
 	}
 
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty,
-					openat_mode(flags));
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      openat_mode(flags), &t);
 	if (e) return e;
 
-	/* Empty suffix → guest asked for "/" or for a bind dst's root.
-	 * Pass "." so the kernel resolves it to the dir base_fd points at;
+	/* Empty t.path → guest asked for "/" or for a bind dst's root.
+	 * Pass "." so the kernel resolves it to the dir t.fd points at;
 	 * this works on every kernel we target (AT_EMPTY_PATH on openat
 	 * only landed in 6.6, kernel 5.4 device doesn't have it). */
-	const char *p = use_empty ? "." : suffix;
+	const char *p = t.is_root ? "." : t.path;
 
 	/* Plain openat — the kernel chases a leaf symlink against the
 	 * process's actual fs root. Non-leaf in-rootfs symlinks are
 	 * pre-folded by tawcroot_path_resolve_symlinks during translate
-	 * (path_orchestrate.c), so by here `suffix` no longer contains
+	 * (path_orchestrate.c), so by here `t.path` no longer contains
 	 * unresolved rootfs-side directory components.
 	 *
 	 * We don't use openat2 with RESOLVE_IN_ROOT: that would clamp
-	 * absolute symlink targets at base_fd, but when base_fd is a
+	 * absolute symlink targets at t.fd, but when t.fd is a
 	 * bind src dirfd a leaf symlink whose target points into a
 	 * *different* bind (e.g. /system/lib64/libc.so →
 	 * /apex/com.android.runtime/lib64/bionic/libc.so on Android)
 	 * needs the kernel to follow through the host root, not the
 	 * bind src. See test_prod_rootfs.c::prod_rootfs_cross_bind_abs_symlink
 	 * and notes/tawcroot.md "Cross-bind absolute symlinks". */
-	return tawc_openat(base_fd, p, flags, mode);
+	return tawc_openat(t.fd, p, flags, mode);
 }
 
 /* Decorate uid/gid in a kernel `struct stat` to look root-owned. The
@@ -284,7 +297,7 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 	 * "stat the file referred to by dirfd". glibc's fstat() implements
 	 * this as fstatat(fd, "", &st, AT_EMPTY_PATH) with a NON-NULL empty
 	 * string, NOT a NULL pointer. Earlier we only short-circuited
-	 * gpath==0; the gpath="" case fell through to fetch_and_translate
+	 * gpath==0; the gpath="" case fell through to translate_at
 	 * which then translates the empty string against the kernel cwd
 	 * and stats the wrong inode (cwd dir instead of dirfd). wc, which
 	 * uses fstat() on its input fd to decide buffer strategy, then read
@@ -293,17 +306,8 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 	 * provenance — the kernel will see whatever fd it is and stat the
 	 * corresponding inode). */
 	if (flags & AT_EMPTY_PATH) {
-		int empty = (gpath == 0);
-		if (!empty) {
-			/* Peek the first byte. tawc_copy_string_from_guest
-			 * with a small cap returns -ENAMETOOLONG for any
-			 * non-empty path, which would mis-fire on real paths;
-			 * use the raw byte copy instead. */
-			char first = -1;
-			long pe = tawc_copy_from_guest(&first, 1, gpath);
-			if (pe < 0) return pe;     /* -EFAULT */
-			if (first == 0) empty = 1;
-		}
+		long empty = guest_path_is_empty(gpath);
+		if (empty < 0) return empty;
 		if (empty) {
 			long rv = TAWC_RAW(TAWC_SYS_fstatat, dirfd, (long)"",
 					   (long)&local, flags, 0, 0);
@@ -337,23 +341,19 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 		: TAWCROOT_PATH_FOLLOW;
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty, pmode);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      pmode, &t);
 	if (e) return e;
 
-	const char *resolved = suffix;
+	const char *resolved = t.path;
 	int         rv_flags = flags;
-	if (use_empty) {
+	if (t.is_root) {
 		resolved = "";
 		rv_flags |= AT_EMPTY_PATH;
 	}
 
-	long rv = TAWC_RAW(TAWC_SYS_fstatat, base_fd, (long)resolved,
+	long rv = TAWC_RAW(TAWC_SYS_fstatat, t.fd, (long)resolved,
 			   (long)&local, rv_flags, 0, 0);
 	if (rv != 0) return rv;
 	decorate_stat(&local);
@@ -383,34 +383,16 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
  * "relative to cwd" and routes through full translation as before.
  *
  * `..` traversal in a fd-relative path is intercepted in
- * fetch_and_translate_at: the path is lifted to guest-absolute via
+ * translate_at: the path is lifted to guest-absolute via
  * the dirfd's /proc/self/fd link, then path_translate's fold clamps
  * `..` at the rootfs root. Without that, the kernel walks `..` past
  * the dirfd freely and systemd's path_is_root_at probe (chase.c)
  * misclassifies the rootfs and aborts with
  * `Assertion 'path_is_absolute(p)' failed`. */
-static long fetch_and_translate(const char *guest_path,
-				char *path_buf, size_t path_cap,
-				char *suffix,   size_t suffix_cap,
-				int  *base_fd_out, int *use_empty_path,
-				tawcroot_path_mode mode)
-{
-	long n = tawc_copy_string_from_guest(path_buf, path_cap, guest_path);
-	if (n < 0) return n;
-	tawcroot_path_result r =
-		tawcroot_path_translate(path_buf, suffix, suffix_cap, mode);
-	if (r.err) return r.err;
-	*base_fd_out    = r.base_fd;
-	*use_empty_path = (suffix[0] == 0);
-	return 0;
-}
-
-/* Variant that honours the guest's dirfd for fd-relative resolution.
- * See big comment above for why this matters. Returns -1 in
- * `*base_fd_out` and the literal guest-supplied path in `path_buf`
- * (also via the suffix output, kept identical) when the kernel should
- * resolve directly off `dirfd`; the caller then issues the raw *at
- * syscall with `dirfd` and the literal path.
+/* Honours the guest's dirfd for fd-relative resolution — see the big
+ * comment above for why this matters. Returns `dirfd` itself in
+ * `out->fd` and the literal guest-supplied path in `out->path` when
+ * the kernel should resolve directly off `dirfd`.
  *
  * Special case: a relative path containing `..` would let the kernel
  * walk above the dirfd and leak the host filesystem when the dirfd
@@ -428,12 +410,16 @@ static long fetch_and_translate(const char *guest_path,
  * bind so `..` clamps at the bind boundary. Outside-rootfs+outside-binds
  * fds (e.g. host /proc tree) still ENOENT and fall through to kernel
  * passthrough — there's nothing in our view to escape into. */
-static long fetch_and_translate_at(int dirfd, const char *guest_path,
-				   char *path_buf, size_t path_cap,
-				   char *suffix,   size_t suffix_cap,
-				   int  *base_fd_out, int *use_empty_path,
-				   tawcroot_path_mode mode)
+static long translate_at(struct tawcroot_path_scratch *scratch, int slot,
+			 int dirfd, const char *guest_path,
+			 tawcroot_path_mode mode, struct fs_path *out)
 {
+	char  *path_buf   = scratch->buf[slot];
+	char  *suffix     = scratch->buf[slot + 1];
+	size_t path_cap   = TAWCROOT_PATH_SCRATCH_SIZE;
+	size_t suffix_cap = TAWCROOT_PATH_SCRATCH_SIZE;
+	out->path = suffix;
+
 	if (dirfd != AT_FDCWD) {
 		long n = tawc_copy_string_from_guest(path_buf, path_cap,
 		                                     guest_path);
@@ -459,8 +445,8 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 			 * open diverges from kernel inode-based resolution —
 			 * same trade proot makes. */
 			if (path_buf[0] != 0) {
-				TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-				char *abs = scratch->buf[0];
+				TAWCROOT_PATH_SCRATCH_AUTO(lift);
+				char *abs = lift->buf[0];
 				long al = tawcroot_fd_to_guest_abs(dirfd, abs,
 				                                   TAWCROOT_PATH_SCRATCH_SIZE);
 				if (al >= 0) {
@@ -481,8 +467,8 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 							abs, suffix,
 							suffix_cap, mode);
 					if (r.err) return r.err;
-					*base_fd_out    = r.base_fd;
-					*use_empty_path = (suffix[0] == 0);
+					out->fd      = r.base_fd;
+					out->is_root = (suffix[0] == 0);
 					return 0;
 				}
 				/* Outside-rootfs dirfd (-ENOENT) or readlink
@@ -497,7 +483,7 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 			 * off the dirfd. Copy path_buf into suffix so callers
 			 * with one output buffer still work.
 			 *
-			 * use_empty stays 0 even for an empty input: that flag
+			 * is_root stays 0 even for an empty input: that flag
 			 * means "the guest path TRANSLATED to the base_fd
 			 * itself" (e.g. "/" or a bind root) and makes callers
 			 * substitute "." / AT_EMPTY_PATH. A literally-empty
@@ -507,16 +493,22 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 			 * readlinkat(fd, ""). */
 			long ce = tawc_str_copy(suffix, suffix_cap, path_buf);
 			if (ce < 0) return ce;
-			*base_fd_out    = dirfd;
-			*use_empty_path = 0;
+			out->fd      = dirfd;
+			out->is_root = 0;
 			return 0;
 		}
 		/* Absolute path: dirfd is ignored by the kernel; fall
 		 * through to the normal translation. */
 	}
-	return fetch_and_translate(guest_path, path_buf, path_cap,
-	                           suffix, suffix_cap, base_fd_out,
-	                           use_empty_path, mode);
+
+	long n = tawc_copy_string_from_guest(path_buf, path_cap, guest_path);
+	if (n < 0) return n;
+	tawcroot_path_result r =
+		tawcroot_path_translate(path_buf, suffix, suffix_cap, mode);
+	if (r.err) return r.err;
+	out->fd      = r.base_fd;
+	out->is_root = (suffix[0] == 0);
+	return 0;
 }
 
 
@@ -754,6 +746,30 @@ static long read_all_growable(int fd, long *region, size_t *cap)
 	return (long)len;
 }
 
+/* Create a CLOEXEC memfd preloaded with `len` bytes and rewound to
+ * offset 0. Returns the fd or -errno. */
+static long memfd_from_bytes(const char *name, const char *bytes, size_t len)
+{
+	long memfd = tawc_memfd_create(name, 1U /*MFD_CLOEXEC*/);
+	if (memfd < 0) return memfd;
+	size_t written = 0;
+	while (written < len) {
+		long w = tawc_write((int)memfd, bytes + written,
+				    len - written);
+		if (w <= 0) {
+			tawc_close((int)memfd);
+			return w < 0 ? w : TAWC_EFAULT;
+		}
+		written += (size_t)w;
+	}
+	long sk = tawc_lseek((int)memfd, 0, 0 /*SEEK_SET*/);
+	if (sk < 0) {
+		tawc_close((int)memfd);
+		return sk;
+	}
+	return memfd;
+}
+
 static long open_proc_maps_shadow(void)
 {
 	long src = tawc_openat(AT_FDCWD, "/proc/self/maps",
@@ -803,33 +819,10 @@ static long open_proc_maps_shadow(void)
 		(void)tawc_munmap((void *)(uintptr_t)out_region, out_cap);
 		return out_len;
 	}
-	char *out_buf = (char *)(uintptr_t)out_region;
-
-	long memfd = tawc_memfd_create("tawcroot-maps", 1U /*MFD_CLOEXEC*/);
-	if (memfd < 0) {
-		(void)tawc_munmap((void *)(uintptr_t)out_region, out_cap);
-		return memfd;
-	}
-
-	size_t written = 0;
-	while (written < (size_t)out_len) {
-		long w = tawc_write((int)memfd, out_buf + written,
-				    (size_t)out_len - written);
-		if (w < 0) {
-			tawc_close((int)memfd);
-			(void)tawc_munmap((void *)(uintptr_t)out_region, out_cap);
-			return w;
-		}
-		written += (size_t)w;
-	}
-
+	long memfd = memfd_from_bytes("tawcroot-maps",
+				      (const char *)(uintptr_t)out_region,
+				      (size_t)out_len);
 	(void)tawc_munmap((void *)(uintptr_t)out_region, out_cap);
-
-	long sk = tawc_lseek((int)memfd, 0, 0 /*SEEK_SET*/);
-	if (sk < 0) {
-		tawc_close((int)memfd);
-		return sk;
-	}
 	return memfd;
 }
 
@@ -841,30 +834,7 @@ static long open_proc_maps_shadow(void)
  * the two in /proc/self/fd/<fd> readlinks for diagnostic clarity. */
 static long open_proc_overflow_id_shadow(const char *memfd_name)
 {
-	static const char bytes[] = "65534\n";
-	const size_t      len     = sizeof bytes - 1;
-
-	long memfd = tawc_memfd_create(memfd_name, 1U /*MFD_CLOEXEC*/);
-	if (memfd < 0) return memfd;
-
-	size_t written = 0;
-	while (written < len) {
-		long w = tawc_write((int)memfd,
-				    &bytes[written],
-				    len - written);
-		if (w < 0) {
-			tawc_close((int)memfd);
-			return w;
-		}
-		written += (size_t)w;
-	}
-
-	long sk = tawc_lseek((int)memfd, 0, 0 /*SEEK_SET*/);
-	if (sk < 0) {
-		tawc_close((int)memfd);
-		return sk;
-	}
-	return memfd;
+	return memfd_from_bytes(memfd_name, "65534\n", 6);
 }
 
 /* /proc/bus/pci/devices shadow fd. Returns an empty memfd — that's the
@@ -948,17 +918,12 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 		}
 	}
 
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty,
-					TAWCROOT_PATH_NOFOLLOW);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      TAWCROOT_PATH_NOFOLLOW, &t);
 	if (e) return e;
 	/* When the guest path resolves exactly to a bind dst (or rootfs root),
-	 * fetch_and_translate gives us (reserved_dir_fd, ""). The kernel
+	 * translate_at gives us (reserved_dir_fd, ""). The kernel
 	 * answers `readlinkat(dir_fd, "", ...)` with ENOENT, but the
 	 * semantically correct error is EINVAL — those paths are directories,
 	 * not symlinks. Without this, glibc realpath aborts canonicalisation
@@ -967,14 +932,15 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	 * the /proc/self/exe synthesis). The guest-supplied dirfd case
 	 * (empty path on a guest O_PATH symlink fd) keeps the kernel call —
 	 * those fds are not in our reserved range. */
-	if (use_empty && tawcroot_fd_is_reserved(base_fd)) return TAWC_EINVAL;
-	const char *p = use_empty ? "" : suffix;
+	if (t.is_root && tawcroot_fd_is_reserved(t.fd)) return TAWC_EINVAL;
+	const char *p = t.is_root ? "" : t.path;
 
 	/* Read into a kernel-side scratch so we can post-process the result
-	 * before forwarding it. We reuse `path_buf` (dead from here on) as
-	 * the scratch — a fresh PATH_MAX buffer would push the handler
-	 * frame past the stack budget noted in notes/tawcroot.md
-	 * "Threading and `vfork` invariants". Cost vs. the pre-fix direct
+	 * before forwarding it. We reuse translate_at's path buffer (dead
+	 * from here on) as the scratch — a fresh PATH_MAX buffer would
+	 * push the handler frame past the stack budget noted in
+	 * notes/tawcroot.md "Threading and `vfork` invariants". Cost vs.
+	 * the pre-fix direct
 	 * kernel→guest write: every readlinkat now pays a process_vm_writev
 	 * round-trip even when no substitution fires; the equality test
 	 * itself is gated by a length pre-check and is free.
@@ -995,10 +961,10 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	 * fails, and the truncated host path falls through unsubstituted.
 	 * This is harmless in practice — every realpath caller passes a
 	 * PATH_MAX-sized buffer — but worth knowing. */
-	char *readlink_scratch = path_buf;
+	char *readlink_scratch = scratch->buf[0];
 	int   scratch_cap = (size > TAWCROOT_PATH_SCRATCH_SIZE)
 	                    ? TAWCROOT_PATH_SCRATCH_SIZE : size;
-	long n = tawc_readlinkat(base_fd, p, readlink_scratch,
+	long n = tawc_readlinkat(t.fd, p, readlink_scratch,
 				 (size_t)scratch_cap);
 	if (n < 0) return n;
 	if (tawcroot_guest_exe_path_len > 0 &&
@@ -1047,16 +1013,12 @@ static long handle_faccessat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	tawcroot_path_mode pmode = TAWCROOT_PATH_FOLLOW;
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty, pmode);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      pmode, &t);
 	if (e) return e;
-	/* Empty suffix → guest asked for "/" or for a bind dst's root.
-	 * Pass "." so the kernel resolves it to the dir base_fd points at;
+	/* Empty t.path → guest asked for "/" or for a bind dst's root.
+	 * Pass "." so the kernel resolves it to the dir t.fd points at;
 	 * AT_EMPTY_PATH would be cleaner but faccessat (NR 269) ignores
 	 * flags entirely (faccessat2 added them, but Android's
 	 * untrusted_app filter RET_TRAPs that NR — calling it from inside
@@ -1067,8 +1029,8 @@ static long handle_faccessat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * and the kernel returned ENOENT for the empty path — which broke
 	 * xbps's `xbps_pkgdb_lock`, observed as
 	 * `[pkgdb] rootdir /: No such file or directory`. */
-	const char *p = use_empty ? "." : suffix;
-	return TAWC_RAW(TAWC_SYS_faccessat, base_fd, (long)p,
+	const char *p = t.is_root ? "." : t.path;
+	return TAWC_RAW(TAWC_SYS_faccessat, t.fd, (long)p,
 	                mode, 0, 0, 0);
 }
 
@@ -1079,24 +1041,20 @@ static long handle_chdir(const tawcroot_syscall_args *args, ucontext_t *uc)
 	if (!gpath) return TAWC_EFAULT;
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_FOLLOW);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, AT_FDCWD, gpath,
+			      TAWCROOT_PATH_FOLLOW, &t);
 	if (e) return e;
 
-	/* Empty suffix → guest asked for "/", which is the directory the
-	 * base fd already refers to. fchdir(base_fd) directly — avoids the
+	/* Empty t.path → guest asked for "/", which is the directory the
+	 * base fd already refers to. fchdir(t.fd) directly — avoids the
 	 * AT_EMPTY_PATH-on-openat thing which only landed in kernel 6.6. */
-	if (use_empty) {
-		return TAWC_RAW(TAWC_SYS_fchdir, base_fd, 0, 0, 0, 0, 0);
+	if (t.is_root) {
+		return TAWC_RAW(TAWC_SYS_fchdir, t.fd, 0, 0, 0, 0, 0);
 	}
 
 	int flags = O_DIRECTORY | O_PATH | O_CLOEXEC;
-	long fd = tawc_openat(base_fd, suffix, flags, 0);
+	long fd = tawc_openat(t.fd, t.path, flags, 0);
 	if (fd < 0) return fd;
 
 	long rv = TAWC_RAW(TAWC_SYS_fchdir, fd, 0, 0, 0, 0, 0);
@@ -1162,16 +1120,11 @@ static long handle_##name(const tawcroot_syscall_args *args,             \
 	const char *gpath = (const char *)(uintptr_t)args->b;             \
 	if (!gpath) return TAWC_EFAULT;                                       \
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);                                  \
-	char *path_buf = scratch->buf[0];                                     \
-	char *suffix = scratch->buf[1];                                       \
-	int  base_fd, use_empty;                                              \
-	long e = fetch_and_translate_at(dirfd, gpath,                         \
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE, \
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,   \
-					&base_fd, &use_empty, pmode);         \
+	struct fs_path t;                                                     \
+	long e = translate_at(scratch, 0, dirfd, gpath, pmode, &t);           \
 	if (e) return e;                                                  \
-	const char *p = use_empty ? "." : suffix;                         \
-	return TAWC_RAW(sysnr, base_fd, (long)p,                          \
+	const char *p = t.is_root ? "." : t.path;                         \
+	return TAWC_RAW(sysnr, t.fd, (long)p,                             \
 			args->c, args->d,                                 \
 			(narg) > 4 ? args->e : 0,                         \
 			(narg) > 5 ? args->f : 0);                        \
@@ -1205,21 +1158,16 @@ static long handle_unlinkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	}
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty,
-					TAWCROOT_PATH_PARENT_REMOVE);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      TAWCROOT_PATH_PARENT_REMOVE, &t);
 	if (e) return e;
 	/* Path resolved to the rootfs/bind root itself: match kernel
 	 * errno for operating on "/". rmdir("/") → EBUSY, unlink("/") →
-	 * EISDIR (not the EINVAL an empty suffix would otherwise yield). */
-	if (use_empty)
+	 * EISDIR (not the EINVAL an empty t.path would otherwise yield). */
+	if (t.is_root)
 		return (flag & AT_REMOVEDIR) ? TAWC_EBUSY : TAWC_EISDIR;
-	return TAWC_RAW(TAWC_SYS_unlinkat, base_fd, (long)suffix, flag, 0, 0, 0);
+	return TAWC_RAW(TAWC_SYS_unlinkat, t.fd, (long)t.path, flag, 0, 0, 0);
 }
 
 /* utimensat: translate path and pass through. Two special cases:
@@ -1255,16 +1203,12 @@ static long handle_utimensat(const tawcroot_syscall_args *args,
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty, pmode);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      pmode, &t);
 	if (e) return e;
-	const char *p = use_empty ? "." : suffix;
-	return TAWC_RAW(TAWC_SYS_utimensat, base_fd, (long)p,
+	const char *p = t.is_root ? "." : t.path;
+	return TAWC_RAW(TAWC_SYS_utimensat, t.fd, (long)p,
 			args->c, flags, 0, 0);
 }
 
@@ -1284,13 +1228,8 @@ static long handle_fchownat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	/* AT_EMPTY_PATH (with NULL or empty path) operates on dirfd
 	 * directly — validate the fd. */
 	if (flags & AT_EMPTY_PATH) {
-		int empty = (gpath == 0);
-		if (!empty) {
-			char first = -1;
-			long pe = tawc_copy_from_guest(&first, 1, gpath);
-			if (pe < 0) return pe;
-			if (first == 0) empty = 1;
-		}
+		long empty = guest_path_is_empty(gpath);
+		if (empty < 0) return empty;
 		if (empty) {
 			if (tawcroot_fd_is_reserved(dirfd)) return TAWC_EBADF;
 			struct stat probe;
@@ -1305,18 +1244,14 @@ static long handle_fchownat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty, pmode);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      pmode, &t);
 	if (e) return e;
-	const char *p = use_empty ? "" : suffix;
-	int sflags = (flags & AT_SYMLINK_NOFOLLOW) | (use_empty ? AT_EMPTY_PATH : 0);
+	const char *p = t.is_root ? "" : t.path;
+	int sflags = (flags & AT_SYMLINK_NOFOLLOW) | (t.is_root ? AT_EMPTY_PATH : 0);
 	struct stat probe;
-	long rv = TAWC_RAW(TAWC_SYS_fstatat, base_fd, (long)p,
+	long rv = TAWC_RAW(TAWC_SYS_fstatat, t.fd, (long)p,
 			   (long)&probe, sflags, 0, 0);
 	return rv < 0 ? rv : 0;  /* exists → fake-root no-op */
 }
@@ -1347,18 +1282,13 @@ static long handle_symlinkat(const tawcroot_syscall_args *args,
 	int newdirfd = (int)args->b;
 	const char *linkpath = (const char *)(uintptr_t)args->c;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int base_fd, use_empty;
-	long e = fetch_and_translate_at(newdirfd, linkpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty,
-					TAWCROOT_PATH_PARENT_CREATE);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, newdirfd, linkpath,
+			      TAWCROOT_PATH_PARENT_CREATE, &t);
 	if (e) return e;
-	if (use_empty) return TAWC_EINVAL; /* can't create / */
-	return TAWC_RAW(TAWC_SYS_symlinkat, (long)target, base_fd,
-			(long)suffix, 0, 0, 0);
+	if (t.is_root) return TAWC_EINVAL; /* can't create / */
+	return TAWC_RAW(TAWC_SYS_symlinkat, (long)target, t.fd,
+			(long)t.path, 0, 0, 0);
 }
 
 /* statx with fake-root decoration. Layout differs from `struct stat`
@@ -1391,13 +1321,8 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * empty string; route through dirfd directly rather than
 	 * mistakenly translating "". */
 	if (flags & AT_EMPTY_PATH) {
-		int empty = (path == 0);
-		if (!empty) {
-			char first = -1;
-			long pe = tawc_copy_from_guest(&first, 1, path);
-			if (pe < 0) return pe;
-			if (first == 0) empty = 1;
-		}
+		long empty = guest_path_is_empty(path);
+		if (empty < 0) return empty;
 		if (empty) {
 			long rv = TAWC_RAW(TAWC_SYS_statx, dirfd, (long)"", flags,
 					   mask, (long)&local, 0);
@@ -1435,20 +1360,16 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 		: TAWCROOT_PATH_FOLLOW;
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, path,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty, pmode);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, path,
+			      pmode, &t);
 	if (e) return e;
 
-	const char *resolved = use_empty ? "" : suffix;
+	const char *resolved = t.is_root ? "" : t.path;
 	int rv_flags = flags;
-	if (use_empty) rv_flags |= AT_EMPTY_PATH;
+	if (t.is_root) rv_flags |= AT_EMPTY_PATH;
 
-	long rv = TAWC_RAW(TAWC_SYS_statx, base_fd, (long)resolved,
+	long rv = TAWC_RAW(TAWC_SYS_statx, t.fd, (long)resolved,
 			   rv_flags, mask, (long)&local, 0);
 	if (rv != 0) return rv;
 	local.stx_uid = 0;
@@ -1512,16 +1433,13 @@ static long handle_inotify_add_watch(const tawcroot_syscall_args *args,
 		: TAWCROOT_PATH_FOLLOW;
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty, pmode);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, AT_FDCWD, gpath,
+			      pmode, &t);
 	if (e) return e;
 	char *host_path = scratch->buf[2];
 	long bp = tawc_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
-				    base_fd, suffix);
+				    t.fd, t.path);
 	if (bp < 0) return bp;
 	return TAWC_RAW(TAWC_SYS_inotify_add_watch, inotify_fd,
 			(long)host_path, mask, 0, 0, 0);
@@ -1570,32 +1488,24 @@ static long handle_linkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		: TAWCROOT_PATH_NOFOLLOW;
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *old_buf = scratch->buf[0], *old_suf = scratch->buf[1];
-	char *new_buf = scratch->buf[2], *new_suf = scratch->buf[3];
-	int  old_fd, old_empty, new_fd, new_empty;
-	long e1 = fetch_and_translate_at(olddirfd, oldpath,
-					 old_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					 old_suf, TAWCROOT_PATH_SCRATCH_SIZE,
-					 &old_fd, &old_empty, src_mode);
+	struct fs_path told, tnew;
+	long e1 = translate_at(scratch, 0, olddirfd, oldpath, src_mode, &told);
 	if (e1) return e1;
-	long e2 = fetch_and_translate_at(newdirfd, newpath,
-					 new_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					 new_suf, TAWCROOT_PATH_SCRATCH_SIZE,
-					 &new_fd, &new_empty,
-					 TAWCROOT_PATH_PARENT_CREATE);
+	long e2 = translate_at(scratch, 2, newdirfd, newpath,
+			       TAWCROOT_PATH_PARENT_CREATE, &tnew);
 	if (e2) return e2;
 	/* Kernel: a root/empty operand to link is ENOENT (the empty-name
 	 * lookup), not EINVAL. */
-	if (old_empty || new_empty) return TAWC_ENOENT;
+	if (told.is_root || tnew.is_root) return TAWC_ENOENT;
 
-	return link_with_symlink_fallback(old_fd, old_suf, new_fd, new_suf,
-					  flags);
+	return link_with_symlink_fallback(told.fd, told.path,
+					  tnew.fd, tnew.path, flags);
 }
 
 /* renameat2 — translate both operands; old is PARENT_REMOVE, new is
  * PARENT_CREATE. The kernel takes (olddirfd, oldpath, newdirfd, newpath,
  * flags); when the guest passes non-AT_FDCWD dirfds with relative paths
- * we let the kernel resolve off the dirfd (see fetch_and_translate_at).
+ * we let the kernel resolve off the dirfd (see translate_at).
  * Both renameat and renameat2 funnel through here — renameat just passes
  * flags=0 to the kernel renameat2 (the latter is a strict superset and
  * present on every kernel we target). */
@@ -1604,24 +1514,16 @@ static long do_renameat(int olddirfd, const char *oldpath,
 			unsigned int rflags)
 {
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *old_buf = scratch->buf[0], *old_suf = scratch->buf[1];
-	char *new_buf = scratch->buf[2], *new_suf = scratch->buf[3];
-	int  old_fd, old_empty, new_fd, new_empty;
-	long e1 = fetch_and_translate_at(olddirfd, oldpath,
-					 old_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					 old_suf, TAWCROOT_PATH_SCRATCH_SIZE,
-					 &old_fd, &old_empty,
-					 TAWCROOT_PATH_PARENT_REMOVE);
+	struct fs_path told, tnew;
+	long e1 = translate_at(scratch, 0, olddirfd, oldpath,
+			       TAWCROOT_PATH_PARENT_REMOVE, &told);
 	if (e1) return e1;
-	long e2 = fetch_and_translate_at(newdirfd, newpath,
-					 new_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					 new_suf, TAWCROOT_PATH_SCRATCH_SIZE,
-					 &new_fd, &new_empty,
-					 TAWCROOT_PATH_PARENT_CREATE);
+	long e2 = translate_at(scratch, 2, newdirfd, newpath,
+			       TAWCROOT_PATH_PARENT_CREATE, &tnew);
 	if (e2) return e2;
-	if (old_empty || new_empty) return TAWC_EINVAL;
-	return TAWC_RAW(TAWC_SYS_renameat2, old_fd, (long)old_suf,
-			new_fd, (long)new_suf, rflags, 0);
+	if (told.is_root || tnew.is_root) return TAWC_EINVAL;
+	return TAWC_RAW(TAWC_SYS_renameat2, told.fd, (long)told.path,
+			tnew.fd, (long)tnew.path, rflags, 0);
 }
 
 static long handle_renameat2(const tawcroot_syscall_args *args,
@@ -1662,20 +1564,16 @@ static long handle_truncate(const tawcroot_syscall_args *args,
 	long len          = (long)args->b;
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_FOLLOW);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, AT_FDCWD, gpath,
+			      TAWCROOT_PATH_FOLLOW, &t);
 	if (e) return e;
-	/* base_fd is a directory in every translation path (rootfs or a
-	 * bind src, both opened O_DIRECTORY at init), so empty suffix means
+	/* t.fd is a directory in every translation path (rootfs or a
+	 * bind src, both opened O_DIRECTORY at init), so empty t.path means
 	 * the kernel would EISDIR truncate(2) on the dir. */
-	if (use_empty) return TAWC_EISDIR;
+	if (t.is_root) return TAWC_EISDIR;
 
-	long fd = tawc_openat(base_fd, suffix,
+	long fd = tawc_openat(t.fd, t.path,
 			      1 /*O_WRONLY*/ | 0x80000 /*O_CLOEXEC*/, 0);
 	if (fd < 0) return fd;
 	long rv = TAWC_RAW(TAWC_SYS_ftruncate, (long)fd, len, 0, 0, 0, 0);
@@ -1690,232 +1588,48 @@ static long handle_truncate(const tawcroot_syscall_args *args,
  * which is the cleanest version of the kludge proot's
  * src/tracee/seccomp.c carries. */
 
-static long stat_via_at(const char *path, struct stat *out, int flags)
+/* Re-dispatch a legacy syscall as its modern *at counterpart by
+ * rebuilding the argument frame. `nr` is preserved so nr-sensitive
+ * handlers (handle_faccessat's faccessat2 check) still see the
+ * original syscall number. */
+static long via_at(tawcroot_handler_fn fn, const tawcroot_syscall_args *args,
+		   ucontext_t *uc, long a, long b, long c, long d, long e)
 {
-	if (!out) return TAWC_EFAULT;
-	struct stat local;
-
-	{
-		char shm_buf[320];
-		const char *shm_name;
-		int kind = peek_shm(path, shm_buf, sizeof shm_buf, &shm_name);
-		if (kind == SHM_PEEK_NAME || kind == SHM_PEEK_DIR) {
-			long r = (kind == SHM_PEEK_NAME)
-				? tawcroot_shm_stat_name(shm_name, &local)
-				: (tawcroot_shm_stat_dir(&local), 0L);
-			if (r < 0) return r;
-			long ce = tawc_copy_to_guest(out, &local, sizeof local);
-			if (ce < 0) return ce;
-			return 0;
-		}
-	}
-
-	tawcroot_path_mode pmode = (flags & AT_SYMLINK_NOFOLLOW)
-		? TAWCROOT_PATH_NOFOLLOW
-		: TAWCROOT_PATH_FOLLOW;
-
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty, pmode);
-	if (e) return e;
-
-	const char *p = use_empty ? "" : suffix;
-	int f = flags;
-	if (use_empty) f |= AT_EMPTY_PATH;
-
-	long rv = TAWC_RAW(TAWC_SYS_fstatat, base_fd, (long)p,
-			   (long)&local, f, 0, 0);
-	if (rv != 0) return rv;
-	decorate_stat(&local);
-	long ce = tawc_copy_to_guest(out, &local, sizeof local);
-	if (ce < 0) return ce;
-	return rv;
+	tawcroot_syscall_args s = *args;
+	s.a = a; s.b = b; s.c = c; s.d = d; s.e = e;
+	return fn(&s, uc);
 }
 
 static long handle_stat(const tawcroot_syscall_args *args, ucontext_t *uc)
-{ (void)uc; return stat_via_at((const char *)(uintptr_t)args->a,
-			       (struct stat *)(uintptr_t)args->b, 0); }
+{ return via_at(handle_newfstatat, args, uc,
+		AT_FDCWD, args->a, args->b, 0, 0); }
 
 static long handle_lstat(const tawcroot_syscall_args *args, ucontext_t *uc)
-{ (void)uc; return stat_via_at((const char *)(uintptr_t)args->a,
-			       (struct stat *)(uintptr_t)args->b,
-			       AT_SYMLINK_NOFOLLOW); }
+{ return via_at(handle_newfstatat, args, uc,
+		AT_FDCWD, args->a, args->b, AT_SYMLINK_NOFOLLOW, 0); }
 
 static long handle_access(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	(void)uc;
-	const char *path = (const char *)(uintptr_t)args->a;
-	int mode = (int)args->b;
-	{
-		char shm_buf[320];
-		const char *shm_name;
-		int kind = peek_shm(path, shm_buf, sizeof shm_buf, &shm_name);
-		if (kind == SHM_PEEK_NAME) return tawcroot_shm_access_name(shm_name);
-		if (kind == SHM_PEEK_DIR)  return tawcroot_shm_access_dir();
-	}
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_FOLLOW);
-	if (e) return e;
-	const char *p = use_empty ? "." : suffix;
-	/* Use faccessat (NR 269) — Android RET_TRAPs faccessat2 from
-	 * untrusted_app, and a recursive SIGSYS in our handler is fatal.
-	 * See handle_faccessat above for the longer story. */
-	return TAWC_RAW(TAWC_SYS_faccessat, base_fd, (long)p, mode, 0, 0, 0);
-}
+{ return via_at(handle_faccessat, args, uc,
+		AT_FDCWD, args->a, args->b, 0, 0); }
 
 static long handle_readlink(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	(void)uc;
-	const char *path = (const char *)(uintptr_t)args->a;
-	char *buf = (char *)(uintptr_t)args->b;
-	int  size = (int)args->c;
-	/* Kernel checks bufsiz first: <= 0 is EINVAL, not EFAULT. */
-	if (size <= 0) return TAWC_EINVAL;
-	if (!path || !buf) return TAWC_EFAULT;
-
-	/* Mirror handle_readlinkat: synthesize /proc/self/exe from the
-	 * stashed guest exe path. Without this, x86_64 callers that go
-	 * through the legacy readlink(2) (NR 89) bypass the rewrite,
-	 * /proc/self/exe resolves to libtawcroot.so, and Firefox's stub
-	 * binary fails XPCOM lookup. */
-	{
-		TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-		char *tmp = scratch->buf[0];
-		long n = tawc_copy_string_from_guest(
-			tmp, TAWCROOT_PATH_SCRATCH_SIZE, path);
-		if (n < 0) return n;
-		if (tawcroot_guest_exe_path_len > 0 && is_proc_self_exe(tmp)) {
-			size_t len = tawcroot_guest_exe_path_len;
-			if (len > (size_t)size) len = (size_t)size;
-			long ce = tawc_copy_to_guest(buf,
-				tawcroot_guest_exe_path, len);
-			if (ce < 0) return ce;
-			return (long)len;
-		}
-	}
-
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_NOFOLLOW);
-	if (e) return e;
-	/* See handle_readlinkat for the EINVAL-vs-ENOENT rationale. */
-	if (use_empty && tawcroot_fd_is_reserved(base_fd)) return TAWC_EINVAL;
-	const char *p = use_empty ? "" : suffix;
-
-	/* Mirror handle_readlinkat's second substitution surface too: a
-	 * result equal to libtawcroot.so's own host path (the
-	 * readlink("/proc/self/fd/<n>") trick) is rewritten to the guest
-	 * exe path. Read into kernel-side scratch (path_buf is dead from
-	 * here on) so we can compare before forwarding. */
-	char *readlink_scratch = path_buf;
-	int   scratch_cap = (size > TAWCROOT_PATH_SCRATCH_SIZE)
-	                    ? TAWCROOT_PATH_SCRATCH_SIZE : size;
-	long n = tawc_readlinkat(base_fd, p, readlink_scratch,
-				 (size_t)scratch_cap);
-	if (n < 0) return n;
-	if (tawcroot_guest_exe_path_len > 0 &&
-	    tawcroot_self_host_path_len > 0 &&
-	    (size_t)n == tawcroot_self_host_path_len &&
-	    memcmp(readlink_scratch, tawcroot_self_host_path,
-	           tawcroot_self_host_path_len) == 0) {
-		size_t glen = tawcroot_guest_exe_path_len;
-		if (glen > (size_t)size) glen = (size_t)size;
-		long ce = tawc_copy_to_guest(buf, tawcroot_guest_exe_path, glen);
-		if (ce < 0) return ce;
-		return (long)glen;
-	}
-	long ce = tawc_copy_to_guest(buf, readlink_scratch, (size_t)n);
-	if (ce < 0) return ce;
-	return n;
-}
+{ return via_at(handle_readlinkat, args, uc,
+		AT_FDCWD, args->a, args->b, args->c, 0); }
 
 static long handle_chmod(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	(void)uc;
-	const char *path = (const char *)(uintptr_t)args->a;
-	int mode = (int)args->b;
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_FOLLOW);
-	if (e) return e;
-	const char *p = use_empty ? "." : suffix;
-	return TAWC_RAW(TAWC_SYS_fchmodat, base_fd, (long)p, mode, 0, 0, 0);
-}
+{ return via_at(handle_fchmodat, args, uc,
+		AT_FDCWD, args->a, args->b, 0, 0); }
 
 static long handle_mkdir(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	(void)uc;
-	const char *path = (const char *)(uintptr_t)args->a;
-	int mode = (int)args->b;
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_PARENT_CREATE);
-	if (e) return e;
-	if (use_empty) return TAWC_EEXIST; /* root already exists */
-	return TAWC_RAW(TAWC_SYS_mkdirat, base_fd, (long)suffix, mode, 0, 0, 0);
-}
-
-static long handle_unlink_or_rmdir(const tawcroot_syscall_args *args,
-				   ucontext_t *uc, int rmdir_flag)
-{
-	(void)uc;
-	const char *path = (const char *)(uintptr_t)args->a;
-	{
-		char shm_buf[320];
-		const char *shm_name;
-		int kind = peek_shm(path, shm_buf, sizeof shm_buf, &shm_name);
-		if (kind == SHM_PEEK_NAME) {
-			if (rmdir_flag) return TAWC_ENOTDIR;
-			return tawcroot_shm_unlink(shm_name);
-		}
-		if (kind == SHM_PEEK_DIR) return rmdir_flag ? TAWC_EBUSY : TAWC_EISDIR;
-	}
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(path, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_PARENT_REMOVE);
-	if (e) return e;
-	/* Operating on "/": rmdir("/") → EBUSY, unlink("/") → EISDIR. */
-	if (use_empty)
-		return rmdir_flag ? TAWC_EBUSY : TAWC_EISDIR;
-	return TAWC_RAW(TAWC_SYS_unlinkat, base_fd, (long)suffix,
-			rmdir_flag, 0, 0, 0);
-}
+{ return via_at(handle_mkdirat, args, uc,
+		AT_FDCWD, args->a, args->b, 0, 0); }
 
 static long handle_unlink(const tawcroot_syscall_args *args, ucontext_t *uc)
-{ return handle_unlink_or_rmdir(args, uc, 0); }
+{ return via_at(handle_unlinkat, args, uc, AT_FDCWD, args->a, 0, 0, 0); }
 
 static long handle_rmdir(const tawcroot_syscall_args *args, ucontext_t *uc)
-{ return handle_unlink_or_rmdir(args, uc, AT_REMOVEDIR); }
+{ return via_at(handle_unlinkat, args, uc,
+		AT_FDCWD, args->a, AT_REMOVEDIR, 0, 0); }
 
 static long handle_chown_legacy(const tawcroot_syscall_args *args,
 				ucontext_t *uc)
@@ -1934,56 +1648,18 @@ static long handle_chown_legacy(const tawcroot_syscall_args *args,
 	return 0;  /* fake-root no-op, like fchownat */
 }
 
-/* Legacy x86_64 link(oldpath, newpath). flags=0 → src is NOFOLLOW. */
+/* Legacy x86_64 link(oldpath, newpath): linkat with flags=0 (source is
+ * NOFOLLOW). */
 static long handle_link_legacy(const tawcroot_syscall_args *args,
 			       ucontext_t *uc)
-{
-	(void)uc;
-	const char *oldpath = (const char *)(uintptr_t)args->a;
-	const char *newpath = (const char *)(uintptr_t)args->b;
-
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *old_buf = scratch->buf[0], *old_suf = scratch->buf[1];
-	char *new_buf = scratch->buf[2], *new_suf = scratch->buf[3];
-	int  old_fd, old_empty, new_fd, new_empty;
-	long e1 = fetch_and_translate(oldpath, old_buf,
-				      TAWCROOT_PATH_SCRATCH_SIZE,
-				      old_suf, TAWCROOT_PATH_SCRATCH_SIZE,
-				      &old_fd, &old_empty,
-				      TAWCROOT_PATH_NOFOLLOW);
-	if (e1) return e1;
-	long e2 = fetch_and_translate(newpath, new_buf,
-				      TAWCROOT_PATH_SCRATCH_SIZE,
-				      new_suf, TAWCROOT_PATH_SCRATCH_SIZE,
-				      &new_fd, &new_empty,
-				      TAWCROOT_PATH_PARENT_CREATE);
-	if (e2) return e2;
-	if (old_empty || new_empty) return TAWC_ENOENT;  /* match linkat */
-
-	return link_with_symlink_fallback(old_fd, old_suf, new_fd, new_suf, 0);
-}
+{ return via_at(handle_linkat, args, uc,
+		AT_FDCWD, args->a, AT_FDCWD, args->b, 0); }
 
 /* Legacy x86_64 symlink(target, linkpath). */
 static long handle_symlink_legacy(const tawcroot_syscall_args *args,
 				  ucontext_t *uc)
-{
-	(void)uc;
-	const char *target   = (const char *)(uintptr_t)args->a;
-	const char *linkpath = (const char *)(uintptr_t)args->b;
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(linkpath, path_buf,
-				     TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_PARENT_CREATE);
-	if (e) return e;
-	if (use_empty) return TAWC_EINVAL;
-	return TAWC_RAW(TAWC_SYS_symlinkat, (long)target, base_fd,
-			(long)suffix, 0, 0, 0);
-}
+{ return via_at(handle_symlinkat, args, uc,
+		args->a, AT_FDCWD, args->b, 0, 0); }
 
 /* Legacy x86_64 rename(oldpath, newpath). */
 static long handle_rename_legacy(const tawcroot_syscall_args *args,
@@ -2006,26 +1682,14 @@ static long handle_rename_legacy(const tawcroot_syscall_args *args,
  * modern openat callers. */
 static long handle_open_legacy(const tawcroot_syscall_args *args,
 			       ucontext_t *uc)
-{
-	tawcroot_syscall_args shifted = *args;
-	shifted.a = (long)AT_FDCWD;  /* dirfd  */
-	shifted.b = args->a;         /* path   */
-	shifted.c = args->b;         /* flags  */
-	shifted.d = args->c;         /* mode   */
-	return handle_openat(&shifted, uc);
-}
+{ return via_at(handle_openat, args, uc,
+		AT_FDCWD, args->a, args->b, args->c, 0); }
 
 /* Legacy x86_64 creat(path, mode) ≡ open(path, O_WRONLY|O_CREAT|O_TRUNC).
  * Same routing rationale as handle_open_legacy. */
 static long handle_creat(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	tawcroot_syscall_args shifted = *args;
-	shifted.a = (long)AT_FDCWD;                     /* dirfd */
-	shifted.b = args->a;                            /* path  */
-	shifted.c = O_WRONLY | O_CREAT | O_TRUNC;       /* flags */
-	shifted.d = args->b;                            /* mode  */
-	return handle_openat(&shifted, uc);
-}
+{ return via_at(handle_openat, args, uc,
+		AT_FDCWD, args->a, O_WRONLY | O_CREAT | O_TRUNC, args->b, 0); }
 
 /* Shared tail for the legacy time-setting trio: translate (dirfd, path)
  * and issue utimensat with a kernel-side timespec[2] (or NULL = now).
@@ -2035,17 +1699,12 @@ static long utimensat_via_translate(int dirfd, const char *gpath,
 {
 	if (!gpath) return TAWC_EFAULT;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate_at(dirfd, gpath,
-					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-					&base_fd, &use_empty,
-					TAWCROOT_PATH_FOLLOW);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      TAWCROOT_PATH_FOLLOW, &t);
 	if (e) return e;
-	const char *p = use_empty ? "." : suffix;
-	return TAWC_RAW(TAWC_SYS_utimensat, base_fd, (long)p,
+	const char *p = t.is_root ? "." : t.path;
+	return TAWC_RAW(TAWC_SYS_utimensat, t.fd, (long)p,
 			(long)ts, 0, 0, 0);
 }
 
@@ -2107,26 +1766,10 @@ static long handle_futimesat(const tawcroot_syscall_args *args, ucontext_t *uc)
 }
 
 /* Legacy x86_64 mknod(path, mode, dev). aarch64 has no mknod — only
- * mknodat — so this is x86_64-only. Routes to the modern mknodat
- * with our base_fd / suffix. */
+ * mknodat — so this is x86_64-only. */
 static long handle_mknod(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	(void)uc;
-	const char *gpath = (const char *)(uintptr_t)args->a;
-	if (!gpath) return TAWC_EFAULT;
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_PARENT_CREATE);
-	if (e) return e;
-	if (use_empty) return TAWC_EINVAL; /* can't mknod the dir itself */
-	return TAWC_RAW(TAWC_SYS_mknodat, base_fd, (long)suffix,
-			args->b, args->c, 0, 0);
-}
+{ return via_at(handle_mknodat, args, uc,
+		AT_FDCWD, args->a, args->b, args->c, 0); }
 #endif  /* __x86_64__ */
 
 /* statfs(path, buf): translate path, then dispatch using a /proc/self/
@@ -2140,17 +1783,13 @@ static long handle_statfs(const tawcroot_syscall_args *args, ucontext_t *uc)
 	const char *gpath = (const char *)(uintptr_t)args->a;
 	if (!gpath) return TAWC_EFAULT;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *path_buf = scratch->buf[0];
-	char *suffix = scratch->buf[1];
-	int  base_fd, use_empty;
-	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-				     &base_fd, &use_empty,
-				     TAWCROOT_PATH_FOLLOW);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, AT_FDCWD, gpath,
+			      TAWCROOT_PATH_FOLLOW, &t);
 	if (e) return e;
 	char *host_path = scratch->buf[2];
 	long bp = tawc_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
-				    base_fd, suffix);
+				    t.fd, t.path);
 	if (bp < 0) return bp;
 	return TAWC_RAW(TAWC_SYS_statfs, (long)host_path, args->b, 0, 0, 0, 0);
 }
@@ -2186,21 +1825,16 @@ static long handle_##name(const tawcroot_syscall_args *args, ucontext_t *uc) \
 	const char *gpath = (const char *)(uintptr_t)args->a;                  \
 	if (!gpath) return TAWC_EFAULT;                                        \
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);                                   \
-	char *path_buf = scratch->buf[0];                                      \
-	char *suffix = scratch->buf[1];                                        \
-	int  base_fd, use_empty;                                               \
-	long e = fetch_and_translate(gpath, path_buf,                          \
-				     TAWCROOT_PATH_SCRATCH_SIZE,              \
-				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,      \
-				     &base_fd, &use_empty, pmode);             \
+	struct fs_path t;                                                      \
+	long e = translate_at(scratch, 0, AT_FDCWD, gpath, pmode, &t);         \
 	if (e) return e;                                                   \
-	if (use_empty && (pmode) == TAWCROOT_PATH_NOFOLLOW) {                  \
+	if (t.is_root && (pmode) == TAWCROOT_PATH_NOFOLLOW) {                  \
 		return TAWC_EOPNOTSUPP; /* see big comment above */            \
 	}                                                                      \
 	char *host_path = scratch->buf[2];                                      \
 	long bp = tawc_proc_fd_path(host_path,                                  \
 				    TAWCROOT_PATH_SCRATCH_SIZE,               \
-				    base_fd, suffix);                          \
+				    t.fd, t.path);                             \
 	if (bp < 0) return bp;                                             \
 	return TAWC_RAW(sysnr, (long)host_path,                            \
 			args->b, args->c, args->d,                         \
