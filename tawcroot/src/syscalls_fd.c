@@ -20,6 +20,7 @@
 #include "dispatch.h"
 #include "errno_neg.h"
 #include "fdtab.h"
+#include "io.h"
 #include "raw_sys.h"
 #include "sysnr.h"
 #include "tawc_uapi.h"
@@ -205,24 +206,8 @@ static long handle_getdents64(const tawcroot_syscall_args *args,
 	 * /proc/<self|digits>/fd. Non-proc dirfds short-circuit. */
 	char proc_link[PROC_FD_LINK_MAX];
 	char self_path[32];
-	{
-		const char *prefix = "/proc/self/fd/";
-		size_t off = 0;
-		while (prefix[off] && off + 1 < sizeof self_path) {
-			self_path[off] = prefix[off];
-			off++;
-		}
-		/* Append fd as decimal. */
-		char tmp[12]; int tn = 0;
-		unsigned int u = fd >= 0 ? (unsigned int)fd : 0;
-		if (u == 0) tmp[tn++] = '0';
-		while (u) { tmp[tn++] = (char)('0' + (u % 10)); u /= 10; }
-		while (tn--) {
-			if (off + 1 >= sizeof self_path) return n;
-			self_path[off++] = tmp[tn];
-		}
-		self_path[off] = 0;
-	}
+	if (tawc_proc_fd_path(self_path, sizeof self_path, fd, 0) < 0)
+		return n;
 	long ln = tawc_readlinkat(AT_FDCWD, self_path,
 	                          proc_link, sizeof proc_link);
 	if (ln <= 0) return n;

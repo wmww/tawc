@@ -8,6 +8,7 @@
 #include "errno_neg.h"
 #include "exec_handler.h"
 #include "exec_state.h"
+#include "io.h"
 #include "loader_elf.h"
 #include "path.h"
 #include "path_scratch.h"
@@ -135,24 +136,6 @@ static long classify_loadable(int fd, int depth)
 	if (ck == 0) ck = classify_loadable((int)ifd, depth + 1);
 	tawc_close((int)ifd);
 	return ck;
-}
-
-/* Tiny int-to-string for the fd argv slot. Returns the number of
- * bytes written (excluding NUL); 0 if it doesn't fit. */
-static size_t u_to_str(unsigned long v, char *buf, size_t cap)
-{
-	if (cap < 2) return 0;
-	char tmp[24];
-	size_t n = 0;
-	if (v == 0) tmp[n++] = '0';
-	while (v && n < sizeof tmp) {
-		tmp[n++] = (char)('0' + (v % 10));
-		v /= 10;
-	}
-	if (n >= cap) return 0;
-	for (size_t i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
-	buf[n] = '\0';
-	return n;
 }
 
 long tawcroot_exec_handler_perform(const char *path, int argc,
@@ -308,7 +291,7 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 
 	/* (5) Build the new argv: ["tawcroot", "--exec-child", "<fdstr>"]. */
 	char fdstr[24];
-	if (u_to_str((unsigned long)mfd, fdstr, sizeof fdstr) == 0) {
+	if (tawc_int_to_str(fdstr, sizeof fdstr, (int)mfd) <= 0) {
 		tawc_close((int)exe_fd);
 		tawc_close((int)mfd);
 		return TAWC_EFAULT;

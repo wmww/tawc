@@ -77,26 +77,21 @@ void tawcroot_set_guest_exe_path(const char *path)
 			path, suffix, TAWCROOT_PATH_SCRATCH_SIZE,
 			TAWCROOT_PATH_FOLLOW);
 		if (r.err == 0 && r.base_fd == tawcroot_rootfs_fd) {
-			tawcroot_guest_exe_path[0] = '/';
-			size_t i = 0;
-			while (suffix[i] &&
-			       i + 2 < sizeof tawcroot_guest_exe_path) {
-				tawcroot_guest_exe_path[i + 1] = suffix[i];
-				i++;
-			}
-			tawcroot_guest_exe_path[i + 1] = 0;
-			tawcroot_guest_exe_path_len    = i + 1;
+			size_t pos = 0;
+			(void)tawc_str_append(tawcroot_guest_exe_path,
+					      sizeof tawcroot_guest_exe_path,
+					      &pos, "/");
+			(void)tawc_str_append(tawcroot_guest_exe_path,
+					      sizeof tawcroot_guest_exe_path,
+					      &pos, suffix);
+			tawcroot_guest_exe_path_len = pos;
 			return;
 		}
 	}
 
-	size_t i = 0;
-	while (path[i] && i + 1 < sizeof tawcroot_guest_exe_path) {
-		tawcroot_guest_exe_path[i] = path[i];
-		i++;
-	}
-	tawcroot_guest_exe_path[i]   = 0;
-	tawcroot_guest_exe_path_len  = i;
+	long n = tawc_str_copy(tawcroot_guest_exe_path,
+			       sizeof tawcroot_guest_exe_path, path);
+	tawcroot_guest_exe_path_len = n < 0 ? 0 : (size_t)n;
 }
 
 void tawcroot_init_self_host_path(void)
@@ -124,11 +119,8 @@ long tawcroot_proc_fd_to_host_path(int fd, char *out, size_t out_cap)
 	if (!out || out_cap < 2) return TAWC_EINVAL;
 
 	char link[64];
-	const char *prefix = "/proc/self/fd/";
-	size_t pl = 0;
-	while (prefix[pl]) { link[pl] = prefix[pl]; pl++; }
-	int wrote = tawc_int_to_str(link + pl, sizeof link - pl, fd);
-	if (wrote <= 0) return TAWC_EINVAL;
+	if (tawc_proc_fd_path(link, sizeof link, fd, 0) < 0)
+		return TAWC_EINVAL;
 
 	long n = tawc_readlinkat(AT_FDCWD, link, out, out_cap - 1);
 	if (n < 0) return n;
@@ -327,13 +319,11 @@ long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
 		TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 		char *abs = scratch->buf[0];
 		size_t off = 0;
-		abs[off++] = '/';
-		for (const char *d = dst_guest; *d; d++) {
-			if (off + 1 >= TAWCROOT_PATH_SCRATCH_SIZE)
-				return TAWC_ENAMETOOLONG;
-			abs[off++] = *d;
-		}
-		abs[off] = 0;
+		long e = tawc_str_append(abs, TAWCROOT_PATH_SCRATCH_SIZE,
+					 &off, "/");
+		if (!e) e = tawc_str_append(abs, TAWCROOT_PATH_SCRATCH_SIZE,
+					    &off, dst_guest);
+		if (e) return e;
 		long fr = tawcroot_path_fold_absolute(abs, b->dst, sizeof b->dst);
 		if (fr < 0) return fr;
 	}
@@ -364,17 +354,9 @@ long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
 	{
 		long pn = tawcroot_proc_fd_to_host_path(b->src_fd, b->src,
 		                                        sizeof b->src);
-		if (pn > 0) {
-			b->src_len = (size_t)pn;
-		} else {
-			size_t k = 0;
-			while (src_host[k] && k + 1 < sizeof b->src) {
-				b->src[k] = src_host[k];
-				k++;
-			}
-			b->src[k]  = 0;
-			b->src_len = k;
-		}
+		if (pn <= 0)
+			pn = tawc_str_copy(b->src, sizeof b->src, src_host);
+		b->src_len = pn > 0 ? (size_t)pn : 0;
 	}
 	tawcroot_n_binds++;
 	return 0;

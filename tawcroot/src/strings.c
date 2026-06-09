@@ -14,6 +14,7 @@
  */
 
 #include <stddef.h>
+#include "errno_neg.h"
 #include "io.h"
 
 #if !__STDC_HOSTED__
@@ -100,6 +101,11 @@ long tawc_parse_long(const char *s)
 
 int tawc_int_to_str(char *buf, size_t buflen, int v)
 {
+	return tawc_long_to_str(buf, buflen, v);
+}
+
+int tawc_long_to_str(char *buf, size_t buflen, long v)
+{
 	if (buflen == 0) return 0;
 	int n = 0;
 	if (v == 0) {
@@ -107,14 +113,56 @@ int tawc_int_to_str(char *buf, size_t buflen, int v)
 		buf[n] = 0;
 		return n;
 	}
-	/* Negate in unsigned space: -v is UB for INT_MIN. */
+	/* Negate in unsigned space: -v is UB for LONG_MIN. */
 	int neg = v < 0;
-	unsigned int u = neg ? -(unsigned int)v : (unsigned int)v;
-	char tmp[12];
+	unsigned long u = neg ? -(unsigned long)v : (unsigned long)v;
+	char tmp[20];
 	int t = 0;
 	while (u && t < (int)sizeof tmp) { tmp[t++] = (char)('0' + (u % 10)); u /= 10; }
 	if (neg && n + 1 < (int)buflen) buf[n++] = '-';
 	while (t && n + 1 < (int)buflen) buf[n++] = tmp[--t];
 	buf[n] = 0;
 	return n;
+}
+
+long tawc_str_append(char *dst, size_t cap, size_t *pos, const char *src)
+{
+	size_t i = *pos;
+	if (i >= cap) return TAWC_ENAMETOOLONG;
+	for (; *src; src++) {
+		if (i + 1 >= cap) {
+			dst[*pos] = 0;
+			return TAWC_ENAMETOOLONG;
+		}
+		dst[i++] = *src;
+	}
+	dst[i] = 0;
+	*pos = i;
+	return 0;
+}
+
+long tawc_str_append_dec(char *dst, size_t cap, size_t *pos, long v)
+{
+	char tmp[24];
+	tawc_long_to_str(tmp, sizeof tmp, v);
+	return tawc_str_append(dst, cap, pos, tmp);
+}
+
+long tawc_str_copy(char *dst, size_t cap, const char *src)
+{
+	size_t pos = 0;
+	long e = tawc_str_append(dst, cap, &pos, src);
+	return e ? e : (long)pos;
+}
+
+long tawc_proc_fd_path(char *out, size_t cap, int fd, const char *suffix)
+{
+	size_t pos = 0;
+	long e = tawc_str_append(out, cap, &pos, "/proc/self/fd/");
+	if (!e) e = tawc_str_append_dec(out, cap, &pos, fd);
+	if (!e && suffix && suffix[0]) {
+		e = tawc_str_append(out, cap, &pos, "/");
+		if (!e) e = tawc_str_append(out, cap, &pos, suffix);
+	}
+	return e ? e : (long)pos;
 }

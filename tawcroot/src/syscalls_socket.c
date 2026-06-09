@@ -36,6 +36,7 @@
 
 #include "dispatch.h"
 #include "errno_neg.h"
+#include "io.h"
 #include "path.h"
 #include "raw_sys.h"
 #include "syscalls_socket.h"
@@ -82,62 +83,14 @@ static long render_host_path(char *dst, size_t cap,
                              const char *host_prefix, const char *suffix)
 {
 	size_t i = 0;
-	while (host_prefix[i]) {
-		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
-		dst[i] = host_prefix[i];
-		i++;
+	long e = tawc_str_append(dst, cap, &i, host_prefix);
+	if (!e && suffix && suffix[0]) {
+		e = tawc_str_append(dst, cap, &i, "/");
+		if (!e) e = tawc_str_append(dst, cap, &i, suffix);
 	}
-	if (suffix && suffix[0]) {
-		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
-		dst[i++] = '/';
-		size_t j = 0;
-		while (suffix[j]) {
-			if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
-			dst[i++] = suffix[j++];
-		}
-	}
-	dst[i] = '\0';
-	return (long)i;
+	return e ? e : (long)i;
 }
 
-/* Render `/proc/self/fd/<fd>/<suffix>` into `dst`. Fallback used when
- * `host_path_for_base_fd` doesn't have a stored host prefix. Returns
- * the byte count (excluding NUL) or -ENAMETOOLONG if the rendering
- * doesn't fit in `cap` bytes (cap should be ≤ sizeof sun_path). */
-static long render_proc_fd_path(char *dst, size_t cap, int fd,
-                                const char *suffix)
-{
-	static const char prefix[] = "/proc/self/fd/";
-	const size_t prefix_len = sizeof prefix - 1;
-
-	if (cap <= prefix_len) return TAWC_ENAMETOOLONG;
-
-	size_t i = 0;
-	for (; i < prefix_len; i++) dst[i] = prefix[i];
-
-	/* Decimal fd. fd >= 0 by construction (we checked). */
-	char fdbuf[12];
-	int  fdn = 0;
-	int  v = fd;
-	if (v < 0) return TAWC_EFAULT;
-	if (v == 0) fdbuf[fdn++] = '0';
-	while (v) { fdbuf[fdn++] = '0' + (v % 10); v /= 10; }
-	if (i + (size_t)fdn >= cap) return TAWC_ENAMETOOLONG;
-	while (fdn--) dst[i++] = fdbuf[fdn];
-
-	/* Suffix may be empty (the fd itself names the bind target). */
-	if (suffix && suffix[0]) {
-		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
-		dst[i++] = '/';
-		size_t j = 0;
-		while (suffix[j]) {
-			if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
-			dst[i++] = suffix[j++];
-		}
-	}
-	dst[i] = '\0';
-	return (long)i;
-}
 
 /* Build a translated sockaddr_un from a guest one. Reads `addrlen`
  * bytes of guest sockaddr at `guest_addr`, and if it's a pathname
@@ -188,8 +141,8 @@ static long translate_unix_sockaddr(const void *guest_addr, long addrlen,
 		n = render_host_path(un_out->sun_path, sizeof un_out->sun_path,
 				     host_prefix, suffix);
 	} else {
-		n = render_proc_fd_path(un_out->sun_path, sizeof un_out->sun_path,
-					r.base_fd, suffix);
+		n = tawc_proc_fd_path(un_out->sun_path, sizeof un_out->sun_path,
+				      r.base_fd, suffix);
 	}
 	if (n < 0) return n;
 	*out_len = (long)sizeof(uint16_t) + n + 1;

@@ -150,3 +150,71 @@ test(tawc_int_to_str_round_trip_with_parse_long)
 		test_int_eq(parsed, (long)values[i]);
 	}
 }
+
+test(tawc_str_append_basics)
+{
+	char buf[16];
+	size_t pos = 0;
+	test_int_eq(tawc_str_append(buf, sizeof buf, &pos, "foo"), 0);
+	test_int_eq(tawc_str_append(buf, sizeof buf, &pos, "/bar"), 0);
+	test_int_eq(pos, 7);
+	test_true(tawc_streq(buf, "foo/bar"));
+	/* Empty append is a no-op that still terminates. */
+	test_int_eq(tawc_str_append(buf, sizeof buf, &pos, ""), 0);
+	test_int_eq(pos, 7);
+}
+
+test(tawc_str_append_overflow_drops_whole_append)
+{
+	char buf[8];
+	size_t pos = 0;
+	test_int_eq(tawc_str_append(buf, sizeof buf, &pos, "abcd"), 0);
+	long e = tawc_str_append(buf, sizeof buf, &pos, "efgh");
+	test_true(e < 0);
+	test_int_eq(pos, 4);                /* pos unchanged */
+	test_true(tawc_streq(buf, "abcd")); /* re-terminated at old pos */
+}
+
+test(tawc_str_append_dec_basics)
+{
+	char buf[32];
+	size_t pos = 0;
+	test_int_eq(tawc_str_append_dec(buf, sizeof buf, &pos, 0), 0);
+	test_int_eq(tawc_str_append_dec(buf, sizeof buf, &pos, -42), 0);
+	test_true(tawc_streq(buf, "0-42"));
+}
+
+test(tawc_str_copy_basics)
+{
+	char buf[8];
+	test_int_eq(tawc_str_copy(buf, sizeof buf, "hello"), 5);
+	test_true(tawc_streq(buf, "hello"));
+	test_true(tawc_str_copy(buf, sizeof buf, "too-long-for-8") < 0);
+	test_true(tawc_streq(buf, ""));   /* left empty on overflow */
+}
+
+test(tawc_long_to_str_basics)
+{
+	char buf[32];
+	test_int_eq(tawc_long_to_str(buf, sizeof buf, 0), 1);
+	test_true(tawc_streq(buf, "0"));
+	tawc_long_to_str(buf, sizeof buf, -9223372036854775807L - 1);
+	test_true(tawc_streq(buf, "-9223372036854775808"));
+	long vals[] = { 1, -1, 4096, -4096, 9223372036854775807L };
+	for (size_t i = 0; i < sizeof vals / sizeof vals[0]; i++) {
+		tawc_long_to_str(buf, sizeof buf, vals[i]);
+		test_int_eq(tawc_parse_long(buf), vals[i]);
+	}
+}
+
+test(tawc_proc_fd_path_basics)
+{
+	char buf[64];
+	test_int_eq(tawc_proc_fd_path(buf, sizeof buf, 17, 0), 16);
+	test_true(tawc_streq(buf, "/proc/self/fd/17"));
+	test_int_eq(tawc_proc_fd_path(buf, sizeof buf, 17, ""), 16);
+	test_true(tawc_streq(buf, "/proc/self/fd/17"));
+	test_int_eq(tawc_proc_fd_path(buf, sizeof buf, 3, "etc/hosts"), 25);
+	test_true(tawc_streq(buf, "/proc/self/fd/3/etc/hosts"));
+	test_true(tawc_proc_fd_path(buf, 8, 3, 0) < 0);
+}

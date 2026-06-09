@@ -137,53 +137,19 @@ static void sigsys_handler(int sig, siginfo_t *info, void *ucontext)
 	{
 		/* Build the trace line into a stack buffer and emit in one
 		 * write so fd 1 / fd 2 don't interleave with our debug output.
-		 * Format: "[t] pid=<pid> nr=<nr> rv=<rv>\n" — async-signal-safe. */
+		 * Format: "[t] pid=<pid> nr=<nr> a=<a> rv=<rv>\n". */
 		char line[96];
 		size_t li = 0;
-		const char *p = "[t] pid=";
-		while (*p) line[li++] = *p++;
 		long pid = TAWC_RAW(TAWC_SYS_getpid, 0, 0, 0, 0, 0, 0);
-		{
-			char tmp[24]; int tn = 0;
-			unsigned long u = pid > 0 ? (unsigned long)pid : 0;
-			if (u == 0) tmp[tn++] = '0';
-			while (u) { tmp[tn++] = (char)('0' + (u % 10)); u /= 10; }
-			while (tn--) line[li++] = tmp[tn];
-		}
-		p = " nr=";
-		while (*p) line[li++] = *p++;
-		{
-			char tmp[24]; int tn = 0;
-			long v = args.nr;
-			int neg = v < 0; unsigned long u = neg ? (unsigned long)(-v) : (unsigned long)v;
-			if (u == 0) tmp[tn++] = '0';
-			while (u) { tmp[tn++] = (char)('0' + (u % 10)); u /= 10; }
-			if (neg) line[li++] = '-';
-			while (tn--) line[li++] = tmp[tn];
-		}
-		p = " a=";
-		while (*p) line[li++] = *p++;
-		{
-			char tmp[24]; int tn = 0;
-			long v = args.a;
-			int neg = v < 0; unsigned long u = neg ? (unsigned long)(-v) : (unsigned long)v;
-			if (u == 0) tmp[tn++] = '0';
-			while (u) { tmp[tn++] = (char)('0' + (u % 10)); u /= 10; }
-			if (neg) line[li++] = '-';
-			while (tn--) line[li++] = tmp[tn];
-		}
-		p = " rv=";
-		while (*p) line[li++] = *p++;
-		{
-			char tmp[24]; int tn = 0;
-			long v = rv;
-			int neg = v < 0; unsigned long u = neg ? (unsigned long)(-v) : (unsigned long)v;
-			if (u == 0) tmp[tn++] = '0';
-			while (u) { tmp[tn++] = (char)('0' + (u % 10)); u /= 10; }
-			if (neg) line[li++] = '-';
-			while (tn--) line[li++] = tmp[tn];
-		}
-		line[li++] = '\n';
+		(void)tawc_str_append(line, sizeof line, &li, "[t] pid=");
+		(void)tawc_str_append_dec(line, sizeof line, &li, pid);
+		(void)tawc_str_append(line, sizeof line, &li, " nr=");
+		(void)tawc_str_append_dec(line, sizeof line, &li, args.nr);
+		(void)tawc_str_append(line, sizeof line, &li, " a=");
+		(void)tawc_str_append_dec(line, sizeof line, &li, args.a);
+		(void)tawc_str_append(line, sizeof line, &li, " rv=");
+		(void)tawc_str_append_dec(line, sizeof line, &li, rv);
+		(void)tawc_str_append(line, sizeof line, &li, "\n");
 		TAWC_RAW(TAWC_SYS_write, 2, (long)line, (long)li, 0, 0, 0);
 	}
 #endif

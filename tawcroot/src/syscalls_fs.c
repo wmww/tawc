@@ -118,8 +118,6 @@ static long        open_proc_bus_pci_devices_shadow(void);
 static int         try_proc_shadow(const char *path, long *out);
 static long        compose_fd_relative(int dirfd, const char *gpath_str,
 				       char *out, size_t cap);
-static long        build_proc_fd_path(char *out, size_t cap, int base_fd,
-				      const char *suffix, int use_empty);
 
 /* Fast-out: does this guest-relative leaf even have a chance of
  * composing into a /proc/<x> path that we shadow? Legitimate first chars
@@ -466,17 +464,18 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 				long al = tawcroot_fd_to_guest_abs(dirfd, abs,
 				                                   TAWCROOT_PATH_SCRATCH_SIZE);
 				if (al >= 0) {
-					if (abs[al - 1] != '/') {
-						if ((size_t)al + 1 >= TAWCROOT_PATH_SCRATCH_SIZE)
-							return TAWC_ENAMETOOLONG;
-						abs[al++] = '/';
-					}
-					size_t pi = 0;
-					while (path_buf[pi] &&
-					       (size_t)al + 1 < TAWCROOT_PATH_SCRATCH_SIZE)
-						abs[al++] = path_buf[pi++];
-					if (path_buf[pi]) return TAWC_ENAMETOOLONG;
-					abs[al] = 0;
+					size_t pos = (size_t)al;
+					long je = 0;
+					if (abs[pos - 1] != '/')
+						je = tawc_str_append(
+							abs,
+							TAWCROOT_PATH_SCRATCH_SIZE,
+							&pos, "/");
+					if (!je) je = tawc_str_append(
+							abs,
+							TAWCROOT_PATH_SCRATCH_SIZE,
+							&pos, path_buf);
+					if (je) return je;
 					tawcroot_path_result r =
 						tawcroot_path_translate(
 							abs, suffix,
@@ -506,13 +505,8 @@ static long fetch_and_translate_at(int dirfd, const char *guest_path,
 			 * the kernel's own empty-path semantics apply: -ENOENT
 			 * for most syscalls, the O_PATH-symlink magic for
 			 * readlinkat(fd, ""). */
-			size_t i = 0;
-			while (path_buf[i] && i + 1 < suffix_cap) {
-				suffix[i] = path_buf[i];
-				i++;
-			}
-			if (i + 1 >= suffix_cap) return TAWC_ENAMETOOLONG;
-			suffix[i] = '\0';
+			long ce = tawc_str_copy(suffix, suffix_cap, path_buf);
+			if (ce < 0) return ce;
 			*base_fd_out    = dirfd;
 			*use_empty_path = 0;
 			return 0;
@@ -541,19 +535,11 @@ static int is_my_tid(long n)
 	if (n == mypid) return 1;
 
 	char path[64];
-	const char *prefix = "/proc/";
-	size_t i = 0;
-	while (prefix[i]) { path[i] = prefix[i]; i++; }
-	int wrote = tawc_int_to_str(path + i, sizeof path - i, (int)n);
-	if (wrote <= 0) return 0;
-	i += (size_t)wrote;
-	const char *suffix = "/status";
-	size_t j = 0;
-	while (suffix[j]) {
-		if (i + 1 >= sizeof path) return 0;
-		path[i++] = suffix[j++];
-	}
-	path[i] = 0;
+	size_t pos = 0;
+	if (tawc_str_append(path, sizeof path, &pos, "/proc/") ||
+	    tawc_str_append_dec(path, sizeof path, &pos, n) ||
+	    tawc_str_append(path, sizeof path, &pos, "/status"))
+		return 0;
 
 	long fd = tawc_openat(AT_FDCWD, path,
 			      0 /*O_RDONLY*/ | 0x80000 /*O_CLOEXEC*/, 0);
@@ -660,17 +646,10 @@ static long compose_fd_relative(int dirfd, const char *gpath_str,
 	long n = tawcroot_proc_fd_to_host_path(dirfd, out, cap);
 	if (n < 0) return n;
 	size_t dl = (size_t)n;
-	if (out[dl - 1] != '/') {
-		if (dl + 1 >= cap) return TAWC_ENAMETOOLONG;
-		out[dl++] = '/';
-	}
-	size_t gi = 0;
-	while (gpath_str[gi]) {
-		if (dl + 1 >= cap) return TAWC_ENAMETOOLONG;
-		out[dl++] = gpath_str[gi++];
-	}
-	out[dl] = 0;
-	return (long)dl;
+	long e = 0;
+	if (out[dl - 1] != '/') e = tawc_str_append(out, cap, &dl, "/");
+	if (!e) e = tawc_str_append(out, cap, &dl, gpath_str);
+	return e ? e : (long)dl;
 }
 
 static int is_proc_self_exe(const char *path)
@@ -1541,8 +1520,8 @@ static long handle_inotify_add_watch(const tawcroot_syscall_args *args,
 				     &base_fd, &use_empty, pmode);
 	if (e) return e;
 	char *host_path = scratch->buf[2];
-	long bp = build_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
-				     base_fd, suffix, use_empty);
+	long bp = tawc_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
+				    base_fd, suffix);
 	if (bp < 0) return bp;
 	return TAWC_RAW(TAWC_SYS_inotify_add_watch, inotify_fd,
 			(long)host_path, mask, 0, 0, 0);
@@ -1563,12 +1542,12 @@ static long link_with_symlink_fallback(int src_fd, const char *src_suf,
 	}
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	char *abs_target = scratch->buf[0];
-	abs_target[0] = '/';
-	size_t i = 0;
-	while (src_suf[i] && i + 2 < TAWCROOT_PATH_SCRATCH_SIZE) {
-		abs_target[1 + i] = src_suf[i]; i++;
-	}
-	abs_target[1 + i] = 0;
+	size_t pos = 0;
+	long se = tawc_str_append(abs_target, TAWCROOT_PATH_SCRATCH_SIZE,
+				  &pos, "/");
+	if (!se) se = tawc_str_append(abs_target, TAWCROOT_PATH_SCRATCH_SIZE,
+				      &pos, src_suf);
+	if (se) return se;
 	return TAWC_RAW(TAWC_SYS_symlinkat, (long)abs_target, dst_fd,
 			(long)dst_suf, 0, 0, 0);
 }
@@ -2150,43 +2129,6 @@ static long handle_mknod(const tawcroot_syscall_args *args, ucontext_t *uc)
 }
 #endif  /* __x86_64__ */
 
-/* Build a "/proc/self/fd/<base_fd>[/suffix]" path into `out`. Used by
- * the path-bearing syscall handlers that don't have an *at variant
- * (statfs, *xattr): we open the rootfs/bind dir as `base_fd`, then
- * pass /proc/self/fd/<n>/<suffix> to the kernel as the path. The
- * kernel resolves /proc/self/fd/<n> to the dir's underlying inode
- * and walks the suffix from there.
- *
- * `use_empty=1` means the syscall should target `base_fd` itself
- * (suffix == ""); we omit the trailing "/<suffix>" so the path is
- * just "/proc/self/fd/<n>". Returns 0 / -ENAMETOOLONG. */
-static long build_proc_fd_path(char *out, size_t cap,
-			       int base_fd, const char *suffix, int use_empty)
-{
-	const char *prefix = "/proc/self/fd/";
-	size_t i = 0;
-	while (prefix[i]) {
-		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
-		out[i] = prefix[i];
-		i++;
-	}
-	int wrote = tawc_int_to_str(out + i, cap - i, base_fd);
-	if (wrote <= 0) return TAWC_ENAMETOOLONG;
-	i += (size_t)wrote;
-	if (!use_empty) {
-		if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
-		out[i++] = '/';
-		size_t j = 0;
-		while (suffix[j]) {
-			if (i + 1 >= cap) return TAWC_ENAMETOOLONG;
-			out[i++] = suffix[j++];
-		}
-	}
-	if (i >= cap) return TAWC_ENAMETOOLONG;
-	out[i] = 0;
-	return 0;
-}
-
 /* statfs(path, buf): translate path, then dispatch using a /proc/self/
  * fd-anchored path. statfs has no fd-relative variant; we could `openat
  * O_PATH` + fstatfs, but on Android-shipped 5.4 kernels fstatfs against
@@ -2207,8 +2149,8 @@ static long handle_statfs(const tawcroot_syscall_args *args, ucontext_t *uc)
 				     TAWCROOT_PATH_FOLLOW);
 	if (e) return e;
 	char *host_path = scratch->buf[2];
-	long bp = build_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
-				     base_fd, suffix, use_empty);
+	long bp = tawc_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
+				    base_fd, suffix);
 	if (bp < 0) return bp;
 	return TAWC_RAW(TAWC_SYS_statfs, (long)host_path, args->b, 0, 0, 0, 0);
 }
@@ -2256,9 +2198,9 @@ static long handle_##name(const tawcroot_syscall_args *args, ucontext_t *uc) \
 		return TAWC_EOPNOTSUPP; /* see big comment above */            \
 	}                                                                      \
 	char *host_path = scratch->buf[2];                                      \
-	long bp = build_proc_fd_path(host_path,                                 \
-				     TAWCROOT_PATH_SCRATCH_SIZE,              \
-				     base_fd, suffix, use_empty);              \
+	long bp = tawc_proc_fd_path(host_path,                                  \
+				    TAWCROOT_PATH_SCRATCH_SIZE,               \
+				    base_fd, suffix);                          \
 	if (bp < 0) return bp;                                             \
 	return TAWC_RAW(sysnr, (long)host_path,                            \
 			args->b, args->c, args->d,                         \

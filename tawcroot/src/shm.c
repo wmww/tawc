@@ -136,13 +136,7 @@ static long dup_to_reserved_inheritable(int fd)
 static long reopen_for_guest(int internal_fd, int flags)
 {
 	char path[32];
-	const char *prefix = "/proc/self/fd/";
-	size_t i = 0;
-	while (prefix[i]) { path[i] = prefix[i]; i++; }
-	int wrote = tawc_int_to_str(path + i, sizeof path - i, internal_fd);
-	if (wrote > 0) {
-		i += (size_t)wrote;
-		path[i] = 0;
+	if (tawc_proc_fd_path(path, sizeof path, internal_fd, 0) > 0) {
 		int oflags = (flags & O_ACCMODE);
 		if (flags & O_CLOEXEC) oflags |= O_CLOEXEC;
 		long fd = tawc_openat(AT_FDCWD, path, oflags, 0);

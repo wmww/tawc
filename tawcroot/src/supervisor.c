@@ -62,26 +62,14 @@ void tawcroot_supervisor_init(const struct tawcroot_supervisor_args *args)
 		char canon[sizeof tawcroot_rootfs_host_path];
 		long rl = tawcroot_proc_fd_to_host_path(tawcroot_rootfs_fd,
 		                                        canon, sizeof canon);
-		const char *src;
-		size_t srclen;
-		if (rl > 0) {
-			src    = canon;
-			srclen = (size_t)rl;
-		} else {
-			/* /proc not mounted yet, or some other oddity. Fall
-			 * back to the user-supplied path; the legacy mismatch
-			 * bug from before canonicalisation reappears, but
-			 * tawcroot is already broken in deeper ways without
-			 * /proc. */
-			src    = args->rootfs_host_path;
-			srclen = 0;
-			while (src[srclen]) srclen++;
-		}
-		size_t k = 0;
-		while (k < srclen && k + 1 < sizeof tawcroot_rootfs_host_path) {
-			tawcroot_rootfs_host_path[k] = src[k];
-			k++;
-		}
+		/* On readlink failure (/proc not mounted yet, or some other
+		 * oddity) fall back to the user-supplied path; the legacy
+		 * mismatch bug from before canonicalisation reappears, but
+		 * tawcroot is already broken in deeper ways without /proc. */
+		long kn = tawc_str_copy(tawcroot_rootfs_host_path,
+		                        sizeof tawcroot_rootfs_host_path,
+		                        rl > 0 ? canon : args->rootfs_host_path);
+		size_t k = kn > 0 ? (size_t)kn : 0;
 		while (k > 1 && tawcroot_rootfs_host_path[k - 1] == '/') k--;
 		tawcroot_rootfs_host_path[k] = 0;
 		tawcroot_rootfs_host_path_len = k;

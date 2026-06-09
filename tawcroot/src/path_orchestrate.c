@@ -134,20 +134,11 @@ static long join_cwd_rel(const char *cwd_abs, const char *rel,
 			 char *out, size_t out_cap)
 {
 	size_t off = 0;
-	for (size_t i = 0; cwd_abs[i]; i++) {
-		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
-		out[off++] = cwd_abs[i];
-	}
-	if (off == 0 || out[off - 1] != '/') {
-		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
-		out[off++] = '/';
-	}
-	for (size_t i = 0; rel[i]; i++) {
-		if (off + 1 >= out_cap) return TAWC_ENAMETOOLONG;
-		out[off++] = rel[i];
-	}
-	out[off] = 0;
-	return 0;
+	long e = tawc_str_append(out, out_cap, &off, cwd_abs);
+	if (!e && (off == 0 || out[off - 1] != '/'))
+		e = tawc_str_append(out, out_cap, &off, "/");
+	if (!e) e = tawc_str_append(out, out_cap, &off, rel);
+	return e;
 }
 
 long tawcroot_path_binds_reanchor(struct tawcroot_bind *binds, size_t n_binds,
@@ -302,17 +293,16 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 				ctx->memos, ctx->n_memos)) break;
 		char *tmp = scratch->buf[2];
 		size_t i = 0;
-		tmp[i++] = '/';
-		size_t j = 0;
-		while (out_suffix[j] && i + 1 < TAWCROOT_PATH_SCRATCH_SIZE)
-			tmp[i++] = out_suffix[j++];
-		if (out_suffix[j]) {
+		long je = tawc_str_append(tmp, TAWCROOT_PATH_SCRATCH_SIZE,
+					  &i, "/");
+		if (!je) je = tawc_str_append(tmp, TAWCROOT_PATH_SCRATCH_SIZE,
+					      &i, out_suffix);
+		if (je) {
 			/* Suffix doesn't fit the re-fold scratch — error out
 			 * rather than silently truncating to a wrong path. */
-			r.err = TAWC_ENAMETOOLONG;
+			r.err = je;
 			return r;
 		}
-		tmp[i] = 0;
 		long rf = tawcroot_path_fold_absolute(tmp, out_suffix, out_cap);
 		if (rf < 0) { r.err = rf; return r; }
 	}
