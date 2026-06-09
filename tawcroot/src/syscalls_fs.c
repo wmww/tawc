@@ -49,24 +49,31 @@
 #include "tawc_uapi.h"
 #include "usercopy.h"
 
-/* Peek the guest path to classify a possible `/dev/shm` intercept.
+/* Classify an already-fetched local path as a `/dev/shm` intercept.
  *   NONE — not shm (fall through to normal translation)
- *   NAME — `/dev/shm/<name>` (p->name points at the name)
- *   DIR  — `/dev/shm` directory itself */
+ *   NAME — `/dev/shm/<name>` (*name_out points into `local_path`)
+ *   DIR  — `/dev/shm` directory itself
+ * Callers fetch the guest string once (fetch_guest_path) and classify
+ * that copy — the same bytes later reach the translator, so a racing
+ * guest thread can't swap the path between classification and use. */
 enum { SHM_PEEK_NONE = 0, SHM_PEEK_NAME = 1, SHM_PEEK_DIR = 2 };
-struct shm_peek {
-	char        buf[320];   /* "/dev/shm/" + 255-byte POSIX name + slack */
-	const char *name;       /* valid while the struct lives (NAME only) */
-};
-static int peek_shm(const char *gpath, struct shm_peek *p)
+static int classify_shm(const char *local_path, const char **name_out)
 {
-	if (!gpath) return SHM_PEEK_NONE;
-	long sp = tawc_copy_string_from_guest(p->buf, sizeof p->buf, gpath);
-	if (sp < 0) return SHM_PEEK_NONE;
-	p->name = tawcroot_shm_match(p->buf);
-	if (p->name) return SHM_PEEK_NAME;
-	if (tawcroot_shm_is_dir(p->buf)) return SHM_PEEK_DIR;
+	*name_out = tawcroot_shm_match(local_path);
+	if (*name_out) return SHM_PEEK_NAME;
+	if (tawcroot_shm_is_dir(local_path)) return SHM_PEEK_DIR;
 	return SHM_PEEK_NONE;
+}
+
+/* Fetch the guest path once into scratch->buf[slot] for a handler that
+ * classifies intercepts before translating. Returns 0 / -errno. */
+static long fetch_guest_path(struct tawcroot_path_scratch *scratch, int slot,
+			     const char *guest_path)
+{
+	long n = tawc_copy_string_from_guest(scratch->buf[slot],
+					     TAWCROOT_PATH_SCRATCH_SIZE,
+					     guest_path);
+	return n < 0 ? n : 0;
 }
 
 /* AT_EMPTY_PATH support: returns 1 when `gpath` is NULL or "", 0 when
@@ -98,6 +105,9 @@ struct fs_path {
 static long translate_at(struct tawcroot_path_scratch *scratch, int slot,
 			 int dirfd, const char *guest_path,
 			 tawcroot_path_mode mode, struct fs_path *out);
+static long translate_local(struct tawcroot_path_scratch *scratch, int slot,
+			    int dirfd, tawcroot_path_mode mode,
+			    struct fs_path *out);
 static void decorate_stat(struct stat *st);
 
 /* Pick the resolution mode for an openat based on the kernel flags.
@@ -131,7 +141,11 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	const char *gpath = (const char *)(uintptr_t)args->b;
 	int flags = (int)args->c;
 	int mode  = (int)args->d;
+	if (!gpath) return TAWC_EFAULT;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path = scratch->buf[0];
+	long fe = fetch_guest_path(scratch, 0, gpath);
+	if (fe) return fe;
 
 	/* /proc/self/maps and /proc/<our-pid>/maps: synthesize a shadow fd
 	 * backed by a memfd containing the kernel's maps output with each
@@ -166,57 +180,47 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 *
 	 * Only intercept O_RDONLY (no O_DIRECTORY, no O_PATH). Other flag
 	 * combos fall through to normal translation so the kernel produces
-	 * the conventional -ENOTDIR / O_PATH-fd behavior. The 64-byte peek
-	 * is wide enough for "/proc/<10-digit-pid>/task/<10-digit-tid>/maps"
-	 * and for "/proc/sys/kernel/overflowuid"; longer paths can't match.
+	 * the conventional -ENOTDIR / O_PATH-fd behavior.
 	 *
 	 * Fd-relative form: openat(proc_dir_fd, "self/maps", ...) or
 	 * openat(proc_dir_fd, "sys/kernel/overflowuid", ...). We resolve
 	 * dirfd via /proc/self/fd/<n>, join with the guest path, and
 	 * re-classify. One extra readlinkat per non-AT_FDCWD relative
 	 * O_RDONLY-ish open; only fires when the absolute peek didn't match. */
-	if (gpath &&
-	    (flags & O_ACCMODE) == O_RDONLY &&
+	if ((flags & O_ACCMODE) == O_RDONLY &&
 	    (flags & O_DIRECTORY) == 0 &&
 	    (flags & O_PATH) == 0) {
-		char tmp[64];
-		long pn = tawc_copy_string_from_guest(tmp, sizeof tmp, gpath);
-		if (pn >= 0) {
-			long shadow;
-			int hit = tawcroot_proc_shadow_open(tmp, &shadow);
-			if (!hit && dirfd != AT_FDCWD && tmp[0] != '/' &&
-			    tawcroot_could_be_proc_relative(tmp)) {
-				char *composed = scratch->buf[2];
-				if (tawcroot_compose_fd_relative(dirfd, tmp,
-							composed,
-							TAWCROOT_PATH_SCRATCH_SIZE) > 0)
-					hit = tawcroot_proc_shadow_open(composed, &shadow);
-			}
-			if (hit) {
-				/* The shadow memfds are created MFD_CLOEXEC.
-				 * If the guest didn't ask for O_CLOEXEC, clear
-				 * FD_CLOEXEC so the fd survives the guest's next
-				 * exec like a real /proc file would. */
-				if (shadow >= 0 && (flags & O_CLOEXEC) == 0)
-					(void)tawc_fcntl((int)shadow, F_SETFD, 0);
-				return shadow;
-			}
+		long shadow;
+		int hit = tawcroot_proc_shadow_open(path, &shadow);
+		if (!hit && dirfd != AT_FDCWD && path[0] != '/' &&
+		    tawcroot_could_be_proc_relative(path)) {
+			char *composed = scratch->buf[2];
+			if (tawcroot_compose_fd_relative(dirfd, path,
+						composed,
+						TAWCROOT_PATH_SCRATCH_SIZE) > 0)
+				hit = tawcroot_proc_shadow_open(composed,
+								&shadow);
+		}
+		if (hit) {
+			/* The shadow memfds are created MFD_CLOEXEC.
+			 * If the guest didn't ask for O_CLOEXEC, clear
+			 * FD_CLOEXEC so the fd survives the guest's next
+			 * exec like a real /proc file would. */
+			if (shadow >= 0 && (flags & O_CLOEXEC) == 0)
+				(void)tawc_fcntl((int)shadow, F_SETFD, 0);
+			return shadow;
 		}
 	}
 
-	{
-		struct shm_peek sp;
-		int kind = peek_shm(gpath, &sp);
-		if (kind == SHM_PEEK_NAME)
-			return tawcroot_shm_open(sp.name, flags, mode);
-		/* SHM_PEEK_DIR (open of /dev/shm itself) falls through; the
-		 * translator returns -ENOENT, matching what a host with no
-		 * /dev/shm dir would do. */
-	}
+	const char *shm_name;
+	if (classify_shm(path, &shm_name) == SHM_PEEK_NAME)
+		return tawcroot_shm_open(shm_name, flags, mode);
+	/* SHM_PEEK_DIR (open of /dev/shm itself) falls through; the
+	 * translator returns -ENOENT, matching what a host with no
+	 * /dev/shm dir would do. */
 
 	struct fs_path t;
-	long e = translate_at(scratch, 0, dirfd, gpath,
-			      openat_mode(flags), &t);
+	long e = translate_local(scratch, 0, dirfd, openat_mode(flags), &t);
 	if (e) return e;
 
 	/* Empty t.path → guest asked for "/" or for a bind dst's root.
@@ -294,12 +298,16 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 
 	if (!gpath) return TAWC_EFAULT;
 
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	long fe = fetch_guest_path(scratch, 0, gpath);
+	if (fe) return fe;
+
 	{
-		struct shm_peek sp;
-		int kind = peek_shm(gpath, &sp);
-		if (kind == SHM_PEEK_NAME || kind == SHM_PEEK_DIR) {
+		const char *shm_name;
+		int kind = classify_shm(scratch->buf[0], &shm_name);
+		if (kind != SHM_PEEK_NONE) {
 			long r = (kind == SHM_PEEK_NAME)
-				? tawcroot_shm_stat_name(sp.name, &local)
+				? tawcroot_shm_stat_name(shm_name, &local)
 				: (tawcroot_shm_stat_dir(&local), 0L);
 			if (r < 0) return r;
 			long ce = tawc_copy_to_guest(out, &local, sizeof local);
@@ -312,10 +320,8 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
 
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
-	long e = translate_at(scratch, 0, dirfd, gpath,
-			      pmode, &t);
+	long e = translate_local(scratch, 0, dirfd, pmode, &t);
 	if (e) return e;
 
 	const char *resolved = t.path;
@@ -336,9 +342,11 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 
 /* Fetch a guest-pointer path string into a stack-local buffer through
  * the EFAULT-safe usercopy helper, then translate. This is the front
- * door for every path-bearing handler — the path string lives in this
- * buffer for the duration of the call, so the guest cannot modify it
- * out from under us between argument-read and *at issue.
+ * door for every path-bearing handler — the path string is fetched
+ * ONCE into scratch->buf[slot] and every later step (shm / proc-shadow
+ * classification via translate_local callers, translation, *at issue)
+ * works on that copy, so the guest cannot swap the string between
+ * classification and use.
  *
  * `dirfd` is the *at-syscall's directory fd. When the guest passes a
  * non-AT_FDCWD dirfd AND the path is relative, the kernel's intent is
@@ -382,20 +390,16 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
  * bind so `..` clamps at the bind boundary. Outside-rootfs+outside-binds
  * fds (e.g. host /proc tree) still ENOENT and fall through to kernel
  * passthrough — there's nothing in our view to escape into. */
-static long translate_at(struct tawcroot_path_scratch *scratch, int slot,
-			 int dirfd, const char *guest_path,
-			 tawcroot_path_mode mode, struct fs_path *out)
+static long translate_local(struct tawcroot_path_scratch *scratch, int slot,
+			    int dirfd, tawcroot_path_mode mode,
+			    struct fs_path *out)
 {
 	char  *path_buf   = scratch->buf[slot];
 	char  *suffix     = scratch->buf[slot + 1];
-	size_t path_cap   = TAWCROOT_PATH_SCRATCH_SIZE;
 	size_t suffix_cap = TAWCROOT_PATH_SCRATCH_SIZE;
 	out->path = suffix;
 
 	if (dirfd != AT_FDCWD) {
-		long n = tawc_copy_string_from_guest(path_buf, path_cap,
-		                                     guest_path);
-		if (n < 0) return n;
 		if (path_buf[0] != '/') {
 			/* Lift EVERY non-empty fd-relative path to guest-
 			 * absolute via the dirfd's /proc/self/fd link, then
@@ -473,14 +477,23 @@ static long translate_at(struct tawcroot_path_scratch *scratch, int slot,
 		 * through to the normal translation. */
 	}
 
-	long n = tawc_copy_string_from_guest(path_buf, path_cap, guest_path);
-	if (n < 0) return n;
 	tawcroot_path_result r =
 		tawcroot_path_translate(path_buf, suffix, suffix_cap, mode);
 	if (r.err) return r.err;
 	out->fd      = r.base_fd;
 	out->is_root = (suffix[0] == 0);
 	return 0;
+}
+
+static long translate_at(struct tawcroot_path_scratch *scratch, int slot,
+			 int dirfd, const char *guest_path,
+			 tawcroot_path_mode mode, struct fs_path *out)
+{
+	long n = tawc_copy_string_from_guest(scratch->buf[slot],
+					     TAWCROOT_PATH_SCRATCH_SIZE,
+					     guest_path);
+	if (n < 0) return n;
+	return translate_local(scratch, slot, dirfd, mode, out);
 }
 
 
@@ -502,34 +515,31 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	 * wants the path it originally asked us to exec. The fd-relative
 	 * case (readlinkat(proc_self_fd, "exe", ...)) is caught by re-
 	 * composing through the dirfd's /proc/self/fd/<n> link. */
-	{
-		char *tmp = scratch->buf[0];
-		long n = tawc_copy_string_from_guest(
-			tmp, TAWCROOT_PATH_SCRATCH_SIZE, gpath);
-		if (n < 0) return n;
-		if (tawcroot_guest_exe_path_len > 0) {
-			int hit = tawcroot_is_proc_self_exe(tmp);
-			char *composed = scratch->buf[1];
-			if (!hit && dirfd != AT_FDCWD && tmp[0] != '/' &&
-			    tawcroot_could_be_proc_relative(tmp) &&
-			    tawcroot_compose_fd_relative(dirfd, tmp,
-						composed,
-						TAWCROOT_PATH_SCRATCH_SIZE) > 0)
-				hit = tawcroot_is_proc_self_exe(composed);
-			if (hit) {
-				size_t len = tawcroot_guest_exe_path_len;
-				if (len > (size_t)size) len = (size_t)size;
-				long ce = tawc_copy_to_guest(buf,
-					tawcroot_guest_exe_path, len);
-				if (ce < 0) return ce;
-				return (long)len;
-			}
+	char *path = scratch->buf[0];
+	long fe = fetch_guest_path(scratch, 0, gpath);
+	if (fe) return fe;
+	if (tawcroot_guest_exe_path_len > 0) {
+		int hit = tawcroot_is_proc_self_exe(path);
+		char *composed = scratch->buf[1];
+		if (!hit && dirfd != AT_FDCWD && path[0] != '/' &&
+		    tawcroot_could_be_proc_relative(path) &&
+		    tawcroot_compose_fd_relative(dirfd, path,
+					composed,
+					TAWCROOT_PATH_SCRATCH_SIZE) > 0)
+			hit = tawcroot_is_proc_self_exe(composed);
+		if (hit) {
+			size_t len = tawcroot_guest_exe_path_len;
+			if (len > (size_t)size) len = (size_t)size;
+			long ce = tawc_copy_to_guest(buf,
+				tawcroot_guest_exe_path, len);
+			if (ce < 0) return ce;
+			return (long)len;
 		}
 	}
 
 	struct fs_path t;
-	long e = translate_at(scratch, 0, dirfd, gpath,
-			      TAWCROOT_PATH_NOFOLLOW, &t);
+	long e = translate_local(scratch, 0, dirfd,
+				 TAWCROOT_PATH_NOFOLLOW, &t);
 	if (e) return e;
 	/* When the guest path resolves exactly to a bind dst (or rootfs root),
 	 * translate_at gives us (reserved_dir_fd, ""). The kernel
@@ -611,19 +621,19 @@ static long handle_faccessat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	if (args->nr == TAWC_SYS_faccessat2 && (int)args->d != 0)
 		return TAWC_ENOSYS;
 
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	long fe = fetch_guest_path(scratch, 0, gpath);
+	if (fe) return fe;
+
 	{
-		struct shm_peek sp;
-		int kind = peek_shm(gpath, &sp);
-		if (kind == SHM_PEEK_NAME) return tawcroot_shm_access_name(sp.name);
+		const char *shm_name;
+		int kind = classify_shm(scratch->buf[0], &shm_name);
+		if (kind == SHM_PEEK_NAME) return tawcroot_shm_access_name(shm_name);
 		if (kind == SHM_PEEK_DIR)  return tawcroot_shm_access_dir();
 	}
 
-	tawcroot_path_mode pmode = TAWCROOT_PATH_FOLLOW;
-
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
-	long e = translate_at(scratch, 0, dirfd, gpath,
-			      pmode, &t);
+	long e = translate_local(scratch, 0, dirfd, TAWCROOT_PATH_FOLLOW, &t);
 	if (e) return e;
 	/* Empty t.path → guest asked for "/" or for a bind dst's root.
 	 * Pass "." so the kernel resolves it to the dir t.fd points at;
@@ -753,21 +763,24 @@ static long handle_unlinkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int flag = (int)args->c;
 	if (!gpath) return TAWC_EFAULT;
 
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	long fe = fetch_guest_path(scratch, 0, gpath);
+	if (fe) return fe;
+
 	{
-		struct shm_peek sp;
-		int kind = peek_shm(gpath, &sp);
+		const char *shm_name;
+		int kind = classify_shm(scratch->buf[0], &shm_name);
 		if (kind == SHM_PEEK_NAME) {
 			if (flag & AT_REMOVEDIR) return TAWC_ENOTDIR;
-			return tawcroot_shm_unlink(sp.name);
+			return tawcroot_shm_unlink(shm_name);
 		}
 		if (kind == SHM_PEEK_DIR)
 			return (flag & AT_REMOVEDIR) ? TAWC_EBUSY : TAWC_EISDIR;
 	}
 
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
-	long e = translate_at(scratch, 0, dirfd, gpath,
-			      TAWCROOT_PATH_PARENT_REMOVE, &t);
+	long e = translate_local(scratch, 0, dirfd,
+				 TAWCROOT_PATH_PARENT_REMOVE, &t);
 	if (e) return e;
 	/* Path resolved to the rootfs/bind root itself: match kernel
 	 * errno for operating on "/". rmdir("/") → EBUSY, unlink("/") →
@@ -943,13 +956,19 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 		}
 	}
 
+	if (!path) return TAWC_EFAULT;
+
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	long fe = fetch_guest_path(scratch, 0, path);
+	if (fe) return fe;
+
 	{
-		struct shm_peek sp;
-		int kind = peek_shm(path, &sp);
-		if (kind == SHM_PEEK_NAME || kind == SHM_PEEK_DIR) {
+		const char *shm_name;
+		int kind = classify_shm(scratch->buf[0], &shm_name);
+		if (kind != SHM_PEEK_NONE) {
 			long r;
 			if (kind == SHM_PEEK_NAME) {
-				r = tawcroot_shm_statx_name(sp.name, &local,
+				r = tawcroot_shm_statx_name(shm_name, &local,
 							    mask);
 				if (r < 0) return r;
 			} else {
@@ -965,10 +984,8 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 		? TAWCROOT_PATH_NOFOLLOW
 		: TAWCROOT_PATH_FOLLOW;
 
-	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
-	long e = translate_at(scratch, 0, dirfd, path,
-			      pmode, &t);
+	long e = translate_local(scratch, 0, dirfd, pmode, &t);
 	if (e) return e;
 
 	const char *resolved = t.is_root ? "" : t.path;
