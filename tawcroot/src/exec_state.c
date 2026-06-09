@@ -61,6 +61,18 @@ size_t tawcroot_exec_state_estimate_bytes(const char *path,
 	return tawcroot_exec_state_total_bytes((uint32_t)s);
 }
 
+/* Append `str` (with NUL) to the string pool at `*off`; returns the
+ * offset it landed at. Bounds were established up front by the
+ * estimate_bytes check in the writer. */
+static uint32_t emit_str(uint8_t *strings, uint32_t *off, const char *str)
+{
+	size_t n = strlen(str) + 1;
+	uint32_t at = *off;
+	memcpy(strings + at, str, n);
+	*off += (uint32_t)n;
+	return at;
+}
+
 long tawcroot_exec_state_write(void *buf, size_t buf_cap,
                                const char *path,
                                int argc, const char *const *argv,
@@ -99,62 +111,34 @@ long tawcroot_exec_state_write(void *buf, size_t buf_cap,
 	uint32_t off = 0;
 
 	/* path first — convention, so a debug dump finds it easily. */
-	{
-		size_t n = strlen(path) + 1;
-		h->path_off = off;
-		memcpy(strings + off, path, n);
-		off += (uint32_t)n;
-	}
-
-	for (int i = 0; i < argc; i++) {
-		size_t n = strlen(argv[i]) + 1;
-		h->argv_off[i] = off;
-		memcpy(strings + off, argv[i], n);
-		off += (uint32_t)n;
-	}
-	for (int i = 0; i < envc; i++) {
-		size_t n = strlen(envp[i]) + 1;
-		h->envp_off[i] = off;
-		memcpy(strings + off, envp[i], n);
-		off += (uint32_t)n;
-	}
+	h->path_off = emit_str(strings, &off, path);
+	for (int i = 0; i < argc; i++)
+		h->argv_off[i] = emit_str(strings, &off, argv[i]);
+	for (int i = 0; i < envc; i++)
+		h->envp_off[i] = emit_str(strings, &off, envp[i]);
 
 	/* Optional per-process state. 0-offset = absent (path is at offset 0
 	 * so any subsequent string has off > 0 — unambiguous). */
 	if (ex) {
-		if (ex->rootfs_host) {
-			size_t n = strlen(ex->rootfs_host) + 1;
-			h->rootfs_host_off = off;
-			memcpy(strings + off, ex->rootfs_host, n);
-			off += (uint32_t)n;
-		}
-		if (ex->guest_exe) {
-			size_t n = strlen(ex->guest_exe) + 1;
-			h->guest_exe_off = off;
-			memcpy(strings + off, ex->guest_exe, n);
-			off += (uint32_t)n;
-		}
+		if (ex->rootfs_host)
+			h->rootfs_host_off = emit_str(strings, &off,
+			                              ex->rootfs_host);
+		if (ex->guest_exe)
+			h->guest_exe_off = emit_str(strings, &off,
+			                            ex->guest_exe);
 		h->n_binds = ex->n_binds;
 		for (uint32_t i = 0; i < ex->n_binds; i++) {
-			if (ex->bind_src && ex->bind_src[i]) {
-				size_t n = strlen(ex->bind_src[i]) + 1;
-				h->bind_src_off[i] = off;
-				memcpy(strings + off, ex->bind_src[i], n);
-				off += (uint32_t)n;
-			}
-			if (ex->bind_dst && ex->bind_dst[i]) {
-				size_t n = strlen(ex->bind_dst[i]) + 1;
-				h->bind_dst_off[i] = off;
-				memcpy(strings + off, ex->bind_dst[i], n);
-				off += (uint32_t)n;
-			}
+			if (ex->bind_src && ex->bind_src[i])
+				h->bind_src_off[i] = emit_str(strings, &off,
+				                              ex->bind_src[i]);
+			if (ex->bind_dst && ex->bind_dst[i])
+				h->bind_dst_off[i] = emit_str(strings, &off,
+				                              ex->bind_dst[i]);
 		}
 		h->n_shm = ex->n_shm;
 		for (uint32_t i = 0; i < ex->n_shm; i++) {
-			size_t n = strlen(ex->shm_name[i]) + 1;
-			h->shm_name_off[i] = off;
-			memcpy(strings + off, ex->shm_name[i], n);
-			off += (uint32_t)n;
+			h->shm_name_off[i] = emit_str(strings, &off,
+			                              ex->shm_name[i]);
 			h->shm_fd[i] = (uint32_t)ex->shm_fd[i];
 		}
 	}
