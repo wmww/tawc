@@ -50,22 +50,22 @@
 #include "usercopy.h"
 
 /* Peek the guest path to classify a possible `/dev/shm` intercept.
- *   0 = not shm (fall through to normal translation)
- *   1 = `/dev/shm/<name>` (writes name pointer into `*name_out`,
- *       valid for the lifetime of `buf`)
- *   2 = `/dev/shm` directory itself
- * `buf` is caller-owned scratch (320 bytes covers `/dev/shm/` +
- * 255-byte POSIX shm name with headroom; longer paths can't match). */
+ *   NONE — not shm (fall through to normal translation)
+ *   NAME — `/dev/shm/<name>` (p->name points at the name)
+ *   DIR  — `/dev/shm` directory itself */
 enum { SHM_PEEK_NONE = 0, SHM_PEEK_NAME = 1, SHM_PEEK_DIR = 2 };
-static int peek_shm(const char *gpath, char *buf, size_t cap,
-		    const char **name_out)
+struct shm_peek {
+	char        buf[320];   /* "/dev/shm/" + 255-byte POSIX name + slack */
+	const char *name;       /* valid while the struct lives (NAME only) */
+};
+static int peek_shm(const char *gpath, struct shm_peek *p)
 {
 	if (!gpath) return SHM_PEEK_NONE;
-	long sp = tawc_copy_string_from_guest(buf, cap, gpath);
+	long sp = tawc_copy_string_from_guest(p->buf, sizeof p->buf, gpath);
 	if (sp < 0) return SHM_PEEK_NONE;
-	const char *n = tawcroot_shm_match(buf);
-	if (n) { *name_out = n; return SHM_PEEK_NAME; }
-	if (tawcroot_shm_is_dir(buf)) return SHM_PEEK_DIR;
+	p->name = tawcroot_shm_match(p->buf);
+	if (p->name) return SHM_PEEK_NAME;
+	if (tawcroot_shm_is_dir(p->buf)) return SHM_PEEK_DIR;
 	return SHM_PEEK_NONE;
 }
 
@@ -205,11 +205,10 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	}
 
 	{
-		char shm_buf[320];
-		const char *shm_name;
-		int kind = peek_shm(gpath, shm_buf, sizeof shm_buf, &shm_name);
+		struct shm_peek sp;
+		int kind = peek_shm(gpath, &sp);
 		if (kind == SHM_PEEK_NAME)
-			return tawcroot_shm_open(shm_name, flags, mode);
+			return tawcroot_shm_open(sp.name, flags, mode);
 		/* SHM_PEEK_DIR (open of /dev/shm itself) falls through; the
 		 * translator returns -ENOENT, matching what a host with no
 		 * /dev/shm dir would do. */
@@ -296,12 +295,11 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 	if (!gpath) return TAWC_EFAULT;
 
 	{
-		char shm_buf[320];
-		const char *shm_name;
-		int kind = peek_shm(gpath, shm_buf, sizeof shm_buf, &shm_name);
+		struct shm_peek sp;
+		int kind = peek_shm(gpath, &sp);
 		if (kind == SHM_PEEK_NAME || kind == SHM_PEEK_DIR) {
 			long r = (kind == SHM_PEEK_NAME)
-				? tawcroot_shm_stat_name(shm_name, &local)
+				? tawcroot_shm_stat_name(sp.name, &local)
 				: (tawcroot_shm_stat_dir(&local), 0L);
 			if (r < 0) return r;
 			long ce = tawc_copy_to_guest(out, &local, sizeof local);
@@ -614,10 +612,9 @@ static long handle_faccessat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		return TAWC_ENOSYS;
 
 	{
-		char shm_buf[320];
-		const char *shm_name;
-		int kind = peek_shm(gpath, shm_buf, sizeof shm_buf, &shm_name);
-		if (kind == SHM_PEEK_NAME) return tawcroot_shm_access_name(shm_name);
+		struct shm_peek sp;
+		int kind = peek_shm(gpath, &sp);
+		if (kind == SHM_PEEK_NAME) return tawcroot_shm_access_name(sp.name);
 		if (kind == SHM_PEEK_DIR)  return tawcroot_shm_access_dir();
 	}
 
@@ -757,12 +754,11 @@ static long handle_unlinkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	if (!gpath) return TAWC_EFAULT;
 
 	{
-		char shm_buf[320];
-		const char *shm_name;
-		int kind = peek_shm(gpath, shm_buf, sizeof shm_buf, &shm_name);
+		struct shm_peek sp;
+		int kind = peek_shm(gpath, &sp);
 		if (kind == SHM_PEEK_NAME) {
 			if (flag & AT_REMOVEDIR) return TAWC_ENOTDIR;
-			return tawcroot_shm_unlink(shm_name);
+			return tawcroot_shm_unlink(sp.name);
 		}
 		if (kind == SHM_PEEK_DIR)
 			return (flag & AT_REMOVEDIR) ? TAWC_EBUSY : TAWC_EISDIR;
@@ -948,13 +944,12 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 	}
 
 	{
-		char shm_buf[320];
-		const char *shm_name;
-		int kind = peek_shm(path, shm_buf, sizeof shm_buf, &shm_name);
+		struct shm_peek sp;
+		int kind = peek_shm(path, &sp);
 		if (kind == SHM_PEEK_NAME || kind == SHM_PEEK_DIR) {
 			long r;
 			if (kind == SHM_PEEK_NAME) {
-				r = tawcroot_shm_statx_name(shm_name, &local,
+				r = tawcroot_shm_statx_name(sp.name, &local,
 							    mask);
 				if (r < 0) return r;
 			} else {
