@@ -97,11 +97,49 @@ static long parse_image(int fd, struct tawc_loader_image *img,
 	return tawc_loader_parse_phdrs(pbuf, pbuf_cap, page_size, img);
 }
 
-/* Maximum number of `#!` shebang levels we'll resolve before bailing.
- * Linux's binfmt_script.c caps at 4 by default. */
-#define TAWC_SHEBANG_MAX_DEPTH 4
-/* Linux BINPRM_BUF_SIZE is currently 256 bytes. We can use the same. */
-#define TAWC_SHEBANG_BUF 256
+long tawcroot_shebang_read(int fd, char *line, size_t cap,
+                           const char **interp, const char **arg)
+{
+	long ln = tawc_pread64(fd, line, cap - 1, 0);
+	if (ln < 2) return TAWC_ENOEXEC;
+	line[ln] = 0;
+	/* Find newline; trim. A full buffer with no newline means the
+	 * shebang line exceeds the buffer — the kernel (≥5.1) returns
+	 * ENOEXEC rather than truncating the interpreter path mid-token.
+	 * (A short read hit EOF, which acts as the line terminator, same
+	 * as the kernel.) */
+	long eol = 2;
+	while (eol < ln && line[eol] != '\n') eol++;
+	if (eol == ln && ln == (long)cap - 1) return TAWC_ENOEXEC;
+	line[eol] = 0;
+	/* Skip "#!" and leading whitespace; the interpreter runs to the
+	 * FIRST whitespace. Everything after (trimmed) is a single
+	 * argument, regardless of further whitespace — Linux semantics. */
+	long i = 2;
+	while (i < eol && (line[i] == ' ' || line[i] == '\t')) i++;
+	long interp_lo = i;
+	while (i < eol && line[i] != ' ' && line[i] != '\t') i++;
+	long interp_hi = i;
+	if (interp_hi == interp_lo) return TAWC_ENOEXEC;  /* "#!\n" — bad */
+	while (i < eol && (line[i] == ' ' || line[i] == '\t')) i++;
+	long arg_lo = i;
+	long arg_hi = eol;
+	while (arg_hi > arg_lo &&
+	       (line[arg_hi - 1] == ' ' || line[arg_hi - 1] == '\t'))
+		arg_hi--;
+
+	line[interp_hi] = 0;
+	*interp = &line[interp_lo];
+	if (arg) {
+		if (arg_hi > arg_lo) {
+			line[arg_hi] = 0;
+			*arg = &line[arg_lo];
+		} else {
+			*arg = 0;
+		}
+	}
+	return 0;
+}
 
 /* Resolve a #! shebang chain. Prepends argv entries (the interpreter,
  * optionally a single shebang argument; the original argv[0] becomes
@@ -135,44 +173,11 @@ static long resolve_shebangs(int initial_fd,
 		}
 
 		static char line[TAWC_SHEBANG_BUF];
-		long ln = tawc_pread64(bin_fd, line, sizeof line - 1, 0);
-		if (ln < 2) { tawc_close(bin_fd); return TAWC_ENOEXEC; }
-		line[ln] = 0;
-		/* Find newline; trim. A full buffer with no newline means the
-		 * shebang line exceeds BINPRM_BUF_SIZE — the kernel (≥5.1)
-		 * returns ENOEXEC rather than truncating the interpreter path
-		 * mid-token; match that. (A short read hit EOF, which acts as
-		 * the line terminator, same as the kernel.) */
-		long eol = 2;
-		while (eol < ln && line[eol] != '\n') eol++;
-		if (eol == ln && ln == (long)sizeof line - 1) {
-			tawc_close(bin_fd);
-			return TAWC_ENOEXEC;
-		}
-		line[eol] = 0;
-		/* Skip "#!" and leading whitespace. */
-		long i = 2;
-		while (i < eol && (line[i] == ' ' || line[i] == '\t')) i++;
-		long interp_lo = i;
-		while (i < eol && line[i] != ' ' && line[i] != '\t') i++;
-		long interp_hi = i;
-		while (i < eol && (line[i] == ' ' || line[i] == '\t')) i++;
-		long arg_lo = i;
-		long arg_hi = eol;
-		/* Trim trailing whitespace from argument. */
-		while (arg_hi > arg_lo &&
-		       (line[arg_hi - 1] == ' ' || line[arg_hi - 1] == '\t'))
-			arg_hi--;
-
-		if (interp_hi == interp_lo) {           /* "#!\n" — bad */
-			tawc_close(bin_fd);
-			return TAWC_ENOEXEC;
-		}
-		line[interp_hi] = 0;
-		const char *interp = &line[interp_lo];
-
-		const char *shebang_arg = (arg_hi > arg_lo) ? &line[arg_lo] : 0;
-		if (shebang_arg) line[arg_hi] = 0;
+		const char *interp;
+		const char *shebang_arg;
+		long pe = tawcroot_shebang_read(bin_fd, line, sizeof line,
+		                                &interp, &shebang_arg);
+		if (pe < 0) { tawc_close(bin_fd); return pe; }
 
 		/* Duplicate the original script path so we can reuse path_buf
 		 * for the interpreter. The script-path string was stored in

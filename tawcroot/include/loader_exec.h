@@ -21,6 +21,24 @@
 extern "C" {
 #endif
 
+/* Shebang resolution limits, shared with the exec handler's pre-commit
+ * classifier so both walk #! chains with the same kernel-matching
+ * rules. BUF mirrors Linux's BINPRM_BUF_SIZE (256); DEPTH mirrors
+ * binfmt_script's default chain cap (4). */
+#define TAWC_SHEBANG_MAX_DEPTH 4
+#define TAWC_SHEBANG_BUF       256
+
+/* Read and tokenize the "#!" line of `fd` (caller has already checked
+ * the magic). `line` (capacity `cap`, typically TAWC_SHEBANG_BUF) holds
+ * the tokens; on success *interp points at the interpreter path and
+ * *arg at the single optional shebang argument (NULL when absent; pass
+ * arg == NULL when the caller doesn't want it). Returns 0 or -ENOEXEC
+ * for malformed / overlong lines, matching binfmt_script (kernels
+ * >= 5.1 ENOEXEC a line that overflows BINPRM_BUF_SIZE rather than
+ * truncating; EOF terminates the line like a newline). */
+long tawcroot_shebang_read(int fd, char *line, size_t cap,
+                           const char **interp, const char **arg);
+
 /* Production loader I/O vtable, defined in src/loader_io_prod.c. */
 extern const struct tawc_loader_io tawcroot_loader_io_prod;
 

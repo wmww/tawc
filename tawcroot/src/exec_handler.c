@@ -10,15 +10,12 @@
 #include "exec_state.h"
 #include "io.h"
 #include "loader_elf.h"
+#include "loader_exec.h"
 #include "path.h"
 #include "raw_sys.h"
 #include "shm.h"
 #include "tawc_uapi.h"
 
-/* Shebang resolution depth + read buffer, matching binfmt_script /
- * loader_exec.c. */
-#define PROBE_SHEBANG_MAX_DEPTH 4
-#define PROBE_SHEBANG_BUF       256
 
 /* Cap on serialized exec_state size we'll write into a memfd. Sized to
  * hold the full header (offset arrays for MAX_ARGS args + MAX_ENV envs)
@@ -83,7 +80,7 @@ static long classify_elf(int fd)
  * always-dies-post-commit behaviour it replaces. */
 static long classify_loadable(int fd, int depth)
 {
-	if (depth > PROBE_SHEBANG_MAX_DEPTH) return TAWC_ELOOP;
+	if (depth > TAWC_SHEBANG_MAX_DEPTH) return TAWC_ELOOP;
 
 	uint8_t magic[2];
 	long n = tawc_pread64(fd, magic, 2, 0);
@@ -91,25 +88,12 @@ static long classify_loadable(int fd, int depth)
 	if (n < 2 || !(magic[0] == '#' && magic[1] == '!'))
 		return classify_elf(fd);
 
-	/* Shebang: read the line, extract the interpreter path, open it
-	 * through the view, require it executable, and recurse. */
-	char line[PROBE_SHEBANG_BUF];
-	long ln = tawc_pread64(fd, line, sizeof line - 1, 0);
-	if (ln < 2) return TAWC_ENOEXEC;
-	line[ln] = 0;
-	long eol = 2;
-	while (eol < ln && line[eol] != '\n') eol++;
-	/* A full buffer with no newline = interpreter line too long: the
-	 * kernel (≥5.1) returns ENOEXEC rather than truncating. */
-	if (eol == ln && ln == (long)sizeof line - 1) return TAWC_ENOEXEC;
-	line[eol] = 0;
-	long i = 2;
-	while (i < eol && (line[i] == ' ' || line[i] == '\t')) i++;
-	long lo = i;
-	while (i < eol && line[i] != ' ' && line[i] != '\t') i++;
-	if (i == lo) return TAWC_ENOEXEC;  /* "#!\n" with no interpreter */
-	line[i] = 0;
-	const char *interp = &line[lo];
+	/* Shebang: parse the line, open the interpreter through the view,
+	 * require it executable, and recurse. */
+	char line[TAWC_SHEBANG_BUF];
+	const char *interp;
+	long pe = tawcroot_shebang_read(fd, line, sizeof line, &interp, 0);
+	if (pe < 0) return pe;
 
 	long ifd = tawcroot_open_in_view(interp);
 	if (ifd < 0) return ifd;  /* missing interpreter → ENOENT, etc. */
