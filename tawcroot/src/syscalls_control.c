@@ -91,65 +91,6 @@ static long handle_seccomp(const tawcroot_syscall_args *args, ucontext_t *uc)
 			args->d, args->e, 0);
 }
 
-/* Defense-in-depth denials. Trapped so the guest can't mutate kernel
- * state our path-translation layer assumes is fixed: pivot_root would
- * desync our root-relative bookkeeping (we don't model mounts, so the
- * "pivot the rootfs onto a sibling mount" semantics have nothing to
- * pivot to); mount/umount2 would tear down our setup binds (/dev/shm,
- * /proc, libhybris stage); unshare/setns would hand the guest a
- * namespace where our fd-relative /proc walks no longer name what we
- * think they name. Lying with -EPERM is the same posture proot takes.
- *
- * chroot is NOT in this list — it has its own handler in chroot.c
- * that swaps the root-view bookkeeping. */
-static long fake_eperm(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	(void)args;
-	(void)uc;
-	return TAWC_EPERM;
-}
-
-/* io_uring_setup: deny with -ENOSYS so guest libraries fall back to
- * syscall-based I/O which we can translate. The plan
- * (notes/tawcroot.md "Open questions" #1) classifies a passed-through
- * io_uring as a *correctness* hazard, not just a missing feature: the
- * kernel reads SQEs from app-shared memory, sees host-relative paths,
- * and silently opens host files — bypassing every translation rule.
- * Programs that probe with -ENOSYS fall back to non-uring paths
- * cleanly. (Review finding D4.)
- *
- * io_uring_register and io_uring_enter trap with the same -ENOSYS for
- * defense-in-depth: with io_uring_setup denied the guest can't create
- * a ring fd, but a ring fd inherited from a non-tawcroot parent across
- * exec would otherwise sail past us untranslated. Trapping the post-
- * setup syscalls makes "no io_uring traffic ever escapes" enforceable
- * independently of the stacked Android filter. See notes/tawcroot.md
- * "io_uring MVP behavior". */
-static long handle_io_uring_deny(const tawcroot_syscall_args *args,
-				 ucontext_t *uc)
-{
-	(void)args;
-	(void)uc;
-	return TAWC_ENOSYS;
-}
-
-/* clone3: deny with -ENOSYS so glibc's __clone falls back to the
- * older clone(2) syscall (NR 220 aarch64 / NR 56 x86_64). All stacked
- * seccomp filters are evaluated at syscall entry and the most
- * restrictive action wins, so this can't shield the guest from an
- * Android RET_KILL on clone3 — it works only because Android's policy
- * is empirically not KILL: on Android 14 our trap fires ([sigsys]
- * nr=435), i.e. Android allows-or-traps clone3. Returning -ENOSYS
- * causes glibc to set its "clone3 missing" flag and use clone()
- * going forward, keeping the guest off the risky syscall entirely. */
-static long handle_clone3(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	(void)args;
-	(void)uc;
-	return TAWC_ENOSYS;
-}
-
-
 static long handle_prctl(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
@@ -322,14 +263,53 @@ void tawcroot_control_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_prctl,           handle_prctl);
 	tawcroot_dispatch_install(TAWC_SYS_rt_sigaction,    handle_rt_sigaction);
 	tawcroot_dispatch_install(TAWC_SYS_rt_sigprocmask,  handle_rt_sigprocmask);
-	tawcroot_dispatch_install(TAWC_SYS_io_uring_setup,    handle_io_uring_deny);
-	tawcroot_dispatch_install(TAWC_SYS_io_uring_enter,    handle_io_uring_deny);
-	tawcroot_dispatch_install(TAWC_SYS_io_uring_register, handle_io_uring_deny);
-	tawcroot_dispatch_install(TAWC_SYS_clone3,          handle_clone3);
+	/* io_uring_setup: deny with -ENOSYS so guest libraries fall back to
+	 * syscall-based I/O which we can translate. The plan
+	 * (notes/tawcroot.md "Open questions" #1) classifies a passed-through
+	 * io_uring as a *correctness* hazard, not just a missing feature: the
+	 * kernel reads SQEs from app-shared memory, sees host-relative paths,
+	 * and silently opens host files — bypassing every translation rule.
+	 * Programs that probe with -ENOSYS fall back to non-uring paths
+	 * cleanly. (Review finding D4.)
+	 *
+	 * io_uring_register and io_uring_enter trap with the same -ENOSYS for
+	 * defense-in-depth: with io_uring_setup denied the guest can't create
+	 * a ring fd, but a ring fd inherited from a non-tawcroot parent across
+	 * exec would otherwise sail past us untranslated. Trapping the post-
+	 * setup syscalls makes "no io_uring traffic ever escapes" enforceable
+	 * independently of the stacked Android filter. See notes/tawcroot.md
+	 * "io_uring MVP behavior". */
+	tawcroot_dispatch_install(TAWC_SYS_io_uring_setup,    tawcroot_deny_enosys);
+	tawcroot_dispatch_install(TAWC_SYS_io_uring_enter,    tawcroot_deny_enosys);
+	tawcroot_dispatch_install(TAWC_SYS_io_uring_register, tawcroot_deny_enosys);
+
+	/* clone3: deny with -ENOSYS so glibc's __clone falls back to the
+	 * older clone(2) syscall (NR 220 aarch64 / NR 56 x86_64). All stacked
+	 * seccomp filters are evaluated at syscall entry and the most
+	 * restrictive action wins, so this can't shield the guest from an
+	 * Android RET_KILL on clone3 — it works only because Android's policy
+	 * is empirically not KILL: on Android 14 our trap fires ([sigsys]
+	 * nr=435), i.e. Android allows-or-traps clone3. Returning -ENOSYS
+	 * causes glibc to set its "clone3 missing" flag and use clone()
+	 * going forward, keeping the guest off the risky syscall entirely. */
+	tawcroot_dispatch_install(TAWC_SYS_clone3,          tawcroot_deny_enosys);
+
 	tawcroot_dispatch_install(TAWC_SYS_exit,            handle_exit);
-	tawcroot_dispatch_install(TAWC_SYS_pivot_root,      fake_eperm);
-	tawcroot_dispatch_install(TAWC_SYS_mount,           fake_eperm);
-	tawcroot_dispatch_install(TAWC_SYS_umount2,         fake_eperm);
-	tawcroot_dispatch_install(TAWC_SYS_unshare,         fake_eperm);
-	tawcroot_dispatch_install(TAWC_SYS_setns,           fake_eperm);
+
+	/* Defense-in-depth denials. Trapped so the guest can't mutate kernel
+	 * state our path-translation layer assumes is fixed: pivot_root would
+	 * desync our root-relative bookkeeping (we don't model mounts, so the
+	 * "pivot the rootfs onto a sibling mount" semantics have nothing to
+	 * pivot to); mount/umount2 would tear down our setup binds (/dev/shm,
+	 * /proc, libhybris stage); unshare/setns would hand the guest a
+	 * namespace where our fd-relative /proc walks no longer name what we
+	 * think they name. Lying with -EPERM is the same posture proot takes.
+	 *
+	 * chroot is NOT in this list — it has its own handler in chroot.c
+	 * that swaps the root-view bookkeeping. */
+	tawcroot_dispatch_install(TAWC_SYS_pivot_root,      tawcroot_deny_eperm);
+	tawcroot_dispatch_install(TAWC_SYS_mount,           tawcroot_deny_eperm);
+	tawcroot_dispatch_install(TAWC_SYS_umount2,         tawcroot_deny_eperm);
+	tawcroot_dispatch_install(TAWC_SYS_unshare,         tawcroot_deny_eperm);
+	tawcroot_dispatch_install(TAWC_SYS_setns,           tawcroot_deny_eperm);
 }

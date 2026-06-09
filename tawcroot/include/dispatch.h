@@ -35,6 +35,14 @@ typedef long (*tawcroot_handler_fn)(const tawcroot_syscall_args *args,
 				    ucontext_t *uc);
 
 void tawcroot_dispatch_install(int nr, tawcroot_handler_fn fn);
+
+/* Stock handlers for trapped-and-denied syscalls. -ENOSYS makes
+ * callers fall back to an older syscall we do translate (openat2,
+ * fchmodat2, clone3, io_uring_*); -EPERM is the proot-style lie for
+ * operations whose semantics we can't honour (mount, pivot_root,
+ * unshare, guest seccomp). Rationale lives at each registration. */
+long tawcroot_deny_enosys(const tawcroot_syscall_args *args, ucontext_t *uc);
+long tawcroot_deny_eperm(const tawcroot_syscall_args *args, ucontext_t *uc);
 tawcroot_handler_fn tawcroot_dispatch_get(int nr);
 
 /* Register every handler we ship today. Single source of

@@ -10,6 +10,7 @@
 
 #include "chroot.h"
 #include "dispatch.h"
+#include "errno_neg.h"
 #include "fdtab.h"
 #include "identity.h"
 #include "io.h"
@@ -20,6 +21,20 @@
 #include "syscalls_socket.h"
 
 static tawcroot_handler_fn g_dispatch[TAWCROOT_DISPATCH_MAX];
+
+long tawcroot_deny_enosys(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)args;
+	(void)uc;
+	return TAWC_ENOSYS;
+}
+
+long tawcroot_deny_eperm(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)args;
+	(void)uc;
+	return TAWC_EPERM;
+}
 
 void tawcroot_dispatch_install(int nr, tawcroot_handler_fn fn)
 {

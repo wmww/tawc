@@ -1011,21 +1011,6 @@ static long handle_fstat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	return rv;
 }
 
-/* openat2: deny with -ENOSYS so callers fall back to openat, which we
- * translate. The BPF default is RET_ALLOW, so leaving it untrapped is a
- * complete translation bypass (systemd, runc, newer glibc use it with
- * absolute paths). Emulating struct open_how is possible but the
- * fallback path is universal — every openat2 caller handles ENOSYS
- * because pre-5.6 kernels lack the syscall. Same story for fchmodat2
- * (kernel 6.6+, glibc 2.39 AT_SYMLINK_NOFOLLOW): glibc falls back to
- * its O_PATH emulation on ENOSYS. */
-static long handle_enosys(const tawcroot_syscall_args *args, ucontext_t *uc)
-{
-	(void)args;
-	(void)uc;
-	return TAWC_ENOSYS;
-}
-
 /* inotify_add_watch(fd, path, mask): translate the path, then route the
  * kernel call through /proc/self/fd/<base_fd>/<suffix> (no *at variant
  * exists). Untrapped, GLib/GIO file monitors silently watch host paths.
@@ -1470,9 +1455,11 @@ void tawcroot_fs_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_readlinkat,  handle_readlinkat);
 	/* openat2/fchmodat2: ENOSYS so callers fall back to the *at
 	 * variants we translate; untrapped they'd resolve against the
-	 * HOST view (BPF default is RET_ALLOW). See handle_enosys. */
-	tawcroot_dispatch_install(TAWC_SYS_openat2,     handle_enosys);
-	tawcroot_dispatch_install(TAWC_SYS_fchmodat2,   handle_enosys);
+	 * HOST view (BPF default is RET_ALLOW). The fallback is universal:
+	 * every openat2/fchmodat2 caller handles ENOSYS because older
+	 * kernels lack the syscalls. */
+	tawcroot_dispatch_install(TAWC_SYS_openat2,     tawcroot_deny_enosys);
+	tawcroot_dispatch_install(TAWC_SYS_fchmodat2,   tawcroot_deny_enosys);
 	tawcroot_dispatch_install(TAWC_SYS_inotify_add_watch,
 				  handle_inotify_add_watch);
 	/* Trap both faccessat (NR 269 aarch64 / 48 x86_64) and the
