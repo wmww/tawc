@@ -102,11 +102,12 @@ static cstr run_nm(const char *obj_path, int *ok)
 {
 	VecStr cmd = c_init(vec_str, {"nm", "-u", "--format=just-symbols"});
 	vec_str_push(&cmd, obj_path);
-	cstr out = cstr_init();
-	cstr err = cstr_init();
-	int rc = run_subproc(cmd, (SubprocArgs){
-		.stdout = &out, .stderr = &err
+	cstr out, err;
+	int rc = -1;
+	FailableResult res = run_subproc((SubprocArgs){
+		.vec_cmd = cmd, .stdout = &out, .stderr = &err, .exit_code = &rc
 	});
+	failable_result_drop(&res);
 	if (rc != 0) {
 		fprintf(stderr, "    nm failed (rc=%d) on %s: %s\n",
 			rc, obj_path, cstr_str(&err));

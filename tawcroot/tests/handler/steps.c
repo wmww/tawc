@@ -104,12 +104,15 @@ void steps_register_from_testhost_prefixed(csview module,
 		}
 	}
 
-	cstr out = cstr_init();
-	cstr err = cstr_init();
-	int rc = run_subproc(cmd, (SubprocArgs){
+	cstr out, err;
+	int rc = -1;
+	FailableResult res = run_subproc((SubprocArgs){
+		.vec_cmd = cmd,
 		.stdout = &out,
 		.stderr = &err,
+		.exit_code = &rc,
 	});
+	failable_result_drop(&res);
 
 	int n_steps = 0;
 

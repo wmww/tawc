@@ -41,13 +41,11 @@ static int run(const char *const *extra_args)
 	for (const char *const *p = extra_args; *p; p++) {
 		vec_str_push(&cmd, *p);
 	}
-	cstr out = cstr_init();
-	cstr err = cstr_init();
-	int rc = run_subproc(cmd, (SubprocArgs){
-		.stdout = &out, .stderr = &err
+	int rc = -1;
+	FailableResult res = run_subproc((SubprocArgs){
+		.vec_cmd = cmd, .exit_code = &rc
 	});
-	cstr_drop(&out);
-	cstr_drop(&err);
+	failable_result_drop(&res);
 	return rc;
 }
 

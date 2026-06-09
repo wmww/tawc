@@ -184,6 +184,8 @@ CLEAT_C := \
     $(CLEAT)/stc/src/fmt.c \
     $(CLEAT)/stc/src/cstr_utf8.c \
     $(CLEAT)/stc/src/cstr_core.c \
+    $(CLEAT)/stc/src/cstr_misc.c \
+    $(CLEAT)/stc/src/utf8_misc.c \
     $(CLEAT)/stc/src/random.c \
     $(CLEAT)/stc/src/cstr_io.c \
     $(CLEAT)/stc/src/stc_core.c \
@@ -191,12 +193,14 @@ CLEAT_C := \
     $(CLEAT)/stc/src/cregex.c \
     $(CLEAT)/stc/src/csview.c \
     $(CLEAT)/src/string_helpers.c \
-    $(CLEAT)/src/panic.c \
+    $(CLEAT)/src/time_helpers.c \
+    $(CLEAT)/src/log.c \
     $(CLEAT)/src/filesystem.c \
     $(CLEAT)/src/real_filesystem.c \
     $(CLEAT)/src/subproc.c \
     $(CLEAT)/src/display.c \
     $(CLEAT)/src/failable.c \
+    $(CLEAT)/src/uri.c \
     $(CLEAT)/src/base64.c \
     $(CLEAT)/src/random.c \
     $(CLEAT)/src/seri.c \
