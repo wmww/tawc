@@ -176,7 +176,7 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * re-classify. One extra readlinkat per non-AT_FDCWD relative
 	 * O_RDONLY-ish open; only fires when the absolute peek didn't match. */
 	if (gpath &&
-	    (flags & 3) == 0 /*O_RDONLY*/ &&
+	    (flags & O_ACCMODE) == O_RDONLY &&
 	    (flags & O_DIRECTORY) == 0 &&
 	    (flags & O_PATH) == 0) {
 		char tmp[64];
@@ -1165,7 +1165,7 @@ static long handle_truncate(const tawcroot_syscall_args *args,
 	if (t.is_root) return TAWC_EISDIR;
 
 	long fd = tawc_openat(t.fd, t.path,
-			      1 /*O_WRONLY*/ | 0x80000 /*O_CLOEXEC*/, 0);
+			      O_WRONLY | O_CLOEXEC, 0);
 	if (fd < 0) return fd;
 	long rv = TAWC_RAW(TAWC_SYS_ftruncate, (long)fd, len, 0, 0, 0, 0);
 	tawc_close((int)fd);

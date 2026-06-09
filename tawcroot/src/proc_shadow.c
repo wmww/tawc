@@ -5,6 +5,7 @@
 
 #include "errno_neg.h"
 #include "io.h"
+#include "loader_map.h"
 #include "path.h"
 #include "proc_rewrite.h"
 #include "proc_shadow.h"
@@ -49,7 +50,7 @@ static int is_my_tid(long n)
 		return 0;
 
 	long fd = tawc_openat(AT_FDCWD, path,
-			      0 /*O_RDONLY*/ | 0x80000 /*O_CLOEXEC*/, 0);
+			      O_RDONLY | O_CLOEXEC, 0);
 	if (fd < 0) return 0;
 	char buf[512];
 	long r = tawc_read((int)fd, buf, sizeof buf - 1);
@@ -217,8 +218,8 @@ static int is_proc_bus_pci_devices(const char *path)
 
 static long maps_mmap(size_t cap)
 {
-	long r = tawc_mmap(0, cap, 3 /*PROT_READ|PROT_WRITE*/,
-			   0x22 /*MAP_PRIVATE|MAP_ANONYMOUS*/, -1, 0);
+	long r = tawc_mmap(0, cap, TAWC_MM_PROT_READ | TAWC_MM_PROT_WRITE,
+			   TAWC_MM_MAP_PRIVATE | TAWC_MM_MAP_ANON, -1, 0);
 	if (r < 0 && r > -4096) return r;
 	if (r == 0) return TAWC_ENOMEM;
 	return r;
@@ -288,7 +289,7 @@ static long memfd_from_bytes(const char *name, const char *bytes, size_t len)
 static long open_proc_maps_shadow(void)
 {
 	long src = tawc_openat(AT_FDCWD, "/proc/self/maps",
-			       0 /*O_RDONLY*/ | 0x80000 /*O_CLOEXEC*/, 0);
+			       O_RDONLY | O_CLOEXEC, 0);
 	if (src < 0) return src;
 
 	long in_region;
