@@ -786,6 +786,111 @@ static int test_fstatat_fake_root_decoration(void)
 	return fails;
 }
 
+/* fstat must decorate like stat/fstatat/statx do, and reserved fds
+ * must answer EBADF (fdtab.h contract). */
+static int test_fstat_fake_root_decoration(void)
+{
+	int fails = 0;
+	long fd = inline_openat(AT_FDCWD, "/etc/probe", O_RDONLY, 0);
+	fails += tawc_io_step("fstat: open /etc/probe", fd >= 0);
+	if (fd >= 0) {
+		struct stat st;
+		st.st_uid = 99;
+		st.st_gid = 99;
+		long rv;
+		INLINE_SYS6(TAWC_SYS_fstat, fd, &st, 0, 0, 0, 0, rv);
+		fails += tawc_io_step("fstat(fd) -> 0", rv == 0);
+		fails += tawc_io_step("fstat fake-root: st_uid == 0",
+				      st.st_uid == 0);
+		fails += tawc_io_step("fstat fake-root: st_gid == 0",
+				      st.st_gid == 0);
+		tawc_close((int)fd);
+	}
+	long rv2;
+	struct stat st2;
+	INLINE_SYS6(TAWC_SYS_fstat, tawcroot_rootfs_fd, &st2, 0, 0, 0, 0, rv2);
+	fails += tawc_io_step("fstat(reserved rootfs fd) -> EBADF",
+			      rv2 == TAWC_EBADF);
+	tawc_io_kv_dec("    rv", rv2);
+	return fails;
+}
+
+/* openat2 / fchmodat2 must trap to ENOSYS — untrapped they'd resolve
+ * guest paths against the HOST view (BPF default is RET_ALLOW). Every
+ * caller has a pre-5.6 / pre-6.6 fallback path. */
+static int test_openat2_fchmodat2_enosys(void)
+{
+	int fails = 0;
+	unsigned long long how[3] = { 0, 0, 0 };  /* struct open_how */
+	long rv;
+	INLINE_SYS6(TAWC_SYS_openat2, AT_FDCWD, "/etc/probe",
+		    how, sizeof how, 0, 0, rv);
+	fails += tawc_io_step("openat2 -> ENOSYS (forces openat fallback)",
+			      rv == TAWC_ENOSYS);
+	tawc_io_kv_dec("    rv", rv);
+	INLINE_SYS6(TAWC_SYS_fchmodat2, AT_FDCWD, "/etc/probe",
+		    0644, 0, 0, 0, rv);
+	fails += tawc_io_step("fchmodat2 -> ENOSYS (forces fallback)",
+			      rv == TAWC_ENOSYS);
+	tawc_io_kv_dec("    rv", rv);
+	return fails;
+}
+
+/* inotify_add_watch carries a path; untrapped it watches HOST paths
+ * (GLib/GIO monitors silently break). inotify_init1 is untrapped on
+ * purpose — fd-only, nothing to translate. */
+static int test_inotify_add_watch_translates(void)
+{
+	int fails = 0;
+	long ifd;
+	INLINE_SYS6(TAWC_SYS_inotify_init1, 0x80000 /*IN_CLOEXEC*/,
+		    0, 0, 0, 0, 0, ifd);
+	fails += tawc_io_step("inotify_init1 -> fd", ifd >= 0);
+	tawc_io_kv_dec("    ifd", ifd);
+	if (ifd < 0) return fails;
+	long wd;
+	INLINE_SYS6(TAWC_SYS_inotify_add_watch, ifd, "/etc/probe",
+		    0x8 /*IN_CLOSE_WRITE*/, 0, 0, 0, wd);
+	fails += tawc_io_step(
+		"inotify_add_watch(\"/etc/probe\") -> wd (translated)",
+		wd >= 0);
+	tawc_io_kv_dec("    wd", wd);
+	INLINE_SYS6(TAWC_SYS_inotify_add_watch, ifd, "/no/such/file",
+		    0x8, 0, 0, 0, wd);
+	fails += tawc_io_step("inotify_add_watch(bogus) -> ENOENT",
+			      wd == TAWC_ENOENT);
+	tawc_close((int)ifd);
+	return fails;
+}
+
+/* fchdir: reserved fds must answer EBADF; ordinary guest dir fds keep
+ * working. Kernel cwd is restored via the raw stub afterwards. */
+static int test_fchdir_dispatch(void)
+{
+	int fails = 0;
+	long rv;
+	INLINE_SYS6(TAWC_SYS_fchdir, tawcroot_rootfs_fd, 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("fchdir(reserved rootfs fd) -> EBADF",
+			      rv == TAWC_EBADF);
+	tawc_io_kv_dec("    rv", rv);
+
+	char saved[512];
+	long sl = TAWC_RAW(TAWC_SYS_getcwd, (long)saved, sizeof saved,
+			   0, 0, 0, 0);
+	long dfd = inline_openat(AT_FDCWD, "/etc",
+				 O_RDONLY | O_DIRECTORY, 0);
+	fails += tawc_io_step("fchdir: open(\"/etc\") dir fd", dfd >= 0);
+	if (dfd >= 0) {
+		INLINE_SYS6(TAWC_SYS_fchdir, dfd, 0, 0, 0, 0, 0, rv);
+		fails += tawc_io_step("fchdir(guest dir fd) -> 0", rv == 0);
+		tawc_io_kv_dec("    rv", rv);
+		tawc_close((int)dfd);
+	}
+	if (sl > 0)
+		(void)TAWC_RAW(TAWC_SYS_chdir, (long)saved, 0, 0, 0, 0, 0);
+	return fails;
+}
+
 /* Escape attempt: a deeply-nested `..` aimed at a known-good host
  * file outside the rootfs. With our fold semantics this should
  * clamp at root and translate to <rootfs>/host-secret.txt -- which
@@ -1639,6 +1744,61 @@ static int test_legacy_x86_64_wrappers(void)
 			      rv == 0);
 	INLINE_SYS6(TAWC_SYS_unlink, "/legacy-symlink",
 		    0, 0, 0, 0, 0, rv);
+	return fails;
+}
+
+/* Legacy creat / utime / utimes / futimesat (x86_64-only). These were
+ * unregistered while open/stat/unlink were trapped — a static binary
+ * issuing raw NR 85/132/235/261 resolved against the HOST view. */
+static int test_legacy_time_and_creat(void)
+{
+	int fails = 0;
+	long rv;
+
+	INLINE_SYS6(TAWC_SYS_creat, "/run/legacy-creat", 0644,
+		    0, 0, 0, 0, rv);
+	fails += tawc_io_step("creat(\"/run/legacy-creat\") (legacy) -> fd",
+			      rv >= 0);
+	tawc_io_kv_dec("    rv", rv);
+	if (rv >= 0) tawc_close((int)rv);
+
+	/* utime: set mtime to a recognizable value, stat it back. */
+	long utb[2] = { 1000, 2000 };  /* actime, modtime */
+	INLINE_SYS6(TAWC_SYS_utime, "/run/legacy-creat", utb, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("utime(file, {1000,2000}) (legacy) -> 0",
+			      rv == 0);
+	tawc_io_kv_dec("    rv", rv);
+	struct stat st;
+	if (inline_fstatat(AT_FDCWD, "/run/legacy-creat", &st, 0) == 0) {
+		fails += tawc_io_step("utime set mtime == 2000",
+				      st.st_mtime == 2000);
+		tawc_io_kv_dec("    st_mtime", (long)st.st_mtime);
+	}
+
+	long tv_ok[4]  = { 3000, 0, 4000, 0 };       /* {sec,usec} x2 */
+	INLINE_SYS6(TAWC_SYS_utimes, "/run/legacy-creat", tv_ok,
+		    0, 0, 0, 0, rv);
+	fails += tawc_io_step("utimes(file, valid) (legacy) -> 0", rv == 0);
+	long tv_bad[4] = { 0, 1000000, 0, 0 };       /* usec out of range */
+	INLINE_SYS6(TAWC_SYS_utimes, "/run/legacy-creat", tv_bad,
+		    0, 0, 0, 0, rv);
+	fails += tawc_io_step("utimes(file, usec=1e6) -> EINVAL",
+			      rv == TAWC_EINVAL);
+	tawc_io_kv_dec("    rv", rv);
+
+	long tv2[4] = { 5000, 0, 6000, 0 };
+	INLINE_SYS6(TAWC_SYS_futimesat, AT_FDCWD, "/run/legacy-creat", tv2,
+		    0, 0, 0, rv);
+	fails += tawc_io_step("futimesat(AT_FDCWD, file) (legacy) -> 0",
+			      rv == 0);
+	if (inline_fstatat(AT_FDCWD, "/run/legacy-creat", &st, 0) == 0) {
+		fails += tawc_io_step("futimesat set mtime == 6000",
+				      st.st_mtime == 6000);
+		tawc_io_kv_dec("    st_mtime", (long)st.st_mtime);
+	}
+
+	INLINE_SYS6(TAWC_SYS_unlink, "/run/legacy-creat", 0, 0, 0, 0, 0, rv);
+	fails += tawc_io_step("unlink legacy-creat cleanup", rv == 0);
 	return fails;
 }
 
@@ -3899,6 +4059,10 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_dotdot_via_bind_dst_dirfd();
 	fails += test_dotdot_via_bind_dst_does_not_escape_to_host();
 	fails += test_fstatat_fake_root_decoration();
+	fails += test_fstat_fake_root_decoration();
+	fails += test_openat2_fchmodat2_enosys();
+	fails += test_inotify_add_watch_translates();
+	fails += test_fchdir_dispatch();
 	fails += test_escape_attempt_clamps();
 	fails += test_relative_path_after_chdir();
 	fails += test_readlinkat_dispatch();
@@ -3942,6 +4106,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_mode_aware_memoization();
 #if defined(__x86_64__)
 	fails += test_legacy_x86_64_wrappers();
+	fails += test_legacy_time_and_creat();
 	fails += test_legacy_epoll_wait();
 #endif
 	fails += test_ioctl_translation();

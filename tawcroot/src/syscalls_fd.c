@@ -133,6 +133,19 @@ static long handle_dup3(const tawcroot_syscall_args *args, ucontext_t *uc)
 	return TAWC_RAW(TAWC_SYS_dup3, oldfd, newfd, flags, 0, 0, 0);
 }
 
+/* fchdir: reserved fds must behave as EBADF (fdtab.h contract) — an
+ * untrapped fchdir(reserved_fd) would land the kernel cwd on the rootfs
+ * or a bind src dir via a guest-visible route. Ordinary guest fds pass
+ * through; they were handed out by translated openat and point inside
+ * the view. */
+static long handle_fchdir(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	int fd = (int)args->a;
+	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
+	return TAWC_RAW(TAWC_SYS_fchdir, fd, 0, 0, 0, 0, 0);
+}
+
 static long handle_fcntl(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
@@ -384,6 +397,7 @@ void tawcroot_fd_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_close_range, handle_close_range);
 	tawcroot_dispatch_install(TAWC_SYS_dup,         handle_dup);
 	tawcroot_dispatch_install(TAWC_SYS_dup3,        handle_dup3);
+	tawcroot_dispatch_install(TAWC_SYS_fchdir,      handle_fchdir);
 	tawcroot_dispatch_install(TAWC_SYS_fcntl,       handle_fcntl);
 	tawcroot_dispatch_install(TAWC_SYS_getdents64,  handle_getdents64);
 	tawcroot_dispatch_install(TAWC_SYS_ioctl,       handle_ioctl);

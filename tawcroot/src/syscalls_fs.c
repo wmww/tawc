@@ -108,6 +108,8 @@ static long        open_proc_bus_pci_devices_shadow(void);
 static int         try_proc_shadow(const char *path, long *out);
 static long        compose_fd_relative(int dirfd, const char *gpath_str,
 				       char *out, size_t cap);
+static long        build_proc_fd_path(char *out, size_t cap, int base_fd,
+				      const char *suffix, int use_empty);
 
 /* Fast-out: does this guest-relative leaf even have a chance of
  * composing into a /proc/<x> path that we shadow? Legitimate first chars
@@ -1367,6 +1369,74 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 	return rv;
 }
 
+/* fstat with fake-root decoration. Without this, fstat(fd) reports the
+ * real app uid while stat/fstatat/statx fake uid/gid 0 — programs that
+ * compare the two (tar/cpio ownership checks) see an inconsistent
+ * fake-root world. Reserved fds answer EBADF per the fdtab.h contract. */
+static long handle_fstat(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	int fd = (int)args->a;
+	struct stat *out = (struct stat *)(uintptr_t)args->b;
+	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
+	if (!out) return TAWC_EFAULT;
+	struct stat local;
+	long rv = TAWC_RAW(TAWC_SYS_fstat, fd, (long)&local, 0, 0, 0, 0);
+	if (rv != 0) return rv;
+	decorate_stat(&local);
+	long ce = tawc_copy_to_guest(out, &local, sizeof local);
+	if (ce < 0) return ce;
+	return rv;
+}
+
+/* openat2: deny with -ENOSYS so callers fall back to openat, which we
+ * translate. The BPF default is RET_ALLOW, so leaving it untrapped is a
+ * complete translation bypass (systemd, runc, newer glibc use it with
+ * absolute paths). Emulating struct open_how is possible but the
+ * fallback path is universal — every openat2 caller handles ENOSYS
+ * because pre-5.6 kernels lack the syscall. Same story for fchmodat2
+ * (kernel 6.6+, glibc 2.39 AT_SYMLINK_NOFOLLOW): glibc falls back to
+ * its O_PATH emulation on ENOSYS. */
+static long handle_enosys(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)args;
+	(void)uc;
+	return TAWC_ENOSYS;
+}
+
+/* inotify_add_watch(fd, path, mask): translate the path, then route the
+ * kernel call through /proc/self/fd/<base_fd>/<suffix> (no *at variant
+ * exists). Untrapped, GLib/GIO file monitors silently watch host paths.
+ * IN_DONT_FOLLOW (0x02000000) selects NOFOLLOW resolution. */
+static long handle_inotify_add_watch(const tawcroot_syscall_args *args,
+				     ucontext_t *uc)
+{
+	(void)uc;
+	int inotify_fd = (int)args->a;
+	const char *gpath = (const char *)(uintptr_t)args->b;
+	unsigned int mask = (unsigned int)args->c;
+	if (!gpath) return TAWC_EFAULT;
+
+	tawcroot_path_mode pmode = (mask & 0x02000000U /*IN_DONT_FOLLOW*/)
+		? TAWCROOT_PATH_NOFOLLOW
+		: TAWCROOT_PATH_FOLLOW;
+
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
+	int  base_fd, use_empty;
+	long e = fetch_and_translate(gpath, path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+				     suffix, TAWCROOT_PATH_SCRATCH_SIZE,
+				     &base_fd, &use_empty, pmode);
+	if (e) return e;
+	char *host_path = scratch->buf[2];
+	long bp = build_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
+				     base_fd, suffix, use_empty);
+	if (bp < 0) return bp;
+	return TAWC_RAW(TAWC_SYS_inotify_add_watch, inotify_fd,
+			(long)host_path, mask, 0, 0, 0);
+}
+
 /* link_with_symlink_fallback: issue host linkat, and on EACCES/EPERM
  * (typical under Android `untrusted_app` SELinux for hardlinks across
  * subtrees) fall back to creating a guest-absolute `symlinkat`. Mirrors
@@ -1851,6 +1921,97 @@ static long handle_open_legacy(const tawcroot_syscall_args *args,
 	return handle_openat(&shifted, uc);
 }
 
+/* Legacy x86_64 creat(path, mode) ≡ open(path, O_WRONLY|O_CREAT|O_TRUNC).
+ * Same routing rationale as handle_open_legacy. */
+static long handle_creat(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	tawcroot_syscall_args shifted = *args;
+	shifted.a = (long)AT_FDCWD;                     /* dirfd */
+	shifted.b = args->a;                            /* path  */
+	shifted.c = O_WRONLY | O_CREAT | O_TRUNC;       /* flags */
+	shifted.d = args->b;                            /* mode  */
+	return handle_openat(&shifted, uc);
+}
+
+/* Shared tail for the legacy time-setting trio: translate (dirfd, path)
+ * and issue utimensat with a kernel-side timespec[2] (or NULL = now).
+ * All three follow leaf symlinks (none has an AT_SYMLINK_NOFOLLOW). */
+static long utimensat_via_translate(int dirfd, const char *gpath,
+				    const long ts[4])
+{
+	if (!gpath) return TAWC_EFAULT;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *path_buf = scratch->buf[0];
+	char *suffix = scratch->buf[1];
+	int  base_fd, use_empty;
+	long e = fetch_and_translate_at(dirfd, gpath,
+					path_buf, TAWCROOT_PATH_SCRATCH_SIZE,
+					suffix, TAWCROOT_PATH_SCRATCH_SIZE,
+					&base_fd, &use_empty,
+					TAWCROOT_PATH_FOLLOW);
+	if (e) return e;
+	const char *p = use_empty ? "." : suffix;
+	return TAWC_RAW(TAWC_SYS_utimensat, base_fd, (long)p,
+			(long)ts, 0, 0, 0);
+}
+
+/* Legacy x86_64 utime(path, struct utimbuf*): two time_t seconds. */
+static long handle_utime(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	const char *gpath = (const char *)(uintptr_t)args->a;
+	const void *gtimes = (const void *)(uintptr_t)args->b;
+	if (!gtimes)
+		return utimensat_via_translate(AT_FDCWD, gpath, 0);
+	long sec[2];
+	long e = tawc_copy_from_guest(sec, sizeof sec, gtimes);
+	if (e < 0) return e;
+	long ts[4] = { sec[0], 0, sec[1], 0 };
+	return utimensat_via_translate(AT_FDCWD, gpath, ts);
+}
+
+/* timeval[2] → timespec[2] with the kernel's EINVAL range check. */
+static long timeval_pair_to_ts(const void *gtimes, long ts[4])
+{
+	long tv[4];  /* {sec, usec} x2 */
+	long e = tawc_copy_from_guest(tv, sizeof tv, gtimes);
+	if (e < 0) return e;
+	if (tv[1] < 0 || tv[1] >= 1000000 ||
+	    tv[3] < 0 || tv[3] >= 1000000) return TAWC_EINVAL;
+	ts[0] = tv[0]; ts[1] = tv[1] * 1000;
+	ts[2] = tv[2]; ts[3] = tv[3] * 1000;
+	return 0;
+}
+
+/* Legacy x86_64 utimes(path, struct timeval[2]). */
+static long handle_utimes(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	const char *gpath = (const char *)(uintptr_t)args->a;
+	const void *gtimes = (const void *)(uintptr_t)args->b;
+	if (!gtimes)
+		return utimensat_via_translate(AT_FDCWD, gpath, 0);
+	long ts[4];
+	long e = timeval_pair_to_ts(gtimes, ts);
+	if (e < 0) return e;
+	return utimensat_via_translate(AT_FDCWD, gpath, ts);
+}
+
+/* Legacy x86_64 futimesat(dirfd, path, struct timeval[2]). */
+static long handle_futimesat(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	int dirfd = (int)args->a;
+	const char *gpath = (const char *)(uintptr_t)args->b;
+	const void *gtimes = (const void *)(uintptr_t)args->c;
+	if (!gtimes)
+		return utimensat_via_translate(dirfd, gpath, 0);
+	long ts[4];
+	long e = timeval_pair_to_ts(gtimes, ts);
+	if (e < 0) return e;
+	return utimensat_via_translate(dirfd, gpath, ts);
+}
+
 /* Legacy x86_64 mknod(path, mode, dev). aarch64 has no mknod — only
  * mknodat — so this is x86_64-only. Routes to the modern mknodat
  * with our base_fd / suffix. */
@@ -2003,7 +2164,15 @@ void tawcroot_fs_register(void)
 {
 	tawcroot_dispatch_install(TAWC_SYS_openat,      handle_openat);
 	tawcroot_dispatch_install(TAWC_SYS_fstatat,     handle_newfstatat);
+	tawcroot_dispatch_install(TAWC_SYS_fstat,       handle_fstat);
 	tawcroot_dispatch_install(TAWC_SYS_readlinkat,  handle_readlinkat);
+	/* openat2/fchmodat2: ENOSYS so callers fall back to the *at
+	 * variants we translate; untrapped they'd resolve against the
+	 * HOST view (BPF default is RET_ALLOW). See handle_enosys. */
+	tawcroot_dispatch_install(TAWC_SYS_openat2,     handle_enosys);
+	tawcroot_dispatch_install(TAWC_SYS_fchmodat2,   handle_enosys);
+	tawcroot_dispatch_install(TAWC_SYS_inotify_add_watch,
+				  handle_inotify_add_watch);
 	/* Trap both faccessat (NR 269 aarch64 / 48 x86_64) and the
 	 * newer faccessat2 (NR 439). Glibc's `access(2)` wrapper issues
 	 * the older faccessat on most kernels (faccessat2 only on
@@ -2051,6 +2220,10 @@ void tawcroot_fs_register(void)
 	/* Legacy x86_64 syscalls — the lp64-`access`-on-x86_64 set that
 	 * Android's untrusted_app filter RET_ERRNOs but our TRAP wins. */
 	tawcroot_dispatch_install(TAWC_SYS_open,        handle_open_legacy);
+	tawcroot_dispatch_install(TAWC_SYS_creat,       handle_creat);
+	tawcroot_dispatch_install(TAWC_SYS_utime,       handle_utime);
+	tawcroot_dispatch_install(TAWC_SYS_utimes,      handle_utimes);
+	tawcroot_dispatch_install(TAWC_SYS_futimesat,   handle_futimesat);
 	tawcroot_dispatch_install(TAWC_SYS_stat,        handle_stat);
 	tawcroot_dispatch_install(TAWC_SYS_lstat,       handle_lstat);
 	tawcroot_dispatch_install(TAWC_SYS_access,      handle_access);
