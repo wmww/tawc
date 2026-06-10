@@ -2,6 +2,7 @@ package me.phie.tawc.install.distro.apt
 
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import me.phie.tawc.install.ShellDefaults
 import java.io.IOException
 
 internal object AptCommon {
@@ -86,6 +87,7 @@ internal object AptCommon {
             appendLine("esac")
             appendLine("export PATH")
             appendLine("PROFILE_EOF")
+            append(ShellDefaults.configureScript())
             appendLine("rm -rf $purgeList")
             appendLine("mkdir -p \"\$ROOTFS/var/cache/apt/archives/partial\"")
             appendLine("echo OK")

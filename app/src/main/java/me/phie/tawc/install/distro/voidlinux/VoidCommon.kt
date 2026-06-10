@@ -2,6 +2,7 @@ package me.phie.tawc.install.distro.voidlinux
 
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import me.phie.tawc.install.ShellDefaults
 import java.io.IOException
 
 /**
@@ -142,7 +143,8 @@ internal object VoidCommon {
      *
      * The in-rootfs env (PATH, Wayland, GL, X11) comes from [RootfsEnv]
      * via `env -i KEY=VAL` on every spawn — nothing is written under
-     * `/etc/profile.d/` (see notes/installation.md).
+     * `/etc/profile.d/` (see notes/installation.md). Shell-default
+     * stubs for /root come from [ShellDefaults.configureScript].
      */
     fun configure(
         method: InstallationMethod,
@@ -177,6 +179,7 @@ internal object VoidCommon {
             appendLine("IGN_EOF")
 
             appendLine("chmod 644 \"\$ROOTFS/etc/xbps.d/\"*.conf")
+            append(ShellDefaults.configureScript())
             appendLine("echo OK")
         }
         val r = method.runOutside(script) { log("conf: $it") }

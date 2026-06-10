@@ -215,7 +215,7 @@ The package is split into three layers:
 | `distro/voidlinux/VoidSha256Resolver.kt` | Fetches `sha256sum.txt` from `repo-default.voidlinux.org/live/current/` over HTTPS at install time, parses out the latest `void-<arch>-ROOTFS-YYYYMMDD.tar.xz` filename + SHA-256, and hands them to the installer as a [BootstrapVerification.Sha256]. |
 | `distro/voidlinux/VoidLinuxX86_64.kt` | Void Linux x86_64 (glibc). Bootstrap is the dated `tar.xz` ROOTFS published under `live/current/`. |
 | `distro/voidlinux/VoidLinuxAarch64.kt` | Void Linux aarch64 (glibc). Same flow as the x86_64 flavour, different bootstrap URL and ABI. |
-| `distro/apt/AptCommon.kt`      | Shared apt-family helpers: deb822 sources, apt.conf, dpkg `path-exclude`, apt-family `/etc/profile.d/tawc.sh`, `apt-get update`, `apt-get dist-upgrade`, and base package install. |
+| `distro/apt/AptCommon.kt`      | Shared apt-family helpers: deb822 sources, apt.conf, dpkg `path-exclude`, apt-family `/etc/profile.d/tawc.sh`, shell-default stubs, `apt-get update`, `apt-get dist-upgrade`, and base package install. |
 | `distro/debian/DebianDockerResolver.kt` | Fetches the Debian debuerreotype Docker artifact OCI manifest from the `dist-amd64` / `dist-arm64v8` branches and returns the `rootfs.tar.gz` URL plus layer SHA-256. |
 | `distro/debian/DebianSid.kt`   | Debian sid x86_64 / aarch64. Suite-driven apt-family implementation; future Debian suites should mostly be additional data objects. |
 | `util/HostArch.kt`             | `primaryAbi()` and `linuxArchFor(abi)` — the only place that knows the Android ABI ↔ Linux `uname -m` mapping. |
@@ -286,7 +286,12 @@ reported as `InstallProgress` to the UI and per-line logged to logcat
      -i KEY=VAL …` on every spawn ([ChrootMethod], [ProotMethod],
      [TawcrootMethod]). No on-disk env state inside the rootfs that
      the app version would have to keep rewriting; env changes pick
-     up next entry without a reinstall.
+     up next entry without a reinstall. (Interactive-shell cosmetics
+     are the one exception, and they don't go through profile.d
+     either: `ShellDefaults.configureScript` overwrites
+     `/root/.bashrc` + `/root/.bash_profile` once at configure time
+     with stubs that source the app-managed
+     `/usr/lib/tawc/bashrc` — see [ShellDefaultsInstallProvider].)
    - `TawcInstaller.installInto` lays down the APK-bundled libhybris
      tree (and its glvnd vendor JSON) as **real files** inside the
      rootfs, not symlinks and not bind mounts. Same generic mechanism
@@ -299,6 +304,11 @@ reported as `InstallProgress` to the UI and per-line logged to logcat
      [MesaZinkInstallProvider]) plus `/usr/share/glvnd/egl_vendor.d/00_libhybris.json`.
      [AndoInstallProvider] ships the ando client at
      `/usr/local/bin/ando` (notes/ando.md).
+     [ShellDefaultsInstallProvider] ships `/usr/lib/tawc/bashrc`
+     (colored short PS1, `ls`/`grep` color aliases) — sourced by the
+     one-time `/root/.bashrc` stub that `ShellDefaults.configureScript`
+     writes during CONFIGURING; the user can remove that source line
+     to opt out per-rootfs while the app-owned file stays updatable.
       `LD_LIBRARY_PATH` (set by [RootfsEnv]) is
       `/usr/lib/hybris/gl-shims:/usr/lib/hybris`. The source tree at
       `<filesDir>/libhybris/` is extracted from

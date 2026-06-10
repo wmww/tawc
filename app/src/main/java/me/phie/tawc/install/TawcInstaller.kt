@@ -47,6 +47,7 @@ internal object TawcInstaller {
         BridgeInstallProvider,
         MesaZinkInstallProvider,
         AndoInstallProvider,
+        ShellDefaultsInstallProvider,
     )
 
     /**

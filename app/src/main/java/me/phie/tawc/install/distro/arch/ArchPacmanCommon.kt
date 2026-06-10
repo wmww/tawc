@@ -2,6 +2,7 @@ package me.phie.tawc.install.distro.arch
 
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
+import me.phie.tawc.install.ShellDefaults
 import java.io.IOException
 
 /**
@@ -283,7 +284,8 @@ internal object ArchPacmanCommon {
      * [POST_EXTRACT_PURGE_PATHS]. The in-rootfs env (PATH, Wayland,
      * GL, X11) comes from [RootfsEnv] via `env -i KEY=VAL` on every
      * spawn — nothing is written under `/etc/profile.d/` (see
-     * notes/installation.md).
+     * notes/installation.md). Shell-default stubs for /root come from
+     * [ShellDefaults.configureScript].
      *
      * @param rootfs absolute path to the chroot rootfs.
      * @param mirrorListBody contents of `/etc/pacman.d/mirrorlist`
@@ -412,6 +414,8 @@ PACMAN_EOF
                 HOOK_EOF
                 """.trimIndent()
             )
+
+            append(ShellDefaults.configureScript())
 
             appendLine(
                 """
