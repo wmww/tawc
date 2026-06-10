@@ -257,6 +257,8 @@ dependencies {
     // with IME/scroll/selection handling (terminal-view). Vendored from
     // deps/termux-app — see settings.gradle.kts. Used by TerminalActivity.
     implementation(project(":terminal-view"))
+    // Termux's extra-keys row (GPLv3 — see termux-extrakeys/build.gradle.kts).
+    implementation(project(":termux-extrakeys"))
 }
 
 val checkInputConnectionAudit = tasks.register<Exec>("checkInputConnectionAudit") {

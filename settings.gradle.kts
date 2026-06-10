@@ -17,8 +17,10 @@ dependencyResolutionManagement {
 rootProject.name = "tawc"
 include(":app")
 
-// Termux's terminal-emulator + terminal-view (Apache-2.0; the GPL parts
-// of termux-app are not included) provide the in-app terminal widget.
+// Termux's terminal-emulator + terminal-view (Apache-2.0) provide the
+// in-app terminal widget, and :termux-extrakeys compiles termux's
+// GPLv3 extra-keys row from the same checkout (license notes in
+// termux-extrakeys/build.gradle.kts and notes/terminal.md).
 // They're wired in as included projects straight from the vendored
 // checkout, so the dep must exist at settings-evaluation time — clone/
 // verify it here instead of in a build task. Pin lives in deps/deps.list.
@@ -34,3 +36,4 @@ include(":terminal-emulator")
 project(":terminal-emulator").projectDir = file("deps/termux-app/terminal-emulator")
 include(":terminal-view")
 project(":terminal-view").projectDir = file("deps/termux-app/terminal-view")
+include(":termux-extrakeys")

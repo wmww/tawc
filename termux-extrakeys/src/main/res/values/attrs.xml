@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ExtraKeysView's theme attrs (same names as termux-shared's
+     attrs.xml so the vendored sources' R references resolve). tawc's
+     theme leaves them unset, so the widget uses its built-in termux
+     dark defaults. -->
+<resources>
+    <attr name="extraKeysButtonTextColor" format="reference" />
+    <attr name="extraKeysButtonActiveTextColor" format="reference" />
+    <attr name="extraKeysButtonBackgroundColor" format="reference" />
+    <attr name="extraKeysButtonActiveBackgroundColor" format="reference" />
+</resources>

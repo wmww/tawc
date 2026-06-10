@@ -14,6 +14,11 @@ import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.termux.shared.termux.extrakeys.ExtraKeysConstants
+import com.termux.shared.termux.extrakeys.ExtraKeysInfo
+import com.termux.shared.termux.extrakeys.ExtraKeysView
+import com.termux.shared.termux.extrakeys.SpecialButton
+import com.termux.shared.termux.terminal.io.TerminalExtraKeys
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
@@ -47,6 +52,7 @@ import me.phie.tawc.ui.buildChildScreen
 class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessionClient {
 
     private lateinit var terminalView: TerminalView
+    private lateinit var extraKeysView: ExtraKeysView
     private var session: TerminalSession? = null
     private var distroId: String = ""
     private var fontSizePx: Int = 0
@@ -99,8 +105,29 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         scaffold.content.setPadding(0, 0, 0, 0)
         scaffold.content.addView(
             terminalView,
-            LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT),
+            LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
         )
+
+        // Termux's extra-keys row (ESC/arrows/CTRL/...) between the
+        // terminal and the IME. Same default layout and per-row height
+        // as termux; held CTRL/ALT/SHIFT/FN state is consumed via the
+        // read*Key() client callbacks below.
+        val extraKeysInfo = ExtraKeysInfo(
+            EXTRA_KEYS_CONFIG, EXTRA_KEYS_STYLE, ExtraKeysConstants.CONTROL_CHARS_ALIASES,
+        )
+        val rowHeightPx = EXTRA_KEYS_ROW_HEIGHT_DP * resources.displayMetrics.density
+        extraKeysView = ExtraKeysView(this, null).apply {
+            setExtraKeysViewClient(TerminalExtraKeys(terminalView))
+            setBackgroundColor(Color.BLACK)
+        }
+        scaffold.content.addView(
+            extraKeysView,
+            LinearLayout.LayoutParams(
+                MATCH_PARENT,
+                (rowHeightPx * extraKeysInfo.matrix.size + 0.5f).toInt(),
+            ),
+        )
+        extraKeysView.reload(extraKeysInfo, rowHeightPx)
         setContentView(scaffold.root)
 
         val existing = TerminalSessions.get(distroId)
@@ -192,14 +219,18 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
 
     override fun onLongPress(event: MotionEvent): Boolean = false
 
-    // No extra-keys row (yet) — no held virtual modifiers to report.
-    override fun readControlKey(): Boolean = false
+    // Held/locked virtual modifiers from the extra-keys row (matches
+    // termux's TermuxTerminalViewClient.readExtraKeysSpecialButton).
+    private fun readSpecialButton(button: SpecialButton): Boolean =
+        extraKeysView.readSpecialButton(button, true) == true
 
-    override fun readAltKey(): Boolean = false
+    override fun readControlKey(): Boolean = readSpecialButton(SpecialButton.CTRL)
 
-    override fun readShiftKey(): Boolean = false
+    override fun readAltKey(): Boolean = readSpecialButton(SpecialButton.ALT)
 
-    override fun readFnKey(): Boolean = false
+    override fun readShiftKey(): Boolean = readSpecialButton(SpecialButton.SHIFT)
+
+    override fun readFnKey(): Boolean = readSpecialButton(SpecialButton.FN)
 
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean = false
 
@@ -274,6 +305,14 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         private const val TAG = "tawc-terminal"
         private const val TRANSCRIPT_ROWS = 4000
         private const val DEFAULT_FONT_SIZE_DP = 13f
+        // Termux's default extra-keys config and per-row height
+        // (TermuxPropertyConstants.DEFAULT_IVALUE_EXTRA_KEYS and the
+        // 37.5dp terminal_toolbar_view_pager in activity_termux.xml).
+        private const val EXTRA_KEYS_CONFIG =
+            "[['ESC','/',{key: '-', popup: '|'},'HOME','UP','END','PGUP'], " +
+                "['TAB','CTRL','ALT','LEFT','DOWN','RIGHT','PGDN']]"
+        private const val EXTRA_KEYS_STYLE = "default"
+        private const val EXTRA_KEYS_ROW_HEIGHT_DP = 37.5f
         private const val FONT_SIZE_STEP_DP = 1f
         private const val MIN_FONT_SIZE_DP = 7f
         private const val MAX_FONT_SIZE_DP = 36f

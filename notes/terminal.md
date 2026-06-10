@@ -11,7 +11,7 @@ The UI is termux's terminal widget, vendored as `deps/termux-app`
 projects `:terminal-emulator` and `:terminal-view`
 (`settings.gradle.kts` `projectDir` redirects; the dep is ensured at
 settings-evaluation time because included projects must exist before
-configuration). Only those two modules are used:
+configuration):
 
 - `terminal-emulator` — VT emulation plus a small JNI
   (`libtermux.so`, built by ndk-build during the app build) that opens
@@ -22,9 +22,25 @@ configuration). Only those two modules are used:
 
 Both modules are **Apache-2.0** (the explicit exception in termux-app's
 `LICENSE.md`; they descend from jackpal's Android-Terminal-Emulator).
-The GPLv3 `app` and MIT+GPL `termux-shared` modules are *not* built or
-shipped — keep it that way. Termux packages/bootstrap are not involved
-at all; the shell is the distro's own `/bin/bash`.
+Termux packages/bootstrap are not involved at all; the shell is the
+distro's own `/bin/bash`.
+
+The extra-keys row (ESC/TAB/CTRL/arrows above the IME) is termux's
+`ExtraKeysView` + `TerminalExtraKeys`, cherry-picked from the
+`termux-shared` module by the in-repo `:termux-extrakeys` shim
+(`termux-extrakeys/build.gradle.kts`): it compiles just those classes
+straight out of the vendored checkout (an include-filtered `srcDir`),
+plus a local trimmed `ThemeUtils` stand-in so the rest of
+termux-shared (Logger → guava, markwon, NDK code, ...) stays out of
+the build. **License**: those classes are GPLv3-only, a deliberate
+exception to the otherwise-MIT app (decided 2026-06; the repo sources
+stay MIT, but distributed APKs are subject to GPLv3). Config is
+termux's default double-row layout, inlined in `TerminalActivity`;
+held CTRL/ALT/SHIFT/FN flow through the `read*Key()`
+`TerminalViewClient` callbacks, same as termux.
+
+The rest of `termux-shared` and the GPLv3 `app` module are still not
+built or shipped.
 
 The modules read `minSdkVersion`/`targetSdkVersion`/`compileSdkVersion`/
 `ndkVersion` from root `gradle.properties` (keys added there; keep in
