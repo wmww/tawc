@@ -1,5 +1,6 @@
 package me.phie.tawc.terminal
 
+import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -12,6 +13,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -81,6 +83,19 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         }
 
         val scaffold = buildChildScreen(DistroRegistry.displayLabel(installation))
+        // Leaving the terminal (up arrow or system back) backgrounds the
+        // task instead of finishing it: the shell keeps running, the
+        // recents card stays, and — because the activity instance stays
+        // alive with the task — swiping the card later still reaches
+        // onDestroy, which kills the shell. finish() here would leave a
+        // card whose swipe the app never sees (no onTaskRemoved service;
+        // see TerminalSessions).
+        scaffold.toolbar.setNavigationOnClickListener { moveTaskToBack(true) }
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                moveTaskToBack(true)
+            }
+        })
         // Replace the scaffold's system-bar-only inset padding with one
         // that includes the IME, so the keyboard resizes the terminal
         // and the prompt stays visible above it.
@@ -171,10 +186,24 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
 
     override fun onDestroy() {
         super.onDestroy()
+        val s = session ?: return
         // The session outlives this activity in [TerminalSessions]; drop
         // its reference to us so the destroyed activity (and view tree)
         // is collectable. Reopening swaps the live client back in.
-        session?.updateTerminalSessionClient(DetachedTerminalClient(distroId))
+        s.updateTerminalSessionClient(DetachedTerminalClient(distroId))
+        // Distinguish "task swiped away in recents" from recreation
+        // (config change, system pressure): a swipe removes the recents
+        // card before destroying us; recreation isn't finishing. With
+        // the card gone nothing can reattach, so kill the shell like
+        // closing a desktop terminal window. Back never finishes us
+        // (see onCreate), so a live card always has a live activity to
+        // receive this.
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val taskInRecents = am.appTasks.any { it.taskInfo.taskId == taskId }
+        if (isFinishing && !taskInRecents) {
+            TerminalSessions.remove(distroId, s)
+            s.finishIfRunning()
+        }
     }
 
     private fun showSoftKeyboard() {
@@ -222,13 +251,18 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
         // Enter on a dead session closes the terminal (matches termux).
         if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
-            finish()
+            finishAndRemoveTask()
             return true
         }
         return false
     }
 
-    override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean = false
+    // TerminalViewClient.onKeyUp shares Activity.onKeyUp's signature,
+    // so this one override serves both callers: TerminalView consults
+    // it for app-handled keys (none), and the framework dispatches
+    // unhandled key-ups here. Returning a bare `false` would shadow
+    // Activity.onKeyUp and swallow the back button.
+    override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean = super.onKeyUp(keyCode, e)
 
     override fun onLongPress(event: MotionEvent): Boolean = false
 
@@ -260,8 +294,10 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
     override fun onSessionFinished(finishedSession: TerminalSession) {
         TerminalSessions.remove(distroId, finishedSession)
         // The shell exited (user typed `exit`, or the rootfs side
-        // died). Closing the screen mirrors a desktop terminal window.
-        if (!isFinishing) finish()
+        // died). Closing the screen and dropping the recents card
+        // mirrors a desktop terminal window; a leftover card would
+        // just respawn a fresh shell when tapped.
+        if (!isFinishing) finishAndRemoveTask()
     }
 
     override fun onCopyTextToClipboard(session: TerminalSession, text: String?) {

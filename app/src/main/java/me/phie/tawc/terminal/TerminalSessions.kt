@@ -7,9 +7,11 @@ import com.termux.terminal.TerminalSessionClient
 
 /**
  * Process-wide registry of live terminal sessions, one per installation
- * id. Sessions outlive [TerminalActivity] — rotation, back, and
- * re-opening from the home screen reattach to the running shell instead
- * of spawning a second one. Sessions die with the app process; there is
+ * id. Sessions outlive [TerminalActivity] — recreation (uncaught config
+ * changes, system pressure) and re-opening from the home screen reattach
+ * to the running shell instead of spawning a second one. (Back merely
+ * backgrounds the task, keeping the activity itself alive.) Sessions
+ * die with the app process; there is
  * deliberately no foreground service keeping shells alive, so a
  * backgrounded app's shell can be reaped with the process.
  */
