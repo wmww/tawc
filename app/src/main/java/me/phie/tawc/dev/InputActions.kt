@@ -3,6 +3,7 @@ package me.phie.tawc.dev
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.inputmethod.CompletionInfo
 import android.view.inputmethod.CorrectionInfo
@@ -483,7 +484,24 @@ internal object InputActions {
                 ok = true
             }
             if (!ran) return ctx.fail("main loop did not run focus-activity within 5s")
-            return if (ok) 0 else 1
+            if (!ok) return 1
+            // startActivity from an app context silently no-ops when
+            // Android 10+ blocks background activity starts, so verify the
+            // target actually came forward instead of trusting the call.
+            val deadline = SystemClock.uptimeMillis() + 5_000
+            while (SystemClock.uptimeMillis() < deadline) {
+                var focused = false
+                if (!onMainBlocking {
+                    focused = service.getActivity(activityId)?.hasWindowFocus() == true
+                }) return ctx.fail("main loop did not run focus-activity within 5s")
+                if (focused) return 0
+                if (ctx.cancelFlag.get()) return 1
+                Thread.sleep(100)
+            }
+            return ctx.fail(
+                "focus-activity: $activityId did not gain window focus within 5s " +
+                    "(Android blocks activity starts while tawc is backgrounded)"
+            )
         }
     }
 
