@@ -3355,6 +3355,35 @@ covered by unit/hosted/smoke tests.)
   wholesale, so this leaks nothing the kernel doesn't. Includes
   `/proc/<pid>/root` of an emulated-chroot'd guest, which an outside
   observer sees as "/" where a real kernel would show the chroot dir.
+- **`security.capability` xattrs cannot be written.** SELinux denies
+  `untrusted_app` CAP_SETFCAP, so setting that xattr returns EPERM;
+  during pacman installs libarchive degrades it to a per-file warning
+  (`newuidmap`, `gst-ptp-helper`, …) and the file lands without the
+  capability bit. `setcap`-running scriptlets fail the same way via
+  `cap_set_proc` (separate path, same root denial) and pacman reports
+  `error: command failed to execute correctly`. Do **not** make
+  `setxattr` lie success: the bit genuinely isn't on disk, exec-time
+  capability grants genuinely don't happen, and the warning is the
+  user's only accurate signal. We also can't fake it — there is no
+  exec-time capability application layer to back the lie. In practice
+  it doesn't matter: `newuidmap`/`newgidmap` are irrelevant under
+  fake-root (no user namespaces), and `gst-ptp-helper` is an optional
+  niche plugin. A workload that truly needs file caps must use the
+  debug-only `chroot` install method (su can set the xattr) or be
+  declared unsupported under tawcroot.
+- **x86_64-only legacy syscalls missing from the dispatch table fall
+  through to `-ENOSYS`.** Bionic never issues them, so Android's
+  seccomp allowlist RET_TRAPs them; x86_64 glibc occasionally does.
+  Observed instance: `getpgrp` (NR 111) broke bash job control —
+  fixed by forwarding to `getpgid(0)` in syscalls_control.c.
+  Speculative same-class candidates, flagged in review but never
+  observed: `pause` (34) (an -ENOSYS pause() returns immediately —
+  busy loops, broken signal waits) and `alarm` (37) (silently dropped
+  SIGALRM timers). Emulator-only; aarch64 never allocated these
+  numbers. If odd timing/signal bugs appear on the x86_64 emulator,
+  check TAWCROOT_TRACE `[t] nr=...` output for unhandled legacy
+  numbers first; the fix pattern is a small forwarding handler plus a
+  hosted test.
 
 ## Future work
 
