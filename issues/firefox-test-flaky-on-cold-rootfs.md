@@ -1,5 +1,15 @@
 # `hybris::test_firefox_renders_via_ahb` flakes on the very first run after a fresh install
 
+**2026-06-09 addendum:** unrelated to this flake, both firefox tests
+went permanently red via a different mechanism: repeated hard kills
+pushed `toolkit.startup.recent_crashes` past 3, making every launch
+silently relaunch into safe mode, and the relaunch then wedged on a
+tawcroot exec_lock leak. Both fixed (tawcroot prepare/commit split;
+`helpers::firefox_profile_cleanup` pins
+`toolkit.startup.max_resumed_crashes=-1`) — see
+notes/firefox.md "Startup-crash safe-mode relaunch". If this issue's
+cold-rootfs flake reappears, rule those out first.
+
 **Likely fixed as of 2026-05-02.** The test's steady-state
 assertion was rewritten from "saw a `wlegl: imported` log line in
 the last 2 s" (which is empty whenever Firefox's WebRender ring of

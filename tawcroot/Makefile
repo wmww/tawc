@@ -372,6 +372,16 @@ $(OUT)/programs/static_fork_closefrom_exec_argv1: $(SRC_TS)/integration/programs
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
 
+# static_vfork_exec_then_fork_exec_argv1: posix_spawn-shaped
+# clone(CLONE_VM|CLONE_VFORK|SIGCHLD) child execve's argv[1], then a
+# plain fork child execve's argv[1] again. Catches the exec_lock leak:
+# a CLONE_VM child that execveat'd away while holding the lock left it
+# set in the parent's memory, wedging the family's next exec (the
+# Firefox glxtest-then-relaunch hang).
+$(OUT)/programs/static_vfork_exec_then_fork_exec_argv1: $(SRC_TS)/integration/programs/static_vfork_exec_then_fork_exec_argv1_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
+
 # static_fexecve_argv1: open(argv[1]) and execveat(fd, "", ..., AT_EMPTY_PATH).
 # Exercises the fexecve(3) shape that used to return -ENOSYS for dirfd !=
 # AT_FDCWD.

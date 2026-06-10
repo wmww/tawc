@@ -1,8 +1,8 @@
 /* SIGSYS dispatch handlers for `execve` / `execveat`.
  *
- * Wires the guest's exec syscalls into `tawcroot_exec_handler_perform`,
- * which builds an exec_state in a memfd and re-execs tawcroot with
- * --exec-child. See exec_handler.h.
+ * Wires the guest's exec syscalls into exec_handler.h's prepare
+ * (build an exec_state memfd, under exec_lock) + commit (re-exec
+ * tawcroot with --exec-child, after unlock) pair.
  *
  * The handlers themselves are small adapters: they pull pointers and
  * argv/envp arrays out of the guest's saved registers, copy strings
@@ -124,12 +124,18 @@ static long collect_array(char *const *guest_arr,
  * multiple guest threads (sa_mask only masks the trapping thread), and
  * a CLONE_VM child exec'ing while a sibling execs shares this address
  * space, so two concurrent execs could interleave writes into these
- * buffers. Serialize the whole collect→write→execveat sequence with a
- * spinlock: exec is terminal for the thread (the winner execveats away
- * and never unlocks — that's fine, the address space is replaced), so
- * blocking a concurrent exec briefly is harmless and vfork-safe. The
- * common fork-then-exec case never contends (COW gives the child its
- * own copy of the statics). */
+ * buffers. Serialize the collect→serialize phase with a spinlock.
+ *
+ * The lock MUST be released before the execveat commit point — hence
+ * the prepare/commit split in exec_handler.h. An earlier revision held
+ * it across the execveat ("the winner never unlocks, the address space
+ * is replaced anyway"), which is wrong for posix_spawn children:
+ * CLONE_VM|CLONE_VFORK shares the parent's memory, so the lock the
+ * exec'ing child left set persisted in the parent — and in every later
+ * fork snapshot — wedging the family's next exec in this spin forever
+ * (Firefox: glxtest posix_spawn leaked the lock, the startup-crash
+ * relaunch fork+execve then hung). commit() touches no shared statics,
+ * so running it unlocked is safe. */
 static volatile int g_exec_lock;
 
 static void exec_lock(void)
@@ -145,9 +151,9 @@ static void exec_unlock(void)
 }
 
 /* Common path: parse arg0 = path pointer, arg1 = argv, arg2 = envp;
- * collect strings; call perform. Returns the value to write back to
- * the guest as the syscall return — typically -errno on failure
- * (perform doesn't return on success). */
+ * collect strings; call prepare. Returns the serialized exec_state
+ * memfd (>= 0) for the caller to commit after unlocking, or -errno
+ * to write back to the guest as the syscall return. */
 static long do_exec_path(const char *path,
                          char *const *guest_argv, char *const *guest_envp)
 {
@@ -173,8 +179,9 @@ static long do_exec_path(const char *path,
 	                          envp_ptrs, MAX_ENV);
 	if (envc < 0) return envc;
 
-	/* Perform never returns on success. On failure it returns -errno. */
-	return tawcroot_exec_handler_perform(path, (int)argc,
+	/* Returns the serialized exec_state memfd (>= 0) or -errno; the
+	 * caller commits (execveats) after dropping the lock. */
+	return tawcroot_exec_handler_prepare(path, (int)argc,
 	                                     argv_ptrs, envp_ptrs);
 }
 
@@ -204,10 +211,10 @@ static long handle_execve(const tawcroot_syscall_args *args, ucontext_t *uc)
 	exec_lock();
 	long r = do_exec((const void *)args->a, (char *const *)args->b,
 	                 (char *const *)args->c);
-	/* Only reached on failure — on success do_exec execveats away and
-	 * never returns, leaving the lock held in the now-replaced image. */
 	exec_unlock();
-	return r;
+	if (r < 0) return r;
+	/* commit() returns only on failure; on success it execveats away. */
+	return tawcroot_exec_handler_commit((int)r);
 }
 
 /* execveat(dirfd, path, argv, envp, flags). Handles the common fexecve(3)
@@ -262,8 +269,10 @@ static long handle_execveat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	(void)uc;
 	exec_lock();
 	long r = execveat_locked(args);
-	exec_unlock();  /* only on failure — success execveats away */
-	return r;
+	exec_unlock();
+	if (r < 0) return r;
+	/* commit() returns only on failure; on success it execveats away. */
+	return tawcroot_exec_handler_commit((int)r);
 }
 
 void tawcroot_exec_register(void)

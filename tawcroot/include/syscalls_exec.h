@@ -1,6 +1,6 @@
 /* SIGSYS dispatch handlers for execve / execveat. The handlers are
- * thin adapters around tawcroot_exec_handler_perform (see
- * exec_handler.h). See syscalls_exec.c.
+ * thin adapters around exec_handler.h's prepare/commit pair. See
+ * syscalls_exec.c.
  */
 
 #pragma once

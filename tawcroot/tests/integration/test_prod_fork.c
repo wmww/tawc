@@ -15,9 +15,10 @@
  *     in usercopy.c:14-22).
  *
  *   - Bash's fork+execve chain depends on every link working in a
- *     fresh process: handle_execve, exec_handler_perform's memfd
- *     handoff, --exec-child re-init, and the SIGSYS-blocked sigmask
- *     unblock in loader_exec_child (notes/tawcroot.md "phase-5b").
+ *     fresh process: handle_execve, the exec handler's prepare/commit
+ *     memfd handoff, --exec-child re-init, and the SIGSYS-blocked
+ *     sigmask unblock in loader_exec_child (notes/tawcroot.md
+ *     "phase-5b").
  *
  *   - gpgme's pre-exec closefrom() needs reserved fds to survive
  *     the close()/close_range() barrage and remain re-exportable
@@ -82,6 +83,9 @@
 #ifndef TAWCROOT_STATIC_CHECK_PROC_EXE_ARGV0_BIN
 # error "TAWCROOT_STATIC_CHECK_PROC_EXE_ARGV0_BIN must be defined"
 #endif
+#ifndef TAWCROOT_STATIC_VFORK_EXEC_THEN_FORK_EXEC_ARGV1_BIN
+# error "TAWCROOT_STATIC_VFORK_EXEC_THEN_FORK_EXEC_ARGV1_BIN must be defined"
+#endif
 
 #ifndef TAWCROOT_TEST_TMPDIR
 # define TAWCROOT_TEST_TMPDIR "/tmp"
@@ -111,6 +115,8 @@ static bool build_rootfs(void)
 		  "static_exit42" },
 		{ TAWCROOT_STATIC_CHECK_PROC_EXE_ARGV0_BIN,
 		  "static_check_proc_exe_argv0" },
+		{ TAWCROOT_STATIC_VFORK_EXEC_THEN_FORK_EXEC_ARGV1_BIN,
+		  "static_vfork_exec_then_fork_exec_argv1" },
 	};
 	for (size_t i = 0; i < sizeof fixtures / sizeof fixtures[0]; i++) {
 		snprintf(p, sizeof p, "%s/bin/%s",
@@ -253,6 +259,32 @@ test(prod_fork_exec_proc_self_exe_correct_in_child)
 		"-r", FAKE_ROOTFS, "--",
 		"/bin/static_fork_exec_argv1",
 		"/bin/static_check_proc_exe_argv0", NULL
+	};
+	test_int_eq(run_with(args), 42);
+
+	rh_rmrf(FAKE_ROOTFS);
+}
+
+/* exec_lock must not leak through a CLONE_VM (posix_spawn-shaped)
+ * child. The fixture vfork+execs argv[1] (sharing the parent's memory
+ * — under the old held-across-execveat locking this left exec_lock
+ * set in the parent), then fork+execs argv[1] again; the second exec
+ * spun forever in the SIGSYS handler. Firefox hit this for real:
+ * glxtest is posix_spawn'd at startup, then the startup-crash
+ * relaunch fork+execve wedged and Firefox silently never came up.
+ *
+ * The fixture self-watchdogs the second child with wait4(WNOHANG)
+ * polling: a regression exits 80 within ~10 s instead of hanging the
+ * suite. */
+test(prod_vfork_exec_then_fork_exec_no_lock_leak)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	test_true(build_rootfs());
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS, "--",
+		"/bin/static_vfork_exec_then_fork_exec_argv1",
+		"/bin/static_exit42", NULL
 	};
 	test_int_eq(run_with(args), 42);
 

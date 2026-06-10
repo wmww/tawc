@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use tawc_integration::helpers::{
     assert_client_animating, assert_compositor_clean, assert_renders_via_ahb,
-    launch_and_wait_for_ahb, require_compositor, TIMEOUT,
+    firefox_profile_cleanup, launch_and_wait_for_ahb, require_compositor, TIMEOUT,
 };
 use tawc_integration::{adb, compositor, GraphicsBackend};
 
@@ -190,14 +190,7 @@ fn test_gtk4_renders_via_ahb() {
 #[ignore = "gfxstream not yet working"]
 fn test_firefox_renders_via_ahb() {
     tawc_integration::helpers::test_init();
-    let _ = adb::rootfs_run_with(
-        BACKEND,
-        "rm -f ~/.config/mozilla/firefox/*/.parentlock \
-              ~/.config/mozilla/firefox/*/lock \
-              ~/.config/mozilla/firefox/*/sessionstore.jsonlz4 \
-              ~/.config/mozilla/firefox/*/sessionCheckpoints.json && \
-         rm -rf ~/.config/mozilla/firefox/*/sessionstore-backups",
-    );
+    firefox_profile_cleanup(BACKEND);
 
     let mut firefox = launch_and_wait_for_ahb(
         BACKEND,

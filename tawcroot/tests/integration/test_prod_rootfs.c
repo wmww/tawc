@@ -204,10 +204,10 @@ test(prod_rootfs_nonexistent_guest_returns_loader_code)
  *   1. tawcroot starts in -r mode, installs handler+filter, manual-loads
  *      /bin/static_execve_exit42.
  *   2. The fixture issues execve("/bin/static_exit42"). Filter traps,
- *      handler dispatches to tawcroot_exec_handler_perform.
- *   3. exec_handler_perform translates the path against the rootfs,
- *      probes that it's openable, builds an exec_state with rootfs +
- *      bind specs + guest_exe, writes the memfd, and execveats
+ *      handler dispatches to the exec handler's prepare/commit pair.
+ *   3. prepare translates the path against the rootfs, probes that
+ *      it's openable, builds an exec_state with rootfs + bind specs +
+ *      guest_exe, and writes the memfd; commit execveats
  *      /proc/self/exe with --exec-child <fd>.
  *   4. The new tawcroot incarnation reads exec_state, re-establishes
  *      the rootfs view (open rootfs fd, bind table, handler reinstall),

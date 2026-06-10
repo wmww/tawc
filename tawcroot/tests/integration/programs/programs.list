@@ -22,6 +22,7 @@ static_fork_open_argv1
 static_small_stack_open_argv1
 static_fork_exec_argv1
 static_fork_closefrom_exec_argv1
+static_vfork_exec_then_fork_exec_argv1
 static_fexecve_argv1
 static_unix_bind_argv1
 static_check_proc_self_fd

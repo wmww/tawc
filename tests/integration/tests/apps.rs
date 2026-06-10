@@ -16,8 +16,8 @@
 use std::time::Duration;
 
 use tawc_integration::helpers::{
-    assert_broker_ok, assert_compositor_clean, launch_and_wait_for_toplevel,
-    wait_for_keyboard_shown, TIMEOUT,
+    assert_broker_ok, assert_compositor_clean, firefox_profile_cleanup,
+    launch_and_wait_for_toplevel, wait_for_keyboard_shown, TIMEOUT,
 };
 use tawc_integration::{adb, compositor, GraphicsBackend};
 
@@ -70,15 +70,7 @@ fn wait_for_android_clipboard(expected: &str, timeout: Duration) {
 #[test]
 fn test_firefox_launches() {
     tawc_integration::helpers::test_init();
-    // Remove lock/crash files so Firefox doesn't show the troubleshoot-mode dialog
-    // (killall doesn't give Firefox a clean shutdown, leaving these behind)
-    let _ = adb::rootfs_run(
-        "rm -f ~/.config/mozilla/firefox/*/.parentlock \
-              ~/.config/mozilla/firefox/*/lock \
-              ~/.config/mozilla/firefox/*/sessionstore.jsonlz4 \
-              ~/.config/mozilla/firefox/*/sessionCheckpoints.json && \
-         rm -rf ~/.config/mozilla/firefox/*/sessionstore-backups",
-    );
+    firefox_profile_cleanup(BACKEND);
 
     let mut firefox = launch_and_wait_for_toplevel(BACKEND, FIREFOX_CMD, "Firefox", FIREFOX_LAUNCH_TIMEOUT);
 

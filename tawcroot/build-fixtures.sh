@@ -112,6 +112,7 @@ build_static  static_fork_open_argv1
 build_static  static_small_stack_open_argv1
 build_static  static_fork_exec_argv1
 build_static  static_fork_closefrom_exec_argv1
+build_static  static_vfork_exec_then_fork_exec_argv1
 build_static  static_fexecve_argv1
 build_static  static_unix_bind_argv1
 build_static  static_check_proc_self_fd

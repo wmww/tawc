@@ -303,6 +303,39 @@ pub fn assert_compositor_clean() {
         .expect("Screen still shows toplevels after cleanup");
 }
 
+/// Pre-launch profile hygiene for Firefox tests. The harness kills
+/// Firefox without a clean shutdown, which leaves two kinds of poison
+/// in the profile:
+///
+///   - lock/session files that trigger the session-restore or
+///     "Firefox is already running" paths;
+///   - an ever-growing `toolkit.startup.recent_crashes` counter
+///     (`toolkit.startup.last_success` never updates because no run
+///     shuts down cleanly). Once it passes max_resumed_crashes (3),
+///     every launch silently relaunches into safe mode: no window
+///     within the toplevel wait, and safe mode forces software
+///     rendering, which breaks the AHB assertions even when the
+///     relaunch works.
+///
+/// Delete the locks and pin `toolkit.startup.max_resumed_crashes=-1`
+/// (detector off) via user.js, which Firefox re-applies every startup.
+/// The prefs.js guard keeps user.js out of non-profile dirs the glob
+/// also matches ("Profile Groups").
+pub fn firefox_profile_cleanup(backend: GraphicsBackend) {
+    let _ = adb::rootfs_run_with(
+        backend,
+        r#"rm -f ~/.config/mozilla/firefox/*/.parentlock \
+              ~/.config/mozilla/firefox/*/lock \
+              ~/.config/mozilla/firefox/*/sessionstore.jsonlz4 \
+              ~/.config/mozilla/firefox/*/sessionCheckpoints.json; \
+         rm -rf ~/.config/mozilla/firefox/*/sessionstore-backups; \
+         for d in ~/.config/mozilla/firefox/*/; do \
+            [ -f "$d/prefs.js" ] || continue; \
+            echo 'user_pref("toolkit.startup.max_resumed_crashes", -1);' > "$d/user.js"; \
+         done"#,
+    );
+}
+
 pub fn assert_broker_ok(output: std::process::Output, action: &str) {
     assert!(
         output.status.success(),

@@ -103,7 +103,7 @@ static long classify_loadable(int fd, int depth)
 	return ck;
 }
 
-long tawcroot_exec_handler_perform(const char *path, int argc,
+long tawcroot_exec_handler_prepare(const char *path, int argc,
                                    const char *const *argv,
                                    const char *const *envp)
 {
@@ -240,6 +240,11 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 		return TAWC_EFAULT;
 	}
 
+	return mfd;
+}
+
+long tawcroot_exec_handler_commit(int mfd)
+{
 	/* (4) Open /proc/self/exe so we can execveat ourselves with
 	 * AT_EMPTY_PATH. Going through the path namespace would require
 	 * us to know our own filesystem path, which depends on how
@@ -286,4 +291,13 @@ long tawcroot_exec_handler_perform(const char *path, int argc,
 	tawc_close((int)exe_fd);
 	tawc_close((int)mfd);
 	return er;
+}
+
+long tawcroot_exec_handler_perform(const char *path, int argc,
+                                   const char *const *argv,
+                                   const char *const *envp)
+{
+	long mfd = tawcroot_exec_handler_prepare(path, argc, argv, envp);
+	if (mfd < 0) return mfd;
+	return tawcroot_exec_handler_commit((int)mfd);
 }

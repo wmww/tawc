@@ -179,3 +179,26 @@ adb shell "su -c 'killall firefox'"
 ```
 
 The wayland flush shim (`libwayland-flush-shim.so`) is no longer needed.
+
+## Startup-crash safe-mode relaunch (June 2026)
+
+Every hard kill (test harness `stop()`, app death) counts as a
+startup crash because `toolkit.startup.last_success` only updates on
+clean shutdown. Once `toolkit.startup.recent_crashes` passes
+`toolkit.startup.max_resumed_crashes` (3), each launch **silently
+fork+execs itself** with `MOZ_SAFE_MODE_RESTART=1` and the original
+process exits 0 — no window, no output. Diagnosed June 2026 when both
+firefox integration tests failed: the relaunch additionally wedged on
+a tawcroot exec_lock leak (see `tawcroot/include/exec_handler.h`,
+fixed via the prepare/commit split + the
+`prod_vfork_exec_then_fork_exec_no_lock_leak` regression test); with
+that fixed, the relaunch would instead come up in safe mode, which
+forces software rendering and breaks the AHB assertions.
+
+The integration tests neutralize the detector by writing
+`user_pref("toolkit.startup.max_resumed_crashes", -1);` to each
+profile's `user.js` before launching — see
+`helpers::firefox_profile_cleanup`. A real user whose Firefox is
+repeatedly killed un-cleanly (app swiped away, Android lowmem) gets
+the safe-mode relaunch by design; that's upstream behavior, not a
+tawc bug.
