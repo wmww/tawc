@@ -21,6 +21,7 @@
 
 #define TAWC_EPERM         (-1)
 #define TAWC_ENOENT        (-2)
+#define TAWC_EINTR         (-4)
 #define TAWC_E2BIG         (-7)
 #define TAWC_ENOEXEC       (-8)
 #define TAWC_EBADF         (-9)
@@ -32,6 +33,7 @@
 #define TAWC_ENOTDIR       (-20)
 #define TAWC_EISDIR        (-21)
 #define TAWC_EINVAL        (-22)
+#define TAWC_EMFILE        (-24)
 #define TAWC_ENOSPC        (-28)
 #define TAWC_ERANGE        (-34)
 #define TAWC_ENAMETOOLONG  (-36)

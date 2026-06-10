@@ -7,7 +7,6 @@
  * is integration-tested in tests/integration/test_exec_child.c.
  */
 
-#define _GNU_SOURCE
 #include <cleat/test.h>
 #include <stddef.h>
 #include <stdint.h>

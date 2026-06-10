@@ -16,7 +16,6 @@
  * passes, dynamic-binary support (phase 2.5) doesn't land.
  */
 
-#define _GNU_SOURCE
 #include <cleat/test.h>
 #include <errno.h>
 #include <fcntl.h>

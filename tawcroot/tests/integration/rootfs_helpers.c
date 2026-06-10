@@ -1,7 +1,5 @@
 /* See rootfs_helpers.h. */
 
-#define _GNU_SOURCE
-
 #include "rootfs_helpers.h"
 
 #include <errno.h>

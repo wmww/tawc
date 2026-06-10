@@ -1,10 +1,14 @@
 #!/bin/bash
 # Run the cleat-driven tawcroot test runner.
 #
-# A single binary at `build/tawcroot-host/tests` runs four layers of
+# A single binary at `build/tawcroot-host/tests` runs five layers of
 # tests (per `notes/tawcroot.md` "Testing strategy"):
 #
 #   - tawcroot/tests/unit/         pure-function unit tests (cleat-direct)
+#   - tawcroot/tests/hosted/       handler-logic tests, in-process against
+#                                  the full production tree (host build is
+#                                  ASan+UBSan; raw syscalls go through the
+#                                  hosted shim + test hook)
 #   - tawcroot/tests/handler/      handler/filter tests (fork tawcroot-testhost)
 #   - tawcroot/tests/integration/  full-supervisor tests (fork production tawcroot)
 #   - tawcroot/tests/diff/         (future) differential tests vs proot
@@ -70,6 +74,9 @@ if [ "$MODE" = "host" ]; then
     fi
     BIN="$REPO_DIR/build/tawcroot-host/tests"
     [ -x "$BIN" ] || { echo "ERROR: $BIN missing — drop --no-build?" >&2; exit 1; }
+    # The host tests binary is built with ASan+UBSan (see Makefile).
+    # Callers can override by exporting their own ASAN_OPTIONS.
+    export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_stack_use_after_return=1:strict_string_checks=1}"
     exec "$BIN" "${PASSTHROUGH[@]}"
 fi
 

@@ -47,9 +47,20 @@ HOST_BASE := 0x10000000
 # the cross-build's hook in build.sh. NOTE: flag changes don't trigger
 # rebuilds — run `tawcroot/build.sh --abi=host --clean` (or touch the
 # sources) when toggling.
+# Trap-mode UBSan: no runtime, UB becomes SIGILL → the forked test
+# fails. Host test artifacts only — the shipped binaries are the NDK
+# cross-builds in tawcroot/build.sh, which stay uninstrumented.
+# Alignment checking stays off: the ELF loader and dirent walkers do
+# intentional misaligned reads through packed kernel structures.
+# Diagnostics are poor (trap PC + addr2line only); if a trap fires,
+# rebuild with EXTRA_CFLAGS='-fsanitize-undefined-trap-on-error' off
+# the table and reproduce hosted instead, where UBSan reports nicely.
+TAWC_UBSAN := -fsanitize=undefined -fsanitize-trap=all -fno-sanitize=alignment
+
 TAWC_CFLAGS := \
     -O2 -fno-strict-aliasing -fno-stack-protector -fvisibility=hidden \
     -fno-exceptions -fno-asynchronous-unwind-tables -ffreestanding \
+    $(TAWC_UBSAN) \
     -Wall -Wextra -Werror -D_GNU_SOURCE \
     -I$(SRC_T)/include \
     -MMD -MP $(EXTRA_CFLAGS)
@@ -84,8 +95,16 @@ PROGRAMS_DEFINES := $(shell awk -v out='$(OUT)' \
 # [[maybe_unused]]). Warning set mirrors deps/cleat/meson.build's cleat_c_args so
 # the test build stays clean against cleat + STC's intentional unused-* /
 # format-zero-length patterns.
+#
+# ASan+UBSan are always on for the hosted tests binary (not a knob: the
+# incremental build doesn't rebuild on flag changes, so an env toggle
+# would silently mix sanitized and unsanitized objects). If an
+# unsanitized host tests build is ever needed, add it as a separate
+# OBJ/OUT suffix, not a flag on this tree. Sanitizer errors abort the
+# orchestrator (-fno-sanitize-recover=all) and fail the run.
+TESTS_SANFLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all
 TESTS_CFLAGS := \
-    -std=c23 -O2 -fno-strict-aliasing \
+    -std=c23 -O2 -fno-strict-aliasing $(TESTS_SANFLAGS) -D_GNU_SOURCE \
     -fno-tree-loop-distribute-patterns \
     -Wno-missing-braces -Wno-unused-function -Wno-format-zero-length \
     -Wno-error=unused-variable -Wno-error=unused-parameter \
@@ -104,7 +123,7 @@ TESTS_CFLAGS := \
     -DTAWCROOT_TEST_TMPDIR=\"/tmp\" \
     -MMD -MP
 
-TESTS_LDFLAGS := -lm -pthread
+TESTS_LDFLAGS := $(TESTS_SANFLAGS) -lm -pthread
 
 # --- source lists ---
 
@@ -143,25 +162,13 @@ PROD_C := \
     $(SRC_T)/src/syscalls_exec.c \
     $(SRC_T)/src/supervisor.c
 
-# Pure tawcroot sources also compiled into the cleat test orchestrator under
-# hosted glibc, so unit tests can call them directly without re-execing the
-# testhost. Must contain no raw-syscall calls (those would clash with glibc's
-# `_start` and friends). `strings.c` is the canonical one — it intentionally
-# has no `tawc_write` etc.
-PROD_C_FOR_TESTS := \
-    $(SRC_T)/src/strings.c \
-    $(SRC_T)/src/filter_build.c \
-    $(SRC_T)/src/path_scratch.c \
-    $(SRC_T)/src/path_fold.c \
-    $(SRC_T)/src/path_orchestrate.c \
-    $(SRC_T)/src/path_resolve.c \
-    $(SRC_T)/src/proc_rewrite.c \
-    $(SRC_T)/src/loader_elf.c \
-    $(SRC_T)/src/loader_map.c \
-    $(SRC_T)/src/loader_stack.c \
-    $(SRC_T)/src/exec_state.c \
-    $(SRC_T)/src/signal_shadow.c \
-    $(SRC_T)/src/dirent_filter.c
+# Production sources also compiled into the cleat test orchestrator under
+# hosted glibc (and ASan+UBSan), so tests can call handlers directly without
+# re-execing the testhost. This is the whole PROD_C set: the raw-syscall
+# extern resolves to the hosted shim in tests/hosted/raw_syscall_host.c
+# instead of the asm stub (which carries `_start` and can't link against
+# glibc). Only src/arch/*.S stays freestanding-only.
+PROD_C_FOR_TESTS := $(PROD_C) $(SRC_TS)/hosted/raw_syscall_host.c
 
 TESTHOST_EXTRA_C := \
     $(SRC_TH)/src/testhost_main.c \
@@ -212,13 +219,16 @@ CLEAT_C := \
     $(CLEAT)/src/stdout_test_output.c \
     $(CLEAT)/src/test_docs_code.c
 
-# Test sources: every .c directly under tawcroot/tests/{unit,handler,integration}/.
-# Subdirectories (e.g. tawcroot/tests/integration/programs/) are excluded
-# so guest fixture programs with their own main() don't get linked into
-# the cleat orchestrator. New cases land by dropping a .c file in one
-# of those dirs — no list to maintain.
-TEST_C := $(shell find $(SRC_TS)/unit $(SRC_TS)/handler $(SRC_TS)/integration \
-                       -maxdepth 1 -name '*.c' -type f 2>/dev/null | sort)
+# Test sources: every .c directly under tawcroot/tests/{unit,hosted,handler,
+# integration}/. Subdirectories (e.g. tawcroot/tests/integration/programs/)
+# are excluded so guest fixture programs with their own main() don't get
+# linked into the cleat orchestrator. New cases land by dropping a .c file
+# in one of those dirs — no list to maintain. (raw_syscall_host.c is pulled
+# in via PROD_C_FOR_TESTS, so exclude it here.)
+TEST_C := $(shell find $(SRC_TS)/unit $(SRC_TS)/hosted $(SRC_TS)/handler \
+                       $(SRC_TS)/integration \
+                       -maxdepth 1 -name '*.c' -type f 2>/dev/null \
+                  | grep -v '/hosted/raw_syscall_host\.c$$' | sort)
 
 # --- object-file paths ---
 #

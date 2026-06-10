@@ -48,7 +48,6 @@
 #include <cleat/subproc.h>
 #include <stc/cstr.h>
 
-#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>

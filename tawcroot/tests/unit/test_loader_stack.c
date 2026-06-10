@@ -13,7 +13,6 @@
  * synth to actually launch a static binary.
  */
 
-#define _GNU_SOURCE
 #include <cleat/test.h>
 #include <stddef.h>
 #include <stdint.h>

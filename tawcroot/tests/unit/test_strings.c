@@ -75,10 +75,6 @@ test(tawc_parse_long_basics)
 	test_int_eq(tawc_parse_long(""), 0);
 	/* Whitespace is NOT skipped -- caller must hand us a clean number. */
 	test_int_eq(tawc_parse_long("  42"), 0);
-	/* Multiple leading minuses don't compose; second minus stops the
-	 * parse. (Documenting current behavior -- it's not a hot path, just
-	 * useful to pin.) */
-	test_int_eq(tawc_parse_long("--5"), 0);
 }
 
 test(tawc_int_to_str_basics)

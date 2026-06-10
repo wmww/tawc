@@ -23,3 +23,11 @@
 #include <linux/fcntl.h>   /* O_*, F_*, AT_* */
 #include <linux/memfd.h>   /* MFD_CLOEXEC, MFD_ALLOW_SEALING */
 #include <linux/stat.h>    /* S_IF*, STATX_* */
+
+/* <linux/stat.h> hides the S_IF / S_IS / S_IRWXU macro families when
+ * __GLIBC__ is defined (the hosted tests build); glibc's <sys/stat.h>
+ * provides them there. Freestanding builds never define __GLIBC__, so
+ * they keep getting the uapi definitions above. */
+#if __STDC_HOSTED__
+#include <sys/stat.h>
+#endif

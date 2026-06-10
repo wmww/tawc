@@ -12,7 +12,6 @@
  * in test_loader_smoke.c.
  */
 
-#define _GNU_SOURCE
 #include <cleat/test.h>
 #include <errno.h>
 #include <fcntl.h>

@@ -28,7 +28,6 @@
  * (file-on-disk or exit code).
  */
 
-#define _GNU_SOURCE
 #include <cleat/test.h>
 #include <cleat/subproc.h>
 #include <stc/cstr.h>

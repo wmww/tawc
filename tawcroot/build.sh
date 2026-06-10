@@ -411,7 +411,7 @@ build_tests() {
     # NDK clang doesn't recognize -fno-tree-loop-distribute-patterns (gcc-only);
     # the rest of the warning set mirrors tawcroot/Makefile's TESTS_CFLAGS.
     local cflags=(
-        -std=c23 -O2 -fno-strict-aliasing
+        -std=c23 -O2 -fno-strict-aliasing -D_GNU_SOURCE
         -Wno-missing-braces -Wno-unused-function -Wno-format-zero-length
         -Wno-error=unused-variable -Wno-error=unused-parameter
         -Wno-error=unused-function -Wno-error=unused-but-set-variable
@@ -464,31 +464,22 @@ build_tests() {
         "$CLEAT_DIR/src/stdout_test_output.c"
         "$CLEAT_DIR/src/test_docs_code.c"
     )
-    # Same set as the host Makefile's PROD_C_FOR_TESTS — pure-function
-    # tawcroot sources safe to compile against hosted libc (no raw-syscall
-    # _start clashes).
-    local prod_for_tests=(
-        "$TAWCROOT_DIR/src/strings.c"
-        "$TAWCROOT_DIR/src/filter_build.c"
-        "$TAWCROOT_DIR/src/path_scratch.c"
-        "$TAWCROOT_DIR/src/path_fold.c"
-        "$TAWCROOT_DIR/src/path_orchestrate.c"
-        "$TAWCROOT_DIR/src/path_resolve.c"
-        "$TAWCROOT_DIR/src/proc_rewrite.c"
-        "$TAWCROOT_DIR/src/loader_elf.c"
-        "$TAWCROOT_DIR/src/loader_map.c"
-        "$TAWCROOT_DIR/src/loader_stack.c"
-        "$TAWCROOT_DIR/src/exec_state.c"
-        "$TAWCROOT_DIR/src/signal_shadow.c"
-        "$TAWCROOT_DIR/src/dirent_filter.c"
-    )
-    # All test-layer .c files directly under tawcroot/tests/{unit,handler,integration}/.
+    # Same set as the host Makefile's PROD_C_FOR_TESTS — the whole
+    # production C tree, with tawcroot_raw_syscall resolved by the hosted
+    # shim (tests/hosted/raw_syscall_host.c) instead of the asm stub.
+    local prod_for_tests=("${SRC_C_PROD[@]}"
+                          "$TAWCROOT_DIR/tests/hosted/raw_syscall_host.c")
+    # All test-layer .c files directly under
+    # tawcroot/tests/{unit,hosted,handler,integration}/. The hosted shim
+    # is excluded here (already in prod_for_tests).
     local test_srcs=()
     while IFS= read -r f; do test_srcs+=("$f"); done < <(
         find "$TAWCROOT_DIR/tests/unit" \
+             "$TAWCROOT_DIR/tests/hosted" \
              "$TAWCROOT_DIR/tests/handler" \
              "$TAWCROOT_DIR/tests/integration" \
-             -maxdepth 1 -name '*.c' -type f | sort
+             -maxdepth 1 -name '*.c' -type f \
+        | grep -v '/hosted/raw_syscall_host\.c$' | sort
     )
     # Loader trampoline — pure-function helper, safe under bionic.
     local arch_s

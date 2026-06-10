@@ -42,8 +42,6 @@
  * is verified end-to-end by the test surviving startup at all.
  */
 
-#define _GNU_SOURCE
-
 #include <cleat/test.h>
 
 #include <errno.h>

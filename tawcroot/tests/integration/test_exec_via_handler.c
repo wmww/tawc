@@ -21,7 +21,6 @@
  * and calls into this same code path.
  */
 
-#define _GNU_SOURCE
 #include <cleat/test.h>
 #include <cleat/subproc.h>
 #include <stc/cstr.h>

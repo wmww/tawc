@@ -2070,44 +2070,59 @@ This is a hard rule:
   smoke driver uses the same `tawc_io_*` raw-syscall helpers as
   production. cleat / STC are not reachable here either; this
   binary is freestanding.
-- `tawcroot/tests/{unit,handler,integration}/` (cleat orchestrator) —
-  cleat / STC freely. Hosted glibc binary; doesn't share an
-  address space with the binaries it tests.
+- `tawcroot/tests/{unit,hosted,handler,integration}/` (cleat
+  orchestrator) — cleat / STC freely. Hosted glibc binary. The
+  hosted layer shares an address space with the production code
+  under test (that's the point — ASan sees it); the handler /
+  integration layers fork the real freestanding binaries.
 
-If extracting a pure helper from `tawcroot/src/` for unit testing
-needs cleat-style ergonomics, link the helper into the cleat
-orchestrator with a hosted compile (`-fhosted`), not the other way
-around. Production source files compile under both regimes — they
-use only standard C and our own minimal helpers, so a hosted build
-of e.g. `path.c` is fine *if and only if* it doesn't drag in the
-freestanding-only globals (the dispatch table, the raw-syscall
-stub). The first such extraction (likely `path_translate`) is the
-moment to formalize this.
+Every production source compiles under both regimes (the whole
+`PROD_C` set is in `PROD_C_FOR_TESTS`); the freestanding-only parts
+are exactly `src/arch/*.S`. The raw-syscall extern resolves to the
+asm stub in the freestanding binaries and to
+`tests/hosted/raw_syscall_host.c` in the orchestrator.
 
-### The four test layers
+### The five test layers
 
 Every PR-equivalent unit of work should land tests in at least one
-of these four layers, and ideally a layer-1 unit test plus a layer-2
+of these layers, and ideally a layer-1/1.5 logic test plus a layer-2
 or layer-3 functional test.
 
-1. **Unit (`tawcroot/tests/unit/`)** — pure-function tests, cleat-direct.
-   The Makefile compiles flagged-pure tawcroot sources twice (once
-   freestanding for the production / testhost binaries, once with
-   hosted glibc for the cleat orchestrator), so the cleat tests can
-   call into the production code directly. The set of "pure-enough
-   to dual-compile" sources lives in `PROD_C_FOR_TESTS` in
-   `tawcroot/Makefile` — currently just `strings.c`; future
-   candidates include path-translation helpers and BPF program
-   generation once they're extracted out of `path.c` / `filter.c`
-   into pure functions. Tests today: `unit/test_strings.c`
-   (`tawc_strlen` / `tawc_streq` / `tawc_starts_with` /
-   `tawc_parse_long` / `tawc_int_to_str`, plus a round-trip
-   property between the last two). Future per the design: path
-   parsing/translation/reverse-translation, bind-table longest-
-   prefix match, ELF `PT_INTERP` extraction, BPF program generation
-   (cross-checked against libseccomp's `seccomp_export_pfc` for a
-   human-readable diff). Pure C, no syscalls, no fork. Sub-second.
-   Runs on every save.
+**Sanitizers**: the host `tests` orchestrator is always built with
+ASan+UBSan (`TESTS_SANFLAGS` in `tawcroot/Makefile`,
+`-fno-sanitize-recover=all` so any hit fails the run; `test.sh` sets
+`ASAN_OPTIONS=detect_stack_use_after_return=1:strict_string_checks=1`).
+The host `tawcroot` / `tawcroot-testhost` binaries (test artifacts
+only — the shipped binaries are the uninstrumented NDK cross-builds)
+get trap-mode UBSan (`TAWC_UBSAN`): no runtime, UB becomes SIGILL and
+the forked test fails. The whole production C tree compiles into the
+hosted tests binary: `PROD_C_FOR_TESTS = PROD_C` plus the hosted
+raw-syscall shim `tawcroot/tests/hosted/raw_syscall_host.c`, which
+provides `tawcroot_raw_syscall` (inline asm, exact `-errno`
+convention) since the asm stub carries `_start` and can't link
+against glibc. The shim also exposes `tawcroot_test_raw_hook` — a
+test-installable interceptor for fault injection and syscall
+observation. Only `src/arch/*.S` stays freestanding-only.
+
+1. **Unit (`tawcroot/tests/unit/`)** — pure-function tests,
+   cleat-direct, no fixture state: string helpers, path fold/resolve/
+   orchestrate (vtable-mocked), loader ELF/map/stack, BPF program
+   generation, dirent filter, signal shadow, proc rewrite. Pure C,
+   no fork. Sub-second. Runs on every save.
+1.5. **Hosted (`tawcroot/tests/hosted/`)** — handler-LOGIC tests
+   against the real production handlers, in-process under ASan: the
+   harness (`hosted.{h,c}`) builds a tmpdir rootfs, opens+reserves it
+   as the current root (supervisor-init steps 1–6, no filter/SIGSYS),
+   and `th_sys()` calls dispatch handlers directly with synthesized
+   args. "Guest memory" is plain test buffers — usercopy self-targets
+   via `process_vm_readv`. The teardown diffs `/proc/self/fd` so fd
+   leaks fail tests (the fd table is the product's main leakable
+   resource; sanitizers don't track it). `tawcroot_test_raw_hook`
+   injects mid-handler faults (EINTR/ENOSPC/EMFILE) and observes the
+   translated syscalls the handlers actually issue. New handler-logic
+   coverage defaults to this layer; the fork layers below keep what
+   genuinely needs the real artifact (filter install, SIGSYS
+   delivery, stub IP allowlisting, `_start`/bootstrap).
 2. **Handler (`tawcroot/tests/handler/`)** — fork `tawcroot-testhost` with
    chosen argv, capture stdout, parse every `[ok ]` / `[FAIL]` line
    that `tawc_io_step` emits, register one cleat test per check.
@@ -2148,11 +2163,9 @@ or layer-3 functional test.
    translation", "guest seccomp installation is denied", "linkat
    falls back to symlink on Android-style `EPERM`", "execve of a
    dynamically linked binary reaches the loader through PT_INTERP",
-   etc. Lives behind production tawcroot getting a working
-   ELF-load + jump-to-guest path; a `tawcroot/tests/integration/
-   test_placeholder.c` keeps the layout honest in the meantime by
-   asserting production tawcroot exits 2 with the
-   "not yet implemented" message.
+   etc. Today's modules: `test_prod_rootfs` / `test_prod_features` /
+   `test_prod_fork` / `test_exec_child` / `test_exec_via_handler` /
+   `test_diag_exec`.
 4. **Differential (`tawcroot/tests/diff/`, future)** — same `<child>`
    programs as layer 3, run under both proot and tawcroot, diff
    stdout/exit. Cheap once layer 3 exists; high signal because

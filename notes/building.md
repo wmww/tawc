@@ -385,6 +385,13 @@ tawcroot/build.sh --testhost         # also build testhost twin
 tawcroot/build.sh --tests            # also build cleat orchestrator
 ```
 
+The host test build (`--abi=host`, driven by `tawcroot/Makefile`) is
+sanitized: the cleat `tests` orchestrator gets ASan+UBSan, the host
+`tawcroot`/`tawcroot-testhost` binaries get trap-mode UBSan. Needs
+gcc's `libasan`/`libubsan` runtimes, which ship with the same
+distro gcc packages listed above — no extra host package. The NDK
+cross-builds (the shipped artifacts) are untouched.
+
 See [tawcroot.md](tawcroot.md) for the design.
 
 ### APK assembly

@@ -23,9 +23,17 @@
  *
  * See notes/tawcroot.md "Phase 1 -- MVP path translation" and
  * "Phase 0.5 -- runtime invariants" for the historical bring-up labels.
+ *
+ * Hosted twins: tests/hosted/ covers the handler-LOGIC subset of the
+ * above (openat translation, dotdot/symlink clamps, EFAULT safety,
+ * reserved-fd EBADF, chroot, /proc shadows) in-process under
+ * ASan+UBSan. This fork-based copy is kept for artifact fidelity —
+ * real filter install, SIGSYS delivery, raw-stub IP allowlisting
+ * against the freestanding binary. New handler-logic coverage should
+ * default to tests/hosted/; add here only when the test genuinely
+ * needs the real trap path.
  */
 
-#define _GNU_SOURCE  /* symlink(), PATH_MAX in some glibc layouts */
 
 #include <cleat/test.h>
 
