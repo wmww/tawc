@@ -470,10 +470,24 @@ handler-safe and libc-free. Prefer raw `process_vm_readv` /
 `process_vm_writev` against our own task id: the kernel validates the
 guest address and returns `-EFAULT` without delivering SIGSEGV to
 tawcroot. The helpers build small stack-local `iovec`s and issue the
-syscalls through `tawcroot_raw_syscall()`. If a target kernel lacks
-`process_vm_*` or Android policy blocks it, use an arch-local
-fault-recovery path implemented in tawcroot code, not
-`memcpy`/`strlen` directly.
+syscalls through `tawcroot_raw_syscall()`. Never use `memcpy`/`strlen`
+directly on guest pointers.
+
+`process_vm_*` against self always passes the kernel's access check
+(`__ptrace_may_access` short-circuits for the same thread group before
+Yama/SELinux run), and Android's app seccomp policy allows it, so
+production needs no fallback; `supervisor_init` fails fast (exit 92)
+if the probe fails. A `-EPERM` probe failure means a seccomp errno
+filter on the *host* — e.g. a container sandbox without
+`CAP_SYS_PTRACE` (Docker's default profile) — and the host test
+harnesses detect this and bail with one clear message instead of
+cascading `-EFAULT`s. A SIGSEGV-fixup fallback copy path was
+considered and rejected: tawcroot only virtualizes SIGSYS, and taking
+ownership of guest-owned SIGSEGV (used by JITs, e.g. Firefox wasm)
+isn't worth it for a case production never hits. If a real fallback is
+ever needed (sandboxed hosts), prefer the pipe trick — `write(pipe_wr,
+guest_src, n)` gets kernel address validation with clean `-EFAULT` and
+partial counts, reading back completes the copy — over signal games.
 
 These helpers are used for:
 

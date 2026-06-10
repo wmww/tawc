@@ -4352,6 +4352,16 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	long up = tawc_usercopy_init();
 	tawc_io_kv_dec("    usercopy probe rv", up);
 	tawc_io_kv_dec("    usercopy_works", (long)tawc_usercopy_works);
+	if (up < 0) {
+		/* Every path-bearing handler would EFAULT; bail with one clear
+		 * message instead of hundreds of cascading FAILs. -EPERM on a
+		 * self-targeted process_vm_readv means a seccomp errno filter
+		 * (e.g. a container sandbox without CAP_SYS_PTRACE), not a
+		 * tawcroot bug — run on an unsandboxed host. */
+		tawc_io_step("usercopy probe (host blocks process_vm_readv "
+			     "on self; sandbox seccomp? cannot run here)", 0);
+		return 1;
+	}
 
 	/* Memoize well-known symlinks (lib -> usr/lib etc.) before the
 	 * filter goes up. After install, readlinkat is on the trapped set

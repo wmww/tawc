@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -76,7 +77,18 @@ void th_view_setup_impl(TestCtx *test_ctx, th_view *v, const char *tag)
 	test_true(rl > 0);
 	tawcroot_rootfs_host_path_len = (size_t)rl;
 
-	test_int_eq(tawc_usercopy_init(), 0);
+	long up = tawc_usercopy_init();
+	if (up < 0) {
+		/* Without working process_vm_* every guarded copy EFAULTs and
+		 * all hosted tests fail confusingly. -EPERM on a self-targeted
+		 * process_vm_readv means a seccomp errno filter (container
+		 * sandbox without CAP_SYS_PTRACE); abort the run with one
+		 * clear message instead. */
+		fprintf(stderr, "hosted: usercopy probe rv=%ld — host blocks "
+			"process_vm_readv on self (sandbox seccomp?); "
+			"hosted tests cannot run here\n", up);
+		exit(70);
+	}
 	tawcroot_path_memoize_well_known();
 	tawcroot_dispatch_init();
 }
