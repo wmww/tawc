@@ -218,6 +218,8 @@
 # define TAWC_SYS_link           86  /* x86_64 link(2); was incorrectly 9 (mmap) */
 # define TAWC_SYS_rename         82
 # define TAWC_SYS_readlink       89
+# define TAWC_SYS_getpgrp       111  /* routed to getpgid(0) in syscalls_control.c */
+# define TAWC_SYS_getpgid       121
 # define TAWC_SYS_process_vm_readv  310
 # define TAWC_SYS_process_vm_writev 311
 # define TAWC_SYS_gettid           186

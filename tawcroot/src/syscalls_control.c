@@ -257,6 +257,23 @@ static long handle_exit(const tawcroot_syscall_args *args, ucontext_t *uc)
 	__builtin_unreachable();
 }
 
+#if defined(__x86_64__)
+/* x86_64 glibc's getpgrp(3) issues the legacy getpgrp syscall, which
+ * Android's untrusted_app filter RET_TRAPs (bionic only ever calls
+ * getpgid). Without this handler the -ENOSYS fallthrough reaches
+ * bash's job-control init as a garbage process group and interactive
+ * shells on a pty print "initialize_job_control: no job control in
+ * background" and run with job control off. aarch64 never allocated a
+ * getpgrp number — glibc wraps getpgid(0) there — so this is
+ * emulator-only. */
+static long handle_getpgrp(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)args;
+	(void)uc;
+	return TAWC_RAW(TAWC_SYS_getpgid, 0, 0, 0, 0, 0, 0);
+}
+#endif
+
 void tawcroot_control_register(void)
 {
 	tawcroot_dispatch_install(TAWC_SYS_seccomp,         handle_seccomp);
@@ -295,6 +312,10 @@ void tawcroot_control_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_clone3,          tawcroot_deny_enosys);
 
 	tawcroot_dispatch_install(TAWC_SYS_exit,            handle_exit);
+
+#if defined(__x86_64__)
+	tawcroot_dispatch_install(TAWC_SYS_getpgrp,         handle_getpgrp);
+#endif
 
 	/* Defense-in-depth denials. Trapped so the guest can't mutate kernel
 	 * state our path-translation layer assumes is fixed: pivot_root would
