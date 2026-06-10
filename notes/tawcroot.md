@@ -934,6 +934,19 @@ Then apply these rules to the guest-absolute path `P`:
    the source string of `symlink(2)`, or converting `lstat` into
    `stat`.
 
+   **Trailing-slash semantics ride on top of the modes.** The kernel
+   treats leftover bytes after the final component (`/` runs, `/.`)
+   as "follow the final symlink, require a directory" — even under
+   `O_NOFOLLOW`/`AT_SYMLINK_NOFOLLOW` — while parent-mode ops keep
+   the leaf verbatim and apply the slash to it (`unlink("l/")` →
+   ENOTDIR, `mkdir("l/")` → EEXIST). The lexical fold erases those
+   bytes, so translate detects them on the raw guest string
+   (`has_trailing_dir_marker`, path_orchestrate.c), upgrades the
+   leaf walk from NOFOLLOW to FOLLOW (keeping absolute targets
+   clamped by the resolver), and re-appends one `/` to the final
+   suffix so the kernel-side syscall enforces the directory
+   requirement with its native errno shapes.
+
    **`AT_EMPTY_PATH` on plain `openat` is NOT a portable shortcut.**
    It only landed in kernel 6.6 (`openat2` got it earlier, but plain
    `openat(dirfd, "", AT_EMPTY_PATH, ...)` returns `-ENOENT` on

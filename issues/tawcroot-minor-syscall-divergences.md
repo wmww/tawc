@@ -19,15 +19,48 @@ Remaining:
   exhaustion, so enough concurrent mid-chain threads could in
   principle livelock. Theoretical at 128 slots / realistic thread
   counts.
-- **Trailing-slash semantics are erased by the fold**: `lstat("/l/")`
-  should follow `l`, `open("/file/")` should ENOTDIR, `unlink("/d/")`
-  should fail — the fold strips the slash and nothing downstream
-  re-attaches the "must be a directory" requirement.
+- **`/proc/self/cwd` readlink leaks the host path**: `getcwd` is
+  reverse-translated but the cwd symlink is not, so
+  `readlink("/proc/self/cwd")` returns e.g.
+  `/data/.../rootfs/root` verbatim. notes/tawcroot.md §"`/proc`
+  self-magic" calls for synthesizing `cwd` (and `root`) like `exe`;
+  only `exe` is implemented. (`root -> /` happens to be correct since
+  we never kernel-chroot, though it stays `/` after emulated chroot.)
+- **Cross-process `/proc/<pid>/exe` shows the reader's exe**: the
+  readlink substitution matches on the tawcroot binary's host path,
+  so reading *another* tawcroot guest process's exe link returns the
+  *calling* process's guest exe path (observed: `ls` reading bash's
+  `/proc/<pid>/exe` got `/usr/bin/ls`).
+- **`..` after a symlink component resolves lexically**: the fold
+  collapses `..` before the resolver can ask whether the preceding
+  component is a symlink, so `/a/sym/../x` (sym -> /b/c) hits `/a/x`
+  where the kernel would hit `/b/x`. Demonstrated on the host build.
+  Same structural cause as the (now fixed) trailing-slash erasure:
+  the lexical fold runs first and the resolver only re-folds after
+  splices. Note the lexical collapse is what makes `..`-escape
+  containment trivially auditable (post-fold suffixes contain no
+  `..`), so fixing fidelity here means the resolver must handle `..`
+  mid-walk with containment re-checked per step — a fold/resolver
+  rework, not a patch (unlike the trailing-slash marker, which only
+  concerned the final component).
 - **Deep paths**: the fold caps at 256 components (ENAMETOOLONG);
   kernel accepts ~2048 single-char components in 4096 bytes.
 
 ## Fixed (2026-06)
 
+- Trailing-slash semantics: translate now detects trailing `/` runs
+  and `/.` components on the raw guest string (the kernel's
+  "leftover bytes after the final component" rule, erased by the
+  fold) and re-attaches them: leaf symlinks resolve even under
+  NOFOLLOW (through the resolver, so absolute targets stay clamped)
+  and one `/` is re-appended to the final suffix so the kernel
+  enforces the directory requirement with native errno shapes —
+  `lstat("l/")` follows, `open("file/")` ENOTDIR, parent ops keep
+  the leaf verbatim (`unlink("l/")` ENOTDIR, `mkdir("l/")` EEXIST),
+  `open("x/", O_CREAT)` EISDIR. `ls -la /proc/self/` lists the
+  directory again. See has_trailing_dir_marker in
+  path_orchestrate.c; unit tests orch_trailing_slash_*, smoke
+  rootfs_smoke.c::test_trailing_slash_semantics.
 - Reserved-fd "behaves as EBADF" contract: a reserved dirfd with a
   relative path now EBADFs in the shared translate front door
   (translate_local), covering every *at handler at once; the

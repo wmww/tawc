@@ -940,3 +940,180 @@ test(orch_memo_shrinking_target_keeps_tail)
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "p/bash");
 }
+
+/* ----- Trailing-slash semantics (kernel fs/namei.c: bytes after the
+ * final component — '/' runs and '/.' — force LOOKUP_FOLLOW |
+ * LOOKUP_DIRECTORY on the last step; PARENT-mode ops keep the leaf
+ * verbatim and the kernel applies the directory rule to it) ----- */
+
+test(orch_trailing_slash_survives_into_suffix)
+{
+	struct tawcroot_path_translate_ctx ctx = {
+		.rootfs_base_fd = TEST_ROOTFS_FD,
+		.oracle = &ora_empty,
+	};
+	char out[256];
+	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+		&ctx, "/etc/probe/", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "etc/probe/");
+
+	/* Slash runs and '/.' tails collapse to one appended slash. */
+	r = tawcroot_path_translate_with_ctx(
+		&ctx, "/etc/probe//.//", out, sizeof out,
+		TAWCROOT_PATH_FOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "etc/probe/");
+}
+
+test(orch_trailing_slash_follows_leaf_symlink_under_nofollow)
+{
+	const struct mock_link links[] = { { "lnk", "real" } };
+	struct mock_fs fs = { links, 1 };
+	struct tawcroot_path_oracle ora = { .ctx = &fs, .readlink = mock_readlink };
+	struct tawcroot_path_translate_ctx ctx = {
+		.rootfs_base_fd = TEST_ROOTFS_FD,
+		.oracle = &ora,
+	};
+	char out[256];
+	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "real/");
+
+	/* '/.' tail forces the same follow. */
+	r = tawcroot_path_translate_with_ctx(
+		&ctx, "/lnk/.", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "real/");
+
+	/* Without the tail, NOFOLLOW still operates on the symlink. */
+	r = tawcroot_path_translate_with_ctx(
+		&ctx, "/lnk", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "lnk");
+}
+
+test(orch_trailing_slash_keeps_leaf_verbatim_for_parent_modes)
+{
+	/* unlink("lnk/") / mkdir("lnk/") do NOT follow the leaf symlink on
+	 * a real kernel — the verbatim leaf plus the appended slash reach
+	 * the kernel, which then produces its native ENOTDIR/EEXIST. */
+	const struct mock_link links[] = { { "lnk", "real" } };
+	struct mock_fs fs = { links, 1 };
+	struct tawcroot_path_oracle ora = { .ctx = &fs, .readlink = mock_readlink };
+	struct tawcroot_path_translate_ctx ctx = {
+		.rootfs_base_fd = TEST_ROOTFS_FD,
+		.oracle = &ora,
+	};
+	char out[256];
+	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_PARENT_REMOVE);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "lnk/");
+
+	r = tawcroot_path_translate_with_ctx(
+		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_PARENT_CREATE);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "lnk/");
+}
+
+test(orch_trailing_slash_carries_through_bind)
+{
+	struct tawcroot_bind binds[1];
+	mk_bind(&binds[0], 200, "proc");
+	struct tawcroot_path_translate_ctx ctx = {
+		.rootfs_base_fd = TEST_ROOTFS_FD,
+		.binds = binds, .n_binds = 1,
+		.oracle = &ora_empty,
+	};
+	char out[256];
+	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+		&ctx, "/proc/self/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_int_eq(r.base_fd, 200);
+	test_str_eq(out, "self/");
+}
+
+test(orch_trailing_slash_on_root_stays_empty_suffix)
+{
+	/* "/", "//", "/." resolve to the rootfs root (or a bind dst) —
+	 * the empty suffix is the is_root signal and must stay empty. */
+	struct tawcroot_bind binds[1];
+	mk_bind(&binds[0], 200, "proc");
+	struct tawcroot_path_translate_ctx ctx = {
+		.rootfs_base_fd = TEST_ROOTFS_FD,
+		.binds = binds, .n_binds = 1,
+		.oracle = &ora_empty,
+	};
+	char out[256];
+	const char *roots[] = { "/", "//", "/." };
+	for (size_t i = 0; i < 3; i++) {
+		tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+			&ctx, roots[i], out, sizeof out,
+			TAWCROOT_PATH_NOFOLLOW);
+		test_int_eq(r.err, 0);
+		test_str_eq(out, "");
+	}
+	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+		&ctx, "/proc/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_int_eq(r.base_fd, 200);
+	test_str_eq(out, "");
+}
+
+test(orch_trailing_slash_applies_sole_component_memo_under_nofollow)
+{
+	/* lstat("/lib/") with memoized /lib → usr/lib: the kernel would
+	 * follow the symlink (trailing slash), so the memo applies even
+	 * under NOFOLLOW. */
+	struct tawcroot_symlink_memo memos[1] = {{
+		.src = "lib", .src_len = 3,
+		.target = "usr/lib", .target_len = 7,
+	}};
+	struct tawcroot_path_translate_ctx ctx = {
+		.rootfs_base_fd = TEST_ROOTFS_FD,
+		.memos = memos, .n_memos = 1,
+		.oracle = &ora_empty,
+	};
+	char out[256];
+	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+		&ctx, "/lib/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "usr/lib/");
+}
+
+test(orch_trailing_slash_relative_path)
+{
+	struct cwd_state cwd = { .value = "/srv", .ret = 0 };
+	struct tawcroot_path_translate_ctx ctx = {
+		.rootfs_base_fd = TEST_ROOTFS_FD,
+		.oracle = &ora_empty,
+		.cwd_to_guest_abs = mock_cwd, .cwd_ctx = &cwd,
+	};
+	char out[256];
+	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+		&ctx, "sub/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "srv/sub/");
+}
+
+test(orch_dot_heavy_names_are_not_trailing_markers)
+{
+	/* "name.", "name..", "..." are ordinary component names — no
+	 * trailing-slash semantics. */
+	struct tawcroot_path_translate_ctx ctx = {
+		.rootfs_base_fd = TEST_ROOTFS_FD,
+		.oracle = &ora_empty,
+	};
+	char out[256];
+	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
+		&ctx, "/etc/name.", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "etc/name.");
+
+	r = tawcroot_path_translate_with_ctx(
+		&ctx, "/etc/...", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+	test_int_eq(r.err, 0);
+	test_str_eq(out, "etc/...");
+}

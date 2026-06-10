@@ -126,6 +126,53 @@ static void route_through_binds(tawcroot_path_result *r, char *suf,
 	suf[j] = 0;
 }
 
+/* Kernel trailing-slash semantics (fs/namei.c lookup_last /
+ * open_last_lookups): bytes after the final component — trailing '/'
+ * runs and '/.' components — force LOOKUP_FOLLOW | LOOKUP_DIRECTORY
+ * on the last step, even under O_NOFOLLOW / AT_SYMLINK_NOFOLLOW. The
+ * lexical fold erases those bytes, so detect them on the raw guest
+ * string and re-attach the meaning in two places: resolve the leaf
+ * symlink in-handler even in NOFOLLOW mode (the kernel-side follow
+ * must not chase an unclamped rootfs-absolute target), and re-append
+ * one '/' to the final suffix so the kernel enforces the directory
+ * requirement with its native errno shapes. PARENT modes keep the
+ * leaf verbatim — the kernel does NOT follow the leaf for
+ * unlink/mkdir/rename even with a trailing slash; the appended '/'
+ * alone reproduces their ENOTDIR/EEXIST/EISDIR behavior.
+ *
+ * A trailing `..` component is NOT a marker: it folds away lexically
+ * (see the `..`-after-symlink divergence in
+ * issues/tawcroot-minor-syscall-divergences.md). */
+static int has_trailing_dir_marker(const char *p)
+{
+	size_t n = 0;
+	while (p[n]) n++;
+	int marker = 0;
+	for (;;) {
+		if (n > 1 && p[n - 1] == '/') { marker = 1; n--; continue; }
+		if (n > 1 && p[n - 1] == '.' && p[n - 2] == '/') {
+			marker = 1;
+			n--;
+			continue;
+		}
+		break;
+	}
+	return marker;
+}
+
+/* Re-append the directory-requirement slash to a folded suffix. An
+ * empty suffix is the rootfs root or a bind dst — already a directory
+ * fd, the is_root contract needs the suffix to stay empty. */
+static long append_dir_slash(char *suf, size_t cap)
+{
+	size_t n = tawc_strlen(suf);
+	if (n == 0) return 0;
+	if (n + 2 > cap) return TAWC_ENAMETOOLONG;
+	suf[n]     = '/';
+	suf[n + 1] = 0;
+	return 0;
+}
+
 /* Build the joined absolute path "<cwd_abs>/<rel>" into `out`. Both
  * inputs are NUL-terminated; `cwd_abs` must start with '/'. Returns 0
  * on success, -ENAMETOOLONG on overflow. The result may contain
@@ -259,6 +306,14 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	}
 	r.base_fd = ctx->rootfs_base_fd;
 
+	/* See has_trailing_dir_marker: the marker upgrades NOFOLLOW's leaf
+	 * handling to FOLLOW (memo + resolver) and re-appends a '/' to the
+	 * final suffix. PARENT modes stay verbatim. */
+	int dir_marker = has_trailing_dir_marker(guest_path);
+	tawcroot_path_mode walk_mode =
+		(dir_marker && mode == TAWCROOT_PATH_NOFOLLOW)
+		? TAWCROOT_PATH_FOLLOW : mode;
+
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 
 	if (guest_path[0] != '/') {
@@ -283,13 +338,13 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	/* Bind first. If matched, the bind src takes over — skip memo
 	 * and resolver, both of which are rootfs-view-only. */
 	route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
-	if (r.base_fd != ctx->rootfs_base_fd) return r;
+	if (r.base_fd != ctx->rootfs_base_fd) goto done;
 
 	/* Well-known-symlink rewrite. If the rewrite kicks in, the suffix
 	 * may now contain `..`/`.` from the target, so re-fold. Bound
 	 * iterations to avoid pathological loops. */
 	for (int hop = 0; hop < 8; hop++) {
-		if (!apply_memo(out_suffix, out_cap, mode,
+		if (!apply_memo(out_suffix, out_cap, walk_mode,
 				ctx->memos, ctx->n_memos)) break;
 		char *tmp = scratch->buf[2];
 		size_t i = 0;
@@ -315,16 +370,21 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	 * file where the bind has a dir) drives resolution against the
 	 * wrong tree. */
 	route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
-	if (r.base_fd != ctx->rootfs_base_fd) return r;
+	if (r.base_fd != ctx->rootfs_base_fd) goto done;
 
 	/* Manual symlink resolver. See path_resolve.h banner. */
 	if (ctx->oracle) {
 		long er = tawcroot_path_resolve_symlinks(out_suffix, out_cap,
-							 mode, ctx->oracle);
+							 walk_mode, ctx->oracle);
 		if (er < 0) { r.err = er; return r; }
 	}
 
 	/* Final bind pass — memo may have surfaced a match. */
 	route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
+done:
+	if (dir_marker) {
+		long ae = append_dir_slash(out_suffix, out_cap);
+		if (ae < 0) r.err = ae;
+	}
 	return r;
 }

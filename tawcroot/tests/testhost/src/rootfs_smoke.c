@@ -1834,6 +1834,95 @@ static int test_lstat_nofollow_preserves_leaf_symlink(void)
 	return fails;
 }
 
+/* Trailing-slash semantics. The kernel treats bytes after the final
+ * component ('/' runs, '/.') as "follow the final symlink, require a
+ * directory" — even under AT_SYMLINK_NOFOLLOW. Parent-mode ops
+ * (unlink/mkdir) instead keep the leaf verbatim and apply the slash
+ * to it. Fixtures: etcdir-link -> etc (dir), utime-link ->
+ * utime-target (file), procesc -> /proc (host-exists, rootfs-missing:
+ * containment probe). */
+static int test_trailing_slash_semantics(void)
+{
+	int fails = 0;
+	struct stat st;
+	long rv;
+
+	INLINE_SYS6(TAWC_SYS_fstatat, AT_FDCWD, "/etcdir-link/", &st,
+		    AT_SYMLINK_NOFOLLOW, 0, 0, rv);
+	fails += tawc_io_step(
+		"lstat(\"/etcdir-link/\") -> S_IFDIR (slash follows leaf)",
+		rv == 0 && (st.st_mode & 0170000) == 0040000);
+	tawc_io_kv_dec("    rv", rv);
+
+	INLINE_SYS6(TAWC_SYS_fstatat, AT_FDCWD, "/etcdir-link/.", &st,
+		    AT_SYMLINK_NOFOLLOW, 0, 0, rv);
+	fails += tawc_io_step(
+		"lstat(\"/etcdir-link/.\") -> S_IFDIR ('/.' follows leaf)",
+		rv == 0 && (st.st_mode & 0170000) == 0040000);
+	tawc_io_kv_dec("    rv", rv);
+
+	INLINE_SYS6(TAWC_SYS_fstatat, AT_FDCWD, "/utime-link/", &st,
+		    AT_SYMLINK_NOFOLLOW, 0, 0, rv);
+	fails += tawc_io_step(
+		"lstat(\"/utime-link/\") -> ENOTDIR (symlink to file)",
+		rv == TAWC_ENOTDIR);
+	tawc_io_kv_dec("    rv", rv);
+
+	INLINE_SYS6(TAWC_SYS_fstatat, AT_FDCWD, "/etc/probe/", &st,
+		    0, 0, 0, rv);
+	fails += tawc_io_step("stat(\"/etc/probe/\") -> ENOTDIR",
+			      rv == TAWC_ENOTDIR);
+	tawc_io_kv_dec("    rv", rv);
+
+	long fd = inline_openat(AT_FDCWD, "/etc/probe/", O_RDONLY, 0);
+	fails += tawc_io_step("openat(\"/etc/probe/\") -> ENOTDIR",
+			      fd == TAWC_ENOTDIR);
+	tawc_io_kv_dec("    fd", fd);
+
+	fd = inline_openat(AT_FDCWD, "/tawcroot-eisdir-test/",
+			   O_WRONLY | O_CREAT, 0644);
+	fails += tawc_io_step(
+		"openat(\"/tawcroot-eisdir-test/\", O_CREAT) -> EISDIR",
+		fd == TAWC_EISDIR);
+	tawc_io_kv_dec("    fd", fd);
+
+	/* Parent-mode ops: the kernel does NOT follow the leaf symlink
+	 * even with a trailing slash. */
+	rv = inline_unlinkat(AT_FDCWD, "/etcdir-link/", 0);
+	fails += tawc_io_step("unlinkat(\"/etcdir-link/\") -> ENOTDIR",
+			      rv == TAWC_ENOTDIR);
+	tawc_io_kv_dec("    rv", rv);
+
+	INLINE_SYS6(TAWC_SYS_mkdirat, AT_FDCWD, "/etcdir-link/",
+		    0755, 0, 0, 0, rv);
+	fails += tawc_io_step("mkdirat(\"/etcdir-link/\") -> EEXIST",
+			      rv == TAWC_EEXIST);
+	tawc_io_kv_dec("    rv", rv);
+
+	/* Containment: the leaf-follow forced by the trailing slash must
+	 * go through the resolver's clamp. procesc -> /proc exists on the
+	 * host but not in the rootfs; an unclamped kernel-side follow
+	 * would succeed against host /proc. */
+	INLINE_SYS6(TAWC_SYS_fstatat, AT_FDCWD, "/procesc/", &st,
+		    AT_SYMLINK_NOFOLLOW, 0, 0, rv);
+	fails += tawc_io_step(
+		"lstat(\"/procesc/\") -> ENOENT (abs-target follow stays clamped)",
+		rv == TAWC_ENOENT);
+	tawc_io_kv_dec("    rv", rv);
+
+	/* Memoized sole-component symlink: "/lib/" must behave like the
+	 * kernel (follow → dir) even under NOFOLLOW, unlike "/lib" which
+	 * stays the symlink (test_mode_aware_memoization). */
+	INLINE_SYS6(TAWC_SYS_fstatat, AT_FDCWD, "/lib/", &st,
+		    AT_SYMLINK_NOFOLLOW, 0, 0, rv);
+	fails += tawc_io_step(
+		"lstat(\"/lib/\") -> S_IFDIR (memo applies under slash)",
+		rv == 0 && (st.st_mode & 0170000) == 0040000);
+	tawc_io_kv_dec("    rv", rv);
+
+	return fails;
+}
+
 /* Mode-aware memoization: when /lib is the leaf and the operation
  * is NOFOLLOW (lstat), the memoizer must NOT rewrite /lib -> usr/lib
  * -- otherwise lstat would report the directory's mode, not the
@@ -4387,6 +4476,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_openat_abs_target_in_rootfs();
 	fails += test_openat_opath_nofollow_abs_symlink();
 	fails += test_lstat_nofollow_preserves_leaf_symlink();
+	fails += test_trailing_slash_semantics();
 	fails += test_mode_aware_memoization();
 #if defined(__x86_64__)
 	fails += test_legacy_x86_64_wrappers();

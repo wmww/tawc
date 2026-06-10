@@ -126,6 +126,10 @@ static bool build_fake_rootfs(const char *root)
 	SYMLINK("utime-target", "utime-link");
 	/* Visible AFTER chroot("/usr") for the chroot-symlink-follow test. */
 	SYMLINK("lib",         "usr/sublink");
+	/* Trailing-slash semantics fixtures — see
+	 * test_rootfs_syscalls_smoke.c for the rationale. */
+	SYMLINK("etc",         "etcdir-link");
+	SYMLINK("/proc",       "procesc");
 #undef SYMLINK
 
 	return true;

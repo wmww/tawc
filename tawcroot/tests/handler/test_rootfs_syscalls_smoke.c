@@ -88,6 +88,9 @@ static void rmrf(const char *path)
  *                                exercises AT_SYMLINK_NOFOLLOW path mode —
  *                                pre-fix the resolver followed through and
  *                                the kernel ended up touching the target)
+ *   <root>/etcdir-link        -- symlink -> etc (trailing-slash follow probe)
+ *   <root>/procesc            -- symlink -> /proc (host-exists/rootfs-missing
+ *                                target; trailing-slash containment probe)
  */
 static bool build_fake_rootfs(const char *root)
 {
@@ -134,6 +137,14 @@ static bool build_fake_rootfs(const char *root)
 	SYMLINK("etc/probe",   "chain3");
 	SYMLINK("loop",        "loop");
 	SYMLINK("utime-target", "utime-link");
+	/* Trailing-slash semantics fixtures: a relative symlink to a dir
+	 * (kernel follows it for "etcdir-link/"), and an absolute symlink
+	 * whose target exists on the HOST but not in the rootfs — if the
+	 * trailing-slash leaf-follow ever bypasses the resolver's clamp,
+	 * "procesc/" resolves against the host /proc and the ENOENT
+	 * containment check fails. */
+	SYMLINK("etc",         "etcdir-link");
+	SYMLINK("/proc",       "procesc");
 #undef SYMLINK
 
 	return true;
