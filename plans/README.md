@@ -8,6 +8,7 @@ design, build, and operational notes in [`../notes/`](../notes/).
 - [desktop-gl-dispatch.md](desktop-gl-dispatch.md) - older desktop-GL dispatcher design, likely superseded by libhybris-zink unless GLES-over-Zink overhead is unacceptable.
 - [gfxstream-bridge-remaining-work.md](gfxstream-bridge-remaining-work.md) - remaining GL/GLES and x86_64 AVD work for the gfxstream bridge backend.
 - [integration-test-host-transport.md](integration-test-host-transport.md) - plan to remove per-test adb/logcat/tawc-exec process churn from integration tests.
+- [rootfs-tmp-sweep.md](rootfs-tmp-sweep.md) - age-based sweep of `<rootfs>/tmp` at app start so `/tmp` contents don't persist forever.
 - [tawcroot-future-work.md](tawcroot-future-work.md) - deferred tawcroot syscall, `/proc`, and performance work.
 - [tawcroot-readonly-binds.md](tawcroot-readonly-binds.md) - future read-only fake bind support in tawcroot.
 - [verify-libhybris-ahb-alpha.md](verify-libhybris-ahb-alpha.md) - verify sampled-alpha AHB rendering on device after removing the force-opaque workaround.
