@@ -508,7 +508,7 @@ internal object InputActions {
     private object ClipboardSetTextAction : BrokerAction {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
             val text = args["text"] ?: return ctx.fail("clipboard-set-text: --arg text=... required")
-            ClipboardBridge.setTextFromDevAction(text)
+            ClipboardBridge.setTextFromDevAction(text, asHtml = argBool(args, "html"))
             return 0
         }
     }

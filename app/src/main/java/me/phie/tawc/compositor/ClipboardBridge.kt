@@ -2,7 +2,6 @@ package me.phie.tawc.compositor
 
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.ClipDescription
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -94,13 +93,20 @@ object ClipboardBridge {
         cm.setPrimaryClip(ClipData.newPlainText("tawc", text))
     }
 
-    fun setTextFromDevAction(text: String) {
+    /** [asHtml] mimics Firefox/Gecko web-content copies: an HTML clip whose
+     *  description has no text/plain MIME but whose item carries the text. */
+    fun setTextFromDevAction(text: String, asHtml: Boolean = false) {
         val cm = clipboard ?: return
         if (text.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES) {
             Log.w(TAG, "ClipboardBridge: refusing to write dev text over ${MAX_TEXT_BYTES}B")
             return
         }
-        cm.setPrimaryClip(ClipData.newPlainText("tawc-dev", text))
+        val clip = if (asHtml) {
+            ClipData.newHtmlText("tawc-dev", text, "<span>$text</span>")
+        } else {
+            ClipData.newPlainText("tawc-dev", text)
+        }
+        cm.setPrimaryClip(clip)
     }
 
     fun getTextForDevAction(): String {
@@ -130,10 +136,12 @@ object ClipboardBridge {
         NativeBridge.nativeOnAndroidClipboardText(text)
     }
 
+    /** No ClipDescription MIME gate: Firefox/Gecko copies of web content are
+     *  HTML clips that advertise only text/html yet carry the plain text in
+     *  the item. Non-text clips (images, URIs) have a null item text. */
     private fun currentText(): String? {
         val clip = clipboard?.primaryClip ?: return null
         if (clip.itemCount <= 0) return null
-        if (!clip.description.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN)) return null
         val text = clip.getItemAt(0).text ?: return null
         if (text.length > MAX_TEXT_BYTES) return null
         return text.toString()

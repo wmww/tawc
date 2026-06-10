@@ -529,6 +529,12 @@ pub fn clipboard_set_text(text: &str) -> io::Result<Output> {
     broker_action("clipboard-set-text", &[("text", text)])
 }
 
+/// Set an HTML clip (no text/plain MIME in the description), as
+/// Firefox/Gecko does when copying web content.
+pub fn clipboard_set_html_text(text: &str) -> io::Result<Output> {
+    broker_action("clipboard-set-text", &[("text", text), ("html", "1")])
+}
+
 /// Read Android's real ClipboardManager text through tawc's debug broker.
 pub fn clipboard_get_text() -> io::Result<String> {
     let output = broker_action("clipboard-get-text", &[])?;

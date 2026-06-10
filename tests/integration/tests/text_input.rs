@@ -1034,6 +1034,24 @@ fn test_android_clipboard_text_to_client() {
         .expect("clipboard paste app crashed or failed to stop cleanly");
 }
 
+/// Firefox/Gecko copies of web content are HTML clips: the ClipDescription
+/// advertises only text/html, but the clip item still carries the plain
+/// text. The bridge must mirror those, not just text/plain clips.
+#[test]
+fn test_android_clipboard_html_text_to_client() {
+    tawc_integration::helpers::test_init();
+    let android_text = "android html clipboard to wayland";
+    adb::clipboard_set_html_text(android_text).expect("set Android clipboard");
+
+    let mut paste_app = start_wayland_debug_clipboard_paste(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+    paste_app
+        .wait_for_tag_value("CLIPBOARD_PASTE", android_text, TIMEOUT)
+        .expect("Wayland client did not receive Android HTML clip text");
+    paste_app
+        .stop()
+        .expect("clipboard paste app crashed or failed to stop cleanly");
+}
+
 #[test]
 fn test_client_clipboard_text_to_android() {
     tawc_integration::helpers::test_init();
