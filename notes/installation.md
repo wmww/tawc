@@ -988,6 +988,48 @@ rootfs." Two installs with the same `schemaVersion` can differ in
 code is what an `if (installedAtAppVersionCode < N)` check should
 key on.
 
+## Known harmless install noise
+
+Errors that appear in pacman/install logs under tawcroot, are
+understood (or understood-enough), and have no practical fix worth
+doing. Don't re-file these as issues.
+
+- **`Cannot set file attributes for '/var/log/journal'`** plus
+  pacman's `error: command failed to execute correctly` — the
+  journald tmpfiles rule requests `FS_NOCOW_FL` (`+C`); ext4 on the
+  Android data partition doesn't support it, so
+  `ioctl(FS_IOC_SETFLAGS)` correctly returns EOPNOTSUPP.
+  systemd-tmpfiles says `ignoring` but exits non-zero, which pacman
+  reports as the hook failing. Only cost is a minor journal-rotation
+  perf hint. Do **not** "fix" this by making tawcroot's ioctl handler
+  return 0 — the flag genuinely isn't set on disk, and lying would
+  hide real failures. If the noise ever matters, the clean fix is in
+  the Kotlin install profile: mask
+  `/usr/lib/tmpfiles.d/journal-nocow.conf` with an empty
+  `/etc/tmpfiles.d/journal-nocow.conf` at install time.
+- **`Failed to open path /dev/net/tun`** from tmpfiles — we don't
+  stage `/dev/net/`, no target workload uses tun, and systemd never
+  runs as init (tmpfiles only fires via the pacman ALPM hook).
+  Cosmetic.
+- **`Failed to check for chroot() environment: Function not
+  implemented` → `Skipped: Current root is not booted.`** in
+  `systemd-hook` post-transaction hooks (`systemctl daemon-reload`,
+  `udevadm`, `sysctl --system`, …). The hook skips for the wrong
+  reason (ENOSYS instead of a clean chroot detection), but the
+  outcome is identical: systemd isn't PID 1 here, so the hook would
+  no-op anyway. Root cause never pinned down. What's been ruled out:
+  tawcroot *does* handle `statx` (`tawcroot/src/syscalls_fs.c`
+  `handle_statx`, registered in the dispatch table), and the
+  `/proc/1/sched` read plus `stat` compare in systemd's
+  `running_in_chroot_or_offline()` go through handled paths that
+  would fail with EACCES/ENOENT, not ENOSYS. Leading suspect: a
+  newer-systemd syscall the 5.4 kernel lacks (e.g. `statmount(2)`/
+  `listmount(2)`, kernel 6.8+, RET_ALLOWed by tawcroot → kernel
+  ENOSYS) — i.e. a kernel-version/ABI mismatch, not a missing
+  tawcroot handler, so there's nothing for us to do. If it ever
+  needs confirming: `strace -f -e trace=!read,write` the
+  systemd-hook invocation and find the syscall returning -38.
+
 ## Refactor history
 
 - **2026-04-27** — split `ArchInstaller` into a generic [Installer]

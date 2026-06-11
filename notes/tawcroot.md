@@ -1806,6 +1806,22 @@ guards the table; held only across the create/unlink syscalls).
 `mmap`/`ftruncate`/`mremap`/etc. operate on the returned fd as
 real kernel operations — no further handler involvement.
 
+Known low-value fidelity gaps vs. real `/dev/shm` (the
+program-tripping ones — O_RDONLY access mode, per-open file offsets,
+`.`/`..` classification, bogus STATX_SIZE — were fixed by re-opening
+the internal memfd via `/proc/self/fd/<n>` with the guest's access
+mode):
+
+- `mode` is ignored (`(void)mode` in shm_open) and stat always
+  synthesizes 0600 regardless of the creator's mode or later
+  `fchmod`. Fine under fake-root.
+- Handler inconsistency around the `/dev/shm` directory itself:
+  `stat`/`statx`/`access` fake it as existing, but `openat`/`chdir`
+  of it return ENOENT, and `truncate`/`utimensat`/`renameat*`/
+  `statfs` of `/dev/shm/<name>` aren't intercepted at all. A
+  configure-style probe sees a directory that stats but can't be
+  opened.
+
 `-w` sets initial CWD (translated). We also export a small set of
 env vars (`HOME`, `USER`, `TMPDIR`, `PATH`) before exec.
 
