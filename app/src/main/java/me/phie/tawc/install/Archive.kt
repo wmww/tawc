@@ -52,7 +52,7 @@ object Archive {
      * crash leftover never gets reused) and deleted in the `finally`.
      * For `.tar` / `.tar.gz` inputs [tempFifo] is unused.
      *
-     * (Wiping is the sole job of [InstallationMethod.wipe], called from
+     * (Wiping is the sole job of [RootfsCleaner.wipe], called from
      * the uninstall path. If install ever wiped here, a single missed
      * unmount could let `rm` walk through a live `/dev` bind and unlink
      * host system nodes — see notes/installation.md.)

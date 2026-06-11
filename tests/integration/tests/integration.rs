@@ -10,5 +10,6 @@ mod rendering;
 mod settings;
 mod tawcroot;
 mod text_input;
+mod uninstall_wipe;
 mod touch_input;
 mod xwayland;

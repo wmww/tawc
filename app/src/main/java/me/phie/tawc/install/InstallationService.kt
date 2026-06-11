@@ -58,7 +58,7 @@ import me.phie.tawc.tasks.ProcessScanner
  *
  * The job body runs inside `runInterruptible(Dispatchers.IO)` so a
  * coroutine cancel translates into a thread interrupt that the
- * blocking IO callers ([Su.run], [ProotMethod.runShell],
+ * blocking IO callers ([Su.run], [Sh.run],
  * [Downloader.download]) all honour by destroying their subprocesses
  * / re-throwing `InterruptedIOException`. The state-machine
  * consequences:
@@ -460,7 +460,7 @@ class InstallationService : Service() {
         _log.resetReplayCache()
         lastLoggedStage = null
         val store = InstallationStore(applicationContext)
-        // Uninstall doesn't need a Distro — `method.wipe(...)` is
+        // Uninstall doesn't need a Distro — [RootfsCleaner.wipe] is
         // distro-agnostic. Resolve one for symmetry / future logging,
         // falling back to the host default and ultimately to the
         // first registered distro if no metadata exists. The Installer
@@ -602,8 +602,8 @@ class InstallationService : Service() {
     /**
      * Cancel the in-flight uninstall for [id]. Per the state machine
      * (`UNINSTALLING → FAILED` on a wipe failure), the catch handler
-     * already writes FAILED if the dir survives — and with the two-
-     * pass wipe in [RootfsCleaner.wipe] / [ProotMethod.wipe] the
+     * already writes FAILED if the dir survives — and with
+     * [RootfsCleaner.wipe]'s two-pass delete the
      * `metadata.json` survives a cancel mid-pass-1, so the slot stays
      * recognisable on the home screen for a manual recovery.
      *

@@ -1,7 +1,6 @@
 package me.phie.tawc.install
 
 import android.content.Context
-import android.util.Log
 import me.phie.tawc.AppPaths
 import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.Settings
@@ -70,7 +69,7 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         script: String,
         onLine: ((String) -> Unit)?,
     ): MethodResult =
-        runShell(listOf("/system/bin/sh"), "set -eu\n$script", onLine)
+        Sh.run("set -eu\n$script", onLine)
 
     /**
      * Start a tawcroot subprocess running [command] inside [rootfs].
@@ -259,46 +258,6 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         return binds
     }
 
-    private fun shellQuote(s: String): String =
-        "'" + s.replace("'", "'\\''") + "'"
-
-    /** Used by [runOutside] / [wipe]: run a short shell script via
-     * `argv` (typically `/system/bin/sh`), feed [script] on stdin,
-     * collect combined stdout+stderr. */
-    private fun runShell(
-        argv: List<String>,
-        script: String,
-        onLine: ((String) -> Unit)?,
-    ): MethodResult {
-        val pb = ProcessBuilder(argv).redirectErrorStream(true)
-        val proc = pb.start()
-        proc.outputStream.bufferedWriter().use { w -> w.write(script); w.write("\n") }
-        val sb = StringBuilder()
-        val readerThread = Thread {
-            try {
-                proc.inputStream.bufferedReader().forEachLine { line ->
-                    if (sb.length < 256 * 1024) {
-                        if (sb.isNotEmpty()) sb.append('\n')
-                        sb.append(line)
-                    }
-                    onLine?.invoke(line)
-                }
-            } catch (e: IOException) {
-                Log.w(TAG, "runShell stdout: $e")
-            }
-        }.also { it.isDaemon = true; it.start() }
-        try {
-            proc.waitFor()
-        } catch (e: InterruptedException) {
-            proc.destroyForcibly()
-            readerThread.join(2000)
-            Thread.currentThread().interrupt()
-            throw e
-        }
-        readerThread.join(2000)
-        return MethodResult(proc.exitValue(), sb.toString())
-    }
-
     /**
      * Pure-Kotlin extract via [ProotArchiveExtractor]. Same rationale
      * as [ProotMethod.extractBootstrap] — toybox tar's eager
@@ -316,49 +275,6 @@ class TawcrootMethod(context: Context) : InstallationMethod {
     ) {
         File(rootfs).mkdirs()
         ProotArchiveExtractor.extract(tarball, rootfs, stripPrefix, onLine)
-    }
-
-    /**
-     * Recursive delete. tawcroot doesn't track tracee processes the
-     * way proot does — there's no tracer to leave PIDs around — so
-     * the wipe is simpler than [ProotMethod.wipe]: no pkill, no
-     * `su`-retry chmod path. Just chmod + find -delete.
-     */
-    override fun wipe(installDir: File, log: (String) -> Unit) {
-        if (!installDir.exists()) return
-        val installPathQ = shellQuote(installDir.absolutePath)
-
-        log("chmod: making $installDir writable")
-        runShell(
-            listOf("/system/bin/sh"),
-            "chmod -R u+rwX $installPathQ 2>/dev/null; exit 0",
-            onLine = null,
-        )
-
-        log("delete: $installDir")
-        // No per-line callback — `find -delete` over a multi-GB
-        // rootfs streams one stderr line per permission-denied /
-        // busy file (very common on cancel paths) and floods the
-        // panel. Full output is captured in `r.output` for the
-        // IOException below.
-        val r = runShell(
-            listOf("/system/bin/sh"),
-            "find $installPathQ -xdev -depth -delete 2>&1",
-            onLine = null,
-        )
-
-        if (r.ok && !installDir.exists()) return
-        // Same fallback as ProotMethod: `su -c` retry catches any
-        // root-owned leftovers from interleaved chroot+tawcroot use.
-        if (Su.rootAvailable()) {
-            log("delete: app-uid find -delete failed, retrying via su")
-            val sr = Su.run("find $installPathQ -xdev -depth -delete")
-            if (sr.ok && !installDir.exists()) return
-            throw IOException(
-                "Recursive delete failed (su retry exit=${sr.exitCode}): ${sr.output}"
-            )
-        }
-        throw IOException("Recursive delete failed for $installDir (exit=${r.exitCode})")
     }
 
     // ---- internals ---------------------------------------------------
@@ -397,7 +313,6 @@ class TawcrootMethod(context: Context) : InstallationMethod {
 
     companion object {
         const val KEY = "tawcroot"
-        private const val TAG = "tawc-install"
         /** In-rootfs path the share dir is exposed at. Single source
          *  of truth — also referenced by [RootfsEnv] (WAYLAND_DISPLAY)
          *  and the chroot/proot install methods. */

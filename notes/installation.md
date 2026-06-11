@@ -106,11 +106,13 @@ Two consequences shape every other piece of the system:
    we never re-extract on top of a live chroot. To re-install,
    uninstall first.
 2. **`<distros>/<id>/` is mutated only by the uninstall path
-   ([RootfsCleaner]).** Uninstall is the one place that kills chroot
-   processes, unmounts strictly, and `find -xdev -depth -delete`s the
-   directory tree. Nothing else deletes anything under there, so the
-   historical `rm -rf` walking through a live `/dev` bind mount is
-   structurally impossible.
+   ([RootfsCleaner]).** One engine for every install method: kill
+   guest processes, unmount (chroot only), refuse if any mount
+   remains under the install dir, then `find -xdev -depth -delete`.
+   Nothing else deletes anything under there — enforced by
+   `RootfsCleanerTripwireTest`, which scans the sources for stray
+   recursive deletes — so the historical `rm -rf` walking through a
+   live `/dev` bind mount is structurally impossible.
 
 ### Cancellation
 
@@ -135,7 +137,7 @@ The cancel mechanism has three layers:
 1. **Coroutine cancellation** — [InstallationService] wraps the job
    body in `runInterruptible(Dispatchers.IO)` so a `Job.cancel()`
    translates into a thread interrupt. [Su.run],
-   [ProotMethod.runShell], and [Downloader.download] all honour
+   [Sh.run], and [Downloader.download] all honour
    thread interrupts (`destroyForcibly` of subprocess /
    `InterruptedIOException` from the HTTP read loop).
 2. **Defensive process kill** — Magisk's `su` doesn't reliably
@@ -144,9 +146,9 @@ The cancel mechanism has three layers:
    parallel with the cancel: a /proc sweep that SIGKILLs anything
    chrooted into the rootfs (by `/proc/<pid>/root` dev:ino) or whose
    argv mentions the install path (catches host-side helpers).
-3. **Two-pass wipe** — [RootfsCleaner.wipe] / [ProotMethod.wipe]
-   delete the rootfs subtree first, then `metadata.json` + the
-   container dir as a separate `find` invocation. A cancel mid-pass-1
+3. **Two-pass wipe** — [RootfsCleaner.wipe] deletes the rootfs
+   subtree first, then `metadata.json` + the container dir as a
+   separate explicit step. A cancel mid-pass-1
    leaves `metadata.json` intact so the slot still shows up on the
    home screen and a follow-up uninstall picks up cleanly. Without
    this split, `find`'s readdir order between `rootfs/` and its
@@ -201,7 +203,7 @@ The package is split into three layers:
 | `SignatureVerifier.kt`         | Sealed `BootstrapVerification` (`None` / `Pgp` / `CrossMirrorMd5` / `Sha256`) and `verify(...)`. Called from [Installer] between download and extract — see *Bootstrap integrity* below. Uses BouncyCastle (`bcpg-jdk18on` + `bcprov-jdk18on`) for the OpenPGP layer. Treat as load-bearing security code. |
 | `BootstrapCache.kt`            | Sole owner of `<cacheDir>/install/`. `download(arch, url, format, …)` is the single entry point: it mkdirs, fetches via [Downloader], and refreshes the file's mtime so the TTL counts from "last used" rather than "first downloaded". Also exposes `tempFifoFor(arch)` for [Archive]'s zstd→tar streaming FIFO so the transient lives in the cache dir under one owner. `sweepStale` runs a two-pass janitor: TTL eviction (7 days) for canonical `bootstrap-<cacheKey>.tar.{zst,gz}`; unconditional deletion of `*.fifo`, legacy `*.tmp`, and `*.part` (transients are never valid across processes). Also defines the `BootstrapFormat` enum. |
 | `Archive.kt`                   | Tar extraction. Plain `.tar` / `.tar.gz` get handed to `toybox tar` directly; `.tar.zst` is streamed in-process through a named pipe (`bootstrap-<cacheKey>.tar.fifo`) so the ~700 MB plaintext never lands on disk. Never wipes — install only runs against an empty slot. |
-| `RootfsCleaner.kt`             | The one and only delete path: kill chroot processes → unmount strictly → `find -xdev -depth -delete`. Used by uninstall; never by install. |
+| `RootfsCleaner.kt`             | The one and only delete path, for every install method: kill guest processes → unmount (chroot only) → refuse if any mount remains under the install dir → two-pass `find -xdev -depth -delete` (su-first for chroot, app-uid with one su retry otherwise). The chroot-only facts come from the metadata-recorded method key, not a live `InstallationMethod`, so disabled-method slots still wipe correctly. Used by uninstall; never by install. `RootfsCleanerTripwireTest` fails on recursive deletes elsewhere in the app sources. |
 | `ChrootMounter.kt`             | Builds the bind-mount shell snippet (`mountScript`) used by [ChrootMethod.startInside], and provides defensive-cleanup `unmount` (used by [RootfsCleaner]). Mounts live inside a single `su` invocation's private namespace, not globally. |
 | `Installer.kt`                 | Generic install/uninstall orchestrator. Drives `setState(INSTALLING) → BootstrapCache.download → Archive.extractAsRoot → distro.configure → distro.initPackageManager → distro.installBasePackages → setState(READY)`. Distro-agnostic; per-distro behaviour comes from the [Distro] passed in. |
 | `distro/Distro.kt`             | Interface for a (distro × Linux arch). Owns `bootstrap` (URL/format/stripPrefix/verification), `cacheKey`, `basePackages`, the three policy hooks (`configure`, `initPackageManager`, `installBasePackages`), and `resolveBootstrap()` for distros with install-time URL/digest lookup (Manjaro/Void/Debian). Also defines `DistroBootstrap`. |
@@ -394,11 +396,24 @@ sweep fires once at process cold start.
 ## Uninstall pipeline (the one and only wipe)
 
 `<distros>/<id>/` is mutated by exactly one path:
-`RootfsCleaner.wipe(installDir)`, called from
-`ArchInstaller.uninstall()`. It does, in order:
+`RootfsCleaner.wipe(store, id)`, called from `Installer.uninstall()`.
+One engine for every install method — the two facts it branches on
+(kernel mounts to tear down, root-owned guests; both chroot-only) are
+derived from the method key recorded in `metadata.json`, not from a
+live `InstallationMethod`, so a slot recorded against a now-disabled
+method still wipes with the right guards (missing/corrupt metadata
+degrades to the rootless path, whose su retry still clears root-owned
+trees). `InstallationMethod` deliberately has no `wipe()`.
+`RootfsCleanerTripwireTest` (JVM unit test) fails the build if a
+recursive-delete primitive shows up anywhere else in the app sources.
+The engine does, in order:
 
-1. **(state write)** — `setState(UNINSTALLING)`.
-2. **kill rootfs processes** — loops over scan → SIGKILL → short wait
+1. **(state write)** — `setState(UNINSTALLING)` (in
+   `Installer.uninstall`, before the engine runs).
+2. **containment** — the engine computes `<store.baseDir>/<id>` itself
+   from a validated id, so a caller-side path bug can't hand it a
+   parent dir.
+3. **kill guest processes** — loops over scan → SIGKILL → short wait
    until the scan comes back empty or the sweep limit is reached. The
    app-uid scanner matches rootfs links/maps; the chroot branch compares
    `/proc/<pid>/root` dev:inode values via `su` (so it matches whether
@@ -407,23 +422,40 @@ sweep fires once at process cold start.
    the canonical offender is the `gpg-agent --daemon` that
    `pacman-key --init` detaches; left alive it holds FDs into the rootfs
    and races the delete, which on Android 14 spins vold's FUSE accounting
-   into a `vdc volume abort_fuse` storm.
-3. **strict unmount** — `ChrootMounter.unmount` runs via `su -mm`
-   (Magisk's mount-master mode) so `umount` actually affects the
-   global mount table; refuses with a non-zero exit if any mount
+   into a `vdc volume abort_fuse` storm. The hazard is
+   method-independent (a `setsid`'d tawcroot guest from a previous app
+   process is just as live), so every method gets the sweep; the argv
+   match on the install path additionally catches supervisors (proot
+   tracer) and host-side helpers.
+4. **strict unmount (chroot only)** — `ChrootMounter.unmount` runs via
+   `su -mm` (Magisk's mount-master mode) so `umount` actually affects
+   the global mount table; refuses with a non-zero exit if any mount
    remains under the rootfs.
-4. **`find -xdev -depth -delete` (rootfs subtree)** — pass 1 deletes
+5. **uniform mount gate (every method)** — read `/proc/self/mounts`
+   and refuse to delete while any mount entry sits under the install
+   dir; re-checked before every `su` escalation in the delete step
+   (pass 1 takes minutes, and a root `find` ignores DAC). This — not
+   `find -xdev` — is the load-bearing guard: `-xdev`
+   only refuses to cross *filesystems*, and a bind mount with a
+   same-filesystem source (anything under `/data`) has the same
+   `st_dev` and gets walked straight through. For rootless methods a
+   hit means something external leaked a mount; refusing loudly is
+   correct. Covered by `tests/integration/tests/uninstall_wipe.rs`.
+6. **`find -xdev -depth -delete` (rootfs subtree)** — pass 1 deletes
    everything under `<installDir>/rootfs/`. Never `rm -rf`. Toybox
-   `rm` has no `--one-file-system`, and a single missed unmount could
-   otherwise let `rm` walk through a live `/dev` bind and unlink host
-   nodes (the historical bug that crashed zygote and pegged vold).
-   `-xdev` is the belt-and-braces against that. This is the long
-   step (multi-GB tree); a cancel from the UI lands here.
-5. **`find -xdev -depth -delete` (metadata + container)** — pass 2
-   deletes `metadata.json` and the empty `<installDir>/` itself.
-   Split out from pass 1 so a cancel mid-wipe leaves the slot
-   recognisable on the home screen for follow-up. See
-   *Cancellation* under *State machine* above.
+   `rm` has no `--one-file-system`; `-xdev` is a free extra fence on
+   top of the gate (the historical `rm` walking through a live `/dev`
+   bind crashed zygote and pegged vold). Root-owned trees (chroot)
+   delete via `su` directly; app-uid trees get
+   `chmod -R u+rwX` first (mode-0500 bootstrap dirs) and one `su`
+   retry for root-owned droppings from interleaved debug `su` use.
+   This is the long step (multi-GB tree); a cancel from the UI lands
+   here.
+7. **explicit metadata + container teardown** — pass 2 removes
+   `metadata.json.tmp`, `metadata.json`, then `rmdir`s the empty
+   `<installDir>/`, in that order. Split out from pass 1 so a cancel
+   mid-wipe leaves the slot recognisable on the home screen for
+   follow-up. See *Cancellation* under *State machine* above.
 
 On success the directory (including `metadata.json`) is gone and the id
 is back to `(no dir)`. On any failure, the directory is left as-is and

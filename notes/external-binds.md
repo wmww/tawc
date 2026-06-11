@@ -7,7 +7,12 @@ uninstall and visible to other Android apps. Example: shared storage
 
 Tawcroot-only: the bind list rides the same `-b src:dst` table as the
 built-in system/share binds (path rewrites, not kernel mounts — so
-uninstall's recursive delete never traverses into a bind source). The
+uninstall's recursive delete never traverses into a bind source). That
+invariant — not the wipe engine — is what protects Android-side data
+on OS-level uninstall, where no app code runs. At in-app wipe time,
+[RootfsCleaner]'s uniform mount gate (refuse to delete while any mount
+sits under the install dir) is the backstop if the invariant is ever
+broken (e.g. external binds wired into chroot's real mounts). The
 chroot debug method uses real mounts and deliberately does not get
 these binds until its uninstall interaction is reviewed; proot doesn't
 need them for any dev-loop purpose.

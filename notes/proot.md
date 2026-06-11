@@ -246,8 +246,8 @@ the merged-fd reader drains. To fix properly: `strace -f` (or
 `simpleperf`) a direct-exec invocation, check `dmesg | grep avc` for
 SELinux denials, then drop the wrapper if there's a clean direct
 path. References: the `// We invoke proot via the system shell …`
-block in `ProotMethod.runInside` and the `// No `set -e` prefix here.`
-block in `runShell`.
+block in `ProotMethod.startInside` and the no-`set -eu` note in
+`Sh`'s kdoc.
 
 ### `/dev/shm` is disk-backed; wants memfd via a proot extension
 
@@ -276,34 +276,15 @@ week for a working prototype. Land as a local patch in
 Not urgent — the disk-backed bind works; nobody's complained about
 flash wear.
 
-### Wipe has two open-coded su-retry blocks
+### Wipe
 
-After the cancel-uninstall split, `ProotMethod.wipe` runs two
-`find -xdev -depth -delete` passes (rootfs subtree first, then
-`metadata.json` + container) and each pass duplicates the same
-"try app-uid, retry via Su.run, throw on residual" pattern with
-slightly different log strings. Pass 1 ~`ProotMethod.kt:296-315`,
-pass 2 ~`329-339`. Refactor to a single helper
-(`deleteWithSuRetry(cmd, label, expectGone, log)`) — pure refactor,
-no behaviour change. The chroot-side `RootfsCleaner.wipe` is the
-clean reference (single su-only path, no duplication).
-
-### Wipe su-retry is probably legacy
-
-The `Su.run("find … -xdev -depth -delete")` fallback exists because
-historical proot-via-su entry paths could leave pacman files
-root-owned on disk; plain app-uid `chmod -R u+rwX` then couldn't
-make those files writable. The current entry path is broker-mediated
-and runs as the app uid throughout — no `su` is ever forked for proot
-installs. The only remaining justification is **stale installs from
-before the broker dispatch landed**. Either drop the su-retry
-entirely (early-development project, nobody's relying on
-months-old installs — users can recover with
-`adb shell su -c 'rm -rf …'`) or keep with mount-aware semantics
-(today's `find -xdev -depth -delete` already refuses to cross
-filesystem boundaries — match `RootfsCleaner.wipe`, never weaken
-it; bind-mounted device nodes inside the rootfs are a recurring
-footgun).
+`ProotMethod` has no wipe code: all deletion lives in
+`RootfsCleaner` (one engine for every method — see
+notes/installation.md). The engine keeps a single app-uid-first
+delete with one `su` retry; the retry is deliberate, covering
+root-owned droppings from interleaved debug `su` use against an
+app-uid rootfs (root is necessarily available on any device that
+could have created them).
 
 ### `MOZ_DISABLE_*_SANDBOX` in the universal proot env
 

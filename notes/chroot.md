@@ -20,12 +20,14 @@ same boat (see [notes/proot.md](proot.md)).
 | `ChrootMethod.kt`            | `startInside` — pipes [ChrootMounter.mountScript] + the in-rootfs `setsid chroot $rootfs … /bin/bash …` to a single `su -c 'exec unshare -m -- /system/bin/sh'` over stdin. One shell per entry; mounts torn down when it exits. |
 | `ChrootMounter.kt`           | Builds the bind-mount shell snippet (`mountScript`) — `/apex /vendor /system /system_ext /linkerconfig /dev /sys /proc /dev/pts /dev/shm /usr/share/tawc`. Also provides defensive-cleanup `unmount` for [RootfsCleaner] to call from uninstall. |
 | `Su.kt`                      | Wrapper around Magisk `su`. Pipes the script via stdin (no shell-quoting headaches), streams combined stdout/stderr line-by-line via a callback. The non-mount-master path wraps in `unshare -m`. |
-| `RootfsCleaner.kt`           | The one and only delete path: kill chroot processes → unmount strictly → `find -xdev -depth -delete`. Used by uninstall; never by install. |
+| `RootfsCleaner.kt`           | The one and only delete path (all methods, see [notes/installation.md](installation.md)): kill guest processes → unmount strictly → mount gate → `find -xdev -depth -delete` via `su`. Used by uninstall; never by install. |
 
 The shared install pipeline (download / verify / extract /
 configure / pacman bootstrap) is method-agnostic and lives in
 [notes/installation.md](installation.md). chroot only contributes
-its `startInside` and `wipe` overrides.
+its `startInside` override; [RootfsCleaner] derives the chroot-only
+wipe facts (kernel mounts, root-owned guests) from the method key
+recorded in metadata.
 
 ## Mount lifecycle
 

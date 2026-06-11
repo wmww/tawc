@@ -286,22 +286,19 @@ class Installer(
     }
 
     /**
-     * Permanently remove [id]: state → UNINSTALLING, [InstallationMethod.wipe],
+     * Permanently remove [id]: state → UNINSTALLING, [RootfsCleaner.wipe],
      * then the directory (including metadata.json) is gone. On a
      * `(no dir)` slot this is a no-op. Throws on wipe failure; the
      * service wraps as `FAILED` so a subsequent uninstall can retry.
      *
-     * No [Distro] is needed — wipe is method-dispatched (chroot kills
-     * tracked-by-`/proc/<pid>/root` processes + unmounts + `find
-     * -xdev -delete`; proot just kills any in-flight tracees and
-     * recursive-deletes).
+     * No [Distro] is needed — the wipe engine is distro-agnostic,
+     * parameterised only by the method's capability flags.
      */
     fun uninstall(
         progress: (InstallProgress) -> Unit,
         log: (String) -> Unit,
     ) {
-        val installDir = store.installationDir(id)
-        if (!installDir.exists()) {
+        if (!store.installationDir(id).exists()) {
             progress(InstallProgress(InstallStage.DONE, context.getString(R.string.install_progress_nothing_to_delete)))
             return
         }
@@ -314,7 +311,7 @@ class Installer(
         // labels, so we keep both for symmetry.
         progress(InstallProgress(InstallStage.UNMOUNTING, context.getString(R.string.install_progress_unmounting_chroot)))
         progress(InstallProgress(InstallStage.DELETING, context.getString(R.string.install_progress_deleting_rootfs)))
-        method.wipe(installDir, log)
+        RootfsCleaner.wipe(store, id, log)
 
         progress(InstallProgress(InstallStage.DONE, context.getString(R.string.install_progress_deleted)))
     }

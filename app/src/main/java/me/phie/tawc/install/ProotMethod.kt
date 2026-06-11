@@ -1,12 +1,10 @@
 package me.phie.tawc.install
 
 import android.content.Context
-import android.util.Log
 import me.phie.tawc.AppPaths
 import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.Settings
 import java.io.File
-import java.io.IOException
 
 /**
  * Rootless implementation of [InstallationMethod] using the vendored
@@ -98,10 +96,15 @@ class ProotMethod(context: Context) : InstallationMethod {
         // `set -eu` to match Su.run's contract — the chroot path
         // implicitly aborts on first failure, so callers writing
         // multi-step scripts (e.g. ArchPacmanCommon.configure) can
-        // expect the same here. Don't add this to the runInside or
-        // wipe paths; both have their own structured exit handling
-        // that fights with -e.
-        runShell(listOf("/system/bin/sh"), "set -eu\n$script", onLine)
+        // expect the same here. Don't add this to the runInside
+        // path; it has its own structured exit handling that fights
+        // with -e. The proot env vars are harmless when the script
+        // doesn't happen to wrap proot.
+        Sh.run(
+            "set -eu\n$script",
+            onLine,
+            env = mapOf("PROOT_TMP_DIR" to prootTmpDir, "PROOT_LOADER" to prootLoader),
+        )
 
     /**
      * Run [command] inside a proot-fake-chroot at [rootfs]. The proot
@@ -171,7 +174,7 @@ class ProotMethod(context: Context) : InstallationMethod {
         // user command verbatim.
         val invokeArgv =
             prootArgv(rootfs) + RootfsEnv.envArgv(RootfsEnv.Method.PROOT, graphics ?: Settings.graphicsBackend)
-        val invokeShell = invokeArgv.joinToString(" ") { shellQuote(it) }
+        val invokeShell = invokeArgv.joinToString(" ") { Sh.quote(it) }
         val script = if (command != null) {
             "exec /system/bin/setsid $invokeShell /bin/bash -lc \"\$1\""
         } else {
@@ -196,10 +199,6 @@ class ProotMethod(context: Context) : InstallationMethod {
             }
             .start()
     }
-
-    /** Quote [s] for inclusion in a /system/bin/sh single-quoted arg. */
-    private fun shellQuote(s: String): String =
-        "'" + s.replace("'", "'\\''") + "'"
 
     /**
      * Extract the bootstrap in pure Kotlin via [ProotArchiveExtractor].
@@ -226,125 +225,6 @@ class ProotMethod(context: Context) : InstallationMethod {
     ) {
         File(rootfs).mkdirs()
         ProotArchiveExtractor.extract(tarball, rootfs, stripPrefix, onLine)
-    }
-
-    /**
-     * Recursive delete with one wrinkle: tracees from any historical
-     * proot-via-su entry path can leave on-disk files with `uid=0`
-     * ownership, even though the install was originally proot/app-uid.
-     * Plain `chmod -R` from app uid then can't make those files
-     * writable, and the subsequent unlink fails with EACCES.
-     *
-     * So: chmod via `su` if it's available, then delete. On
-     * properly-rootless installs (no su ever touched the tree) the
-     * `Su.run` call fails fast and we fall through to the same
-     * app-uid chmod + recursive delete that always worked.
-     */
-    override fun wipe(installDir: File, log: (String) -> Unit) {
-        if (!installDir.exists()) return
-        val installPathQ = shellQuote(installDir.absolutePath)
-        val rootfsPath = File(installDir, "rootfs").absolutePath
-        val rootfsPathQ = shellQuote(rootfsPath)
-
-        // Best-effort: kill any proot processes whose argv mentions
-        // this rootfs. pkill -f scans /proc/<pid>/cmdline; we can only
-        // see our own uid's processes (Android's hidepid policy), but
-        // any leak from this app shows up there.
-        log("kill: any in-flight proot for $rootfsPath (best-effort)")
-        runShell(
-            listOf("/system/bin/sh"),
-            "pkill -KILL -f ${shellQuote("$prootBin .* $rootfsPath")} 2>/dev/null; exit 0",
-            onLine = { log("kill: $it") },
-        )
-
-        // The Arch bootstrap leaves some dirs (e.g. ca-certificates'
-        // `cadir`) at mode 0500 and files inside at 0444 — readable
-        // but not writable, which means recursive delete can't
-        // unlink the children. Chmod everything writable first, then
-        // delete. -f silences "no such file" if a previous attempt
-        // got partway. Prefer `su` when available so root-owned
-        // tracee leftovers (see the kdoc above) get caught.
-        log("chmod: making $installDir writable")
-        val chmodScript = "chmod -R u+rwX $installPathQ 2>/dev/null; exit 0"
-        if (Su.rootAvailable()) {
-            val r = Su.run(chmodScript) { log("chmod (su): $it") }
-            if (!r.ok) log("chmod (su): warning, exit=${r.exitCode}")
-        } else {
-            val r = runShell(listOf("/system/bin/sh"), chmodScript) { log("chmod: $it") }
-            if (!r.ok) log("chmod: warning, exit=${r.exitCode}")
-        }
-
-        // Two-pass delete (rootfs subtree, then metadata + container)
-        // for the same reason as [RootfsCleaner.wipe]: a cancel
-        // mid-wipe must leave `metadata.json` intact so the home
-        // screen still shows the slot and a follow-up uninstall picks
-        // up cleanly. `find -xdev -depth -delete` rather than `rm -rf`
-        // or `File.deleteRecursively()`:
-        //   - -xdev refuses to cross filesystem boundaries, so even if
-        //     something ever leaked a bind mount into this tree
-        //     (proot itself doesn't, but a future regression / manual
-        //     `su -c <chroot-enter>` against this rootfs could) we
-        //     wouldn't start deleting `/apex` or `/system`.
-        //   - -depth -delete walks post-order so directories are
-        //     emptied before unlink, which neither `rm -rf` legacy
-        //     toyboxes nor `File.deleteRecursively()` (which aborts
-        //     on the first un-deletable child) can match.
-        // Quoting flows through shellQuote to keep a hostile `id`
-        // (already rejected by Installation.isValidId, but defence in
-        // depth) from breaking out of the wrapper.
-        log("delete: rootfs subtree at $rootfsPath")
-        if (File(rootfsPath).exists()) {
-            // No per-line `onLine` — `find -delete` over a multi-GB
-            // rootfs floods the panel with one line per
-            // permission-denied / busy file (especially on cancel),
-            // and only the failure message is interesting. Full
-            // output is still in `rfRes.output` for the IOException.
-            val rfRes = runShell(
-                listOf("/system/bin/sh"),
-                "find $rootfsPathQ -xdev -depth -delete 2>&1",
-                onLine = null,
-            )
-            if (!rfRes.ok || File(rootfsPath).exists()) {
-                if (Su.rootAvailable()) {
-                    log("delete: app-uid rootfs find failed, retrying via su")
-                    val sr = Su.run("find $rootfsPathQ -xdev -depth -delete")
-                    if (!sr.ok || File(rootfsPath).exists()) {
-                        throw IOException(
-                            "rootfs delete failed (su retry exit=${sr.exitCode}): ${sr.output}"
-                        )
-                    }
-                } else {
-                    throw IOException(
-                        "rootfs delete failed (exit=${rfRes.exitCode}): ${rfRes.output}"
-                    )
-                }
-            }
-        }
-
-        // Pass 2: explicit metadata.json + container rmdir. The
-        // metadata.json unlink is the second-to-last visible artefact,
-        // with only the empty installDir left and `rmdir` finishing
-        // things near-atomically. See RootfsCleaner.wipe for the same
-        // reasoning.
-        log("delete: container at $installDir (metadata.json, rmdir)")
-        val pass2Script = buildString {
-            appendLine("rm -f $installPathQ/metadata.json.tmp")
-            appendLine("rm -f $installPathQ/metadata.json")
-            appendLine("rmdir $installPathQ")
-        }
-        val r = runShell(listOf("/system/bin/sh"), pass2Script, onLine = null)
-        if (r.ok && !installDir.exists()) return
-
-        // App-uid delete failed — almost certainly a residual
-        // root-owned file from a historical su-mediated entry.
-        // Retry once via `su`. The same explicit order applies.
-        if (Su.rootAvailable()) {
-            log("delete: app-uid pass-2 failed, retrying via su")
-            val sr = Su.run(pass2Script)
-            if (sr.ok && !installDir.exists()) return
-            throw IOException("Recursive delete failed (su retry exit=${sr.exitCode}): ${sr.output}")
-        }
-        throw IOException("Recursive delete failed for $installDir (exit=${r.exitCode})")
     }
 
     // ---- internals ---------------------------------------------------
@@ -395,72 +275,8 @@ class ProotMethod(context: Context) : InstallationMethod {
         addAll(listOf("-b", "$tawcShare/xtmp/.X11-unix:/tmp/.X11-unix"))
     }
 
-    /**
-     * Run [script] under [argv] (typically `/system/bin/sh`). Pipes
-     * the script in via stdin so we never quote-escape through the
-     * shell. Mirrors [Su.run]'s shape to keep the two side-by-side
-     * stories consistent.
-     *
-     * No `set -e` prefix here. The chroot path's [Su.run] does set -e
-     * because the snippet it runs is a multi-step privileged setup
-     * where any failure should abort. Our shell snippets are single
-     * commands (a proot invocation) where the exit code IS the
-     * result, and `set -e` would race the merged-stderr drain — proot
-     * writing diagnostics to fd 2 sometimes loses them when the
-     * shell exits before the kernel has flushed our reader.
-     */
-    private fun runShell(
-        argv: List<String>,
-        script: String,
-        onLine: ((String) -> Unit)?,
-    ): MethodResult {
-        val pb = ProcessBuilder(argv).redirectErrorStream(true)
-        // Set PROOT_TMP_DIR for any `runShell` invocation that happens
-        // to wrap proot — it's harmless when the script doesn't.
-        pb.environment()["PROOT_TMP_DIR"] = prootTmpDir
-        pb.environment()["PROOT_LOADER"] = prootLoader
-        val proc = pb.start()
-        proc.outputStream.bufferedWriter().use { w ->
-            w.write(script)
-            w.write("\n")
-        }
-        return collectOutput(proc, onLine)
-    }
-
-    private fun collectOutput(
-        proc: Process,
-        onLine: ((String) -> Unit)?,
-    ): MethodResult {
-        val sb = StringBuilder()
-        val reader = proc.inputStream.bufferedReader()
-        val readerThread = Thread {
-            try {
-                reader.forEachLine { line ->
-                    if (sb.length < 256 * 1024) {
-                        if (sb.isNotEmpty()) sb.append('\n')
-                        sb.append(line)
-                    }
-                    onLine?.invoke(line)
-                }
-            } catch (e: IOException) {
-                Log.w(TAG, "proot stdout reader: $e")
-            }
-        }.also { it.isDaemon = true; it.start() }
-        try {
-            proc.waitFor()
-        } catch (e: InterruptedException) {
-            proc.destroyForcibly()
-            readerThread.join(2000)
-            Thread.currentThread().interrupt()
-            throw e
-        }
-        readerThread.join(2000)
-        return MethodResult(proc.exitValue(), sb.toString())
-    }
-
     companion object {
         const val KEY = "proot"
-        private const val TAG = "tawc-install"
         /**
          * Android paths bound into the proot view so libhybris can
          * dlopen bionic-side GPU libraries. Mirrors the bind set in

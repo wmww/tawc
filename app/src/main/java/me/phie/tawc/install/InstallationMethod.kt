@@ -160,17 +160,11 @@ interface InstallationMethod {
         onLine: (String) -> Unit,
     )
 
-    /**
-     * Wipe [installDir] (rootfs + metadata + anything else we put
-     * there). The chroot impl has the more involved sequence (kill
-     * chroot procs, strict unmount, find -delete via `su`); proot's
-     * wipe is a plain recursive delete since the dir is app-uid-owned
-     * and there are no global mounts to tear down.
-     *
-     * Throws on failure — the caller (InstallationService) parks the
-     * slot in `FAILED` state if the dir survives.
-     */
-    fun wipe(installDir: File, log: (String) -> Unit)
+    // Deliberately no `wipe()` here: methods cannot delete. All
+    // deletion goes through [RootfsCleaner], which derives its
+    // method-specific facts from the metadata-recorded method key so
+    // that slots whose method is disabled in this build still wipe
+    // with the right guards.
 
     companion object {
         /**

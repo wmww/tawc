@@ -157,26 +157,26 @@ object ProcessScanner {
      * Context-free so [me.phie.tawc.install.RootfsCleaner] (which has
      * no [Context]) can call in directly.
      *
-     * **Guests only, not supervisors.** Catches everything with
+     * **Rootfs matches catch guests only, not supervisors.**
      * `cwd`/`exe`/`root` or an executable mapped file inside
-     * [rootfsPath] — i.e. the actual programs the user launched inside
-     * the chroot/proot/tawcroot.
-     * The host-side supervisor process (proot tracer, tawcroot leader
-     * pre-`exec`) is *not* matched: its `exe` is the supervisor binary
-     * in `nativeLibraryDir`, not in the rootfs. ProotMethod.wipe pairs
-     * its own `pkill -f` against the proot binary's argv to cover that
-     * gap; tawcroot processes use `PR_SET_PDEATHSIG(SIGKILL)` and
-     * disappear with their parent.
+     * [rootfsPath] matches the actual programs the user launched
+     * inside the chroot/proot/tawcroot; the host-side supervisor
+     * process (proot tracer, tawcroot leader pre-`exec`) is not — its
+     * `exe` is the supervisor binary in `nativeLibraryDir`, not in
+     * the rootfs. Wipe/cancel callers close that gap by passing
+     * [extraCmdlinePath]: the supervisor's argv names the rootfs
+     * path, so the cmdline match catches it.
      *
-     * [includeChroot] gates the `su` branch — pass `true` from chroot
-     * wipe paths, `false` from proot / tawcroot wipes (which can't
-     * have root-owned guest pids and shouldn't pay the magisk-prompt
+     * [includeChroot] gates the `su` branch — pass `true` for chroot
+     * installs, `false` for proot / tawcroot (which can't have
+     * root-owned guest pids and shouldn't pay the magisk-prompt
      * latency).
      *
      * [extraCmdlinePath] adds an OR-match on `/proc/<pid>/cmdline`
-     * substring — used by the install-cancel sweep to also catch
-     * out-of-rootfs helpers (`tar`, `find`) launched against the
-     * install dir from outside.
+     * substring — [me.phie.tawc.install.RootfsCleaner] and the
+     * install-cancel sweep pass the install dir, which also catches
+     * out-of-rootfs helpers (`tar`, `find`) launched against it from
+     * outside.
      */
     fun killAllInRootfs(
         rootfsPath: String,

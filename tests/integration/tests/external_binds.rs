@@ -160,7 +160,10 @@ fn test_external_binds_lifecycle() {
     // granted above).
     let out = action("install", &[("id", TEST_ID), ("mirrorProxy", PROXY)]);
     assert!(out.status.success(), "install failed:\n{}", combined(&out));
-    let meta = String::from_utf8_lossy(&host_sh(&format!("cat {}", metadata_path())).stdout).to_string();
+    // Android's JSONStringer escapes `/` as `\/`; normalise before the
+    // literal-path asserts below.
+    let meta = String::from_utf8_lossy(&host_sh(&format!("cat {}", metadata_path())).stdout)
+        .replace("\\/", "/");
     assert!(
         meta.contains("\"guestPath\": \"/home/android\"") && meta.contains("\"guestPath\": \"/android\""),
         "fresh install missing default binds in metadata:\n{meta}"
@@ -191,8 +194,10 @@ fn test_external_binds_lifecycle() {
 
     // --- Edited metadata drives the next spawn: move the home bind to
     // /home/droid and confirm the old guest path stops resolving.
+    // First expression strips JSONStringer's `\/` escaping (still
+    // valid JSON) so the path patterns match literally.
     let sed = host_sh(&format!(
-        "sed -i 's|/home/android|/home/droid|' {}",
+        "sed -i 's|\\\\/|/|g; s|/home/android|/home/droid|' {}",
         metadata_path()
     ));
     assert!(sed.status.success(), "metadata edit failed: {}", combined(&sed));
