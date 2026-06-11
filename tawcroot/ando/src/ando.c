@@ -1,12 +1,14 @@
 // ando — run an Android command from inside the rootfs.
 //
-// Named like sudo, but for Android: `ando <cmd> [args…]` asks the tawc
-// app process (which never had tawcroot's seccomp filter) to spawn
-// <cmd> as a plain Android process, wired to this client's real
+// Named like sudo, but for Android: `ando [flags] <cmd> [args…]` asks
+// the tawc app process (which never had tawcroot's seccomp filter) to
+// spawn <cmd> as a plain Android process, wired to this client's real
 // stdin/stdout/stderr (passed via SCM_RIGHTS — tty semantics survive)
 // and started in the caller's cwd (passed as an O_PATH fd; tawcroot
-// translates the open, fds aren't virtualized). Protocol and design:
-// notes/ando.md; broker: compositor/src/ando.rs.
+// translates the open, fds aren't virtualized). The sudo-style flags
+// (-E, -D, -s, -u, -r) are all client-side: env lines, a chdir before
+// the cwd open, and argv rewrites. Protocol and design: notes/ando.md;
+// broker: compositor/src/ando.rs.
 //
 // Wire order: fd message first (1 byte + SCM_RIGHTS[stdin, stdout,
 // stderr, cwd]), then the text header, then "SIG <n>" lines out /
@@ -19,6 +21,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -28,6 +31,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+extern char **environ;
+
 // Path override, mainly for tests; normal use never needs it.
 #define SOCKET_ENV "TAWC_ANDO_SOCKET"
 // The broker's socket as seen from inside every rootfs: the share-dir
@@ -35,6 +40,15 @@
 // the connect path through the bind; chroot resolves it natively. Keep
 // the basename in sync with AppPaths.andoSocket (Kotlin).
 #define SOCKET_DEFAULT "/usr/share/tawc/ando.sock"
+
+// argv[0] override for the -u/-r su rewrite (test hook, like
+// SOCKET_ENV): lets unrooted tests assert the constructed argv.
+#define SU_ENV "TAWC_ANDO_SU"
+
+// Broker header line limit (compositor/src/ando.rs MAX_LINE, counted
+// including the newline). -E vars over it are skipped with a warning
+// instead of killing the connection mid-header.
+#define MAX_LINE 65536
 
 // Exit codes for ando's own failures; the child's code is passed
 // through verbatim (128+sig for signal deaths, mirroring shells).
@@ -45,10 +59,17 @@ static int sock_fd = -1;
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: ando [-e K=V]... [--] cmd [args...]\n"
+            "usage: ando [-E | --preserve-env[=LIST]] [-D dir] [-s] [-u user | -r]\n"
+            "            [-e K=V]... [--] [cmd [args...]]\n"
             "Run cmd as a plain Android process (no rootfs view, no fake root).\n"
-            "  -e K=V   set an extra environment variable for cmd\n"
-            "The Android-side env is the app process's own plus $TERM and -e extras.\n");
+            "  -e, --env K=V       set an extra environment variable for cmd\n"
+            "  -E, --preserve-env  forward the guest env (minus PATH, LD_PRELOAD,\n"
+            "                      LD_LIBRARY_PATH); =LIST forwards only those vars\n"
+            "  -D, --chdir dir     start cmd in dir instead of the caller's cwd\n"
+            "  -s, --shell         run /system/bin/sh (cmd args become sh -c '...')\n"
+            "  -u, --user user     run cmd as user via Android su (needs root)\n"
+            "  -r                  alias for --user=root\n"
+            "The Android-side env is the app process's own plus $TERM and the above.\n");
 }
 
 // Async-signal-safe "SIG <n>\n" writer. Forwarded signals reach the
@@ -113,18 +134,73 @@ static int send_line(int fd, const char *prefix, const char *value) {
     return rc;
 }
 
-// "ENV K=V": only the value half is encoded (keys never carry control
-// chars — same rule as the exec broker).
-static int send_env(int fd, const char *kv) {
-    const char *eq = strchr(kv, '=');  // presence validated by caller
+// "ENV K=V": only the value half is encoded — callers reject or skip
+// keys carrying LF/CR (same rule as the exec broker).
+static int send_env_kv(int fd, const char *key, size_t keylen, const char *value) {
     if (write_all(fd, "ENV ", 4) != 0) return -1;
-    if (write_all(fd, kv, (size_t)(eq - kv + 1)) != 0) return -1;
-    char *enc = encode_value(eq + 1);
+    if (write_all(fd, key, keylen) != 0) return -1;
+    if (write_all(fd, "=", 1) != 0) return -1;
+    char *enc = encode_value(value);
     if (!enc) return -1;
     int rc = write_all(fd, enc, strlen(enc));
     if (rc == 0) rc = write_all(fd, "\n", 1);
     free(enc);
     return rc;
+}
+
+// Guest values of these are rootfs paths that are meaningless or
+// breaking Android-side (no /system/bin in guest PATH; LD_* is
+// libhybris baggage). An explicit -e or --preserve-env=NAME still
+// forwards them — explicit wins over policy.
+static int env_blocked(const char *key, size_t keylen) {
+    static const char *const block[] = { "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH" };
+    for (size_t i = 0; i < sizeof(block) / sizeof(block[0]); i++) {
+        if (strlen(block[i]) == keylen && memcmp(key, block[i], keylen) == 0) return 1;
+    }
+    return 0;
+}
+
+// Forward one guest var, skipping (with a warning) anything the wire
+// can't carry — an over-MAX_LINE value or a key with LF/CR (only the
+// value half is encoded) — instead of dying mid-header.
+static int forward_env_var(int fd, const char *key, size_t keylen, const char *value) {
+    if (memchr(key, '\n', keylen) || memchr(key, '\r', keylen)) {
+        fprintf(stderr, "ando: skipping env var with unencodable name\n");
+        return 0;
+    }
+    size_t line = 4 + keylen + 1 + 1;  // "ENV " K "=" … "\n"
+    for (const char *c = value; *c; c++) {
+        line += (*c == '\\' || *c == '\n' || *c == '\r') ? 2 : 1;
+    }
+    if (line > MAX_LINE) {
+        fprintf(stderr, "ando: skipping oversized env var %.*s\n", (int)keylen, key);
+        return 0;
+    }
+    return send_env_kv(fd, key, keylen, value);
+}
+
+// sudo-style join for sh -c: every byte outside [A-Za-z0-9_./=:,+@%^-]
+// is backslash-escaped, args joined with single spaces. Returns a
+// malloc'd string.
+static char *shell_join(char **args, int n) {
+    size_t cap = 1;
+    for (int i = 0; i < n; i++) cap += strlen(args[i]) * 2 + 1;
+    char *out = malloc(cap);
+    if (!out) return NULL;
+    char *p = out;
+    for (int i = 0; i < n; i++) {
+        if (i > 0) *p++ = ' ';
+        for (const char *c = args[i]; *c; c++) {
+            unsigned char b = (unsigned char)*c;
+            if (!((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
+                  (b >= '0' && b <= '9') || strchr("_./=:,+@%^-", b))) {
+                *p++ = '\\';
+            }
+            *p++ = *c;
+        }
+    }
+    *p = '\0';
+    return out;
 }
 
 static int connect_broker(void) {
@@ -232,52 +308,129 @@ int main(int argc, char **argv) {
     // not a silent SIGPIPE death.
     signal(SIGPIPE, SIG_IGN);
 
-    int argi = 1;
-    const char *env_extras[256];
-    size_t n_env = 0;
+    int opt_preserve_all = 0;
+    const char *opt_chdir = NULL;
+    const char *opt_user = NULL;
+    int opt_shell = 0;
+    // -e and --preserve-env=LIST can repeat; argc bounds both counts.
+    const char **env_extras = malloc((size_t)argc * sizeof(char *));
+    const char **preserve_lists = malloc((size_t)argc * sizeof(char *));
+    size_t n_env = 0, n_lists = 0;
+    if (!env_extras || !preserve_lists) {
+        fprintf(stderr, "ando: out of memory\n");
+        return EXIT_PROTOCOL;
+    }
 
-    for (; argi < argc; argi++) {
-        if (strcmp(argv[argi], "--") == 0) {
-            argi++;
-            break;
-        }
-        if (strcmp(argv[argi], "-e") == 0) {
-            if (argi + 1 >= argc || !strchr(argv[argi + 1], '=')) {
+    static const struct option longopts[] = {
+        { "env", required_argument, NULL, 'e' },
+        { "preserve-env", optional_argument, NULL, 'E' },
+        { "chdir", required_argument, NULL, 'D' },
+        { "shell", no_argument, NULL, 's' },
+        { "user", required_argument, NULL, 'u' },
+        { "help", no_argument, NULL, 'h' },
+        { NULL, 0, NULL, 0 }
+    };
+    // Leading '+': stop at the first non-option so `ando ls -la` keeps
+    // passing -la to ls. `--` still terminates explicitly.
+    int c;
+    while ((c = getopt_long(argc, argv, "+e:D:u:Ersh", longopts, NULL)) != -1) {
+        switch (c) {
+        case 'e': {
+            // Key must be non-empty and line-safe: only the value half
+            // is encoded on the wire, so LF/CR in a key would inject
+            // header lines.
+            const char *eq = strchr(optarg, '=');
+            if (!eq || eq == optarg ||
+                memchr(optarg, '\n', (size_t)(eq - optarg)) ||
+                memchr(optarg, '\r', (size_t)(eq - optarg))) {
                 fprintf(stderr, "ando: -e needs K=V\n");
                 return EXIT_PROTOCOL;
             }
-            if (n_env >= sizeof(env_extras) / sizeof(env_extras[0])) {
-                fprintf(stderr, "ando: too many -e\n");
-                return EXIT_PROTOCOL;
-            }
-            env_extras[n_env++] = argv[++argi];
-            continue;
+            env_extras[n_env++] = optarg;
+            break;
         }
-        if (strcmp(argv[argi], "-h") == 0 || strcmp(argv[argi], "--help") == 0) {
-            usage();
-            return 0;
-        }
-        if (argv[argi][0] == '-' && argv[argi][1] != '\0') {
-            fprintf(stderr, "ando: unknown option %s\n", argv[argi]);
+        case 'E':
+            // --preserve-env=LIST sets optarg; bare -E/--preserve-env
+            // never consumes a separate word (sudo parity).
+            if (optarg) preserve_lists[n_lists++] = optarg;
+            else opt_preserve_all = 1;
+            break;
+        case 'D': opt_chdir = optarg; break;
+        case 's': opt_shell = 1; break;
+        case 'u': opt_user = optarg; break;  // repeated -u/-r: last wins
+        case 'r': opt_user = "root"; break;
+        case 'h': usage(); return 0;
+        default:  // getopt_long already printed the complaint
             usage();
             return EXIT_PROTOCOL;
         }
-        break;
     }
-    if (argi >= argc) {
+
+    char **cmd_args = argv + optind;
+    int cmd_argc = argc - optind;
+    if (cmd_argc == 0 && !opt_shell) {
         usage();
         return EXIT_PROTOCOL;
     }
 
-    int cwd_fd = open(".", O_PATH | O_DIRECTORY | O_CLOEXEC);
-    if (cwd_fd < 0) {
-        // Deleted cwd etc. — hand over / (the broker child only falls
-        // back to the app process's cwd if fchdir itself fails).
-        cwd_fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
-        if (cwd_fd < 0) {
-            perror("ando: open cwd");
+    if (opt_chdir && chdir(opt_chdir) != 0) {
+        fprintf(stderr, "ando: chdir %s: %s\n", opt_chdir, strerror(errno));
+        return EXIT_PROTOCOL;
+    }
+
+    // -u/-s rewrite the outgoing argv (notes/ando.md "CLI"). The shell
+    // is fixed to /system/bin/sh — the guest's $SHELL is a rootfs path
+    // that doesn't exist Android-side. su's -c also goes through sh -c,
+    // so both routes share the joined string.
+    char *joined = NULL;
+    if (cmd_argc > 0 && (opt_user || opt_shell)) {
+        joined = shell_join(cmd_args, cmd_argc);
+        if (!joined) {
+            fprintf(stderr, "ando: out of memory\n");
             return EXIT_PROTOCOL;
         }
+    }
+    const char *rewrite[4];
+    const char *const *final_argv;
+    int final_argc;
+    if (opt_user) {
+        const char *su = getenv(SU_ENV);
+        if (!su || !*su) su = "su";
+        rewrite[0] = su;
+        rewrite[1] = opt_user;
+        if (joined) {
+            rewrite[2] = "-c";
+            rewrite[3] = joined;
+            final_argc = 4;
+        } else {
+            final_argc = 2;  // su's default action is an interactive shell
+        }
+        final_argv = rewrite;
+    } else if (opt_shell) {
+        rewrite[0] = "/system/bin/sh";
+        if (joined) {
+            rewrite[1] = "-c";
+            rewrite[2] = joined;
+            final_argc = 3;
+        } else {
+            final_argc = 1;
+        }
+        final_argv = rewrite;
+    } else {
+        final_argv = (const char *const *)cmd_args;
+        final_argc = cmd_argc;
+    }
+
+    int cwd_fd = open(".", O_PATH | O_DIRECTORY | O_CLOEXEC);
+    if (cwd_fd < 0 && !opt_chdir) {
+        // Deleted cwd etc. — hand over / (the broker child only falls
+        // back to the app process's cwd if fchdir itself fails). With
+        // -D the dir was just validated; no fallback.
+        cwd_fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
+    }
+    if (cwd_fd < 0) {
+        perror("ando: open cwd");
+        return EXIT_PROTOCOL;
     }
 
     sock_fd = connect_broker();
@@ -287,15 +440,44 @@ int main(int argc, char **argv) {
     close(cwd_fd);
 
     if (write_all(sock_fd, "TAWCANDO 1\n", 11) != 0) goto wfail;
-    for (int i = argi; i < argc; i++) {
-        if (send_line(sock_fd, "ARGV ", argv[i]) != 0) goto wfail;
+    for (int i = 0; i < final_argc; i++) {
+        if (send_line(sock_fd, "ARGV ", final_argv[i]) != 0) goto wfail;
+    }
+    // ENV order matters: the broker applies lines last-wins, so
+    // forwarded env goes first, the TERM default next, -e extras last —
+    // explicit -e always beats -E/policy.
+    if (opt_preserve_all) {
+        for (char **e = environ; *e; e++) {
+            const char *eq = strchr(*e, '=');
+            if (!eq) continue;
+            size_t klen = (size_t)(eq - *e);
+            if (env_blocked(*e, klen)) continue;
+            if (forward_env_var(sock_fd, *e, klen, eq + 1) != 0) goto wfail;
+        }
+    }
+    for (size_t i = 0; i < n_lists; i++) {
+        // Named vars skip the blocklist (naming is as deliberate as
+        // -e); unset names are silently skipped, like sudo.
+        char *list = strdup(preserve_lists[i]);
+        if (!list) goto wfail;
+        for (char *name = strtok(list, ","); name; name = strtok(NULL, ",")) {
+            const char *val = getenv(name);
+            if (!val) continue;
+            if (forward_env_var(sock_fd, name, strlen(name), val) != 0) {
+                free(list);
+                goto wfail;
+            }
+        }
+        free(list);
     }
     const char *term = getenv("TERM");
     if (term && *term) {
         if (send_line(sock_fd, "ENV TERM=", term) != 0) goto wfail;
     }
     for (size_t i = 0; i < n_env; i++) {
-        if (send_env(sock_fd, env_extras[i]) != 0) goto wfail;
+        const char *eq = strchr(env_extras[i], '=');  // validated at parse
+        if (send_env_kv(sock_fd, env_extras[i], (size_t)(eq - env_extras[i]),
+                        eq + 1) != 0) goto wfail;
     }
     if (write_all(sock_fd, "\n", 1) != 0) goto wfail;
 

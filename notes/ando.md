@@ -1,13 +1,14 @@
 # ando — run Android commands from inside the rootfs
 
-`ando <cmd> [args…]` (named like sudo, but for Android) runs `<cmd>`
-as a plain Android process: no tawcroot seccomp filter, no path
-translation, no fake-root identity, no rootfs env / libhybris
+`ando [flags] <cmd> [args…]` (named like sudo, but for Android) runs
+`<cmd>` as a plain Android process: no tawcroot seccomp filter, no
+path translation, no fake-root identity, no rootfs env / libhybris
 `LD_PRELOAD`/`LD_LIBRARY_PATH` baggage. stdio stays on the caller's
-fds, exit status propagates. On a rooted phone `ando su -c '…'` gets
-device root with no special handling — the spawned child is an
-ordinary app-uid process, so the normal Magisk su client/daemon flow
-applies (the Magisk app must grant me.phie.tawc).
+fds, exit status propagates. On a rooted phone `ando -r <cmd>` (or the
+explicit `ando su -c '…'`) gets device root with no special handling —
+the spawned child is an ordinary app-uid process, so the normal Magisk
+su client/daemon flow applies (the Magisk app must grant
+me.phie.tawc).
 
 Production feature, all build types and install methods.
 
@@ -77,6 +78,55 @@ That spiraled: the guest can't compute the uid (`getuid()` is faked to
 `/proc/self/status` would exploit a hole in tawcroot's identity
 shadowing that may close someday), so it needed a `RootfsEnv` var plus
 a fallback alias bind. The share-dir socket needs none of that.
+
+## CLI
+
+```
+ando [-E | --preserve-env[=LIST]] [-D dir] [-s] [-u user | -r]
+     [-e K=V]… [--] [cmd [args…]]
+```
+
+sudo-shaped flags, all client-side (env lines, a chdir before the
+cwd-fd open, argv rewrites); the broker and wire protocol are
+untouched. Parsing is `getopt_long` with a leading `+`: options stop
+at the first non-option, so `ando ls -la` passes `-la` to `ls`. A
+command is required unless `-s` is given.
+
+- `-e, --env K=V` — extra env var for the child.
+- `-E, --preserve-env` — forward the guest environment, minus a fixed
+  blocklist: `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`. Guest values of
+  those are rootfs paths that break Android-side (guest `PATH` has no
+  `/system/bin`, so the broker child's exec search would fail; guest
+  `LD_*` is libhybris baggage the bionic linker would honor and die
+  on). Explicit naming wins over policy: `-e PATH=…` or
+  `--preserve-env=LD_LIBRARY_PATH` still forwards them.
+  `--preserve-env=LIST` (comma-separated, `=` form only — a separate
+  word is never consumed, like sudo) sends exactly the named vars,
+  blocklist not applied; unset names are silently skipped. ENV send
+  order is forwarded-env, then the `TERM` default, then `-e` extras —
+  the broker applies lines last-wins, so `-e` always beats `-E`. A var
+  whose encoded line would exceed the broker's 64K `MAX_LINE` is
+  skipped with a warning instead of killing the connection.
+- `-D, --chdir dir` — client-side `chdir` before the `open(".",
+  O_PATH)`, so path translation and bind resolution come for free;
+  failure is one error line + exit 125.
+- `-s, --shell` — run `/system/bin/sh`, with `sh -c <JOINED>` if args
+  remain. The shell is fixed (sudo uses `$SHELL`, but the guest's
+  `$SHELL` is a rootfs path that doesn't exist Android-side). JOINED
+  is the sudo-style join: every byte outside `[A-Za-z0-9_./=:,+@%^-]`
+  backslash-escaped, args joined with single spaces.
+- `-u user, --user user` / `-r` (alias for `--user=root`) — argv
+  rewrite to Android su: `["su", USER, "-c", JOINED]`, or bare
+  `["su", USER]` for `-u USER -s` with no command (su's default action
+  is an interactive shell). Repeated `-u`/`-r`: last wins. Without
+  root, `su` is absent and the broker's normal 127 "not found" path
+  reports it. `TAWC_ANDO_SU` overrides the rewrite's argv[0] (test
+  hook like `TAWC_ANDO_SOCKET`; lets unrooted tests assert the
+  constructed argv).
+
+Verified on the rooted phone (Magisk): `su <user> -c <str>` ordering
+is accepted, and Magisk su preserves both the su client's environment
+(`-E`/`-e` values reach the root shell) and its cwd (`-D` propagates).
 
 ## Wire protocol
 
@@ -148,7 +198,7 @@ uid and could just as well kill the app; not a security boundary.
 
 ## Semantics and known limits
 
-- **Interactive use** (`ando sh`, `ando su`): the child holds the
+- **Interactive use** (`ando -s`, `ando -r -s`): the child holds the
   guest's pty fd, so reads/writes/winsize work. It can never make that
   pty its controlling terminal (the rootfs session leader owns it), so
   full job control inside an ando shell — `tcsetpgrp`, Ctrl-Z of inner
