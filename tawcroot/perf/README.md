@@ -11,6 +11,9 @@ Standalone microbenchmarks for comparing:
 This is not part of `tawcroot/test.sh` or the integration suite. It is
 for local performance runs only.
 
+Past results are recorded in [results.md](results.md); compare new runs
+against those baselines and append significant runs there.
+
 ## Quick start
 
 Build host tawcroot if needed:
