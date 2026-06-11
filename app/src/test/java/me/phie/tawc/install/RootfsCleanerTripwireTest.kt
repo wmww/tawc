@@ -18,7 +18,10 @@ import java.io.File
  *
  * The allowlist is file-granular: a new recursive delete added to an
  * allowlisted file passes silently. Accepted tradeoff — finer
- * granularity (line patterns) would rot with every refactor.
+ * granularity (line patterns) would rot with every refactor. Hand-
+ * rolled deleters (manual recursion + `File.delete()`) are outside
+ * the pattern's reach entirely; allowlist them anyway when found, so
+ * the list stays the inventory of every non-engine deleter.
  */
 class RootfsCleanerTripwireTest {
 
@@ -32,6 +35,10 @@ class RootfsCleanerTripwireTest {
         // tawc files inside a live rootfs, driven by the recorded
         // tawcInstalls list — not slot deletion.
         "install/TawcInstaller.kt" to "tawc-file uninstall inside rootfs",
+        // Age sweep inside a live rootfs's /tmp — never slot deletion.
+        // Manual recursion (pre-order mtimes + post-order deletes), so
+        // the pattern can't see it; listed for the inventory.
+        "install/RootfsTmpSweeper.kt" to "age sweep of rootfs /tmp",
         // In-rootfs package-cache/cruft cleanup scripts that run
         // inside the guest during install configure.
         "install/distro/apt/AptCommon.kt" to "in-rootfs apt cleanup",

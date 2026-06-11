@@ -204,6 +204,7 @@ The package is split into three layers:
 | `BootstrapCache.kt`            | Sole owner of `<cacheDir>/install/`. `download(arch, url, format, …)` is the single entry point: it mkdirs, fetches via [Downloader], and refreshes the file's mtime so the TTL counts from "last used" rather than "first downloaded". Also exposes `tempFifoFor(arch)` for [Archive]'s zstd→tar streaming FIFO so the transient lives in the cache dir under one owner. `sweepStale` runs a two-pass janitor: TTL eviction (7 days) for canonical `bootstrap-<cacheKey>.tar.{zst,gz}`; unconditional deletion of `*.fifo`, legacy `*.tmp`, and `*.part` (transients are never valid across processes). Also defines the `BootstrapFormat` enum. |
 | `Archive.kt`                   | Tar extraction. Plain `.tar` / `.tar.gz` get handed to `toybox tar` directly; `.tar.zst` is streamed in-process through a named pipe (`bootstrap-<cacheKey>.tar.fifo`) so the ~700 MB plaintext never lands on disk. Never wipes — install only runs against an empty slot. |
 | `RootfsCleaner.kt`             | The one and only delete path, for every install method: kill guest processes → unmount (chroot only) → refuse if any mount remains under the install dir → two-pass `find -xdev -depth -delete` (su-first for chroot, app-uid with one su retry otherwise). The chroot-only facts come from the metadata-recorded method key, not a live `InstallationMethod`, so disabled-method slots still wipe correctly. Used by uninstall; never by install. `RootfsCleanerTripwireTest` fails on recursive deletes elsewhere in the app sources. |
+| `RootfsTmpSweeper.kt`          | Age-based sweep (3 days, lstat mtimes, never follows symlinks, skips `/tmp/.X11-unix`) of every install's `<rootfs>/tmp`, run from `TawcApplication`'s startup thread — see *Rootfs /tmp sweep* below. |
 | `ChrootMounter.kt`             | Builds the bind-mount shell snippet (`mountScript`) used by [ChrootMethod.startInside], and provides defensive-cleanup `unmount` (used by [RootfsCleaner]). Mounts live inside a single `su` invocation's private namespace, not globally. |
 | `Installer.kt`                 | Generic install/uninstall orchestrator. Drives `setState(INSTALLING) → BootstrapCache.download → Archive.extractAsRoot → distro.configure → distro.initPackageManager → distro.installBasePackages → setState(READY)`. Distro-agnostic; per-distro behaviour comes from the [Distro] passed in. |
 | `distro/Distro.kt`             | Interface for a (distro × Linux arch). Owns `bootstrap` (URL/format/stripPrefix/verification), `cacheKey`, `basePackages`, the three policy hooks (`configure`, `initPackageManager`, `installBasePackages`), and `resolveBootstrap()` for distros with install-time URL/digest lookup (Manjaro/Void/Debian). Also defines `DistroBootstrap`. |
@@ -461,6 +462,18 @@ On success the directory (including `metadata.json`) is gone and the id
 is back to `(no dir)`. On any failure, the directory is left as-is and
 `setState(FAILED)` records the reason; the only recovery is to call
 uninstall again.
+
+## Rootfs /tmp sweep
+
+`/tmp` in every install is a plain flash directory (no init in the
+rootfs, so nothing clears it; a tmpfs is unreachable rootlessly), and
+[RootfsEnv]'s `TMPDIR=/tmp` + `XDG_RUNTIME_DIR=/tmp` make it
+accumulate runtime sockets and gpg-agent state across sessions and
+reboots. `RootfsTmpSweeper` (run from `TawcApplication`'s startup
+thread, unit-tested in `RootfsTmpSweeperTest`) age-sweeps it; the
+design constraints — why age-based rather than a full clear, why at
+app start, the mtime-only residual risk for long-lived sockets, what
+is never touched — live in its class kdoc.
 
 ## Mount lifecycle
 

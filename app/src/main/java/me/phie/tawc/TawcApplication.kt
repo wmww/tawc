@@ -6,6 +6,7 @@ import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.dev.ExecBroker
 import me.phie.tawc.install.BootstrapCache
 import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.install.RootfsTmpSweeper
 import me.phie.tawc.install.TawcInstaller
 import me.phie.tawc.ops.OperationsNotificationCenter
 import kotlin.concurrent.thread
@@ -68,6 +69,14 @@ class TawcApplication : Application() {
                 TawcInstaller.installAll(this, InstallationStore(this))
             } catch (t: Throwable) {
                 Log.w(TAG, "TawcInstaller.installAll failed", t)
+            }
+            // Age-sweep every install's flash-backed /tmp (no init in
+            // the rootfs means nothing else ever clears it). See
+            // [RootfsTmpSweeper] for the design constraints.
+            try {
+                RootfsTmpSweeper.sweepAll(InstallationStore(this))
+            } catch (t: Throwable) {
+                Log.w(TAG, "rootfs /tmp sweep failed", t)
             }
         }
         // Dev-only exec broker. Started here (not from MainActivity)
