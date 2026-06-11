@@ -172,6 +172,7 @@
     <string name="install_progress_deleted">Deleted</string>
 
     <string name="terminal_tab_fallback">Terminal</string>
+    <string name="terminal_tab_home">Term %1$d</string>
     <string name="terminal_new_tab">New tab</string>
     <string name="terminal_close_tab">Close tab</string>
 

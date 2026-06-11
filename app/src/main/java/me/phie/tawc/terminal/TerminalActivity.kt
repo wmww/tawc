@@ -55,8 +55,8 @@ import java.io.IOException
  * shows the selected session via `attachSession` (termux-app's own
  * multi-session pattern — background sessions keep a stale pty size
  * until selected). Tab labels follow the session's xterm window title
- * (OSC 0/2; Debian-family PS1 sets `user@host: ~/dir` automatically),
- * falling back to a static "Terminal" while unset.
+ * (OSC 0/2; tawc's shipped bashrc defaults set a cwd-only title —
+ * see ShellDefaults), falling back to a static "Terminal" while unset.
  *
  * tawcroot-only: chroot spawns via su and proot is dev-only, so the
  * home-screen Terminal button is gated on the tawcroot method.
@@ -186,9 +186,9 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
             TerminalSessions.add(distroId, s)
             sessions = listOf(s)
         }
-        for (s in sessions) {
+        for ((i, s) in sessions.withIndex()) {
             s.updateTerminalSessionClient(this)
-            tabBar.addTab(labelFor(s))
+            tabBar.addTab(labelFor(s, i))
         }
         selectTab(TerminalSessions.selected(distroId))
 
@@ -248,8 +248,19 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
         )
     }
 
-    private fun labelFor(session: TerminalSession): CharSequence =
-        session.title?.takeUnless { it.isBlank() } ?: getString(R.string.terminal_tab_fallback)
+    private fun labelFor(session: TerminalSession, index: Int): CharSequence {
+        val title = session.title?.takeUnless { it.isBlank() }
+            ?: return getString(R.string.terminal_tab_fallback)
+        // The shipped bashrc defaults title tabs with the cwd
+        // (ShellDefaults), so every fresh tab would read `~` — number
+        // those by tab position instead.
+        return if (title == "~") getString(R.string.terminal_tab_home, index + 1) else title
+    }
+
+    /** Reapply every tab's label (index-derived labels shift on close). */
+    private fun relabelTabs() {
+        TerminalSessions.list(distroId).forEachIndexed { i, s -> tabBar.setLabel(i, labelFor(s, i)) }
+    }
 
     /** Attach the session at [index] (registry order == bar order). */
     private fun selectTab(index: Int) {
@@ -266,8 +277,9 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
     private fun openNewTab() {
         val session = spawnSession() ?: return // toast shown; existing tabs stay up
         TerminalSessions.add(distroId, session)
-        tabBar.addTab(labelFor(session))
-        selectTab(TerminalSessions.list(distroId).size - 1)
+        val index = TerminalSessions.list(distroId).size - 1
+        tabBar.addTab(labelFor(session, index))
+        selectTab(index)
     }
 
     private fun closeTab(index: Int) {
@@ -297,6 +309,7 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
             if (!isFinishing) finishAndRemoveTask()
             return
         }
+        relabelTabs()
         if (session === activeSession) {
             selectTab(TerminalSessions.selected(distroId))
         } else {
@@ -395,7 +408,7 @@ class TerminalActivity : AppCompatActivity(), TerminalViewClient, TerminalSessio
 
     override fun onTitleChanged(changedSession: TerminalSession) {
         val index = TerminalSessions.list(distroId).indexOfFirst { it === changedSession }
-        if (index >= 0) tabBar.setLabel(index, labelFor(changedSession))
+        if (index >= 0) tabBar.setLabel(index, labelFor(changedSession, index))
     }
 
     override fun onSessionFinished(finishedSession: TerminalSession) {

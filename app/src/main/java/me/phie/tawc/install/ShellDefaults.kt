@@ -33,11 +33,17 @@ internal object ShellDefaults {
      * Contents of [GUEST_BASHRC_PATH]. The user is always root, so
      * `\u@\h` carries no information — the prompt is just the cwd
      * (bold green) plus `\$`, which keeps it short on small screens.
+     * The xterm title (= terminal tab label) is cwd-only for the same
+     * reason. Embedded in PS1 rather than PROMPT_COMMAND so it's
+     * emitted after any distro PROMPT_COMMAND title each prompt
+     * (last escape wins), while apps that set their own title (vim,
+     * htop) still show through while running.
      */
     val GUEST_BASHRC_CONTENT = """
         # tawc shell and prompt defaults:
         case ${'$'}- in *i*) ;; *) return ;; esac
         PS1='\[\e[1;32m\]\w\[\e[0m\] \${'$'} '
+        case ${'$'}TERM in xterm*) PS1='\[\e]0;\w\a\]'${'$'}PS1 ;; esac
         alias ls='ls --color=auto'
         alias grep='grep --color=auto'
     """.trimIndent() + "\n"

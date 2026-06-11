@@ -47,6 +47,11 @@ internal object RootfsEnv {
     fun build(method: Method, backend: GraphicsBackend): Map<String, String> = buildMap {
         put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games")
         put("HOME", "/root")
+        // login(1) normally sets USER/LOGNAME; we exec bash directly,
+        // and bash doesn't, so scripts (and distro title-setting
+        // PROMPT_COMMANDs) would otherwise see them empty.
+        put("USER", "root")
+        put("LOGNAME", "root")
         put("TMPDIR", "/tmp")
         // Wayland socket is exposed inside the rootfs at /usr/share/tawc/
         // via the per-method bind of the host's <appData>/share/ dir

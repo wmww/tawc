@@ -86,13 +86,23 @@ becomes a real complaint.
 
 Tab labels are the session's xterm window title (OSC 0/2, parsed by
 the vendored emulator, surfaced via `TerminalSession.getTitle()` /
-`onTitleChanged`). Debian-family rootfses set `user@host: ~/dir`
-automatically — their default PS1 includes the title escape when
-`TERM` matches `xterm*` and we export `TERM=xterm-256color` — and apps
-that set their own title (vim, htop, ssh) show through. While the
-title is null/blank (fresh shell, or a distro whose bashrc never sets
-one, e.g. Alpine/Arch) the label is a static "Terminal"; duplicate
-labels are fine (desktop terminals behave the same). The compact
+`onTitleChanged`), and apps that set their own title (vim, htop, ssh)
+show through while running. tawc's shipped shell defaults
+(`ShellDefaults`) set a cwd-only title (user@host carries no info —
+always root@localhost) by embedding the escape in PS1, which is
+emitted after any distro PROMPT_COMMAND title each prompt, so it wins
+by default yet stays user-overridable like the rest of the defaults
+file. On rootfses without the defaults (pre-ShellDefaults installs,
+or sourcing opted out) the label is whatever the distro sets: Arch's
+`/etc/bash.bashrc` PROMPT_COMMAND gives `root@localhost:~` (needs
+`USER`, which `RootfsEnv` sets — login(1) never runs to set it),
+Debian-root sets nothing (its escape lives only in
+`/etc/skel/.bashrc`). A title of exactly `~` (the cwd default at
+home, i.e. every fresh tab) is shown as `Term <n>` by tab position —
+app-side, since the number must follow the index as tabs close.
+While the title is null/blank the label is a static "Terminal";
+duplicate labels are fine (desktop terminals behave the same).
+Verified on-device 2026-06-10. The compact
 `TerminalTabBar` (fixed dark palette against the always-black terminal
 surface) replaced the scaffold toolbar; system back still just
 backgrounds the task.
