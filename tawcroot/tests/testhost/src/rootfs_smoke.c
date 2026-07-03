@@ -1554,6 +1554,77 @@ static int test_fchown_fake_root(void)
 	return fails;
 }
 
+/* chmod permission errors are swallowed under fake root: the guest
+ * believes it is root, so a host EPERM/EACCES (e.g. sshd's chmod on an
+ * Android pty at TTY login) must read as success. Permitted chmods must
+ * still really apply, and missing paths must still ENOENT. */
+static int test_fchmodat_swallows_perm_errors(void)
+{
+	int fails = 0;
+	long rv;
+	/* /dev is the host /dev bind; /dev/null is root-owned, so the
+	 * host fchmodat EPERMs (EACCES under Android SELinux) for the
+	 * unprivileged test uid. 0666 is /dev/null's real mode, so even
+	 * an accidentally-root run changes nothing. */
+	INLINE_SYS6(TAWC_SYS_fchmodat, AT_FDCWD, "/dev/null",
+		    0666, 0, 0, 0, rv);
+	fails += tawc_io_step(
+		"fchmodat(/dev/null) host EPERM/EACCES -> 0 (fake-root)",
+		rv == 0);
+	tawc_io_kv_dec("    rv", rv);
+	/* The swallow must not mask real errors. */
+	INLINE_SYS6(TAWC_SYS_fchmodat, AT_FDCWD, "/no-such-file",
+		    0644, 0, 0, 0, rv);
+	fails += tawc_io_step("fchmodat(missing) -> ENOENT", rv == TAWC_ENOENT);
+	tawc_io_kv_dec("    rv", rv);
+	/* A permitted chmod still really changes the mode. */
+	struct stat st;
+	long se = inline_fstatat(AT_FDCWD, "/etc/probe", &st, 0);
+	fails += tawc_io_step("stat /etc/probe before chmod", se == 0);
+	if (se != 0) return fails;
+	long orig_mode = (long)(st.st_mode & 07777);
+	INLINE_SYS6(TAWC_SYS_fchmodat, AT_FDCWD, "/etc/probe",
+		    0604, 0, 0, 0, rv);
+	fails += tawc_io_step("fchmodat(/etc/probe, 0604) -> 0", rv == 0);
+	se = inline_fstatat(AT_FDCWD, "/etc/probe", &st, 0);
+	fails += tawc_io_step("mode really applied (0604)",
+			      se == 0 && (st.st_mode & 07777) == 0604);
+	tawc_io_kv_dec("    mode", (long)(st.st_mode & 07777));
+	INLINE_SYS6(TAWC_SYS_fchmodat, AT_FDCWD, "/etc/probe",
+		    orig_mode, 0, 0, 0, rv);
+	fails += tawc_io_step("restore original mode", rv == 0);
+	return fails;
+}
+
+/* socket(AF_NETLINK, *, NETLINK_AUDIT) must look like a kernel without
+ * CONFIG_AUDIT (EPROTONOSUPPORT — netlink family present, protocol
+ * unregistered). Android SELinux denies it with EACCES, which libaudit
+ * consumers (libpam, sshd) escalate to hard login failures. Other
+ * families must still pass through to the host. */
+static int test_socket_netlink_audit_eprotonosupport(void)
+{
+	int fails = 0;
+	long rv;
+	INLINE_SYS6(TAWC_SYS_socket, 16 /*AF_NETLINK*/, 3 /*SOCK_RAW*/,
+		    9 /*NETLINK_AUDIT*/, 0, 0, 0, rv);
+	fails += tawc_io_step(
+		"socket(AF_NETLINK, SOCK_RAW, NETLINK_AUDIT) -> EPROTONOSUPPORT",
+		rv == TAWC_EPROTONOSUPPORT);
+	tawc_io_kv_dec("    rv", rv);
+	/* Pass-through sanity: an AF_UNIX stream socket still works. */
+	INLINE_SYS6(TAWC_SYS_socket, 1 /*AF_UNIX*/,
+		    1 /*SOCK_STREAM*/ | 02000000 /*SOCK_CLOEXEC*/,
+		    0, 0, 0, 0, rv);
+	fails += tawc_io_step("socket(AF_UNIX, SOCK_STREAM) passes through",
+			      rv >= 0);
+	tawc_io_kv_dec("    rv", rv);
+	if (rv >= 0) {
+		long fd = rv;
+		INLINE_SYS6(TAWC_SYS_close, fd, 0, 0, 0, 0, 0, rv);
+	}
+	return fails;
+}
+
 /* Errno shapes for operating on the rootfs root "/" — they must match
  * the kernel, not the catch-all EINVAL an empty-suffix used to give. */
 static int test_root_op_errno_shapes(void)
@@ -4589,6 +4660,8 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_xattr_dispatch();
 	fails += test_fchownat_fake_root();
 	fails += test_fchown_fake_root();
+	fails += test_fchmodat_swallows_perm_errors();
+	fails += test_socket_netlink_audit_eprotonosupport();
 	fails += test_root_op_errno_shapes();
 	fails += test_fstatat_at_empty_path();
 	fails += test_statx_fake_root_decoration();

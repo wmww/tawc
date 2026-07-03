@@ -1043,6 +1043,13 @@ the dispatch table is generated from a syscall list at build time.
   return success for rootfs-owned files when the requested ownership
   is root-compatible. Do not issue a real host `chown`; app uid cannot
   do it and the on-disk rootfs intentionally remains app-owned.
+- `chmod`, `fchmodat` → translate and ATTEMPT the host chmod (modes
+  matter inside the rootfs and normally apply for real — the app uid
+  owns the files), but swallow a host `EPERM`/`EACCES` into success:
+  root doesn't get permission errors from chmod. Concrete consumer:
+  sshd's `pty_setowner()` chmod on `/dev/pts/N`, which Android
+  SELinux denies and sshd treats as fatal for every TTY login.
+  Non-permission errors pass through. Matches proot `fake_id0`.
 - `capget`/`capset` and related privilege probes: start with the
   minimal behavior needed by Arch/pacman tests. If a probe fails a
   real workload, add a targeted fake-root response rather than trying
@@ -1160,6 +1167,15 @@ the dispatch table is generated from a syscall list at build time.
   datagram request/reply (symptom: replies vanish because the
   host-path source address gets forward-translated again on the
   way back out through `sendto`).
+
+- `socket` (`syscalls_socket.c`): `AF_NETLINK` + `NETLINK_AUDIT`
+  returns `-EPROTONOSUPPORT` — what a kernel without `CONFIG_AUDIT`
+  says (netlink family present, protocol unregistered). Android
+  SELinux denies the audit socket with `EACCES`, which libaudit
+  consumers (Debian libpam, sshd's linux-audit support) escalate to
+  hard failures: `pam_acct_mgmt` → `PAM_SYSTEM_ERR` (breaking
+  `su`/`login`/sshd-with-PAM rootfs-wide) and sshd `fatal()`s on TTY
+  logins. Every other family/protocol passes through.
 
 - `mount`, `umount` — translate paths. Most will fail at the
   kernel layer; that's fine.

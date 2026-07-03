@@ -796,8 +796,34 @@ static long handle_##name(const tawcroot_syscall_args *args,             \
 }
 
 DECLARE_AT_PASS(mkdirat,    TAWC_SYS_mkdirat,    3, TAWCROOT_PATH_PARENT_CREATE)
-DECLARE_AT_PASS(fchmodat,   TAWC_SYS_fchmodat,   3, TAWCROOT_PATH_FOLLOW)
 DECLARE_AT_PASS(mknodat,    TAWC_SYS_mknodat,    4, TAWCROOT_PATH_PARENT_CREATE)
+
+/* fchmodat: translate and ATTEMPT the host chmod — modes matter inside
+ * the rootfs (executable bits, go-w checks) and the app uid owns rootfs
+ * files, so it normally succeeds for real. But when the host refuses
+ * with EPERM/EACCES, report success: the guest believes it is root, and
+ * root doesn't get permission errors from chmod. The concrete hit is
+ * sshd's pty_setowner() chmod on /dev/pts/N (Android SELinux denies
+ * setattr on app ptys), which is fatal() to every TTY login. Same
+ * contract as the fchownat/fchown fakes, and what proot's fake_id0
+ * does; non-permission errors (ENOENT, ENOTDIR, EROFS) pass through —
+ * the translate step already keeps missing paths honest. */
+static long handle_fchmodat(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	int dirfd = (int)args->a;
+	const char *gpath = (const char *)(uintptr_t)args->b;
+	if (!gpath) return TAWC_EFAULT;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      TAWCROOT_PATH_FOLLOW, &t);
+	if (e) return e;
+	const char *p = t.is_root ? "." : t.path;
+	long rv = TAWC_RAW(TAWC_SYS_fchmodat, t.fd, (long)p, args->c, 0, 0, 0);
+	if (rv == TAWC_EPERM || rv == TAWC_EACCES) return 0;
+	return rv;
+}
 
 /* unlinkat with /dev/shm intercept. Routes /dev/shm/<name> through the
  * in-handler emulation; everything else through the standard

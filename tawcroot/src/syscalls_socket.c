@@ -55,6 +55,8 @@
 #include "usercopy.h"
 
 #define AF_UNIX_FAMILY  1
+#define AF_NETLINK_FAMILY  16
+#define NETLINK_AUDIT_PROTO 9
 
 /* sockaddr_un layout, mirrored locally to avoid pulling <sys/un.h>:
  *   uint16_t sun_family;
@@ -398,8 +400,28 @@ static long handle_accept4(const tawcroot_syscall_args *args, ucontext_t *uc)
 				    args->b, args->c, args->d);
 }
 
+/* socket(AF_NETLINK, *, NETLINK_AUDIT) is denied by Android's SELinux
+ * app policy with EACCES. libaudit consumers (Debian libpam, sshd built
+ * with --with-linux-audit) only tolerate EINVAL/EPROTONOSUPPORT/
+ * EAFNOSUPPORT from audit_open() — "kernel without CONFIG_AUDIT" — and
+ * treat every other errno as a hard failure: pam_acct_mgmt returns
+ * PAM_SYSTEM_ERR (breaking su/login/sshd rootfs-wide) and sshd fatals
+ * on TTY logins from linux_audit_write_entry. Answer EPROTONOSUPPORT —
+ * the exact errno netlink_create() gives for a protocol left
+ * unregistered by an audit-less kernel — so the guest sees that
+ * kernel. Everything else passes through. */
+static long handle_socket(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	if ((int)args->a == AF_NETLINK_FAMILY &&
+	    (int)args->c == NETLINK_AUDIT_PROTO)
+		return TAWC_EPROTONOSUPPORT;
+	return TAWC_RAW(TAWC_SYS_socket, args->a, args->b, args->c, 0, 0, 0);
+}
+
 void tawcroot_socket_register(void)
 {
+	tawcroot_dispatch_install(TAWC_SYS_socket,      handle_socket);
 	tawcroot_dispatch_install(TAWC_SYS_bind,        handle_bind);
 	tawcroot_dispatch_install(TAWC_SYS_connect,     handle_connect);
 	tawcroot_dispatch_install(TAWC_SYS_accept,      handle_accept);
