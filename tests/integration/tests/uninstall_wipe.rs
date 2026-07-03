@@ -202,4 +202,14 @@ fn test_wipe_gate_and_su_retry() {
         combined(&out)
     );
     assert!(!slot_exists(), "su retry left the slot behind");
+
+    // The uninstall actions above left the op log screen on top of the
+    // app's task; test-init closes lingering log screens, dropping back
+    // to the home screen for whatever runs next.
+    let out = exec_broker::run_capture(Invocation {
+        foreground_app: false,
+        request: Request::Action { name: "test-init".to_string(), args: vec![] },
+    })
+    .expect("broker test-init");
+    assert!(out.status.success(), "test-init failed:\n{}", combined(&out));
 }

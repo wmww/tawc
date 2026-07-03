@@ -18,6 +18,7 @@ import me.phie.tawc.compositor.RecordingImeOutput
 import me.phie.tawc.compositor.TawcInputConnection
 import me.phie.tawc.install.ChrootMethod
 import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.ops.LogScreenActivity
 import me.phie.tawc.tasks.ProcessScanner
 
 /**
@@ -85,7 +86,7 @@ import me.phie.tawc.tasks.ProcessScanner
  * | `focused-editor-info` | returns the last test-created EditorInfo input fields |
  * | `focused-activity-id` | returns the currently focused compositor Activity id |
  * | `focus-activity` | brings an existing compositor Activity document task forward |
- * | `test-init` | enter in-memory test settings, enable test input, close current client windows |
+ * | `test-init` | enter in-memory test settings, enable test input, close current client windows and lingering op log screens |
  *
  * Observational:
  *
@@ -582,6 +583,12 @@ internal object InputActions {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
             val installId = args["installId"]
             val ran = onMainBlocking {
+                // Close op log screens left on top of the task by broker
+                // install/uninstall/run actions, restoring whatever was
+                // beneath (MainActivity for foreground-app invocations).
+                DevActivityTracker.liveActivities()
+                    .filterIsInstance<LogScreenActivity>()
+                    .forEach { it.finish() }
                 Settings.enterTestMode()
                 NativeBridge.nativeSetTintBuffersByType(Settings.tintBuffersByType)
                 NativeBridge.nativeSetOutputScale(Settings.outputScale)

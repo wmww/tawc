@@ -85,6 +85,7 @@ class TawcApplication : Application() {
         // flows often start at InstallActivity. Release builds skip
         // this entirely. See notes/exec-broker.md.
         if (BuildConfig.DEBUG) {
+            registerActivityLifecycleCallbacks(me.phie.tawc.dev.DevActivityTracker)
             ExecBroker.start(this)
             // Action handlers must register before any host connection;
             // the broker thread spawned by start() above accepts asynchronously
