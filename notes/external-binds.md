@@ -111,10 +111,19 @@ mid-install.
 
 - Unit: `app/src/test/.../InstallationExternalBindsTest.kt` (metadata
   parse/round-trip/validator), `./gradlew :app:testDebugUnitTest`.
-- Integration: `tests/integration/tests/external_binds.rs` — full
-  lifecycle on a disposable `extbinds` install: invalid-binds reject,
-  no binds by default, metadata edits taking effect on the next spawn,
-  both-direction shared-storage round-trip, revoked-grant fail-closed,
-  contents surviving uninstall. Needs the dev cache proxy. The grant is
-  flipped from the host with `appops set --uid me.phie.tawc MANAGE_EXTERNAL_STORAGE
-  allow|deny` (the appop is what `isExternalStorageManager` reads).
+- Integration: **deliberate coverage gap.** There used to be a full
+  lifecycle test (`tests/integration/tests/external_binds.rs`, deleted
+  2026-07) covering invalid-binds reject, metadata edits taking effect
+  on the next spawn, both-direction shared-storage round-trip,
+  revoked-grant fail-closed, and contents surviving uninstall. It was
+  removed on purpose: it performed a real multi-GB distro install
+  through the dev cache proxy and flipped the persistent
+  MANAGE_EXTERNAL_STORAGE appop (`appops set --uid me.phie.tawc ...`),
+  which broke the app for later tests/sessions whenever it died
+  mid-run. Policy now: integration tests must not install distros, hit
+  the cache proxy, or mutate persistent app/device state. If bind
+  coverage is wanted again, it needs a design that spawns into a
+  fabricated (KB-scale) slot and injects the grant state without
+  appops. To exercise this manually: install a disposable slot with
+  binds, run the shared-storage round-trip from the old test by hand,
+  and flip the grant in Android settings.

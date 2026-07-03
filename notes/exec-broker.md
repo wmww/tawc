@@ -468,7 +468,7 @@ pixel tests, the CLI/fallback paths inside `exec_broker.rs`, suite
 setup/teardown in shell scripts, the wrapped tawcroot suite
 (`tawcroot/test.sh --device`), and `adb::shell` for genuinely shell- or
 su-side work that cannot run as the app uid (`ando` process counting,
-`external_binds` shared-storage fixtures, `uninstall_wipe` su sweeps).
+`uninstall_wipe` su sweeps).
 
 Deliberately rejected while killing the old per-request spawns:
 force-stopping the Xwayland wayland connection in `test-init` (the

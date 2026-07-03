@@ -32,6 +32,20 @@ prerequisites are. As of writing the modules are:
 | `touch_input`   | `cpu`       | wayland-debug-app wl_touch routing coverage, including subsurfaces and popups. Buffer type is irrelevant. |
 | `settings`      | `cpu`       | Runtime settings coverage: output scale, configure-state policy, and GTK3 broken menus workaround. |
 | `tawcroot`      | n/a         | tawcroot device-side smokes (wraps the cleat-driven suite). |
+| `uninstall_wipe` | n/a        | Wipe-engine edge cases against a *fabricated* KB-scale slot (mount gate, su-retry ladder). Rooted target only. |
+
+**Persistent-state policy.** Integration tests must not mutate state
+that outlives the test run: no real distro installs (nothing through
+the cache proxy — package deps are installed once, up-front, by the
+run script), no `appops` / permission flips, no writes to the standing
+install's metadata, no persisted-Settings changes (`test-init` resets
+in-memory state only). Fabricated throwaway slots (mkdir +
+metadata.json, KBs) that a test creates and removes itself are fine —
+`uninstall_wipe` is the pattern. The old `external_binds` lifecycle
+test violated all of this (multi-GB proxy install + persistent appop
+flips that broke the app for later tests when it died mid-run) and was
+deleted; accepted coverage gap, see
+[external-binds.md](external-binds.md) "Testing".
 
 The **backend pin** for each module is enforced at every spawn: tests
 in `libhybris::` call `RootfsProcess::spawn_with(GraphicsBackend::Libhybris, …)`

@@ -15,9 +15,11 @@ FAILED: pacman -Syyu --needed install failed (exit=1)
 
 Observed 2026-06-09 on the x86_64 emulator: cached `extra.db` listed
 mesa `1:26.0.6-1`; upstream geo.mirror.pkgbuild.com had `1:26.1.2-1`.
-This currently blocks `tests/integration/tests/external_binds.rs`
-(the one integration test that performs a full install) and any manual
-fresh install through the proxy.
+This blocks any manual fresh install through the proxy, and in-rootfs
+`pacman -Syu` runs such as the run-integration-tests.sh test-deps
+install step. (The `external_binds` integration test used to be
+affected too; it was deleted 2026-07 — tests no longer install
+anything through the proxy.)
 
 Workaround: whoever runs the proxy wipes the cached dbs (cheap, few MB;
 packages stay cached):
