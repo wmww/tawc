@@ -93,41 +93,73 @@ class InstallationStore(context: Context) {
     }
 
     /**
-     * Persist [installation] to its `metadata.json`. The write is atomic:
-     * we stage the JSON in a sibling `metadata.json.tmp` and `rename(2)`
-     * it into place, so a crash mid-write leaves either the old contents
-     * or the new ones — never a half-written file that fromJson can't
-     * parse. All writes go through this one method (including
-     * [setState]'s read-modify-write). Two writers exist:
-     * [InstallationService] (jobs serialised via `currentJob`) and
-     * [ManageBindsActivity], which only writes while the slot is
-     * READY/FAILED — i.e. no service job should be mutating it. A
-     * broker-started job can still race that activity's load→save
-     * window; both writers are in-process and atomic-rename, so the
-     * worst case is one side's field update being dropped, never a
-     * torn file.
+     * Persist [installation], creating its slot if absent. The write is
+     * atomic: we stage the JSON in a sibling `metadata.json.tmp` and
+     * `rename(2)` it into place, so a crash mid-write leaves either the
+     * old contents or the new ones — never a half-written file that
+     * fromJson can't parse.
+     *
+     * This is the *create* entry point ([Installer] lays down the
+     * initial INSTALLING record here). Every read-modify-write of an
+     * existing record must go through [update] instead, which re-reads
+     * the record under the same per-id lock this method takes — a bare
+     * `save(load(id).copy(...))` from two writers would still let the
+     * loser silently revert the winner's fields. The lock is reentrant
+     * ([update] calls this while holding it), so nesting is safe.
      */
     fun save(installation: Installation) {
-        installationDir(installation.id).mkdirs()
-        val finalFile = metadataFile(installation.id)
-        val tmpFile = File(finalFile.parentFile, finalFile.name + ".tmp")
-        tmpFile.writeText(installation.toJson())
-        Files.move(tmpFile.toPath(), finalFile.toPath(), StandardCopyOption.ATOMIC_MOVE)
+        synchronized(lockFor(installation.id)) {
+            installationDir(installation.id).mkdirs()
+            val finalFile = metadataFile(installation.id)
+            val tmpFile = File(finalFile.parentFile, finalFile.name + ".tmp")
+            tmpFile.writeText(installation.toJson())
+            Files.move(tmpFile.toPath(), finalFile.toPath(), StandardCopyOption.ATOMIC_MOVE)
+        }
     }
 
     /**
-     * Update the [Installation.state] field (and optional [failure]
-     * detail) for [id], leaving every other field unchanged. The single
-     * entry point through which the state machine moves; [InstallationService]
-     * is the only caller.
+     * Read-modify-write [id]'s metadata under a per-id in-process lock —
+     * the one safe way to change a field of an existing record.
      *
-     * If no metadata exists yet the call is a no-op — install transitions
-     * call [save] first to lay down the initial record, and uninstall
-     * never moves a `(no dir)` slot.
+     * [mutate] receives the record re-loaded *inside* the lock (so it
+     * already reflects any concurrent writer that committed first) and
+     * returns the record to persist, or `null` to abort the write (e.g.
+     * a state gate that no longer holds). Returns the persisted record,
+     * or `null` when the metadata is gone or [mutate] aborted.
+     *
+     * A missing file is never recreated: a writer racing an uninstall
+     * (whose [RootfsCleaner.wipe] deletes `metadata.json`) must not
+     * resurrect a wiped slot as a ghost with no rootfs. Callers that
+     * gate on READY/FAILED get this for free — a slot mid-uninstall
+     * reads UNINSTALLING inside the lock, and their [mutate] returns
+     * null. All in-process writers serialise on the same lock, so the
+     * load→save window that used to drop the loser's edit is closed.
+     *
+     * Note the lock is in-process only; it does not guard against the
+     * out-of-lock unlink `wipe` performs, but the re-read-then-refuse
+     * above covers the case that unlink beat us to it.
+     */
+    fun update(id: String, mutate: (Installation) -> Installation?): Installation? {
+        synchronized(lockFor(id)) {
+            val current = load(id) ?: return null
+            val next = mutate(current) ?: return null
+            save(next)
+            return next
+        }
+    }
+
+    /**
+     * Move [id]'s [Installation.state] (and optional [failure] detail),
+     * leaving every other field unchanged. The single entry point
+     * through which the state machine moves; [InstallationService]/
+     * [Installer] are the only callers.
+     *
+     * A no-op if no metadata exists yet — install transitions call
+     * [save] first to lay down the initial record, and uninstall never
+     * moves a `(no dir)` slot.
      */
     fun setState(id: String, state: Installation.State, failure: String? = null) {
-        val current = load(id) ?: return
-        save(current.copy(state = state, failure = failure))
+        update(id) { it.copy(state = state, failure = failure) }
     }
 
     /**
@@ -189,6 +221,17 @@ class InstallationStore(context: Context) {
     }
 
     companion object {
+        // Per-id write locks. InstallationStore is constructed ad-hoc
+        // wherever metadata is touched, so the locks must be process-
+        // global (here) rather than instance state, or two `new
+        // InstallationStore(ctx)` for the same id wouldn't exclude each
+        // other. Keyed by install id; entries are never removed (ids are
+        // few and short — an uninstalled-then-reinstalled id just reuses
+        // its monitor).
+        private val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+        private fun lockFor(id: String): Any = locks.computeIfAbsent(id) { Any() }
+
         // Test-only in-memory per-id ando override (notes/ando.md).
         // Mirrors Settings.enterTestMode: the `set-ando` broker action
         // writes here so integration tests can flip ando without a

@@ -188,8 +188,10 @@ made a chroot `mkdir` of the mount point pollute the shared dir.)
   Exec-broker install action: `--arg ando=true|false` (default false).
 - **Post-install:** a READY/FAILED-gated toggle on `DistroInfoActivity`
   (state-gated like `ManageBindsActivity.commit` to avoid racing
-  service writes), read-modify-write through `InstallationStore`, then
-  `AndoBrokers.refresh`.
+  service writes). Gate + write go through `InstallationStore.update`,
+  which re-reads and applies the edit under a per-id lock so a
+  concurrent writer (installer manifest refresh, binds edit) can't
+  revert the toggle; then `AndoBrokers.refresh`.
 - **Tests:** an in-memory per-id override in `InstallationStore`
   (`setAndoOverride`, mirrors `Settings.enterTestMode`) that the
   `set-ando` broker action writes and spawn paths / `AndoBrokers.refresh`

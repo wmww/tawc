@@ -134,16 +134,26 @@ internal object TawcInstaller {
             applyToRootfs(rootfs, entry)
         }
 
-        // 4. Persist. Stamp is updated in the same write as the
-        //    manifest, so a crash between wipe and save leaves us with
-        //    a stale stamp + missing files — which the next run treats
-        //    as "needs refresh" (the old manifest's dests have already
-        //    been removed; the new ones simply get re-laid). Idempotent
-        //    by construction.
-        store.save(installation.copy(
-            tawcStamp = currentStamp,
-            tawcInstalls = newManifest,
-        ))
+        // 4. Persist. We re-load inside [InstallationStore.update]'s
+        //    per-id lock and write only the two fields we own onto the
+        //    *current* record — not the `installation` snapshot loaded at
+        //    the top, which is minutes stale after the file copies above.
+        //    A user toggling ando / editing binds in that window would
+        //    otherwise see their change reverted by a whole-record save.
+        //    Stamp is updated in the same write as the manifest, so a
+        //    crash between wipe and save leaves a stale stamp + missing
+        //    files — which the next run treats as "needs refresh" (the
+        //    old dests are already removed; the new ones simply get
+        //    re-laid). Idempotent by construction. A null return means
+        //    the slot was uninstalled under us — the wipe already took
+        //    the rootfs, so there's nothing to record.
+        val saved = store.update(id) { current ->
+            current.copy(tawcStamp = currentStamp, tawcInstalls = newManifest)
+        }
+        if (saved == null) {
+            log("tawc-installer: $id metadata gone mid-refresh — skipping save")
+            return
+        }
         log("tawc-installer: $id refreshed (${newManifest.size} entries)")
     }
 

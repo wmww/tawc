@@ -143,21 +143,24 @@ class ManageBindsActivity : AppCompatActivity() {
             // rendered the button: a service job (broker-initiated
             // install/uninstall) may have started while this screen was
             // open, and its metadata writes must not interleave with
-            // ours. A tiny load→save window remains (see the
-            // InstallationStore.save doc); both writers are in-process
-            // and atomic-rename, so the loser's edit is dropped, never
-            // torn.
-            val current = store.load(id)
-            if (current == null ||
-                (current.state != Installation.State.READY &&
-                    current.state != Installation.State.FAILED)
-            ) {
+            // ours. [InstallationStore.update] re-reads and applies the
+            // edit under a per-id lock, so the gate and the write are
+            // atomic against other in-process writers.
+            val saved = store.update(id) { current ->
+                if (current.state == Installation.State.READY ||
+                    current.state == Installation.State.FAILED
+                ) {
+                    current.copy(externalBinds = binds.toList())
+                } else {
+                    null
+                }
+            }
+            if (saved == null) {
                 // Uninstalled or mid-mutation underneath us — bail
                 // rather than fight the service over the file.
                 finish()
                 return
             }
-            store.save(current.copy(externalBinds = binds.toList()))
         } else {
             publishResult()
         }

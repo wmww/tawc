@@ -249,12 +249,20 @@ class DistroInfoActivity : AppCompatActivity() {
         return buildAndoToggleRow(this, installation.andoEnabled) { checkbox, checked ->
             if (reverting) return@buildAndoToggleRow
             andoCommitExecutor.execute {
-                val current = store.load(installation.id)
-                val gateOk = current != null &&
-                    (current.state == Installation.State.READY ||
-                        current.state == Installation.State.FAILED)
-                if (gateOk) {
-                    store.save(current!!.copy(andoEnabled = checked))
+                // Gate + write atomically under the store's per-id lock:
+                // re-read inside [update] so a slot that slipped into
+                // INSTALLING/UNINSTALLING (or was uninstalled) under us
+                // is left alone rather than racing the service's writes.
+                val saved = store.update(installation.id) { current ->
+                    if (current.state == Installation.State.READY ||
+                        current.state == Installation.State.FAILED
+                    ) {
+                        current.copy(andoEnabled = checked)
+                    } else {
+                        null
+                    }
+                }
+                if (saved != null) {
                     AndoBrokers.refresh(this)
                 } else {
                     runOnUiThread {
