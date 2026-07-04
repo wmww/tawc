@@ -132,6 +132,11 @@
     <string name="launcher_action_hide">Hide</string>
     <string name="launcher_action_unhide">Unhide</string>
     <string name="launcher_action_edit">Edit</string>
+    <string name="launcher_action_add_home">Add to home screen</string>
+    <string name="shortcut_pin_unsupported">This launcher does not support pinned shortcuts.</string>
+    <string name="shortcut_pin_updated">Updated the existing home-screen shortcut.</string>
+    <string name="shortcut_install_not_ready">Installation is %1$s.</string>
+    <string name="shortcut_entry_gone">This app is no longer installed in the distro.</string>
     <string name="launcher_menu_add_entry">Add entry&#8230;</string>
     <string name="editor_title_new">Add entry</string>
     <string name="editor_title_edit">Edit program</string>

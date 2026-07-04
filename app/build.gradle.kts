@@ -272,6 +272,11 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
+    // ShortcutManagerCompat + IconCompat for pinned home-screen
+    // shortcuts (EntryShortcuts). Already on the classpath transitively
+    // via material; explicit because we compile against it directly.
+    implementation("androidx.core:core-ktx:1.15.0")
+
     // Material Components powers the app's chrome on non-compositor screens:
     // Material3 DayNight theme (auto light/dark), MaterialToolbar with the
     // back-arrow up affordance, and MaterialButton for the accented /

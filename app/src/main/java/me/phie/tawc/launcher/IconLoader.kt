@@ -58,9 +58,10 @@ class IconLoader(
          * Decode [path] into a [Bitmap] no smaller than [targetPx] in its
          * shorter dimension. Returns null on any error (bad PNG, missing
          * file, decoder doesn't recognise the format, e.g. SVG handed
-         * through by mistake).
+         * through by mistake). Internal: [EntryShortcuts] reuses the
+         * bounded decode for pin icons.
          */
-        private fun decode(path: String, targetPx: Int): Bitmap? {
+        internal fun decode(path: String, targetPx: Int): Bitmap? {
             val f = File(path)
             if (!f.isFile) return null
             return runCatching {

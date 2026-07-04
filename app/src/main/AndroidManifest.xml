@@ -175,6 +175,21 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- Trampoline behind pinned home-screen shortcuts
+             (EntryShortcuts). Pinned-shortcut intents may target
+             non-exported components of the publishing app, so no new
+             attack surface. taskAffinity="" + noHistory +
+             excludeFromRecents: a shortcut tap resolves and launches
+             without yanking the main tawc task forward or leaving a
+             card in recents. -->
+        <activity
+            android:name=".launcher.ShortcutLaunchActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Tawc.DialogHost"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="" />
+
         <service
             android:name=".install.InstallationService"
             android:exported="false"

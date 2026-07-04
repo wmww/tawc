@@ -56,7 +56,8 @@ Long-press on a row opens an action-list dialog (plain
 `List<EntryAction>` (label + enabled + handler) in
 `LauncherActivity.entryActionsFor` — append there to grow the menu.
 Today's items: **Hide** on visible entries, **Unhide** on hidden ones,
-**Edit** on managed-dir entries (see "Managed dir + .desktop editor").
+**Add to home screen** (see "Home-screen shortcuts"), **Edit** on
+managed-dir entries (see "Managed dir + .desktop editor").
 
 Hidden state lives in `Installation.hiddenDesktopIds` (ids =
 `LauncherEntry.id`, filename minus `.desktop`), written only through
@@ -133,6 +134,48 @@ Serializer/parse/slug logic is JVM-unit-tested
 behavior is integration-tested through `launcher-list`
 (`tests/integration/tests/launcher.rs`). Editor flows verified
 on-device 2026-07-04.
+
+## Home-screen shortcuts (pinned)
+
+Per-entry action **"Add to home screen"** pins the entry as an Android
+pinned shortcut (`ShortcutManagerCompat.requestPinShortcut`, system
+sheet handles placement; unsupported launchers get a toast). Code:
+`EntryShortcuts` (build/pin + icon) and `ShortcutLaunchActivity` (tap
+trampoline).
+
+- **Payload is a reference, not a command**: the shortcut intent
+  carries `(installId, desktopId, label)` — never the `Exec` string.
+  The trampoline re-resolves the entry with a fresh
+  `nativeLauncherScan` at tap time (same walk the launcher does on
+  open), so pins stay current across `.desktop` edits and the system's
+  shortcut store never holds an executable command.
+- Shortcut id is `"<installId>/<desktopId>"`; install ids can't
+  contain `/`, so `EntryShortcuts.splitShortcutId` is unambiguous.
+  Re-pinning an already-pinned id calls `updateShortcuts` (refreshes
+  label/icon in place) + a toast instead of `requestPinShortcut` —
+  the Pixel launcher does *not* dedupe a re-request; it happily adds
+  a second workspace icon for the same id (verified on emulator).
+- **Trampoline** (`ShortcutLaunchActivity`, non-exported —
+  pinned-shortcut intents may target non-exported components of the
+  publishing app; translucent DialogHost theme, `noHistory`,
+  `excludeFromRecents`, `taskAffinity=""` so a tap doesn't yank the
+  main tawc task forward): gate install exists + state READY → scan →
+  find by id → `EntryLauncher.launch`. Any gate failure shows
+  `LaunchErrorActivity` instead of crashing, which is the whole
+  stale-pin story: uninstalling a distro leaves pins behind, and a
+  stale tap gets a clear error. (Optional follow-up if that annoys:
+  uninstall could `disableShortcuts` ids prefixed `"<installId>/"`.)
+- A hidden entry still launches from its pin — hiding declutters the
+  list; an existing pin is explicit user intent. Terminal entries get
+  no special casing: dispatch goes through `EntryLauncher`, same as
+  the in-app list.
+- **Icon**: entry PNG decoded via `IconLoader.decode`, centered on a
+  neutral square at 2/3 edge (adaptive-icon safe zone) and wrapped
+  with `IconCompat.createWithAdaptiveBitmap` so it masks correctly on
+  every launcher shape; no/undecodable icon falls back to the tawc app
+  icon. Geometry (`pinIconFit`) + id mapping are JVM-unit-tested
+  (`EntryShortcutsTest`); pinning itself is a launcher-UI interaction,
+  so end-to-end coverage is manual.
 
 ## Icon resolution
 

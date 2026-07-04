@@ -6,8 +6,6 @@ design, build, and operational notes in [`../notes/`](../notes/).
 - [audio.md](audio.md) - planned PipeWire/PulseAudio bridge to Android audio.
 - [desktop-gl-dispatch.md](desktop-gl-dispatch.md) - older desktop-GL dispatcher design, likely superseded by libhybris-zink unless GLES-over-Zink overhead is unacceptable.
 - [gfxstream-bridge-remaining-work.md](gfxstream-bridge-remaining-work.md) - remaining GL/GLES and x86_64 AVD work for the gfxstream bridge backend.
-- [home-screen-shortcuts.md](home-screen-shortcuts.md) - pin launcher entries to the Android home screen as pinned shortcuts.
-- [launcher-custom-programs.md](launcher-custom-programs.md) - Terminal=true entries in the native terminal, user `.desktop` dirs, and a minimal in-app `.desktop` editor.
 - [tawcroot-future-work.md](tawcroot-future-work.md) - deferred tawcroot syscall, `/proc`, and performance work.
 - [tawcroot-landlock.md](tawcroot-landlock.md) - kernel-enforced path containment for tawcroot via Landlock (probe-and-enable, kernel 5.13+).
 - [tawcroot-readonly-binds.md](tawcroot-readonly-binds.md) - future read-only fake bind support in tawcroot.

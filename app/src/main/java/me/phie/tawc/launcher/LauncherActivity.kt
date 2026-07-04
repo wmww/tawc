@@ -18,6 +18,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -47,8 +48,8 @@ import kotlin.math.min
  *
  * UX is intentionally minimal: one search field, one scrolling list,
  * Enter launches the top match, tap launches that row. Long-press opens
- * a per-entry action menu (Hide/Unhide today; dependent plans append
- * items via [entryActionsFor]). The ⋮ overflow beside the search field
+ * a per-entry action menu (Hide/Unhide, Add to home screen, Edit —
+ * assembled in [entryActionsFor]). The ⋮ overflow beside the search field
  * holds the transient "Show hidden" toggle. Pinning, frecency,
  * window-list integration are deferred (see notes/launcher.md
  * "Future UX").
@@ -386,6 +387,7 @@ class LauncherActivity : AppCompatActivity() {
             } else {
                 EntryAction(getString(R.string.launcher_action_hide)) { setEntryHidden(entry, true) }
             },
+            EntryAction(getString(R.string.launcher_action_add_home)) { pinEntry(entry) },
             // Only entries in the managed dir are editable — everything
             // else is package-owned (see DesktopEntryFile).
             EntryAction(getString(R.string.launcher_action_edit)) { openEditor(entry.path) }
@@ -405,6 +407,26 @@ class LauncherActivity : AppCompatActivity() {
                 actions[which].run()
             }
             .show()
+    }
+
+    /**
+     * Pin [entry] to the home screen ([EntryShortcuts]). Icon decode is
+     * I/O, so build the request off the main thread; the system pin
+     * sheet takes over from there.
+     */
+    private fun pinEntry(entry: LauncherEntry) {
+        val inst = installation ?: return
+        uiScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                EntryShortcuts.requestPin(this@LauncherActivity, inst, entry)
+            }
+            val toast = when (result) {
+                EntryShortcuts.PinResult.REQUESTED -> null
+                EntryShortcuts.PinResult.UPDATED -> R.string.shortcut_pin_updated
+                EntryShortcuts.PinResult.UNSUPPORTED -> R.string.shortcut_pin_unsupported
+            }
+            toast?.let { Toast.makeText(this@LauncherActivity, it, Toast.LENGTH_SHORT).show() }
+        }
     }
 
     /**
