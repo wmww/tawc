@@ -6,6 +6,7 @@ design, build, and operational notes in [`../notes/`](../notes/).
 - [audio.md](audio.md) - planned PipeWire/PulseAudio bridge to Android audio.
 - [desktop-gl-dispatch.md](desktop-gl-dispatch.md) - older desktop-GL dispatcher design, likely superseded by libhybris-zink unless GLES-over-Zink overhead is unacceptable.
 - [gfxstream-bridge-remaining-work.md](gfxstream-bridge-remaining-work.md) - remaining GL/GLES and x86_64 AVD work for the gfxstream bridge backend.
+- [tawcroot-full-link-emulation.md](tawcroot-full-link-emulation.md) - full hardlink emulation (link2symlink v2) replacing the partial rename+symlink fallback.
 - [tawcroot-future-work.md](tawcroot-future-work.md) - deferred tawcroot syscall, `/proc`, and performance work.
 - [tawcroot-landlock.md](tawcroot-landlock.md) - kernel-enforced path containment for tawcroot via Landlock (probe-and-enable, kernel 5.13+).
 - [tawcroot-readonly-binds.md](tawcroot-readonly-binds.md) - future read-only fake bind support in tawcroot.
