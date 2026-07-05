@@ -164,3 +164,153 @@ test(hosted_observe_translated_openat_shape)
 
 	th_teardown(&v);
 }
+
+/* --- linkat hardlink fallback (SELinux-denial emulation) ------------
+ *
+ * Injecting EPERM on the raw linkat forces the fallback the way an
+ * Android untrusted_app SELinux denial does, with every other syscall
+ * (renameat2/symlinkat/fstatat) hitting the real tmpdir rootfs. */
+
+test(hosted_linkat_fallback_publish_pattern)
+{
+	th_view v;
+	th_setup(&v, "l2s-pub");
+
+	install_fail(TAWC_SYS_linkat, TAWC_EPERM);
+	test_int_eq(th_sys(TAWC_SYS_linkat, AT_FDCWD, "/etc/probe",
+			   AT_FDCWD, "/run/published", 0, 0), 0);
+	test_true(fail_hits > 0);
+	tawcroot_test_raw_hook = NULL;
+
+	/* The real file must land at the destination; the source becomes
+	 * a guest-absolute symlink to it. */
+	struct stat st;
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/run/published",
+			   &st, AT_SYMLINK_NOFOLLOW, 0, 0), 0);
+	test_true(S_ISREG(st.st_mode));
+	char lnk[64] = {0};
+	test_true(th_sys(TAWC_SYS_readlinkat, AT_FDCWD, "/etc/probe",
+			 lnk, sizeof lnk - 1, 0, 0) > 0);
+	test_str_eq(lnk, "/run/published");
+
+	/* Publish idiom (git object finalize): unlink the source; the
+	 * data must survive at the destination. */
+	test_int_eq(th_sys(TAWC_SYS_unlinkat, AT_FDCWD, "/etc/probe",
+			   0, 0, 0, 0), 0);
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/run/published",
+			 O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	char buf[32] = {0};
+	test_true(read((int)fd, buf, sizeof buf - 1) > 0);
+	test_str_eq(buf, "from-rootfs\n");
+	test_int_eq(close((int)fd), 0);
+
+	th_teardown(&v);
+}
+
+test(hosted_linkat_fallback_existing_dst_eexist)
+{
+	th_view v;
+	th_setup(&v, "l2s-eexist");
+
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/run/occupied",
+			 O_WRONLY | O_CREAT, 0644, 0, 0);
+	test_true(fd >= 0);
+	test_int_eq(close((int)fd), 0);
+
+	install_fail(TAWC_SYS_linkat, TAWC_EPERM);
+	test_int_eq(th_sys(TAWC_SYS_linkat, AT_FDCWD, "/etc/probe",
+			   AT_FDCWD, "/run/occupied", 0, 0), TAWC_EEXIST);
+	tawcroot_test_raw_hook = NULL;
+
+	/* RENAME_NOREPLACE refused the clobber — source untouched. */
+	struct stat st;
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/etc/probe",
+			   &st, AT_SYMLINK_NOFOLLOW, 0, 0), 0);
+	test_true(S_ISREG(st.st_mode));
+
+	th_teardown(&v);
+}
+
+test(hosted_linkat_fallback_directory_source_stays_eperm)
+{
+	th_view v;
+	th_setup(&v, "l2s-dir");
+
+	/* A directory source is the kernel's own EPERM for link(2); the
+	 * fallback must not rename the directory away. */
+	install_fail(TAWC_SYS_linkat, TAWC_EPERM);
+	test_int_eq(th_sys(TAWC_SYS_linkat, AT_FDCWD, "/etc/sub",
+			   AT_FDCWD, "/run/sub-link", 0, 0), TAWC_EPERM);
+	tawcroot_test_raw_hook = NULL;
+
+	struct stat st;
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/etc/sub",
+			   &st, AT_SYMLINK_NOFOLLOW, 0, 0), 0);
+	test_true(S_ISDIR(st.st_mode));
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/run/sub-link",
+			   &st, 0, 0, 0), TAWC_ENOENT);
+
+	th_teardown(&v);
+}
+
+/* Fail linkat AND the fallback's symlinkat: the rename must roll back
+ * so a failed link leaves the tree unchanged. */
+static bool fail_link_and_symlink_hook(long nr, const long args[6],
+				       long *ret)
+{
+	(void)args;
+	if (nr == TAWC_SYS_linkat)    { *ret = TAWC_EPERM;  return true; }
+	if (nr == TAWC_SYS_symlinkat) { *ret = TAWC_EACCES; return true; }
+	return false;
+}
+
+test(hosted_linkat_fallback_symlink_failure_rolls_back)
+{
+	th_view v;
+	th_setup(&v, "l2s-undo");
+
+	tawcroot_test_raw_hook = fail_link_and_symlink_hook;
+	test_int_eq(th_sys(TAWC_SYS_linkat, AT_FDCWD, "/etc/probe",
+			   AT_FDCWD, "/run/published", 0, 0), TAWC_EPERM);
+	tawcroot_test_raw_hook = NULL;
+
+	/* Source is a regular file again; nothing at the destination. */
+	struct stat st;
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/etc/probe",
+			   &st, AT_SYMLINK_NOFOLLOW, 0, 0), 0);
+	test_true(S_ISREG(st.st_mode));
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/run/published",
+			   &st, 0, 0, 0), TAWC_ENOENT);
+
+	th_teardown(&v);
+}
+
+/* Cross-device rename during the fallback surfaces as EXDEV — the
+ * same errno a real cross-device link(2) yields. */
+static bool fail_link_rename_exdev_hook(long nr, const long args[6],
+					long *ret)
+{
+	(void)args;
+	if (nr == TAWC_SYS_linkat)    { *ret = TAWC_EPERM; return true; }
+	if (nr == TAWC_SYS_renameat2) { *ret = TAWC_EXDEV; return true; }
+	return false;
+}
+
+test(hosted_linkat_fallback_cross_device_exdev)
+{
+	th_view v;
+	th_setup(&v, "l2s-exdev");
+
+	tawcroot_test_raw_hook = fail_link_rename_exdev_hook;
+	test_int_eq(th_sys(TAWC_SYS_linkat, AT_FDCWD, "/etc/probe",
+			   AT_FDCWD, "/run/published", 0, 0), TAWC_EXDEV);
+	tawcroot_test_raw_hook = NULL;
+
+	struct stat st;
+	test_int_eq(th_sys(TAWC_SYS_fstatat, AT_FDCWD, "/etc/probe",
+			   &st, AT_SYMLINK_NOFOLLOW, 0, 0), 0);
+	test_true(S_ISREG(st.st_mode));
+
+	th_teardown(&v);
+}

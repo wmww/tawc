@@ -33,6 +33,7 @@
 #include "handler.h"
 #include "dispatch.h"
 #include "errno_neg.h"
+#include "tawc_string.h"
 #include "path.h"
 #include "sysnr.h"
 #include "usercopy.h"
@@ -1894,6 +1895,61 @@ static int test_linkat_happy_path(void)
 	/* clean up */
 	INLINE_SYS6(TAWC_SYS_unlinkat, AT_FDCWD,
 		    "/etc/probe-link2", 0, 0, 0, 0, rv);
+	return fails;
+}
+
+/* linkat -- publish idiom: link(tmp, final) then unlink(tmp) must
+ * leave real data readable at final. This is how git finalizes
+ * objects/packs; on-device it exercises the SELinux hardlink
+ * fallback, which must therefore keep the real file at the NEW name
+ * (a symlink at final would dangle after the unlink). Also checks
+ * link onto an existing name -> EEXIST (RENAME_NOREPLACE on the
+ * fallback path). */
+static int test_linkat_publish_then_unlink_source(void)
+{
+	int fails = 0;
+	long fd;
+	INLINE_SYS6(TAWC_SYS_openat, AT_FDCWD, "/tmp-pub-src",
+		    0x42 /*O_CREAT|O_RDWR*/, 0644, 0, 0, fd);
+	fails += tawc_io_step("openat(O_CREAT) /tmp-pub-src", fd >= 0);
+	if (fd >= 0) {
+		long w = tawc_write((int)fd, "publish-me", 10);
+		fails += tawc_io_step("write 10 bytes", w == 10);
+		tawc_close((int)fd);
+	}
+
+	long rv;
+	INLINE_SYS6(TAWC_SYS_linkat, AT_FDCWD, "/tmp-pub-src",
+		    AT_FDCWD, "/tmp-pub-dst", 0, 0, rv);
+	fails += tawc_io_step("linkat(\"/tmp-pub-src\" -> "
+			      "\"/tmp-pub-dst\") -> 0", rv == 0);
+	tawc_io_kv_dec("    rv", rv);
+
+	/* Linking onto an existing name keeps EEXIST semantics. */
+	INLINE_SYS6(TAWC_SYS_linkat, AT_FDCWD, "/tmp-pub-src",
+		    AT_FDCWD, "/tmp-pub-dst", 0, 0, rv);
+	fails += tawc_io_step("linkat onto existing dst -> -EEXIST",
+			      rv == -17);
+	tawc_io_kv_dec("    rv", rv);
+
+	INLINE_SYS6(TAWC_SYS_unlinkat, AT_FDCWD, "/tmp-pub-src",
+		    0, 0, 0, 0, rv);
+	fails += tawc_io_step("unlinkat(\"/tmp-pub-src\") -> 0", rv == 0);
+
+	fd = inline_openat(AT_FDCWD, "/tmp-pub-dst", O_RDONLY, 0);
+	fails += tawc_io_step("openat(\"/tmp-pub-dst\") after source "
+			      "unlink", fd >= 0);
+	if (fd >= 0) {
+		char buf[16] = {0};
+		long n = tawc_read((int)fd, buf, sizeof buf - 1);
+		fails += tawc_io_step("dst content survives (10 bytes)",
+				      n == 10 &&
+				      memcmp(buf, "publish-me", 10) == 0);
+		tawc_close((int)fd);
+	}
+
+	INLINE_SYS6(TAWC_SYS_unlinkat, AT_FDCWD, "/tmp-pub-dst",
+		    0, 0, 0, 0, rv);
 	return fails;
 }
 
@@ -4859,6 +4915,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_fstatat_at_empty_path();
 	fails += test_statx_fake_root_decoration();
 	fails += test_linkat_happy_path();
+	fails += test_linkat_publish_then_unlink_source();
 	fails += test_renameat2_happy_path();
 	fails += test_renameat2_escape_clamped();
 	fails += test_truncate_create_and_resize();

@@ -1146,8 +1146,13 @@ static long handle_inotify_add_watch(const tawcroot_syscall_args *args,
 
 /* link_with_symlink_fallback: issue host linkat, and on EACCES/EPERM
  * (typical under Android `untrusted_app` SELinux for hardlinks across
- * subtrees) fall back to creating a guest-absolute `symlinkat`. Mirrors
- * proot's --link2symlink. */
+ * subtrees) emulate the link in the spirit of proot's --link2symlink:
+ * move the real file to the NEW name (RENAME_NOREPLACE preserves
+ * link()'s EEXIST) and leave a guest-absolute symlink at the OLD name.
+ * The direction matters: the link(tmp, final) + unlink(tmp) publish
+ * idiom (git object/pack finalize) must leave real data at the final
+ * name — a symlink at the final name would dangle once tmp is
+ * unlinked. */
 static long link_with_symlink_fallback(int src_fd, const char *src_suf,
 				       int dst_fd, const char *dst_suf,
 				       int flags)
@@ -1157,16 +1162,36 @@ static long link_with_symlink_fallback(int src_fd, const char *src_suf,
 	if (rv == 0 || (rv != TAWC_EACCES && rv != TAWC_EPERM)) {
 		return rv;
 	}
+	/* link(2) on a directory is the kernel's own EPERM, indistinguishable
+	 * from an SELinux denial by errno alone — emulating it would
+	 * "hardlink" the directory by renaming it away. Stat and pass the
+	 * kernel's error through. */
+	struct stat st;
+	long te = TAWC_RAW(TAWC_SYS_fstatat, src_fd, (long)src_suf,
+			   (long)&st, AT_SYMLINK_NOFOLLOW, 0, 0);
+	if (te || S_ISDIR(st.st_mode)) return rv;
+	long re = TAWC_RAW(TAWC_SYS_renameat2, src_fd, (long)src_suf,
+			   dst_fd, (long)dst_suf, RENAME_NOREPLACE, 0);
+	/* EEXIST/EXDEV are errors link() itself defines — surface them.
+	 * Anything else means the emulation can't work here; report the
+	 * original link failure. */
+	if (re == TAWC_EEXIST || re == TAWC_EXDEV) return re;
+	if (re) return rv;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	char *abs_target = scratch->buf[0];
 	size_t pos = 0;
 	long se = tawc_str_append(abs_target, TAWCROOT_PATH_SCRATCH_SIZE,
 				  &pos, "/");
 	if (!se) se = tawc_str_append(abs_target, TAWCROOT_PATH_SCRATCH_SIZE,
-				      &pos, src_suf);
-	if (se) return se;
-	return TAWC_RAW(TAWC_SYS_symlinkat, (long)abs_target, dst_fd,
-			(long)dst_suf, 0, 0, 0);
+				      &pos, dst_suf);
+	if (!se) se = TAWC_RAW(TAWC_SYS_symlinkat, (long)abs_target, src_fd,
+			       (long)src_suf, 0, 0, 0);
+	if (!se) return 0;
+	/* Symlink-back failed: roll the rename back so the failed link
+	 * leaves the tree unchanged. */
+	TAWC_RAW(TAWC_SYS_renameat2, dst_fd, (long)dst_suf,
+		 src_fd, (long)src_suf, 0, 0);
+	return rv;
 }
 
 /* linkat: translate both operands. */

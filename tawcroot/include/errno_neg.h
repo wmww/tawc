@@ -30,6 +30,7 @@
 #define TAWC_EFAULT        (-14)
 #define TAWC_EBUSY         (-16)
 #define TAWC_EEXIST        (-17)
+#define TAWC_EXDEV         (-18)
 #define TAWC_ENOTDIR       (-20)
 #define TAWC_EISDIR        (-21)
 #define TAWC_EINVAL        (-22)

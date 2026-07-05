@@ -21,6 +21,7 @@
 #pragma once
 
 #include <linux/fcntl.h>   /* O_*, F_*, AT_* */
+#include <linux/fs.h>      /* RENAME_* */
 #include <linux/memfd.h>   /* MFD_CLOEXEC, MFD_ALLOW_SEALING */
 #include <linux/stat.h>    /* S_IF*, STATX_* */
 

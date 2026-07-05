@@ -1128,10 +1128,21 @@ the target user. The privilege predicate everywhere is virtual
 - `symlink`, `symlinkat`.
 - `link`, `linkat` — translate both paths. If the host `linkat`
   fails with `EACCES`/`EPERM` under Android app-data SELinux policy,
-  fall back to a relative `symlinkat` when the source and destination
-  are both inside the rootfs view. This mirrors proot's
-  `--link2symlink` behavior and is required for the same ALARM
-  hardlink cases documented in `notes/proot.md`.
+  emulate the link: `renameat2(src → dst, RENAME_NOREPLACE)` moves
+  the real file to the new name, then a guest-absolute symlink is
+  left at the old name (rolled back if the symlink fails). In the
+  spirit of proot's `--link2symlink`, required for the ALARM hardlink
+  cases documented in `notes/proot.md`. The direction (real file at
+  the NEW name) matters: git finalizes objects/packs with
+  `link(tmp, final); unlink(tmp)`, and a symlink at `final` would
+  dangle after the `unlink` — every fetched object vanished and
+  clones died with `fatal: bad object <HEAD>`. Directory sources are
+  stat-checked and keep the kernel's own EPERM (never rename a
+  directory away). The emulation is deliberately partial (st_nlink
+  stays 1, NOFOLLOW stats see a symlink, unlink-of-destination
+  dangles the source); gaps and the full design live in
+  `plans/tawcroot-full-link-emulation.md`. Hosted fault-injection
+  coverage: `hosted_linkat_fallback_*` in `test_hook_faults.c`.
 - `rename`, `renameat`, `renameat2`.
 - `readlink`, `readlinkat`.
 - `truncate`.
