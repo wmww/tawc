@@ -32,7 +32,12 @@ internal object AptCommon {
     // No hostname provider needed here: Debian's `hostname` package is
     // Essential, so debootstrap bases always ship /usr/bin/hostname
     // (arch/void get inetutils in their base lists for this).
+    // ca-certificates: debootstrap bases ship without a trust store, so
+    // every https client (git, curl, wget) fails until it's installed.
+    // Pacman bases get it via pacman→curl→ca-certificates and void via
+    // xbps's ca-certificates dependency, so only the apt family lists it.
     val DEFAULT_BASE_PACKAGES: List<String> = listOf(
+        "ca-certificates",
         "dbus-x11",
         "libwayland-client0",
         "libwayland-server0",
