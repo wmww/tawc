@@ -168,6 +168,28 @@ of the box.
 
   **Wine-game shakedown remains future work** — left for when a
   specific Wine workload becomes interesting.
+- **Resize regression diagnosed, open (2026-07-06).** Between the
+  step-5 verification and July, the compositor gained fullscreen
+  sizing of X11 toplevels (`configure_x11_toplevel_for_host` resizes
+  every non-override-redirect toplevel to its host activity's logical
+  size, e.g. 540×1085). Clients follow the ConfigureNotify and reset
+  their GL viewport, but libhybris's `X11NativeWindow` keeps its
+  creation-time buffer size — X11 has no client-driven
+  `wl_egl_window_resize` equivalent, and a library sharing the app's
+  connection can't select StructureNotify without feeding
+  ConfigureNotify into the client's own event queue — so es2gears_x11
+  renders a 540×1085 viewport into 300×300 AHBs: a correctly-mapped
+  solid-black window (only the clear color lands in the buffer).
+  Full diagnosis in
+  [issues/x11-presented-windows-black.md](../issues/x11-presented-windows-black.md);
+  fix is [plans/tawc-dri-event-channel.md](../plans/tawc-dri-event-channel.md)
+  (TAWC-DRI XGE events, which also replace the release-less 3-buffer
+  round-robin). `tests/apps/eglx11-test` grew
+  `TAWC_EGLX11_{TRIANGLE,DEPTH,VBO,MVP,READBACK,W,H}` env modes during
+  the bisection. Note the AHB pipe tests
+  (`test_es2gears_x11_renders_via_ahb`, `test_eglx11_renders_via_ahb`)
+  are pixel-blind — they pass throughout this regression; see
+  [issues/xwayland-gl-tests-pixel-blind.md](../issues/xwayland-gl-tests-pixel-blind.md).
 - **Phase 3 — probably skip.** Server-side EGL acceleration
   (GLAMOR-equivalent). Only matters for legacy XRender-heavy apps
   that nobody runs on a phone.

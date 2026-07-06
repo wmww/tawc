@@ -18,6 +18,12 @@
  * Mode selection (env vars):
  *   TAWC_EGLX11_FRAMES=N      render N frames, then exit (default 60)
  *   TAWC_EGLX11_HOLD_SECS=N   keep the mapped window alive after swaps
+ *   TAWC_EGLX11_TRIANGLE=1    draw a solid blue triangle over the clear
+ *   TAWC_EGLX11_DEPTH=1       request a depth buffer + depth-test the draw
+ *   TAWC_EGLX11_READBACK=1    glReadPixels the centre pixel before swap
+ *   TAWC_EGLX11_W/H=N         window size (default 640x240)
+ *   TAWC_EGLX11_VBO=1         source triangle vertices from a VBO
+ *   TAWC_EGLX11_MVP=1         route positions through a mat4 uniform
  *
  * Exit codes:
  *   0  success
@@ -49,6 +55,57 @@ static void log_egl_error(const char *what)
     fprintf(stderr, "eglx11-test: %s -> EGL error 0x%04x\n", what, e);
 }
 
+static GLuint compile_shader(GLenum kind, const char *src)
+{
+    GLuint s = glCreateShader(kind);
+    glShaderSource(s, 1, &src, NULL);
+    glCompileShader(s);
+    GLint ok = 0;
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[1024] = {0};
+        glGetShaderInfoLog(s, sizeof(log), NULL, log);
+        fprintf(stderr, "eglx11-test: shader compile failed: %s\n", log);
+        return 0;
+    }
+    return s;
+}
+
+/* Solid blue triangle covering the middle of the window, drawn at z=0
+ * so it passes a LESS depth test against a cleared (1.0) depth buffer. */
+static GLuint triangle_program(int use_mvp)
+{
+    static const char *vs_plain =
+        "attribute vec2 pos;\n"
+        "void main() { gl_Position = vec4(pos, 0.0, 1.0); }\n";
+    static const char *vs_mvp =
+        "attribute vec2 pos;\n"
+        "uniform mat4 mvp;\n"
+        "void main() { gl_Position = mvp * vec4(pos, 0.0, 1.0); }\n";
+    const char *vs = use_mvp ? vs_mvp : vs_plain;
+    static const char *fs =
+        "precision mediump float;\n"
+        "void main() { gl_FragColor = vec4(0.0, 0.0, 1.0, 1.0); }\n";
+    GLuint v = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint f = compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!v || !f)
+        return 0;
+    GLuint p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glBindAttribLocation(p, 0, "pos");
+    glLinkProgram(p);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[1024] = {0};
+        glGetProgramInfoLog(p, sizeof(log), NULL, log);
+        fprintf(stderr, "eglx11-test: program link failed: %s\n", log);
+        return 0;
+    }
+    return p;
+}
+
 static void window_size(Display *xdpy, Window xwin, int *w, int *h)
 {
     XWindowAttributes attrs;
@@ -64,6 +121,13 @@ int main(void)
 {
     int frames = 60;
     int hold_secs = 0;
+    int want_triangle = 0;
+    int want_depth = 0;
+    int want_readback = 0;
+    int want_vbo = 0;
+    int want_mvp = 0;
+    int win_w0 = WIN_W;
+    int win_h0 = WIN_H;
     {
         const char *f = getenv("TAWC_EGLX11_FRAMES");
         if (f) frames = atoi(f);
@@ -71,6 +135,22 @@ int main(void)
         const char *h = getenv("TAWC_EGLX11_HOLD_SECS");
         if (h) hold_secs = atoi(h);
         if (hold_secs < 0) hold_secs = 0;
+        const char *t = getenv("TAWC_EGLX11_TRIANGLE");
+        if (t) want_triangle = atoi(t);
+        const char *d = getenv("TAWC_EGLX11_DEPTH");
+        if (d) want_depth = atoi(d);
+        const char *r = getenv("TAWC_EGLX11_READBACK");
+        if (r) want_readback = atoi(r);
+        const char *w = getenv("TAWC_EGLX11_W");
+        if (w) win_w0 = atoi(w);
+        if (win_w0 <= 0) win_w0 = WIN_W;
+        const char *hh = getenv("TAWC_EGLX11_H");
+        if (hh) win_h0 = atoi(hh);
+        if (win_h0 <= 0) win_h0 = WIN_H;
+        const char *v = getenv("TAWC_EGLX11_VBO");
+        if (v) want_vbo = atoi(v);
+        const char *m = getenv("TAWC_EGLX11_MVP");
+        if (m) want_mvp = atoi(m);
     }
 
     /* X11 setup */
@@ -83,7 +163,7 @@ int main(void)
     int screen = DefaultScreen(xdpy);
     Window root = RootWindow(xdpy, screen);
     Window xwin = XCreateSimpleWindow(
-        xdpy, root, 0, 0, WIN_W, WIN_H, 0,
+        xdpy, root, 0, 0, win_w0, win_h0, 0,
         BlackPixel(xdpy, screen),
         BlackPixel(xdpy, screen));
     if (!xwin) {
@@ -99,11 +179,11 @@ int main(void)
     XSetClassHint(xdpy, xwin, &class_hint);
     XSizeHints hints = {
         .flags = PSize,
-        .width = WIN_W,
-        .height = WIN_H,
+        .width = win_w0,
+        .height = win_h0,
     };
     XSetWMNormalHints(xdpy, xwin, &hints);
-    XResizeWindow(xdpy, xwin, WIN_W, WIN_H);
+    XResizeWindow(xdpy, xwin, win_w0, win_h0);
     XSelectInput(xdpy, xwin, ExposureMask | StructureNotifyMask);
     XMapWindow(xdpy, xwin);
     XSync(xdpy, False);
@@ -132,6 +212,7 @@ int main(void)
         EGL_GREEN_SIZE, 8,
         EGL_BLUE_SIZE,  8,
         EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, want_depth ? 16 : 0,
         EGL_NONE
     };
     EGLConfig cfg;
@@ -172,18 +253,85 @@ int main(void)
     fprintf(stderr, "eglx11-test: GL_VENDOR=%s GL_RENDERER=%s\n",
             (const char *)glGetString(GL_VENDOR),
             (const char *)glGetString(GL_RENDERER));
+    if (want_depth) {
+        EGLint depth_bits = -1;
+        eglGetConfigAttrib(edpy, cfg, EGL_DEPTH_SIZE, &depth_bits);
+        fprintf(stderr, "eglx11-test: config EGL_DEPTH_SIZE=%d\n", depth_bits);
+    }
+
+    GLuint prog = 0;
+    GLint mvp_loc = -1;
+    GLuint vbo = 0;
+    static const GLfloat tri_verts[] = {
+        -0.8f, -0.8f,
+         0.8f, -0.8f,
+         0.0f,  0.8f,
+    };
+    static const GLfloat identity[16] = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    if (want_triangle) {
+        prog = triangle_program(want_mvp);
+        if (!prog)
+            return 4;
+        if (want_mvp)
+            mvp_loc = glGetUniformLocation(prog, "mvp");
+        if (want_vbo) {
+            glGenBuffers(1, &vbo);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(tri_verts), tri_verts,
+                         GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        }
+    }
+    if (want_depth) {
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+    }
 
     /* Render loop. Each frame paints a different solid colour so a
      * compositor that caches the first texture forever is visible
      * on screen. */
+    int last_w = win_w0;
+    int last_h = win_h0;
     for (int f = 0; f < frames; f++) {
         float t = (float)f / (float)frames;
-        int win_w = WIN_W;
-        int win_h = WIN_H;
+        int win_w = win_w0;
+        int win_h = win_h0;
         window_size(xdpy, xwin, &win_w, &win_h);
+        if (win_w != last_w || win_h != last_h) {
+            fprintf(stderr, "eglx11-test: frame %d window size %dx%d -> %dx%d\n",
+                    f, last_w, last_h, win_w, win_h);
+            last_w = win_w;
+            last_h = win_h;
+        }
         glViewport(0, 0, win_w, win_h);
         glClearColor(t, 1.0f - t, 0.25f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | (want_depth ? GL_DEPTH_BUFFER_BIT : 0));
+        if (want_triangle) {
+            glUseProgram(prog);
+            if (want_mvp)
+                glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, identity);
+            glEnableVertexAttribArray(0);
+            if (want_vbo) {
+                glBindBuffer(GL_ARRAY_BUFFER, vbo);
+                glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+            } else {
+                glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, tri_verts);
+            }
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+        if (want_readback && (f == frames - 1 || f % 1000 == 0)) {
+            unsigned char px[4] = {0};
+            glReadPixels(win_w / 2, win_h / 2, 1, 1,
+                         GL_RGBA, GL_UNSIGNED_BYTE, px);
+            fprintf(stderr,
+                    "eglx11-test: frame %d centre pixel R%u G%u B%u A%u (glGetError=0x%x)\n",
+                    f, px[0], px[1], px[2], px[3], glGetError());
+        }
         if (!eglSwapBuffers(edpy, esurf)) {
             log_egl_error("eglSwapBuffers");
             eglMakeCurrent(edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

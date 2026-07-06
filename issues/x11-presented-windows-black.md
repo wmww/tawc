@@ -1,35 +1,55 @@
 # X11 (TAWC-DRI) windows composite black on OnePlus 9
 
-`es2gears_x11` (and any other X11 GL client) shows a mapped,
-correctly-sized window that is solid black on screen, while
-`xwayland::test_es2gears_x11_renders_via_ahb` **passes** — AHB
-create-buffer (`fmt=1` = RGBA_8888) and texture-import counters advance,
-zero `createFromHandle` failures. Wayland-native `weston-simple-egl`
-renders correctly in the same session, so compositing and the wlegl AHB
-path are fine; only X11/TAWC-DRI-presented content is invisible.
+`es2gears_x11` (and any X11 GL client that outlives the compositor's
+initial window resize) shows a mapped window that is solid black,
+while `xwayland::test_es2gears_x11_renders_via_ahb` **passes** — the
+AHB pipe tests are counter-only and pixel-blind
+([xwayland-gl-tests-pixel-blind.md](xwayland-gl-tests-pixel-blind.md)).
+Wayland-native `weston-simple-egl` renders correctly in the same
+session.
 
 Repro (2026-07-06, OnePlus 9 / Adreno 660):
 
 ```
 scripts/rootfs-run.sh 'sh -c "HYBRIS_EGLPLATFORM=x11 timeout 8 es2gears_x11"'
-# screencap → black ~600x600 window, no gears, no magenta tint
+# screencap → black window, no gears, no magenta tint
 ```
 
-Notes/xwayland.md records gears "visibly rotate correctly" on
-2026-05-01, so this regressed since. Prime suspect: that verification
-predates removing the force-opaque alpha workaround
-([plans/verify-libhybris-ahb-alpha.md](../plans/verify-libhybris-ahb-alpha.md)).
-X11 clients get RGBA_8888 AHBs but GLX/X11 apps typically never write
-meaningful alpha; if the buffer's alpha channel is 0, sampled-alpha
-compositing produces exactly this: counters advance, screen black,
-no tint.
+## Root cause (diagnosed 2026-07-06)
 
-Next step: sample the imported texture's alpha in the compositor (or
-temporarily force alpha=1 for TAWC-DRI buffers) to confirm, then decide
-per the alpha plan. The pixel-blind test should also grow a screencap
-assertion so this can't silently pass again.
+Not alpha (the original suspicion): the window composites *opaque*
+black over the desktop, and CPU-filled TAWC-DRI buffers
+(`tawc-dri-test`) plus glClear-only GL clients (`eglx11-test`) render
+fine. The real chain:
 
-Found while evaluating gl4es (verdict in notes/gpu-strategy.md); it
-blocks any visible X11 GL demo but is unrelated to gl4es itself. Also
-blocks visual verification for
-[plans/gl-on-gles-translator.md](../plans/gl-on-gles-translator.md).
+1. The compositor resizes every non-override-redirect X11 toplevel to
+   its host activity's logical size
+   (`compositor/src/xwayland.rs::configure_x11_toplevel_for_host`,
+   e.g. 300×300 → 540×1085). This landed after the 2026-05-01
+   es2gears verification — that's the regression point.
+2. The client handles ConfigureNotify and resets its GL viewport, as
+   the EGL spec expects the surface to follow the window.
+3. libhybris's `X11NativeWindow` never learns about the resize and
+   keeps allocating creation-time-sized AHBs. The client renders a
+   540×1085 viewport into 300×300 buffers: everything but the clear
+   color lands outside the buffer → black window.
+
+Evidence: an `LD_PRELOAD` shim hooking `eglSwapBuffers` +
+`glReadPixels` showed gears present at frame 0 (300×300 viewport) and
+gone forever once the viewport became 540×1085. `eglx11-test`
+survives only because its window gets resized *before* its EGL
+surface is created, so its buffer pool starts at the final size. A
+prototype `GetGeometry` poll in `queueBuffer` restored visibly
+rotating gears on device (confirming the diagnosis), but was reverted:
+polling papers over TAWC-DRI having no server→client event channel at
+all (same gap forces the release-less 3-buffer round-robin).
+
+## Fix
+
+[plans/tawc-dri-event-channel.md](../plans/tawc-dri-event-channel.md)
+— give TAWC-DRI XGE generic events (ConfigureNotify + BufferRelease)
+delivered to a libxcb special event queue in the plugin.
+
+`tests/apps/eglx11-test` grew `TAWC_EGLX11_{TRIANGLE,DEPTH,VBO,MVP,
+READBACK,W,H}` env modes during the bisection; they stay for the
+plan's verification.
