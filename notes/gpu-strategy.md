@@ -295,6 +295,40 @@ function); ours is smaller because the macro generates the assembly.
 **Upstream PRs worth re-evaluating if we push further on vkcube:**
 - PR #604: Mali `currentExtent` fix, `maxImageExtent` raise, opaque alpha support
 
+## Desktop GL: gl4es evaluated and rejected (2026-07-06)
+
+[ptitSeb/gl4es](https://github.com/ptitSeb/gl4es) (desktop GL → GLES2
+translator) was spike-tested on the OnePlus 9 and **works** over
+libhybris — `glxinfo` under XWayland reports
+`OpenGL 2.1 gl4es wrapper 1.1.7 / GL4ES using Adreno (TM) 660`,
+glxgears runs the full GPU path. Rejected anyway: hard GL 2.1 compat /
+GLSL 1.20 ceiling (no 3.x contexts, textual shader translator), so it
+misses every app we care about (kitty and friends need GL 3.3 core);
+X11/GLX only; single-global-context (not thread-safe). Old-GL-on-X11
+apps alone aren't worth shipping a layer for. The modern-GL gap on
+Vulkan 1.1 devices is instead
+[plans/gl-on-gles-translator.md](../plans/gl-on-gles-translator.md);
+zink remains the endgame on Vulkan 1.3+ hardware.
+
+Durable facts from the spike, useful to any GL-on-GLES front-end:
+
+- libhybris's `x11` EGL ws + TAWC-DRI present works for a GLX-on-EGL
+  translator: plain `eglGetDisplay(x11_display)` with
+  `HYBRIS_EGLPLATFORM=x11`. Do **not** use
+  `eglGetPlatformDisplay(EGL_PLATFORM_ANDROID_KHR, …)` (gl4es's
+  `-DHYBRIS` flag, made for Ubuntu Touch) — it selects the passthrough
+  "null" ws and segfaults in `eglCreateWindowSurface`.
+- Capability probing must use the app's own X display: gl4es probing
+  via `eglGetDisplay(EGL_DEFAULT_DISPLAY)` first made the later real
+  `eglCreateWindowSurface` die (worked around with `LIBGL_NOTEST=1`).
+- Cross-build recipe: `aarch64-linux-gnu-gcc` + host sysroot headers
+  via `-idirafter`, X11 linked from a stub libdir (the sysroot's
+  `libc.so` linker script has absolute host paths).
+- Debugging hazards hit during the spike:
+  [issues/rootfs-crash-exit-code-masked.md](../issues/rootfs-crash-exit-code-masked.md),
+  [issues/x11-presented-windows-black.md](../issues/x11-presented-windows-black.md),
+  [issues/broker-stdin-file-redirect-empty.md](../issues/broker-stdin-file-redirect-empty.md).
+
 ## Termux:X11 Comparison
 
 Both Termux:X11 paths involve CPU readback:
