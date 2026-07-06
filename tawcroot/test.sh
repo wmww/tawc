@@ -2,7 +2,7 @@
 # Run the cleat-driven tawcroot test runner.
 #
 # A single binary at `build/tawcroot-host/tests` runs five layers of
-# tests (per `notes/tawcroot.md` "Testing strategy"):
+# tests (per `notes/tawcroot/testing.md` "Testing strategy"):
 #
 #   - tawcroot/tests/unit/         pure-function unit tests (cleat-direct)
 #   - tawcroot/tests/hosted/       handler-logic tests, in-process against

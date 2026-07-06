@@ -4,7 +4,7 @@
  * a guest-absolute path and yields a (base_fd, suffix) pair we can use
  * with `*at` syscalls. Bind-mount lookup, `..`/symlink clamping, and
  * fd-relative resolution all hang off the same return shape — see
- * notes/tawcroot.md "Path translation".
+ * notes/tawcroot/path-translation.md "Path translation".
  *
  * No allocations. The caller passes a stack buffer for the suffix; we
  * write the (NUL-terminated) result into it. That keeps the API
@@ -23,7 +23,7 @@
  * Every other piece of state in this header (rootfs_host_path, binds[],
  * the well-known-symlink memo) is co-named "current root view" and
  * updates atomically (well, in straight-line order) when chroot swaps
- * the root. See notes/tawcroot.md §"chroot emulation". */
+ * the root. See notes/tawcroot/path-translation.md §"chroot emulation". */
 extern int tawcroot_rootfs_fd;
 
 /* Result of translating a guest path:
@@ -45,7 +45,7 @@ typedef struct {
 	long  err;       /* 0 on success, -errno otherwise */
 } tawcroot_path_result;
 
-/* Resolution mode — see notes/tawcroot.md §"Translation rules" for the
+/* Resolution mode — see notes/tawcroot/path-translation.md §"Translation rules" for the
  * full semantics. The mode parameterizes how the FINAL component of a
  * path is treated; parent components are always followed. The symlink
  * walker (path_resolve.c) varies leaf handling across modes; the
@@ -234,7 +234,7 @@ long tawcroot_open_in_view(const char *guest_path);
  *
  * Set BEFORE the seccomp filter is installed (or before the loader
  * jumps); read from the SIGSYS handler. The buffer is fixed-size and
- * immutable post-init — handler-safe per notes/tawcroot.md
+ * immutable post-init — handler-safe per notes/tawcroot/sigsys-handler.md
  * "Threading and `vfork` invariants". */
 extern char   tawcroot_guest_exe_path[4096];
 extern size_t tawcroot_guest_exe_path_len;

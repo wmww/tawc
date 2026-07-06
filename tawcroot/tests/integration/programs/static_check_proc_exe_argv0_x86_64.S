@@ -4,7 +4,7 @@
  * Used by tests/integration/test_prod_fork.c to validate that
  * /proc/self/exe resolves to the *current* exec target, not the
  * original guest binary, after a fork+execve. The Firefox libxul.so
- * regression (notes/tawcroot.md "Phase 5c"; exec_handler.c:91-101
+ * regression (notes/tawcroot/phasing.md "Phase 5c"; exec_handler.c:91-101
  * comment) was: fork-and-exec'd descendants saw the *parent's*
  * stashed `tawcroot_guest_exe_path` ("/bin/bash") through
  * /proc/self/exe instead of their own exec target ("/usr/bin/firefox"),

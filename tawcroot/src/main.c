@@ -28,7 +28,7 @@
  *
  * The cleat test runner (`build/tawcroot-host/tests`) execs
  * `tawcroot-testhost` for these and for handler-layer smoke. See
- * notes/tawcroot.md "Testing strategy".
+ * notes/tawcroot/testing.md "Testing strategy".
  */
 
 #include <stdint.h>

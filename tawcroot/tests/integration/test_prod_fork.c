@@ -11,18 +11,18 @@
  *
  *   - process_vm_readv must address the *current* thread's tid;
  *     caching the parent's tid silently broke fork-children's path
- *     translation (notes/tawcroot.md "More phase-5b bugs"; comment
+ *     translation (notes/tawcroot/phasing.md "More phase-5b bugs"; comment
  *     in usercopy.c:14-22).
  *
  *   - Bash's fork+execve chain depends on every link working in a
  *     fresh process: handle_execve, the exec handler's prepare/commit
  *     memfd handoff, --exec-child re-init, and the SIGSYS-blocked
- *     sigmask unblock in loader_exec_child (notes/tawcroot.md
+ *     sigmask unblock in loader_exec_child (notes/tawcroot/phasing.md
  *     "phase-5b").
  *
  *   - gpgme's pre-exec closefrom() needs reserved fds to survive
  *     the close()/close_range() barrage and remain re-exportable
- *     through bind.src[256] (notes/tawcroot.md "Phase 5c — full
+ *     through bind.src[256] (notes/tawcroot/phasing.md "Phase 5c — full
  *     integration suite").
  *
  * Each test below runs production tawcroot in `-r ROOTFS` mode
@@ -234,7 +234,7 @@ test(prod_fork_then_execve_with_bind)
 
 /* /proc/self/exe must resolve to the *current* exec target after a
  * fork+execve, not the original guest binary. The Firefox libxul.so
- * regression (notes/tawcroot.md "Phase 5c"; exec_handler.c:91-101):
+ * regression (notes/tawcroot/phasing.md "Phase 5c"; exec_handler.c:91-101):
  * descendants saw "/bin/bash" through /proc/self/exe instead of their
  * own exec target, breaking $ORIGIN-relative dlopen.
  *

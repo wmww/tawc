@@ -10,7 +10,7 @@
  *
  * The rootfs/prod filter expands rule 3 into a generated jump table covering the full trap
  * set. The shape of rules 1, 2, and 4 is the contract that Approach A
- * (re-exec into ourselves) depends on — see notes/tawcroot.md "Why non-PIE".
+ * (re-exec into ourselves) depends on — see notes/tawcroot/sigsys-handler.md "Why non-PIE".
  *
  * cBPF is 32-bit. Our stub address is 64-bit on both arches; we have to
  * compare it in two halves, low first then high. seccomp_data layout is:
@@ -22,7 +22,7 @@
  *     ...
  *
  * The kernel struct above is the source of truth for the offsets
- * (notes/tawcroot.md's cBPF sketch agrees).
+ * (notes/tawcroot/seccomp-filter.md's cBPF sketch agrees).
  */
 
 #include <stddef.h>
@@ -49,7 +49,7 @@
  * kernel will return to). On x86_64 SYSCALL is 2 bytes; on aarch64 SVC
  * is 4 bytes. So the address we compare against is the `_ret` label,
  * not the `_insn` label sitting on the syscall instruction itself.
- * See notes/tawcroot.md "Issuing host syscalls from the handler" for
+ * See notes/tawcroot/sigsys-handler.md "Issuing host syscalls from the handler" for
  * the full breakdown of the three related addresses. */
 extern char tawcroot_raw_syscall_ret[];
 

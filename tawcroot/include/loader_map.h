@@ -13,7 +13,7 @@
  * `PROT_*` / `MAP_*` semantically. Concrete numeric values match
  * Linux uapi so a "pass through" impl works without translation.
  *
- * See notes/tawcroot.md "execve handling in detail" for the
+ * See notes/tawcroot/path-translation.md "execve handling in detail" for the
  * surrounding architecture; this header is just the mapper API.
  */
 

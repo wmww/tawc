@@ -57,7 +57,7 @@ physical test stack (OnePlus 9, Arch Linux ARM Firefox 150.0.3,
 2026-05-19), Firefox accepts that denial without a UI warning and
 stays alive. Older notes claimed `-EPERM` aborted during
 `unregister_tls_module`; that is not reproducible on the current
-stack. See `notes/tawcroot.md` "Signal-handler virtualisation" and
+stack. See `notes/tawcroot/sigsys-handler.md` "Signal-handler virtualisation" and
 `tawcroot/src/syscalls_control.c::handle_seccomp`.
 
 For tawcroot, `/dev/shm` is emulated in-handler via `memfd_create`

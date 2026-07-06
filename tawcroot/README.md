@@ -15,4 +15,4 @@ Layout:
                                     broker (static bionic, runs as a guest
                                     under the loader; see ../notes/ando.md)
 
-Design + plan: ../notes/tawcroot.md
+Design + plan: ../notes/tawcroot/README.md

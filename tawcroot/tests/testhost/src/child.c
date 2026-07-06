@@ -14,7 +14,7 @@
  * Production `--exec-child` uses the loader path in main.c; this file is
  * the testhost-only smoke child.
  *
- * See notes/tawcroot.md "Approach A: re-exec into ourselves first" and
+ * See notes/tawcroot/seccomp-filter.md "Approach A: re-exec into ourselves first" and
  * "Why non-PIE".
  */
 

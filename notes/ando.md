@@ -25,7 +25,7 @@ refuses with enable instructions.
 
 tawcroot's seccomp filter is permanent kernel state: it is inherited
 across fork/exec by every guest descendant and can never be removed,
-only stacked on (tawcroot.md §"Why non-PIE"). Any process forked from
+only stacked on (tawcroot/sigsys-handler.md §"Why non-PIE"). Any process forked from
 inside the rootfs carries the filter forever. So escape = ask a
 process that **never had the filter** to spawn the command. The app
 process is that process; ando is a production sibling of the debug

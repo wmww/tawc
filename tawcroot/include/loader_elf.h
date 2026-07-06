@@ -8,7 +8,7 @@
  * the current address space without invoking `execve`, because doing
  * so resets our SIGSYS handler and the inherited seccomp filter then
  * SIGSYS-kills the guest's first path-bearing syscall. See
- * notes/tawcroot.md §"execve handling in detail".
+ * notes/tawcroot/path-translation.md §"execve handling in detail".
  *
  * This header is the *parser + geometry* half: it consumes raw ELF
  * bytes and produces a `tawc_loader_image` describing what the mapper

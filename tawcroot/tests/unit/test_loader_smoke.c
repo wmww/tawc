@@ -12,7 +12,7 @@
  * If any of parser/mapper/stack/trampoline are broken, the child will
  * exit with a different code (or signal) and the test reports clearly.
  *
- * This is the phase 2.4 exit gate from notes/tawcroot.md: until this
+ * This is the phase 2.4 exit gate from notes/tawcroot/phasing.md: until this
  * passes, dynamic-binary support (phase 2.5) doesn't land.
  */
 

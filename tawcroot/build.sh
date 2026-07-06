@@ -8,7 +8,7 @@
 # tawcroot is shipped as `libtawcroot.so` for the same reason proot ships
 # as `libproot.so` + `libproot-loader.so`: Android's jniLib extractor only
 # matches `lib*.so` filenames and doesn't validate ELF type. The actual
-# binary is a static, non-PIE ET_EXEC. See notes/tawcroot.md.
+# binary is a static, non-PIE ET_EXEC. See notes/tawcroot/sigsys-handler.md.
 #
 # This script lives in `tawcroot/` (with the rest of the tawcroot project)
 # but stages production binaries into `app/src/main/jniLibs/` —
@@ -36,7 +36,7 @@
 #                         layered tests and reports pass/fail with a
 #                         single exit code. cleat / STC are NEVER linked
 #                         into either tawcroot binary — they only live
-#                         in the test runner. See notes/tawcroot.md
+#                         in the test runner. See notes/tawcroot/testing.md
 #                         "Testing strategy".
 #
 # Layout (everything under the project dir):
@@ -84,7 +84,7 @@ JNILIBS_DIR="$REPO_DIR/app/src/main/jniLibs"
 CLEAT_DIR="$(dep_dir cleat)"
 
 # Cleat is pinned to a specific commit in deps/deps.list. cleat is not
-# released; api churn is expected. See notes/tawcroot.md "Testing strategy".
+# released; api churn is expected. See notes/tawcroot/testing.md "Testing strategy".
 setup_cleat() {
     dep_ensure cleat
 }
@@ -108,7 +108,7 @@ find_ndk() {
 }
 
 # ---------------------------------------------------------------------------
-# Per-ABI base address. See notes/tawcroot.md "Why non-PIE" for the full
+# Per-ABI base address. See notes/tawcroot/sigsys-handler.md "Why non-PIE" for the full
 # story. The aarch64 base is high (matches proot's LOADER_ADDRESS); the
 # x86_64 base is constrained to ~1 GB by static-bionic libc.a's PLT32
 # weak-undef relocations — but right now we link `-nostdlib` so the
@@ -118,7 +118,7 @@ find_ndk() {
 # These addresses MUST be stable across re-execs of the same binary —
 # the seccomp filter allowlists `&tawcroot_raw_syscall_ret` as a fixed
 # 64-bit value (the kernel reports post-syscall PC for SIGSYS, see
-# notes/tawcroot.md §"Issuing host syscalls from the handler"). ASLR
+# notes/tawcroot/sigsys-handler.md §"Issuing host syscalls from the handler"). ASLR
 # on tawcroot itself would break that.
 ARCH_BASE_aarch64="0x2000000000"
 ARCH_BASE_x86_64="0x40000000"
@@ -214,7 +214,7 @@ SRC_S_x86_64=(
     "$TAWCROOT_DIR/src/arch/x86_64_loader_jump.S"
 )
 
-# Common compile flags. See notes/tawcroot.md "Language" and
+# Common compile flags. See notes/tawcroot/overview.md "Language" and
 # "Build integration". `-nostdlib`/`-nostartfiles` keep us libc-free; we
 # provide `_start` ourselves and issue every syscall through the raw
 # stub. `-fno-stack-protector` is required so static-bionic's stack

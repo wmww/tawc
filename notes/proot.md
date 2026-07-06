@@ -6,7 +6,7 @@ ptrace-based fake chroot. This note covers what makes it work on
 Android, the non-obvious bits we hit during integration, and the
 maintenance contract for the vendored sources.
 
-**Status: dev-only, not officially supported.** [tawcroot](tawcroot.md)
+**Status: dev-only, not officially supported.** [tawcroot](tawcroot/README.md)
 is the default and only officially supported install method; release
 builds ship only tawcroot (see `notes/installation.md` "Install
 methods"). proot remains in debug builds for performance comparisons

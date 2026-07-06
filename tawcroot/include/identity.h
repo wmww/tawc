@@ -7,7 +7,7 @@
  * after a drop, restoring the old ids fails with EPERM and the getters
  * report the target user. Identity is cosmetic-consistent only — file
  * access remains whatever the app uid can do. See identity.c and
- * notes/tawcroot.md "Virtual identity and metadata".
+ * notes/tawcroot/path-translation.md "Virtual identity and metadata".
  */
 
 #pragma once

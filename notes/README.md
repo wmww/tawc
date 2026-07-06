@@ -43,7 +43,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 
 ## Rootfs Methods And Distros
 
-- [tawcroot.md](tawcroot.md) - systrap-based rootless runtime architecture and implementation notes.
+- [tawcroot/](tawcroot/README.md) - systrap-based rootless runtime architecture and implementation notes (split into topic files).
 - [proot.md](proot.md) - debug-only Termux/proot install method.
 - [chroot.md](chroot.md) - debug-only root `chroot(2)` install method.
 - [distro-abstraction.md](distro-abstraction.md) - distro definition/refactor notes.

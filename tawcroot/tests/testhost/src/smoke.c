@@ -5,7 +5,7 @@
  * (the IP-allowlist contract is the spine of the whole architecture, and
  * the smoke is cheap to keep running on every binary).
  *
- * See notes/tawcroot.md "Issuing host syscalls from the handler" and
+ * See notes/tawcroot/sigsys-handler.md "Issuing host syscalls from the handler" and
  * "Why the handler is async-signal-safe".
  */
 

@@ -21,7 +21,7 @@
  *
  *   - execveat's AT_SYMLINK_NOFOLLOW flag is intentionally not emulated
  *     yet; callers get -ENOSYS rather than a silently-followed symlink.
- *     See notes/tawcroot.md §"Accepted syscall-fidelity divergences".
+ *     See notes/tawcroot/status.md §"Accepted syscall-fidelity divergences".
  */
 
 #include <stddef.h>

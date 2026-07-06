@@ -1,6 +1,6 @@
 /* chroot(2) emulation — handler-side root-view swap.
  *
- * See include/chroot.h for the why; notes/tawcroot.md §"chroot
+ * See include/chroot.h for the why; notes/tawcroot/path-translation.md §"chroot
  * emulation" for the full design. The handler:
  *
  *   1. Pulls the guest path through usercopy (EFAULT-safe).
@@ -167,7 +167,7 @@ static long handle_chroot(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * explicit barriers, an aarch64 reader could observe the new
 	 * `_len` before the path bytes — but the failure mode is bounded
 	 * (the reader returns -ENOENT and the guest retries, which
-	 * works post-update). See notes/tawcroot.md §"chroot emulation"
+	 * works post-update). See notes/tawcroot/path-translation.md §"chroot emulation"
 	 * for the full race analysis. */
 	tawcroot_rootfs_host_path_len = 0;
 	for (size_t i = 0; i < new_host_len; i++)

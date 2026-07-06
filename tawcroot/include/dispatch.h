@@ -3,7 +3,7 @@
  * The SIGSYS handler reads the trapped syscall number, looks up the
  * corresponding handler, calls it with `(args, uc)`, and writes the
  * return value back into ucontext. Empty slots return -ENOSYS — see
- * notes/tawcroot.md "SIGSYS handler" (we deliberately do NOT abort on
+ * notes/tawcroot/sigsys-handler.md "SIGSYS handler" (we deliberately do NOT abort on
  * unexpected TRAP because Android's stacked filter can hand us
  * syscalls we didn't ask for, and that should soft-fail to ENOSYS).
  *

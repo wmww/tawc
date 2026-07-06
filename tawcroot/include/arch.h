@@ -2,7 +2,7 @@
  *
  * Selects between x86_64 and aarch64 inline helpers and exposes a small,
  * ucontext-shaped surface the handler uses to read syscall args and write
- * the return value. Per notes/tawcroot.md "Reading and writing the saved
+ * the return value. Per notes/tawcroot/sigsys-handler.md "Reading and writing the saved
  * registers". Header-only on purpose — every helper is tiny and inlines
  * cleanly into the SIGSYS handler.
  */

@@ -39,7 +39,7 @@ import java.io.IOException
  *     guest seccomp filter installs with `EPERM`, which current
  *     Firefox accepts without UI warnings.
  *
- * See `notes/tawcroot.md` for the full design + phasing.
+ * See `notes/tawcroot/README.md` for the full design + phasing.
  */
 class TawcrootMethod(context: Context) : InstallationMethod {
     private val appPaths = AppPaths.from(context)

@@ -373,7 +373,7 @@ test(prod_rootfs_cross_bind_abs_symlink)
  * filesystem, doesn't care that the path text never appears in the
  * guest view.
  *
- * This pins down the actual contract — see notes/tawcroot.md
+ * This pins down the actual contract — see notes/tawcroot/path-translation.md
  * §"No `openat2(RESOLVE_IN_ROOT)` shortcut". The case that *isn't*
  * supported is a symlink whose target is a guest-view-only path
  * (e.g. /dst_b/...) where the underlying host path differs; that

@@ -17,7 +17,7 @@
  * translation would resolve against the wrong root (or worse, leak
  * outside the rootfs).
  *
- * See notes/tawcroot.md §"chroot emulation" for the full state model
+ * See notes/tawcroot/path-translation.md §"chroot emulation" for the full state model
  * and edge-case behaviour.
  */
 

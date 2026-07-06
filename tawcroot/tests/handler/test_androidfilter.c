@@ -12,7 +12,7 @@
  *   - openat2 / faccessat2 / clone3 / close_range RET_TRAP from the outer
  *     filter must be caught by tawcroot's SIGSYS handler. Bug shapes:
  *       * tawcroot's openat2 probe runs before install_handler -> killed
- *         (notes/tawcroot.md "Bugs found and fixed during install pipeline
+ *         (notes/tawcroot/testing.md "Bugs found and fixed during install pipeline
  *         validation"). Reproducer here would be a dead testhost.
  *       * tawcroot's handler issues NR 439 (faccessat2) recursively from
  *         inside SIGSYS -> recursive trap -> killed. Reproducer here would
@@ -181,7 +181,7 @@ register_dynamic_tests
 	/* Default wrapper config: trap the kernel-version-gated NRs that
 	 * appear on every arch (openat2 / faccessat2 / clone3 / close_range).
 	 * This is the minimum set that catches all the SIGSYS-recursion
-	 * and probe-ordering bugs from notes/tawcroot.md. */
+	 * and probe-ordering bugs from notes/tawcroot/testing.md. */
 	const char *prefix_default[] = {
 		TAWCROOT_ANDROID_FILTER_WRAP,
 		"--",

@@ -141,7 +141,7 @@ static void route_through_binds(tawcroot_path_result *r, char *suf,
  * alone reproduces their ENOTDIR/EEXIST/EISDIR behavior.
  *
  * A trailing `..` component is NOT a marker: it folds away lexically
- * (see the `..`-after-symlink divergence in notes/tawcroot.md
+ * (see the `..`-after-symlink divergence in notes/tawcroot/status.md
  * §"Accepted syscall-fidelity divergences"). */
 static int has_trailing_dir_marker(const char *p)
 {

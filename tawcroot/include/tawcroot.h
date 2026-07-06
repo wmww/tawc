@@ -4,7 +4,7 @@
  * (bind table, dispatch table, fd-provenance table, exec_state_fd
  * format) into this header so the dependency graph stays acyclic.
  *
- * See notes/tawcroot.md.
+ * See notes/tawcroot/README.md.
  */
 
 #pragma once

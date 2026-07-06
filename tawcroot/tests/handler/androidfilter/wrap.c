@@ -1,7 +1,7 @@
 /* Synthesized Android-`untrusted_app`-shape seccomp prefilter wrapper.
  *
  * Reproduces the parts of Android's stacked seccomp filter that have caused
- * production tawcroot bugs (see notes/tawcroot.md "Bugs found and fixed
+ * production tawcroot bugs (see notes/tawcroot/testing.md "Bugs found and fixed
  * during phase-5b" and similar). On plain host Linux this lets us run the
  * existing handler-layer test surface against the same filter shape we'd
  * see under run-as on a real device, without needing adb / a phone /
@@ -52,7 +52,7 @@
  *     kill it before exec. tawcroot's handler internally uses execveat
  *     to re-exec self for the --exec-child handoff; trapping that would
  *     re-enter the SIGSYS handler, which the design explicitly avoids
- *     (see "faccessat2 recursive SIGSYS" in notes/tawcroot.md).
+ *     (see "faccessat2 recursive SIGSYS" in notes/tawcroot/phasing.md).
  *   - Any syscall the wrapper itself uses during init (read, write,
  *     mmap, prctl, seccomp). Same reason — kills the wrapper.
  *
@@ -79,7 +79,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 
-/* Match notes/tawcroot.md naming. */
+/* Match notes/tawcroot/testing.md naming. */
 #if defined(__aarch64__)
 # define WRAP_AUDIT_ARCH      AUDIT_ARCH_AARCH64
 # define WRAP_NR_openat2      437

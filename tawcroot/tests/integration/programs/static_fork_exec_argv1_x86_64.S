@@ -9,7 +9,7 @@
  *   re-establishes rootfs view + handler from exec_state, manual-
  *   loads the requested guest binary → that binary runs.
  *
- * This is the path notes/tawcroot.md "phase-5b" calls out as the
+ * This is the path notes/tawcroot/phasing.md "phase-5b" calls out as the
  * regression surface where (a) NR 221 execve was missing from the
  * aarch64 dispatch, (b) AT_EXECFN incorrectly stuck to the original
  * guest binary across exec, (c) the inherited SIGSYS-blocked sigmask

@@ -9,7 +9,7 @@
  * cleat-driven test runner (`build/tawcroot-host/tests`) execs this
  * binary as a subprocess for handler-layer tests.
  *
- * See notes/tawcroot.md "Testing strategy" -- this is the in-binary half;
+ * See notes/tawcroot/testing.md "Testing strategy" -- this is the in-binary half;
  * the cleat half lives under `tests/{unit,handler,integration}/`.
  */
 

@@ -401,7 +401,7 @@ gcc's `libasan`/`libubsan` runtimes, which ship with the same
 distro gcc packages listed above — no extra host package. The NDK
 cross-builds (the shipped artifacts) are untouched.
 
-See [tawcroot.md](tawcroot.md) for the design.
+See [tawcroot](tawcroot/README.md) for the design.
 
 ### ando client (→ ships in APK as jniLib)
 

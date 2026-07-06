@@ -13,7 +13,7 @@
  * file under /etc/probe before installing the filter so we can compare
  * the bytes after.
  *
- * See notes/tawcroot.md "Phase 1 -- MVP path translation" for the
+ * See notes/tawcroot/phasing.md "Phase 1 -- MVP path translation" for the
  * historical bring-up label.
  */
 
@@ -2730,7 +2730,7 @@ static int test_internal_fd_protection(void)
 	 * — used by gpgme/libcurl/python pre-exec hygiene —
 	 * polled `/proc/self/fd` until empty, looped forever
 	 * because the lying-EBADF kept the fd in the table.
-	 * See `notes/tawcroot.md` "Phase 5c — full integration
+	 * See `notes/tawcroot/phasing.md` "Phase 5c — full integration
 	 * suite, OnePlus 9".) The next path-bearing syscall lazy-
 	 * reopens via `tawcroot_reopen_reserved_fd()` from the
 	 * stashed `tawcroot_rootfs_host_path`. */
@@ -3347,7 +3347,7 @@ static int test_proc_self_exe_synthesis(void)
 	 * `handle_readlink` does the same lookup. Surfaced when
 	 * Firefox's stub binary called `readlink("/proc/self/exe")`,
 	 * got back the libtawcroot host path, and bailed with
-	 * "Couldn't load XPCOM." — see notes/tawcroot.md "Phase 5c". */
+	 * "Couldn't load XPCOM." — see notes/tawcroot/phasing.md "Phase 5c". */
 	{
 		extern void tawcroot_set_guest_exe_path(const char *);
 		tawcroot_set_guest_exe_path("/usr/bin/legacy-guest");
@@ -4779,7 +4779,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	}
 
 	/* Probe process_vm_readv (against our own task id). Used by the
-	 * guarded guest-pointer copy helpers -- see notes/tawcroot.md
+	 * guarded guest-pointer copy helpers -- see notes/tawcroot/sigsys-handler.md
 	 * "Guest memory access". Must run before the seccomp filter goes
 	 * up because the probe issues a process_vm_readv that's only
 	 * RET_ALLOWed when the IP allowlist is in effect from the stub. */

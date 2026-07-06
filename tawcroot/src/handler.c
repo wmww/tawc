@@ -1,6 +1,6 @@
 /* SIGSYS handler.
  *
- * Async-signal-safe by construction (notes/tawcroot.md "Why the handler
+ * Async-signal-safe by construction (notes/tawcroot/sigsys-handler.md "Why the handler
  * is async-signal-safe"): no malloc, no stdio, no libc calls with hidden
  * mutable state. Just reads ucontext, optionally inspects siginfo, and
  * writes a return value back into the saved register frame.
@@ -54,7 +54,7 @@ extern void tawcroot_sigreturn_trampoline(void);
  * handler should not write to a mutable process-wide global on every
  * TRAP — that's contention for multi-threaded guests and violates the
  * "no mutable handler state without snapshot rules" principle from
- * notes/tawcroot.md "Threading and `vfork` invariants". Gate it behind
+ * notes/tawcroot/sigsys-handler.md "Threading and `vfork` invariants". Gate it behind
  * TAWCROOT_TESTHOST so production stays clean; testhost binaries keep
  * the slot for the smoke driver.
  *
@@ -85,7 +85,7 @@ static void sigsys_handler(int sig, siginfo_t *info, void *ucontext)
 	 * us read garbage "args" from an interrupted-code ucontext and,
 	 * worse, clobber a live register via write_return on resume. The
 	 * kernel default for SIGSYS is process death; match it loudly
-	 * (notes/tawcroot.md "SIGSYS handler": abort if not seccomp). */
+	 * (notes/tawcroot/sigsys-handler.md "SIGSYS handler": abort if not seccomp). */
 	if (info->si_code != SYS_SECCOMP) {
 		tawc_io_str("tawcroot: non-seccomp SIGSYS (si_code=");
 		tawc_io_dec(info->si_code);

@@ -21,7 +21,7 @@
  *   - statx fake-root preserves stx_uid/stx_gid == 0
  *   - linkat falls back to symlink, renameat2/truncate/cwd round-trips, …
  *
- * See notes/tawcroot.md "Phase 1 -- MVP path translation" and
+ * See notes/tawcroot/phasing.md "Phase 1 -- MVP path translation" and
  * "Phase 0.5 -- runtime invariants" for the historical bring-up labels.
  *
  * Hosted twins: tests/hosted/ covers the handler-LOGIC subset of the

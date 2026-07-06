@@ -163,7 +163,7 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * glycin's "namespace setup failed" autodetect substrings.
 	 * Synthesizing here lets bwrap proceed to the unshare, fail with
 	 * the substring glycin recognizes, and trigger its NotSandboxed
-	 * fallback. See notes/tawcroot.md "More /proc reverse-translation
+	 * fallback. See notes/tawcroot/path-translation.md "More /proc reverse-translation
 	 * paths" for the wider context.
 	 *
 	 * /proc/bus/pci/devices: synthesize an empty memfd. Android exposes
@@ -243,7 +243,7 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * /apex/com.android.runtime/lib64/bionic/libc.so on Android)
 	 * needs the kernel to follow through the host root, not the
 	 * bind src. See test_prod_rootfs.c::prod_rootfs_cross_bind_abs_symlink
-	 * and notes/tawcroot.md "Cross-bind absolute symlinks". */
+	 * and notes/tawcroot/path-translation.md "Cross-bind absolute symlinks". */
 	return tawc_openat(t.fd, p, flags, mode);
 }
 
@@ -415,7 +415,7 @@ static long translate_local(struct tawcroot_path_scratch *scratch, int slot,
 			/* Lift EVERY non-empty fd-relative path to guest-
 			 * absolute via the dirfd's /proc/self/fd link, then
 			 * run the full translator so the `..` clamp AND the
-			 * symlink resolver apply (notes/tawcroot.md
+			 * symlink resolver apply (notes/tawcroot/path-translation.md
 			 * §"Translation rules" item 4: escapes blocked for
 			 * both absolute and relative requests). Earlier only
 			 * paths containing `..` were lifted; a dotdot-free
@@ -593,7 +593,7 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	 * before forwarding it. We reuse translate_at's path buffer (dead
 	 * from here on) as the scratch — a fresh PATH_MAX buffer would
 	 * push the handler frame past the stack budget noted in
-	 * notes/tawcroot.md "Threading and `vfork` invariants". Cost vs.
+	 * notes/tawcroot/sigsys-handler.md "Threading and `vfork` invariants". Cost vs.
 	 * the pre-fix direct
 	 * kernel→guest write: every readlinkat now pays a process_vm_writev
 	 * round-trip even when no substitution fires; the equality test

@@ -3,7 +3,7 @@
  *
  * Used by tests/integration/test_prod_fork.c to catch the
  * "process_vm_readv must use the child's tid" class of regression
- * (notes/tawcroot.md "More phase-5b bugs"; usercopy.c:14-22). The
+ * (notes/tawcroot/phasing.md "More phase-5b bugs"; usercopy.c:14-22). The
  * fork-child issues a path-translated openat — the SIGSYS handler
  * runs in the child's process, and path translation copies the path
  * string out of the child's VM via process_vm_readv. If the handler

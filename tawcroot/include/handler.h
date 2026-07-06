@@ -3,7 +3,7 @@
  * The foundation smoke uses the observation slot to prove the
  * filter/handler contract: record what it saw and return -ENOSYS via
  * ucontext rewrite. Production dispatch uses the same hot-path
- * constraints (no malloc, no stdio, no libc with hidden state). See notes/tawcroot.md
+ * constraints (no malloc, no stdio, no libc with hidden state). See notes/tawcroot/sigsys-handler.md
  * "SIGSYS handler" and "Why the handler is async-signal-safe".
  *
  * The foundation smoke reads `tawcroot_handler_observe()` after triggering

@@ -4,7 +4,7 @@
  *   - Absolute guest path:
  *       Tokenize on `/`, fold `.` and `..` (clamp at root if they would
  *       escape — proot-compatible behavior described in
- *       notes/tawcroot.md "..&symlink escapes are blocked"). The result
+ *       notes/tawcroot/path-translation.md "..&symlink escapes are blocked"). The result
  *       is a rootfs-relative suffix used with the rootfs O_PATH fd via
  *       *at syscalls.
  *   - Relative guest path:
@@ -20,7 +20,7 @@
  * caller's stack (4 KB PATH_MAX is the hard cap). The `..`-fold lives
  * in path_fold.c; symlink resolution (parameterized per syscall
  * semantics: follow / no-follow / parent-for-create / parent-for-remove
- * — see notes/tawcroot.md §"Translation rules") is wired up through the
+ * — see notes/tawcroot/path-translation.md §"Translation rules") is wired up through the
  * oracle in the translate ctx and implemented in path_resolve.c.
  */
 
@@ -471,7 +471,7 @@ tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 	 * fds, so the guest cannot kill rootfs_fd or bind src_fds. The
 	 * globals read below are written post-init only by the chroot(2)
 	 * handler (chroot.c). A concurrent multi-threaded chroot races
-	 * against the snapshot we take here — see notes/tawcroot.md
+	 * against the snapshot we take here — see notes/tawcroot/path-translation.md
 	 * §"chroot emulation" for the bounded-failure analysis. */
 
 	struct tawcroot_path_translate_ctx ctx = {

@@ -3,19 +3,19 @@
  *
  *   1. AF_UNIX bind() sun_path translation. Untested anywhere prior.
  *      The gpg-agent regression — bind("/run/.gnupg/S.gpg-agent") on
- *      the host fs instead of inside the rootfs (notes/tawcroot.md
+ *      the host fs instead of inside the rootfs (notes/tawcroot/path-translation.md
  *      "More phase-5b bugs"; src/syscalls_socket.c).
  *
  *   2. Reserved fd hidden from /proc/self/fd via getdents64 dirent
  *      filtering. The gpgme closefrom death-spiral regression
- *      (notes/tawcroot.md "Phase 5c"; src/syscalls_fd.c::handle_getdents64
+ *      (notes/tawcroot/phasing.md "Phase 5c"; src/syscalls_fd.c::handle_getdents64
  *      + src/dirent_filter.c). The rootfs testhost has the same
  *      check (test_internal_fd_protection) but only against the
  *      testhost's own filter install — not under production main.c +
  *      seccomp + supervisor_init.
  *
  *   3. Inherited SIGSYS-blocked sigmask is unblocked by supervisor_init.
- *      The JVM-spawned-shell regression (notes/tawcroot.md "Phase 4").
+ *      The JVM-spawned-shell regression (notes/tawcroot/phasing.md "Phase 4").
  *      Reproduced by blocking SIGSYS in the ORCHESTRATOR (not the guest
  *      — the handler intentionally strips SIGSYS from guest-issued
  *      sigprocmask calls), then forking and execing tawcroot. The

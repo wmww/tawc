@@ -13,14 +13,14 @@ today lets tawcroot issue an `openat` outside the rootfs becomes a plain
 **Status: plan, not started.** Gated on kernel ≥ 5.13; the primary
 device (OnePlus 9, kernel 5.4) does not support it, so this is
 probe-and-enable-if-present, same shape as the `PR_SET_SYSCALL_USER_DISPATCH`
-future-work item in notes/tawcroot.md. It ships doing nothing on 5.4 and
+future-work item in notes/tawcroot/status.md. It ships doing nothing on 5.4 and
 lights up on newer devices / the host test machine.
 
 ## Why this is the right lever
 
 - **It moves enforcement into the kernel.** Today the only thing keeping
   a guest inside the rootfs is the in-handler resolver's `..`-clamp and
-  symlink re-rooting (notes/tawcroot.md §"Translation rules"). That code
+  symlink re-rooting (notes/tawcroot/path-translation.md §"Translation rules"). That code
   has two known escape corners (lexical `..` after a symlink component,
   cross-operand rename) and any future bug is a silent escape, because
   tawcroot is *not* `chroot`ing — the host fs is right there. Landlock
@@ -39,7 +39,7 @@ lights up on newer devices / the host test machine.
   (b) inherited across `fork`/`execve`, and (c) monotonic — you can only
   ever *add* restriction. So it installs **once** at top-level init and
   needs no re-application on the `--exec-child` re-exec, exactly like the
-  filter (notes/tawcroot.md §"Why non-PIE", §"Filter installation").
+  filter (notes/tawcroot/sigsys-handler.md §"Why non-PIE", notes/tawcroot/seccomp-filter.md §"Filter installation").
 
 ## Availability & gating
 
@@ -51,7 +51,7 @@ Landlock. On any error, skip silently and run exactly as today. On the
 nothing else changes.
 
 **Must-verify before relying on it (same discipline as the raw-syscall
-smoke in notes/tawcroot.md §"Issuing host syscalls"):** on a real
+smoke in notes/tawcroot/sigsys-handler.md §"Issuing host syscalls"):** on a real
 Android ≥ 5.13 device, confirm Android's own zygote/`untrusted_app`
 seccomp allowlist does not `KILL`/`TRAP` the three landlock syscalls
 (444/445/446). They are new enough that an older allowlist may not
@@ -101,7 +101,7 @@ so nothing GPU/IPC-shaped breaks:
 - **`LANDLOCK_ACCESS_FS_IOCTL_DEV`** (ABI 5+) — NOT handled. GPU
   passthrough (`ioctl` on `/dev/kgsl-3d0`, binder, gfxstream) must stay
   unrestricted; those go straight to the host kernel by design
-  (notes/tawcroot.md §"What it explicitly is not"). Not naming this right
+  (notes/tawcroot/overview.md §"What it explicitly is not"). Not naming this right
   leaves all device ioctls unrestricted.
 - **`LANDLOCK_ACCESS_NET_*`** (ABI 4+) — NOT handled. This is a
   filesystem-containment feature only; leave sockets alone.
@@ -158,7 +158,7 @@ in the 9x band (say 96) like the neighbors.
 
 ### chroot interaction — none, by construction
 
-Emulated `chroot(2)` (notes/tawcroot.md §"chroot emulation") only ever
+Emulated `chroot(2)` (notes/tawcroot/path-translation.md §"chroot emulation") only ever
 *narrows* the guest's view: it re-anchors binds within the existing
 rootfs and swaps the current-root prefix. It never needs to reach a host
 path outside the original rootfs+bind set. Since Landlock already grants
@@ -207,7 +207,7 @@ aarch64 and x86_64 (they live in the post-5.11 shared block):
   inherited, so it never needs to travel in the exec-state fd and never
   violates the "`--exec-child` doesn't read config from env" rule.
 - **Do not** source this from an env var read by `--exec-child`
-  (design rule, notes/tawcroot.md §"Environment rule"). A top-level CLI
+  (design rule, notes/tawcroot/architecture.md §"Environment rule"). A top-level CLI
   flag is the correct channel.
 - **Kotlin (future, optional):** a per-distro "extra hardening" toggle,
   or just always-`auto`, passed via the install action args like the
@@ -246,7 +246,7 @@ sandbox and must not be described as making tawcroot one:
   be fine — the rootfs is one tree — but watch for a workload that renames
   across a bind boundary.
 - **Resolver bugs are contained, not fixed.** The lexical-`..` and
-  cross-rename corners in notes/tawcroot.md "Known gaps" still produce
+  cross-rename corners in notes/tawcroot/status.md "Known gaps" still produce
   *wrong* (non-kernel-faithful) results inside the allowed tree; Landlock
   only guarantees they can't produce an *escape*. Keep hardening/fuzzing
   the resolver regardless.
@@ -258,7 +258,7 @@ be a boundary against a guest that attacks tawcroot in memory.
 
 ## Tests
 
-Per the maintenance contract (notes/tawcroot.md §"Maintenance contract"):
+Per the maintenance contract (notes/tawcroot/status.md §"Maintenance contract"):
 
 - **Unit (cleat):** the pure `abi_version → handled_fs_mask` clamp —
   each ABI version maps to the expected supported-rights subset; unknown
@@ -304,10 +304,10 @@ Per the maintenance contract (notes/tawcroot.md §"Maintenance contract"):
 
 ## Doc updates (same change as implementation)
 
-- notes/tawcroot.md: promote the "sandboxing" open-question item to a
+- notes/tawcroot/overview.md: promote the "sandboxing" open-question item to a
   real §"Optional Landlock containment" describing the probe, allow-set,
   install position, and the honesty boundary; update §"Confirmed
   environment" with the Landlock probe result per kernel.
 - plans/tawcroot-future-work.md: remove the Landlock/sandboxing bullet
   (or point it here) once this starts.
-- This plan is deleted and folded into notes/tawcroot.md when done.
+- This plan is deleted and folded into notes/tawcroot/ when done.

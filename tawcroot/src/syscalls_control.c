@@ -2,7 +2,7 @@
  * virtualization for operations that would otherwise compromise
  * tawcroot's own invariants.
  *
- * Surface (notes/tawcroot.md §"Guest signal/seccomp control"):
+ * Surface (notes/tawcroot/sigsys-handler.md §"Guest signal/seccomp control"):
  *   - `seccomp(2)` / `prctl(PR_SET_SECCOMP)`: refuse with -EPERM. A
  *     guest filter on top of ours would RET_KILL or RET_ERRNO before
  *     our trap, or RET_TRAP into a handler the guest owns — all of
@@ -282,7 +282,7 @@ void tawcroot_control_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_rt_sigprocmask,  handle_rt_sigprocmask);
 	/* io_uring_setup: deny with -ENOSYS so guest libraries fall back to
 	 * syscall-based I/O which we can translate. The plan
-	 * (notes/tawcroot.md "Open questions" #1) classifies a passed-through
+	 * (notes/tawcroot/path-translation.md "Open questions" #1) classifies a passed-through
 	 * io_uring as a *correctness* hazard, not just a missing feature: the
 	 * kernel reads SQEs from app-shared memory, sees host-relative paths,
 	 * and silently opens host files — bypassing every translation rule.
@@ -294,7 +294,7 @@ void tawcroot_control_register(void)
 	 * a ring fd, but a ring fd inherited from a non-tawcroot parent across
 	 * exec would otherwise sail past us untranslated. Trapping the post-
 	 * setup syscalls makes "no io_uring traffic ever escapes" enforceable
-	 * independently of the stacked Android filter. See notes/tawcroot.md
+	 * independently of the stacked Android filter. See notes/tawcroot/path-translation.md
 	 * "io_uring MVP behavior". */
 	tawcroot_dispatch_install(TAWC_SYS_io_uring_setup,    tawcroot_deny_enosys);
 	tawcroot_dispatch_install(TAWC_SYS_io_uring_enter,    tawcroot_deny_enosys);

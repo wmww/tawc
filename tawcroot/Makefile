@@ -35,7 +35,7 @@ CC       ?= cc
 
 # Host base address — same constraints as the x86_64 cross-build's
 # 0x40000000, just pinned lower (0x10000000) to avoid colliding with
-# anything glibc's loader might map. See notes/tawcroot.md "Why non-PIE"
+# anything glibc's loader might map. See notes/tawcroot/sigsys-handler.md "Why non-PIE"
 # for the cross-build constraints.
 HOST_BASE := 0x10000000
 
@@ -352,7 +352,7 @@ $(OUT)/programs/static_sleep_open_creat_argv1: $(SRC_TS)/integration/programs/st
 # parent waits and forwards the child's exit code. Used by the new
 # guest-fork integration tests to exercise process_vm_readv against a
 # fork-child PID — catches the cached-tid class of bug from
-# notes/tawcroot.md ("More phase-5b bugs"; usercopy.c:14-22).
+# notes/tawcroot/phasing.md ("More phase-5b bugs"; usercopy.c:14-22).
 $(OUT)/programs/static_fork_open_argv1: $(SRC_TS)/integration/programs/static_fork_open_argv1_x86_64.S | $(OUT)
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
@@ -437,7 +437,7 @@ $(OUT)/programs/static_check_ids_exit42: $(SRC_TS)/integration/programs/static_c
 # static_io_uring_deny: probe io_uring_setup, io_uring_enter, and
 # io_uring_register; expect -ENOSYS from each. Validates the
 # defense-in-depth deny that closes the inheritance edge case in
-# notes/tawcroot.md "io_uring MVP behavior".
+# notes/tawcroot/path-translation.md "io_uring MVP behavior".
 $(OUT)/programs/static_io_uring_deny: $(SRC_TS)/integration/programs/static_io_uring_deny_x86_64.S | $(OUT)
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
@@ -460,7 +460,7 @@ $(OUT)/androidfilter/wrap: $(SRC_TS)/handler/androidfilter/wrap.c | $(OUT)
 # loader stack; the regression test (`test_prod_exec.c::
 # prod_exec_dynamic_big_stack`) loads it via `tawcroot --exec` and
 # fails with SIGSEGV (exit ~139) if the loader stack is undersized,
-# returns 42 if everything fits. See notes/tawcroot.md "wc segfault"
+# returns 42 if everything fits. See notes/tawcroot/phasing.md "wc segfault"
 # for the original bug.
 $(OUT)/programs/dynamic_big_stack: $(SRC_TS)/integration/programs/dynamic_big_stack.c | $(OUT)
 	@mkdir -p $(dir $@)

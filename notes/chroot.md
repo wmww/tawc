@@ -4,7 +4,7 @@ Real `chroot(2)` into the rootfs via Magisk's `su`. Fastest path
 (no syscall translation, no ptrace tracer), but needs root and
 runs everything inside the chroot as uid 0.
 
-**Status: dev-only, not officially supported.** [tawcroot](tawcroot.md)
+**Status: dev-only, not officially supported.** [tawcroot](tawcroot/README.md)
 is the default and only officially supported install method; release
 builds ship only tawcroot. chroot stays in debug builds because it's
 the syscall-translation-free baseline for perf comparison and the

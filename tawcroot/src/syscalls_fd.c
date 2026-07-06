@@ -4,7 +4,7 @@
  * minimum viable wrapper around the corresponding host syscall; the
  * only intercept is "if a guest argument names a reserved fd, lie".
  *
- * This is NOT a security boundary — see notes/tawcroot.md §"What it
+ * This is NOT a security boundary — see notes/tawcroot/overview.md §"What it
  * explicitly is not". A guest that wants to corrupt our state has
  * other avenues (e.g. mmap over our text). The intercept is for
  * accidental damage from libraries that close-all-fds before exec

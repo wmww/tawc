@@ -6,7 +6,7 @@
  * Used by tests/integration/test_prod_features.c to validate the
  * dirent filter (syscalls_fd.c::handle_getdents64 +
  * dirent_filter.c). The closefrom death-spiral regression
- * (notes/tawcroot.md "Phase 5c") hinged on glibc's
+ * (notes/tawcroot/phasing.md "Phase 5c") hinged on glibc's
  * `__closefrom_fallback` enumerating /proc/self/fd, "closing"
  * each fd via close() — and reserved fds reappearing on the next
  * pass kept the loop alive forever. Filtering them out at the

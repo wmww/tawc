@@ -220,7 +220,7 @@ test(loader_runs_dynamic_exit42)
 
 test(loader_runs_system_bin_true)
 {
-	/* The canonical phase-2 exit gate from notes/tawcroot.md: load
+	/* The canonical phase-2 exit gate from notes/tawcroot/phasing.md: load
 	 * the host's actual /bin/true (a glibc-linked ET_DYN binary built
 	 * by coreutils, completely unrelated to our fixtures) and run it.
 	 * /bin/true exits 0; if anything in the loader pipeline breaks

@@ -2,7 +2,7 @@
  *
  * The table is a fixed-size flat C array. After init it is treated as
  * immutable (handlers stored once, never mutated) so the SIGSYS handler
- * can read it without locking. See notes/tawcroot.md "Threading and
+ * can read it without locking. See notes/tawcroot/sigsys-handler.md "Threading and
  * `vfork` invariants".
  */
 

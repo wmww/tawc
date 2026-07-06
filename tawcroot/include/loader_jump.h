@@ -3,7 +3,7 @@
  *
  * On entry the synthesized stack must already be 16-byte aligned at
  * `sp` and look exactly like a kernel-built initial stack (argc at
- * [sp+0], argv... at [sp+8], etc — see notes/tawcroot.md and
+ * [sp+0], argv... at [sp+8], etc — see notes/tawcroot/path-translation.md and
  * loader_stack.h).
  *
  * `entry` is the address to jump to:

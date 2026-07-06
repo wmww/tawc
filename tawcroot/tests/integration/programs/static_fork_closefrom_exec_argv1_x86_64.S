@@ -3,7 +3,7 @@
  *
  * Mirrors the gpgme/glibc fork-then-closefrom-then-exec pattern that
  * found the reserved-fd survival regressions documented in
- * notes/tawcroot.md "Phase 5c — full integration suite":
+ * notes/tawcroot/phasing.md "Phase 5c — full integration suite":
  *
  *   - close-loop death-spiral: glibc's __closefrom_fallback enumerates
  *     /proc/self/fd via getdents64 and close()s each fd. Pre-fix,

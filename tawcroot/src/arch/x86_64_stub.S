@@ -11,7 +11,7 @@
  *                                seccomp_data.instruction_pointer, so the
  *                                filter's IP allowlist matches against it
  *                                (low and high 32 bits separately —
- *                                cBPF is 32-bit, see notes/tawcroot.md).
+ *                                cBPF is 32-bit, see notes/tawcroot/seccomp-filter.md).
  *   _start                    — kernel-direct entry. Sets up argc/argv
  *                                from the initial stack and tail-calls
  *                                tawcroot_main. No bionic init runs.
