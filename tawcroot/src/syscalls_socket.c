@@ -277,10 +277,19 @@ static long translate_unix_sockaddr(const void *guest_addr, long addrlen,
 	}
 	guest_path[pl] = '\0';
 
+	/* Mode/intent split per caller: bind() creates the socket file —
+	 * PARENT_CREATE (forced write intent) is correct, and an RO bind
+	 * dst refuses with EROFS like the kernel. connect/sendto/sendmsg
+	 * only *reach* an existing socket: FOLLOW + READ, so connecting to
+	 * a socket inside an RO bind stays legal. FOLLOW is independently
+	 * more kernel-faithful for connect — the kernel follows a leaf
+	 * symlink when connecting, PARENT_CREATE does not. */
 	char suffix[1024];
 	tawcroot_path_result r = tawcroot_path_translate(
 		guest_path, suffix, sizeof suffix,
-		TAWCROOT_PATH_PARENT_CREATE);
+		persist ? TAWCROOT_PATH_PARENT_CREATE : TAWCROOT_PATH_FOLLOW,
+		persist ? TAWCROOT_PATH_INTENT_WRITE
+			: TAWCROOT_PATH_INTENT_READ);
 	if (r.err) return r.err;
 
 	un_out->sun_family = AF_UNIX_FAMILY;

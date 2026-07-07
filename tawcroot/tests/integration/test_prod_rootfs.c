@@ -431,3 +431,104 @@ test(prod_rootfs_cross_bind_abs_symlink_different_paths)
 	rh_rmrf(bind_b);
 	rh_rmrf(FAKE_ROOTFS);
 }
+
+/* ----- read-only binds (-b SRC:DST:ro) ------------------------------ */
+
+/* Direct write into an RO bind: the guest opens
+ * O_WRONLY|O_CREAT|O_TRUNC on a path under the RO dst and must see
+ * EROFS (fixture exits 42 on exactly that errno; 202 flags the
+ * write-through bug, 203 a wrong errno). */
+test(prod_rootfs_ro_bind_write_is_erofs)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_BINDSRC);
+	test_true(build_rootfs());
+	test_true(build_bindsrc());
+
+	char fixture[PATH_MAX];
+	snprintf(fixture, sizeof fixture,
+	         "%s/bin/static_expect_erofs_argv1", FAKE_ROOTFS);
+	test_true(rh_copy_file(TAWCROOT_STATIC_EXPECT_EROFS_ARGV1_BIN,
+	                       fixture, 0755));
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS,
+		"-b", FAKE_BINDSRC ":opt:ro",
+		"--", "/bin/static_expect_erofs_argv1", "/opt/marker", NULL
+	};
+	test_int_eq(run_with(args), 42);
+
+	/* Nothing may have been created host-side. */
+	char marker[PATH_MAX];
+	snprintf(marker, sizeof marker, "%s/marker", FAKE_BINDSRC);
+	test_true(access(marker, F_OK) != 0);
+
+	rh_rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_BINDSRC);
+}
+
+/* Reads (including exec) from an RO bind keep working: run a binary
+ * THAT LIVES in the RO bind. */
+test(prod_rootfs_ro_bind_exec_still_works)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_BINDSRC);
+	test_true(build_rootfs());
+	test_true(build_bindsrc());  /* places static_exit42 in the src */
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS,
+		"-b", FAKE_BINDSRC ":opt:ro",
+		"--", "/opt/static_exit42", NULL
+	};
+	test_int_eq(run_with(args), 42);
+
+	rh_rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_BINDSRC);
+}
+
+/* The RO flag survives a guest execve (exec_state v6 bind_ro ferry):
+ * static_fork_exec_argv1 forks + execve's the EROFS fixture, which
+ * runs in the RE-EXEC'D tawcroot incarnation — if the ferry drops the
+ * flag, the write goes through and the fixture exits 202. */
+test(prod_rootfs_ro_bind_survives_execve)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_BINDSRC);
+	test_true(build_rootfs());
+	test_true(build_bindsrc());
+
+	char p[PATH_MAX];
+	snprintf(p, sizeof p, "%s/bin/static_fork_exec_argv1", FAKE_ROOTFS);
+	test_true(rh_copy_file(TAWCROOT_STATIC_FORK_EXEC_ARGV1_BIN, p, 0755));
+	snprintf(p, sizeof p, "%s/bin/static_expect_erofs_argv1", FAKE_ROOTFS);
+	test_true(rh_copy_file(TAWCROOT_STATIC_EXPECT_EROFS_ARGV1_BIN,
+	                       p, 0755));
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS,
+		"-b", FAKE_BINDSRC ":opt:ro",
+		"--", "/bin/static_fork_exec_argv1",
+		"/bin/static_expect_erofs_argv1", "/opt/marker", NULL
+	};
+	test_int_eq(run_with(args), 42);
+
+	rh_rmrf(FAKE_ROOTFS);
+	rh_rmrf(FAKE_BINDSRC);
+}
+
+/* Malformed third field in a -b spec: exactly "ro" or nothing. */
+test(prod_rootfs_bad_bind_ro_spec_exits_84)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	test_true(build_rootfs());
+
+	const char *args[] = {
+		"-r", FAKE_ROOTFS,
+		"-b", FAKE_BINDSRC ":opt:rw",
+		"--", "/bin/static_exit42", NULL
+	};
+	test_int_eq(run_with(args), 84);
+
+	rh_rmrf(FAKE_ROOTFS);
+}

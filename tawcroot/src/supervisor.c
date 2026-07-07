@@ -91,7 +91,10 @@ void tawcroot_supervisor_init(const struct tawcroot_supervisor_args *args)
 	for (size_t i = 0; i < args->n_binds; i++) {
 		if (!args->bind_src[i] || !args->bind_dst[i]) continue;
 		long br = tawcroot_path_add_bind(args->bind_src[i],
-		                                 args->bind_dst[i]);
+		                                 args->bind_dst[i],
+		                                 args->bind_ro
+		                                         ? args->bind_ro[i]
+		                                         : 0);
 		if (br < 0) {
 			tawc_io_str("tawcroot: bind add failed for ");
 			tawc_io_str(args->bind_src[i]);

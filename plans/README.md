@@ -8,4 +8,3 @@ design, build, and operational notes in [`../notes/`](../notes/).
 - [gl-on-gles-translator.md](gl-on-gles-translator.md) - possible in-house GL 3.3-core-on-ES 3.2 translator (glslang/SPIRV-Cross shader pipeline) for the modern-GL gap zink can't cover on Vulkan 1.1 devices.
 - [tawcroot-landlock.md](tawcroot-landlock.md) - kernel-enforced path containment for tawcroot via Landlock (probe-and-enable, kernel 5.13+).
 - [tawcroot-prod-env-tests.md](tawcroot-prod-env-tests.md) - device tests running production tawcroot in the real app sandbox (broker-spawned, guest-program-based).
-- [tawcroot-readonly-binds.md](tawcroot-readonly-binds.md) - future read-only fake bind support in tawcroot.

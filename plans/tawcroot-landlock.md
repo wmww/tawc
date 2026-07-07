@@ -78,7 +78,7 @@ touches. Three sources, all already known at init:
    `/sys`, app-data passthroughs, the per-distro ando dir, …). Granting
    exactly the bind sources means the allow-set and the reachable-set are
    the same object. Grant full read/write/exec + dir ops (some binds are
-   read-only per plans/tawcroot-readonly-binds.md — see §"Interaction
+   read-only — `tawcroot_binds[i].read_only`, landed; see §"Interaction
    with read-only binds").
 3. **tawcroot-internal support paths** — a small fixed list of host paths
    tawcroot itself opens that are *not* necessarily binds: chiefly host
@@ -219,13 +219,16 @@ aarch64 and x86_64 (they live in the post-5.11 shared block):
 
 ## Interaction with read-only binds
 
-plans/tawcroot-readonly-binds.md makes some binds read-only at the
-translation layer. Landlock can enforce that *for real*: grant a
-read-only bind source only the read/exec rights, omitting the write/
-create/delete rights. If that plan lands first (or concurrently), thread
-the per-bind RO flag into the rule's `allowed_access`. If it lands later,
-the first cut grants uniform rights and a follow-up tightens RO binds —
-note the coupling in both plans.
+Read-only binds **landed first** (`-b SRC:DST:ro`, enforced at the
+translation layer — notes/tawcroot/path-translation.md §"Read-only
+binds"). Landlock can enforce that *for real*: thread each bind's
+`tawcroot_binds[i].read_only` flag into the rule's `allowed_access`,
+granting a read-only bind source only the read/exec rights and
+omitting the write/create/delete rights. That turns the emulation
+into kernel enforcement and closes the RO plan's documented residues
+(in-process attacks, `/proc/<pid>/root` escapes, resolver escape
+bugs). The RO-root case (`tawcroot_root_ro`, set by chroot into an RO
+bind) needs the same treatment on the rootfs grant.
 
 ## What it does NOT cover (honesty)
 

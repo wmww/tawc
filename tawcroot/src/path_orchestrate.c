@@ -100,8 +100,10 @@ static int apply_memo(char *suf, size_t cap, tawcroot_path_mode mode,
  *   suffix == dst                    (exact)        OR
  *   suffix starts with dst + '/'    (prefix component boundary)
  * Without the boundary check, "/system_ext" would be matched by a
- * bind with dst "system" (would be misrouted). */
-static void route_through_binds(tawcroot_path_result *r, char *suf,
+ * bind with dst "system" (would be misrouted). Returns the matched
+ * bind (for the RO check at the end of the orchestration), or NULL. */
+static const struct tawcroot_bind *route_through_binds(
+				tawcroot_path_result *r, char *suf,
 				const struct tawcroot_bind *binds, size_t n_binds)
 {
 	size_t suf_len = tawc_strlen(suf);
@@ -114,7 +116,7 @@ static void route_through_binds(tawcroot_path_result *r, char *suf,
 		if (suf_len > b->dst_len && suf[b->dst_len] != '/') continue;
 		if (!best || b->dst_len > best->dst_len) best = b;
 	}
-	if (!best) return;
+	if (!best) return 0;
 
 	/* Rewrite: base_fd = best->src_fd, suffix = bytes after best->dst
 	 * (skipping any leading '/'). */
@@ -124,6 +126,7 @@ static void route_through_binds(tawcroot_path_result *r, char *suf,
 	size_t j = 0;
 	while (suf[k]) suf[j++] = suf[k++];
 	suf[j] = 0;
+	return best;
 }
 
 /* Kernel trailing-slash semantics (fs/namei.c lookup_last /
@@ -286,11 +289,18 @@ long tawcroot_path_binds_reanchor(struct tawcroot_bind *binds, size_t n_binds,
 tawcroot_path_result tawcroot_path_translate_with_ctx(
 	const struct tawcroot_path_translate_ctx *ctx,
 	const char *guest_path, char *out_suffix, size_t out_cap,
-	tawcroot_path_mode mode)
+	tawcroot_path_mode mode, tawcroot_path_intent intent)
 {
 	tawcroot_path_result r;
 	r.err     = 0;
 	r.base_fd = -1;
+	r.ro      = 0;
+
+	/* Final bind route, for the RO check at `done`. Only the LAST
+	 * route_through_binds outcome matters — a memo/symlink walk may
+	 * route into and back out of a bind; each early match `goto done`s
+	 * immediately, so a plain overwrite per pass is the final route. */
+	const struct tawcroot_bind *matched = 0;
 
 	if (!ctx || !guest_path || !out_suffix || out_cap == 0) {
 		r.err = TAWC_EFAULT;
@@ -337,7 +347,7 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 
 	/* Bind first. If matched, the bind src takes over — skip memo
 	 * and resolver, both of which are rootfs-view-only. */
-	route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
+	matched = route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
 	if (r.base_fd != ctx->rootfs_base_fd) goto done;
 
 	/* Well-known-symlink rewrite. If the rewrite kicks in, the suffix
@@ -369,7 +379,7 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	 * rootfs's own shadow of that subtree (conflicting symlinks, or a
 	 * file where the bind has a dir) drives resolution against the
 	 * wrong tree. */
-	route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
+	matched = route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
 	if (r.base_fd != ctx->rootfs_base_fd) goto done;
 
 	/* Manual symlink resolver. See path_resolve.h banner. Token
@@ -397,8 +407,29 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	}
 
 	/* Final bind pass — memo may have surfaced a match. */
-	route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
+	matched = route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
 done:
+	/* THE read-only enforcement point. Every path-bearing syscall
+	 * funnels through here; handlers only declare intent, they never
+	 * implement the refusal. Runs after the final bind route is known
+	 * (a symlink walk may route into and back out of a bind; only the
+	 * final base matters). A store rebase (token hit) is neither a
+	 * bind nor the rootfs → never RO. The mutating modes force write
+	 * intent regardless of the declaration — see tawcroot_path_intent. */
+	{
+		int ro = matched ? matched->read_only
+		                 : (r.base_fd == ctx->rootfs_base_fd &&
+		                    ctx->rootfs_ro);
+		int effective_write =
+			intent != TAWCROOT_PATH_INTENT_READ ||
+			mode == TAWCROOT_PATH_PARENT_CREATE ||
+			mode == TAWCROOT_PATH_PARENT_REMOVE;
+		if (ro && effective_write) {
+			r.err = TAWC_EROFS;
+			return r;
+		}
+		r.ro = ro;
+	}
 	if (dir_marker) {
 		long ae = append_dir_slash(out_suffix, out_cap);
 		if (ae < 0) r.err = ae;

@@ -464,6 +464,7 @@ void tawcroot_loader_exec_child(int state_fd, const char *platform)
 			.rootfs_host_path = st.rootfs_host,
 			.bind_src         = st.bind_src,
 			.bind_dst         = st.bind_dst,
+			.bind_ro          = st.bind_ro,
 			.n_binds          = st.n_binds,
 			.store_host_path  = st.store_host,
 			.shm_names        = st.shm_name,
@@ -471,6 +472,10 @@ void tawcroot_loader_exec_child(int state_fd, const char *platform)
 			.n_shm            = st.n_shm,
 		};
 		tawcroot_supervisor_init(&sa);
+
+		/* Root-view RO bit (guest chrooted into an RO bind before
+		 * this exec): restore alongside the rest of the view. */
+		tawcroot_root_ro = (int)st.root_ro;
 
 		if (st.guest_exe) tawcroot_set_guest_exe_path(st.guest_exe);
 		else              tawcroot_set_guest_exe_path(st.path);

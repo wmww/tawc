@@ -40,6 +40,7 @@
 #include "tawc_uapi.h"
 
 int    tawcroot_rootfs_fd               = -1;
+int    tawcroot_root_ro                 = 0;
 char   tawcroot_rootfs_host_path[4096]  = {0};
 size_t tawcroot_rootfs_host_path_len    = 0;
 
@@ -76,7 +77,7 @@ void tawcroot_set_guest_exe_path(const char *path)
 		char *suffix = scratch->buf[0];
 		tawcroot_path_result r = tawcroot_path_translate(
 			path, suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-			TAWCROOT_PATH_FOLLOW);
+			TAWCROOT_PATH_FOLLOW, TAWCROOT_PATH_INTENT_READ);
 		if (r.err == 0 && r.base_fd == tawcroot_rootfs_fd) {
 			size_t pos = 0;
 			(void)tawc_str_append(tawcroot_guest_exe_path,
@@ -208,6 +209,34 @@ long tawcroot_host_path_to_guest_abs(const char *host, size_t n,
 	return TAWC_ENOENT;
 }
 
+int tawcroot_host_path_in_ro_bind(const char *host, size_t n)
+{
+	if (!host || n == 0) return 0;
+
+	/* Same longest-prefix walk as tawcroot_host_path_to_guest_abs so
+	 * the two can't disagree about which bind (or the rootfs) owns a
+	 * host path — an RW bind nested under an RO bind src stays
+	 * writable here exactly like it does in translation. */
+	int    best_ro = 0;
+	size_t best_pl = 0;
+
+	if (host_prefix_match(host, n, tawcroot_rootfs_host_path,
+	                      tawcroot_rootfs_host_path_len)) {
+		best_pl = tawcroot_rootfs_host_path_len;
+		best_ro = tawcroot_root_ro;
+	}
+	for (size_t bi = 0; bi < tawcroot_n_binds; bi++) {
+		const struct tawcroot_bind *b = &tawcroot_binds[bi];
+		if (!b->active || b->src_len == 0) continue;
+		if (!host_prefix_match(host, n, b->src, b->src_len)) continue;
+		if (b->src_len > best_pl) {
+			best_pl = b->src_len;
+			best_ro = b->read_only;
+		}
+	}
+	return best_ro;
+}
+
 long tawcroot_fd_to_guest_abs(int fd, char *out, size_t out_cap)
 {
 	if (fd < 0 || fd == AT_FDCWD) return TAWC_EINVAL;
@@ -304,7 +333,8 @@ void tawcroot_path_memoize_well_known(void)
 	memo_one("var/run");
 }
 
-long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
+long tawcroot_path_add_bind(const char *src_host, const char *dst_guest,
+                            int read_only)
 {
 	if (tawcroot_n_binds >= TAWCROOT_MAX_BINDS) return TAWC_ENOSPC;
 	struct tawcroot_bind *b = &tawcroot_binds[tawcroot_n_binds];
@@ -338,9 +368,10 @@ long tawcroot_path_add_bind(const char *src_host, const char *dst_guest)
 	long resv = tawcroot_fd_reserve((int)fd);
 	if (resv < 0) return resv;
 
-	b->src_fd  = (int)resv;
-	b->active  = 1;
-	b->dst_len = n;   /* b->dst already holds the folded form */
+	b->src_fd    = (int)resv;
+	b->read_only = read_only ? 1 : 0;
+	b->active    = 1;
+	b->dst_len   = n;   /* b->dst already holds the folded form */
 
 	/* Stash the host src path canonicalized through the kernel's view —
 	 * /proc/self/fd of the just-opened src_fd resolves any symlinks /
@@ -383,7 +414,7 @@ long tawcroot_open_in_view(const char *guest_path)
 	char *suffix = scratch->buf[0];
 	tawcroot_path_result r = tawcroot_path_translate(
 		guest_path, suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-		TAWCROOT_PATH_FOLLOW);
+		TAWCROOT_PATH_FOLLOW, TAWCROOT_PATH_INTENT_READ);
 	if (r.err) return r.err;
 	if (suffix[0] == 0) return TAWC_EISDIR;
 	return tawc_openat(r.base_fd, suffix, O_RDONLY | O_CLOEXEC, 0);
@@ -471,11 +502,13 @@ static long prod_cwd_to_guest_abs(void *ctx, char *out, size_t out_cap)
 
 tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 					     char *out_suffix, size_t out_cap,
-					     tawcroot_path_mode mode)
+					     tawcroot_path_mode mode,
+					     tawcroot_path_intent intent)
 {
 	tawcroot_path_result r;
 	r.err     = 0;
 	r.base_fd = -1;
+	r.ro      = 0;
 
 	if (!guest_path || out_cap == 0) {
 		r.err = TAWC_EFAULT;
@@ -495,6 +528,7 @@ tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 
 	struct tawcroot_path_translate_ctx ctx = {
 		.rootfs_base_fd   = tawcroot_rootfs_fd,
+		.rootfs_ro        = tawcroot_root_ro,
 		.binds            = tawcroot_binds,
 		.n_binds          = tawcroot_n_binds,
 		.memos            = g_memo,
@@ -506,5 +540,6 @@ tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 		.cwd_ctx          = 0,
 	};
 	return tawcroot_path_translate_with_ctx(&ctx, guest_path,
-						out_suffix, out_cap, mode);
+						out_suffix, out_cap, mode,
+						intent);
 }

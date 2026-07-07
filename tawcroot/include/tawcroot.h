@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -19,6 +21,16 @@ extern "C" {
  * (later) the manual-load jump into guest code, terminates this
  * function's logical lifetime. */
 void tawcroot_main(int argc, char **argv);
+
+#ifndef TAWCROOT_TESTHOST
+/* Parse a production `-b` spec "src:dst[:ro]" into NUL-terminated src
+ * and dst buffers and the read-only flag. Returns 0 / -EINVAL. Lives
+ * in main.c; exported (production builds only — the testhost binary
+ * compiles main.c without the prod CLI) so the cleat unit table can
+ * exercise the `:ro` forms directly. */
+long tawcroot_parse_bind_spec(const char *spec, char *src_buf, size_t src_cap,
+                              char *dst_buf, size_t dst_cap, int *ro_out);
+#endif
 
 #ifdef __cplusplus
 }

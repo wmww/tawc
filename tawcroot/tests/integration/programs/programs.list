@@ -17,6 +17,7 @@ static_argc_random
 static_execve_exit42
 static_open_creat_argv1
 static_open_rdonly_argv1
+static_expect_erofs_argv1
 static_sleep_open_creat_argv1
 static_fork_open_argv1
 static_small_stack_open_argv1

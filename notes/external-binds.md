@@ -46,9 +46,11 @@ guestPath)` persisted in `metadata.json` (absent on legacy records =
 empty). Entries carry `"kind": "path"`; unknown kinds are skipped on
 parse so future bind sources stay forward-compatible (ditto unknown
 keys, e.g. the retired `label`). There
-is intentionally no `writable` flag — tawcroot's bind table has no
-read-only mode (see plans/tawcroot-readonly-binds.md); add the flag
-when it does.
+is intentionally no `writable` flag yet — tawcroot now supports
+read-only binds (`-b src:dst:ro`, notes/tawcroot/path-translation.md
+§"Read-only binds"); add the flag plus the Manage-binds UI toggle
+when a workload wants it, and have `TawcrootMethod.bindSpecs` emit
+the `:ro` suffix.
 
 `ExternalBind.validationError()` is the shared structural validator
 (absolute paths, no `..`, no `:` — a colon would split the `-b src:dst`

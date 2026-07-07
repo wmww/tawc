@@ -339,6 +339,13 @@ $(OUT)/programs/static_open_creat_argv1: $(SRC_TS)/integration/programs/static_o
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
 
+# static_expect_erofs_argv1: opens argv[1] O_WRONLY|O_CREAT|O_TRUNC and
+# exits 42 iff the open failed with EROFS (202 on unexpected success —
+# a write-through past a read-only bind, the bug the RO tests catch).
+$(OUT)/programs/static_expect_erofs_argv1: $(SRC_TS)/integration/programs/static_expect_erofs_argv1_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
+
 # static_open_rdonly_argv1: like static_open_creat_argv1 but O_RDONLY.
 # Used by the cross-bind absolute-symlink regression test in
 # test_prod_rootfs.c — argv[1] is a symlink in bind A whose target is

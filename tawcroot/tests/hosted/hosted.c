@@ -96,7 +96,7 @@ void th_view_setup_impl(TestCtx *test_ctx, th_view *v, const char *tag)
 }
 
 const char *th_view_add_bind_impl(TestCtx *test_ctx, th_view *v,
-				  const char *dst)
+				  const char *dst, int ro)
 {
 	static char src[4200];
 	snprintf(src, sizeof src, "%s-bind-%zu", v->root, tawcroot_n_binds);
@@ -104,7 +104,7 @@ const char *th_view_add_bind_impl(TestCtx *test_ctx, th_view *v,
 	char p[4300];
 	snprintf(p, sizeof p, "%s/probe.txt", src);
 	test_true(rh_write_text(p, "from-bind\n"));
-	test_int_eq(tawcroot_path_add_bind(src, dst), 0);
+	test_int_eq(tawcroot_path_add_bind(src, dst, ro), 0);
 	return src;
 }
 
@@ -122,6 +122,7 @@ void th_view_teardown_impl(TestCtx *test_ctx, th_view *v)
 	tawcroot_n_reserved_fds = 0;
 	tawcroot_n_binds = 0;
 	tawcroot_rootfs_fd = -1;
+	tawcroot_root_ro = 0;
 	tawcroot_rootfs_host_path[0] = 0;
 	tawcroot_rootfs_host_path_len = 0;
 	tawcroot_set_guest_exe_path(NULL);

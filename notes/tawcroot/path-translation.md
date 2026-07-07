@@ -237,9 +237,9 @@ the target user. The privilege predicate everywhere is virtual
   from chmod. Concrete consumer: sshd's `pty_setowner()` chmod on
   `/dev/pts/N`, which Android SELinux denies and sshd treats as fatal
   for every TTY login. Non-permission errors pass through; dropped
-  processes get the real result. fd-based `fchmod` stays untrapped
-  (kernel resolves the fd itself; revisit if a workload fatals on it
-  the way sshd did on fchmodat).
+  processes get the real result. fd-based `fchmod` is trapped for the
+  same swallow contract plus the read-only-bind stage-2 check (see
+  §"Read-only binds").
 - A consequence of identity-blind decoration worth knowing: after a
   drop, files the guest itself creates still stat as uid 0, so
   `test -O` / ownership checks in dropped sessions misreport.
@@ -374,11 +374,14 @@ the target user. The privilege predicate everywhere is virtual
 
 - `setxattr`/`getxattr`/`listxattr`/`removexattr` and the `l*`
   symlink-NOFOLLOW variants — trapped, translated, dispatched
-  through `/proc/self/fd/<base_fd>/<suffix>`. `f*xattr` (fd-based)
-  stay untrapped — kernel resolution against an open fd is already
-  correct. Most calls return `-EOPNOTSUPP` from Android app-private
-  storage; the value of trapping is that the failure is against the
-  guest-visible path, not a host-relative one.
+  through `/proc/self/fd/<base_fd>/<suffix>`. The fd-based *writers*
+  (`fsetxattr`/`fremovexattr`) are trapped only for the
+  read-only-bind stage-2 check (§"Read-only binds") and otherwise
+  pass through raw; the fd-based readers stay untrapped — kernel
+  resolution against an open fd is already correct. Most calls
+  return `-EOPNOTSUPP` from Android app-private storage; the value
+  of trapping is that the failure is against the guest-visible path,
+  not a host-relative one.
 
 - AF_UNIX sockaddr translation (`syscalls_socket.c`): `bind`/
   `connect`/`sendto`/`sendmsg` forward-translate a pathname
@@ -788,3 +791,107 @@ two separate mounts and exchanges them; we don't model mounts at
 all (binds aren't kernel mounts), so there's nothing useful to
 emulate. No targeted workload hits it.
 
+
+## Read-only binds
+
+`-b SRC:DST:ro` marks a bind read-only: write-intent path
+translations into it refuse with `-EROFS`. The rootfs itself and
+2-field binds stay read/write. Consumers: user `ExternalBind`s that
+expose shared storage without trusting every guest program with
+deletes, kernel-faithful errors on host-RO Android system binds, a
+future copy→bind revert for APK-shipped assets
+(notes/installation.md §"Why copy, not bind"), and the per-bind
+input plans/tawcroot-landlock.md threads into `allowed_access`.
+
+The kernel gives no RO for free here: the bind src fd is only the
+`dirfd` starting inode for `openat(dirfd, suffix, flags)` — the
+resulting fd's access mode comes from the openat flags, and a real
+`mount --bind -o ro` needs namespaces the app sandbox doesn't have.
+So RO is emulated at the translation layer, structured so a missing
+check can't happen silently:
+
+- **One enforcement point, in pure code.** Every path-bearing
+  syscall funnels through `tawcroot_path_translate_with_ctx`
+  (path_orchestrate.c); the EROFS refusal lives there, once, after
+  the final bind route is known (a memo/symlink walk may route into
+  and back out of a bind — only the final base matters; an RW bind
+  nested under an RO dst wins by longest-prefix, like an RW mount
+  under an RO mount). Handlers only *declare* intent
+  (`tawcroot_path_intent`, a new parameter on the translate
+  functions); they never implement the refusal.
+- **Fail-closed defaults.** The intent enum's zero value is WRITE,
+  so a forgotten/zero-initialized intent degrades to a visible EROFS
+  on RO binds, never a silent write-through. The two inherently
+  mutating modes (`PARENT_CREATE`, `PARENT_REMOVE`) force write
+  intent inside the orchestrator regardless of the declaration —
+  mkdir/mknod/symlink-dst/unlink/rename/link-dst are covered even by
+  a mislabeled call site. The residual mislabel surface
+  (open-for-write, truncate, chmod, chown, utimensat, setxattr) is
+  pinned by the hosted matrix in tests/hosted/test_ro_binds.c.
+- **The kernel double-covers data writes.** Write-mode opens through
+  RO binds are refused, so no write-mode fd into an RO bind exists;
+  `write`/`mmap(PROT_WRITE, MAP_SHARED)`/`ftruncate`/
+  `copy_file_range`/… all fail on the fd's access mode with no
+  tawcroot involvement.
+- **Stateless fd ground truth (stage 2).** The residue — syscalls
+  that mutate *metadata* through an fd legitimately opened read-only
+  through an RO bind — derives its verdict at call time: readlink
+  `/proc/self/fd/<n>`, then `tawcroot_host_path_in_ro_bind`
+  (longest-prefix match against RO bind srcs + the RO root). No
+  taint table, nothing to propagate across dup/exec, and
+  SCM_RIGHTS-passed fds are covered. Trapped/checked: `fchmod`,
+  `fchown`, `utimensat(fd, NULL, …)`, `fsetxattr`, `fremovexattr` —
+  all cold. The `/proc/<pid>/fd/<n>` (and `map_files`) *write-mode
+  re-open* is refused in `handle_openat` by readlinking the magic
+  link and RO-prefix-checking the target — the one check that can't
+  live in the orchestrator (only the kernel knows the target).
+
+Intent per call site: stats/readlink/getxattr/listxattr/access
+without W_OK/chdir/exec/statfs/open-for-read/chroot-target and
+AF_UNIX `connect`/`sendto`/`sendmsg` declare READ; everything that
+mutates declares WRITE (openat via a pure flags→intent classifier,
+`tawcroot_openat_intent`). `bind()` keeps `PARENT_CREATE` (it
+creates the socket file) while connect/sendto/sendmsg moved to
+`FOLLOW`+READ — independently more kernel-faithful, since the
+kernel follows a leaf symlink when connecting.
+
+Errno/fidelity notes:
+
+- `access(W_OK)` → EROFS (kernel behavior on RO fs; falls out of
+  the intent table).
+- `open(existing, O_RDONLY|O_CREAT)` succeeds (POSIX: the create is
+  a no-op). Implemented as a single retry in `handle_openat`: on a
+  central EROFS with O_CREAT-sans-O_EXCL, write-free accmode, no
+  O_TRUNC, re-translate with O_CREAT dropped; a resulting ENOENT is
+  rewritten to EROFS. This is the only flags special case. (A
+  missing *parent* also reports EROFS instead of the kernel's
+  ENOENT — accepted.)
+- `statfs` ORs `ST_RDONLY` into `f_flags` when the path routed RO,
+  so `df` and RO-detecting installers see the truth.
+- `renameat2`: uniform EROFS when either operand lands RO (the
+  kernel gives EXDEV for the cross-mount flavor; equally terminal
+  for `mv`).
+- **linkat source in an RO bind → EXDEV, deliberately.**
+  Kernel-faithful for cross-fs RO binds (tools degrade to copy); for
+  a *same-fs* RO bind the host linkat would succeed and hand out a
+  rootfs-named hardlink whose content stays writable — the classic
+  RO-bind-mount hardlink escape — so we diverge from kernel fidelity
+  on purpose and refuse. The AT_EMPTY_PATH / `/proc/self/fd/N`
+  source spellings are caught by the same host-path prefix check the
+  linkstore source detection already performs. This and statfs are
+  the only consumers of the translate result's `ro` bit — fidelity,
+  never enforcement.
+- chroot *into* an RO bind is allowed (chroot is a read), and sets
+  the process-global `tawcroot_root_ro`: after the swap the whole
+  root view is the bind src but routing goes through
+  `tawcroot_rootfs_fd`, not the bind table. Ferried across guest
+  execve in exec_state v6 (`bind_ro[]` per bind + `root_ro`).
+  Chroot into an RW target clears it.
+
+What this does NOT promise: it is accident containment with
+kernel-shaped errors, same stance as the rest of tawcroot ("not a
+security boundary", overview.md). In-process attacks, `/proc/<pid>/
+root` view escapes, and resolver escape bugs bypass it exactly as
+they bypass containment generally — kernel enforcement is
+plans/tawcroot-landlock.md's territory (grant RO srcs read/exec
+rights only, keyed off the same per-bind flag).

@@ -150,6 +150,7 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 	 * route to host paths (no rootfs_fd). */
 	const char *bind_src_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
 	const char *bind_dst_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
+	unsigned char bind_ro_arr[TAWCROOT_EXEC_STATE_MAX_BINDS];
 	/* Static: 16 KB of name copies would blow the handler stack
 	 * budget. Exec already stages through static buffers (see the
 	 * thread-safety note in exec_handler.h). */
@@ -217,11 +218,15 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 			if (!tawcroot_binds[i].active) continue;
 			bind_src_arr[nb] = tawcroot_binds[i].src;
 			bind_dst_arr[nb] = tawcroot_binds[i].dst;
+			bind_ro_arr[nb]  = (unsigned char)
+				tawcroot_binds[i].read_only;
 			nb++;
 		}
 		extras.n_binds  = nb;
 		extras.bind_src = bind_src_arr;
 		extras.bind_dst = bind_dst_arr;
+		extras.bind_ro  = bind_ro_arr;
+		extras.root_ro  = (uint32_t)tawcroot_root_ro;
 
 		/* /dev/shm name table. The internal memfds are non-CLOEXEC
 		 * and survive execveat as the same fd numbers, so the new

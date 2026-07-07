@@ -5,7 +5,7 @@
  *
  * Production CLI (must stay tight — anything reachable here is a
  * supported surface):
- *   tawcroot -r ROOTFS [-b SRC:DST]... -- CMD [ARGS...]
+ *   tawcroot -r ROOTFS [-b SRC:DST[:ro]]... -- CMD [ARGS...]
  *     The "real" production mode (phase 2d). Opens the rootfs, builds
  *     the bind table, installs handler+filter, and manual-loads CMD
  *     from inside the rootfs view (path translation in effect).
@@ -191,10 +191,10 @@ static __attribute__((noreturn)) void usage(int code)
 	            "  tawcroot-testhost --exec PATH [ARGS...]   (loader diagnostic)\n"
 	            "  tawcroot-testhost --exec-via-handler PATH [ARGS...]\n"
 	            "  tawcroot-testhost --exec-child <fd>       (handler re-exec target)\n"
-	            "  tawcroot-testhost -r ROOTFS [-b SRC:DST]...\n");
+	            "  tawcroot-testhost -r ROOTFS [-b SRC:DST[:ro]]...\n");
 #else
 	tawc_io_str("tawcroot: usage:\n"
-	            "  tawcroot -r ROOTFS [-b SRC:DST]... -- CMD [ARGS...]\n"
+	            "  tawcroot -r ROOTFS [-b SRC:DST[:ro]]... -- CMD [ARGS...]\n"
 	            "  tawcroot --exec-child <fd>\n");
 #endif
 	tawc_exit_group(code);
@@ -202,20 +202,39 @@ static __attribute__((noreturn)) void usage(int code)
 }
 
 #ifndef TAWCROOT_TESTHOST
-/* Parse "src:dst" into a NUL-terminated `src_buf` and a pointer to
- * the dst tail. Returns 0 / -EINVAL. */
-static long parse_bind_spec(const char *spec, char *src_buf, size_t cap,
-                            const char **dst_out)
+/* Parse "src:dst[:ro]" into a NUL-terminated `src_buf`, a NUL-
+ * terminated `dst_buf`, and the read-only flag. A third colon-field
+ * must be exactly "ro" (else the malformed-spec -EINVAL → exit 84).
+ * Unambiguous by construction on the app path: ExternalBind rejects
+ * ':' in bind paths because they travel as `-b src:dst`. Returns
+ * 0 / -EINVAL. Exported for the cleat unit table (tawcroot.h). */
+long tawcroot_parse_bind_spec(const char *spec, char *src_buf, size_t src_cap,
+                              char *dst_buf, size_t dst_cap, int *ro_out)
 {
 	size_t i = 0;
-	while (spec[i] && spec[i] != ':' && i + 1 < cap) {
+	while (spec[i] && spec[i] != ':' && i + 1 < src_cap) {
 		src_buf[i] = spec[i];
 		i++;
 	}
 	if (spec[i] != ':') return -22;
 	src_buf[i] = 0;
-	*dst_out = spec + i + 1;
-	if (**dst_out == 0) return -22;
+
+	const char *dst = spec + i + 1;
+	size_t j = 0;
+	while (dst[j] && dst[j] != ':' && j + 1 < dst_cap) {
+		dst_buf[j] = dst[j];
+		j++;
+	}
+	if (j == 0) return -22;
+	dst_buf[j] = 0;
+
+	*ro_out = 0;
+	if (dst[j] == ':') {
+		if (!tawc_streq(dst + j + 1, "ro")) return -22;
+		*ro_out = 1;
+	} else if (dst[j] != 0) {
+		return -22;  /* dst overran dst_cap */
+	}
 	return 0;
 }
 
@@ -246,20 +265,25 @@ static void prod_rootfs_init(const char *rootfs,
 	 * handing off to supervisor_init. The buffers live for the rest
 	 * of tawcroot_main, which outlives every consumer of the bind
 	 * table. */
-	static char         bind_src_buf[TAWCROOT_MAX_BINDS][1024];
-	static const char  *bind_src[TAWCROOT_MAX_BINDS];
-	static const char  *bind_dst[TAWCROOT_MAX_BINDS];
+	static char          bind_src_buf[TAWCROOT_MAX_BINDS][1024];
+	static char          bind_dst_buf[TAWCROOT_MAX_BINDS][1024];
+	static const char   *bind_src[TAWCROOT_MAX_BINDS];
+	static const char   *bind_dst[TAWCROOT_MAX_BINDS];
+	static unsigned char bind_ro[TAWCROOT_MAX_BINDS];
 	for (size_t i = 0; i < n_binds; i++) {
-		const char *dst = 0;
-		if (parse_bind_spec(bind_specs[i], bind_src_buf[i],
-		                    sizeof bind_src_buf[i], &dst) < 0) {
+		int ro = 0;
+		if (tawcroot_parse_bind_spec(bind_specs[i], bind_src_buf[i],
+		                             sizeof bind_src_buf[i],
+		                             bind_dst_buf[i],
+		                             sizeof bind_dst_buf[i], &ro) < 0) {
 			tawc_io_str("tawcroot: malformed -b spec: ");
 			tawc_io_str(bind_specs[i]);
 			tawc_io_str("\n");
 			tawc_exit_group(84);
 		}
 		bind_src[i] = bind_src_buf[i];
-		bind_dst[i] = dst;
+		bind_dst[i] = bind_dst_buf[i];
+		bind_ro[i]  = (unsigned char)ro;
 	}
 
 	/* Hardlink-emulation store: sibling of the rootfs on the same fs
@@ -294,6 +318,7 @@ static void prod_rootfs_init(const char *rootfs,
 		.rootfs_host_path = rootfs,
 		.bind_src         = bind_src,
 		.bind_dst         = bind_dst,
+		.bind_ro          = bind_ro,
 		.n_binds          = n_binds,
 		.store_host_path  = store,
 		/* No inherited shm at top-level entry. */

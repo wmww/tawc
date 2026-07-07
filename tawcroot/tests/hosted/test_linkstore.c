@@ -956,7 +956,7 @@ test(linkstore_proc_fd_spelled_linkat_source)
 	store_setup(&v);
 	/* Identity /proc bind: the fd-spelling routes through a bind, so
 	 * the resolver never sees the token — the O_PATH backstop must. */
-	test_int_eq(tawcroot_path_add_bind("/proc", "/proc"), 0);
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
 
 	write_file(test_ctx, "/run/f", "pf\n");
 	make_pair(test_ctx, "/run/f", "/run/l1");
@@ -1382,7 +1382,7 @@ test(linkstore_tmpfile_excl_passthrough)
 	th_view v;
 	th_setup(&v, "ls-tmpexcl");
 	store_setup(&v);
-	test_int_eq(tawcroot_path_add_bind("/proc", "/proc"), 0);
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
 
 	/* O_EXCL = "will never link": pure passthrough, nlink 0 exact. */
 	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/run",
@@ -1426,7 +1426,7 @@ test(linkstore_tmpfile_publish)
 	th_view v;
 	th_setup(&v, "ls-tmppub");
 	store_setup(&v);
-	test_int_eq(tawcroot_path_add_bind("/proc", "/proc"), 0);
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
 
 	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/run",
 			 O_TMPFILE | O_RDWR, 0600, 0, 0);
@@ -1479,7 +1479,7 @@ test(linkstore_tmpfile_publish_magic_link_spelling)
 	th_view v;
 	th_setup(&v, "ls-tmpmag");
 	store_setup(&v);
-	test_int_eq(tawcroot_path_add_bind("/proc", "/proc"), 0);
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
 
 	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/run",
 			 O_TMPFILE | O_WRONLY, 0600, 0, 0);

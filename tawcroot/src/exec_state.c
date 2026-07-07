@@ -138,7 +138,9 @@ long tawcroot_exec_state_write(void *buf, size_t buf_cap,
 			if (ex->bind_dst && ex->bind_dst[i])
 				h->bind_dst_off[i] = emit_str(strings, &off,
 				                              ex->bind_dst[i]);
+			h->bind_ro[i] = ex->bind_ro ? ex->bind_ro[i] : 0;
 		}
+		h->root_ro = ex->root_ro ? 1 : 0;
 		h->n_shm = ex->n_shm;
 		for (uint32_t i = 0; i < ex->n_shm; i++) {
 			h->shm_name_off[i] = emit_str(strings, &off,
@@ -234,7 +236,9 @@ long tawcroot_exec_state_read(const void *buf, size_t buf_size,
 	for (uint32_t i = 0; i < h->n_binds; i++) {
 		out->bind_src[i] = h->bind_src_off[i] ? strings + h->bind_src_off[i] : (const char *)0;
 		out->bind_dst[i] = h->bind_dst_off[i] ? strings + h->bind_dst_off[i] : (const char *)0;
+		out->bind_ro[i]  = h->bind_ro[i] ? 1 : 0;
 	}
+	out->root_ro = h->root_ro ? 1 : 0;
 	out->n_shm = h->n_shm;
 	for (uint32_t i = 0; i < h->n_shm; i++) {
 		out->shm_name[i] = strings + h->shm_name_off[i];

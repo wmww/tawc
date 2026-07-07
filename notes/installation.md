@@ -524,12 +524,12 @@ copy on each app upgrade.
 Binding was the obvious shape (no install-time work, source-of-truth
 auto-tracks the APK) but ran into two structural problems:
 
-1. **No read-only bind in tawcroot or proot.** Real `mount --bind -o ro`
-   semantics aren't available at the path-translation layer; both tools
-   would have to grow a per-bind RO flag plus per-syscall enforcement
-   (openat write-mode → EROFS, fchmod / ftruncate / setxattr blocked
-   on tainted fds, etc.). Without RO, anything inside the rootfs can
-   write through the bind into shared host state.
+1. **No read-only bind at decision time.** tawcroot has since grown
+   one — `-b SRC:DST:ro`, enforced centrally at the translation layer
+   (notes/tawcroot/path-translation.md §"Read-only binds"); proot
+   still has none. Historically, without RO, anything inside the
+   rootfs could write through the bind into shared host state, which
+   is what forced the copy design.
 2. **Bind = replacement, not merge.** A single-file bind into a
    distro-managed dir like `/usr/share/glvnd/egl_vendor.d/` doesn't
    show up in `readdir` at the parent (tawcroot's `getdents` is a
@@ -548,9 +548,11 @@ providers, copy/link, persist. Empty manifest (no libhybris on
 x86_64) still records the stamp so subsequent starts hit the no-op
 fast path.
 
-If/when a real RO bind primitive exists in tawcroot, this can revert
-to bind for everything except files that have to coexist with
-distro-managed siblings in the same dir.
+The RO bind primitive now exists in tawcroot (`-b SRC:DST:ro`), so
+this can revert to a whole-dir RO bind for everything except files
+that have to coexist with distro-managed siblings in the same dir
+(problem 2 is unchanged — bind = replacement, not merge). Decide in
+`TawcInstaller` whether the disk/update-churn win justifies it.
 
 ## CLI command interface
 

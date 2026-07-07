@@ -193,7 +193,8 @@ test(orch_relative_uses_cwd_to_join)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "data/x", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "data/x", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, TEST_ROOTFS_FD);
 	test_str_eq(out, "srv/data/x");
@@ -209,7 +210,8 @@ test(orch_relative_cwd_at_rootfs_root)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "etc/passwd", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "etc/passwd", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "etc/passwd");
 }
@@ -224,7 +226,8 @@ test(orch_relative_cwd_propagates_error)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "x", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "x", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, -2);
 }
 
@@ -237,7 +240,8 @@ test(orch_relative_no_cwd_fn_is_enoent)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "x", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "x", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, -2);
 }
 
@@ -254,7 +258,8 @@ test(orch_bind_exact_match_empty_suffix)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/tmp", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/tmp", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, 200);
 	test_str_eq(out, "");
@@ -271,7 +276,8 @@ test(orch_bind_prefix_match_strips_dst)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/system/lib/foo", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/system/lib/foo", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, 200);
 	test_str_eq(out, "lib/foo");
@@ -290,7 +296,8 @@ test(orch_bind_component_boundary_required)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/system_ext/foo", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/system_ext/foo", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, TEST_ROOTFS_FD);
 	test_str_eq(out, "system_ext/foo");
@@ -310,7 +317,8 @@ test(orch_bind_longest_prefix_wins)
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
 		&ctx, "/usr/lib/firmware/blob",
-		out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, 203);   /* deepest match wins, not table order */
 	test_str_eq(out, "blob");
@@ -327,7 +335,8 @@ test(orch_bind_no_match_keeps_rootfs_fd)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/etc/passwd", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/etc/passwd", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, TEST_ROOTFS_FD);
 	test_str_eq(out, "etc/passwd");
@@ -358,7 +367,8 @@ test(orch_bind_takes_priority_over_memo)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lib/libc.so.6", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/lib/libc.so.6", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, 200);    /* bind won, memo did not run */
 	test_str_eq(out, "libc.so.6");
@@ -385,7 +395,8 @@ test(orch_memo_then_bind_when_no_first_pass_match)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lib/x", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/lib/x", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, 200);
 	test_str_eq(out, "x");
@@ -407,7 +418,8 @@ test(orch_memo_with_absolute_target_refolds)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/bin/sh", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/bin/sh", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "usr/bin/sh");
 }
@@ -428,13 +440,15 @@ test(orch_memo_skipped_under_nofollow_when_sole_component)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lib", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/lib", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "lib");
 
 	/* But under FOLLOW the rewrite still applies. */
 	r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lib", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/lib", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "usr/lib");
 }
@@ -455,7 +469,8 @@ test(orch_memo_applies_to_path_with_trailing_components_under_nofollow)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lib/foo", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/lib/foo", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "usr/lib/foo");
 }
@@ -482,7 +497,8 @@ test(orch_resolver_fires_after_memo_before_final_bind)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/etc/host-secret", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/etc/host-secret", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, 200);
 	test_str_eq(out, "");
@@ -499,7 +515,8 @@ test(orch_dotdot_chain_clamps_at_rootfs_root)
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
 		&ctx, "/foo/../../../../../../etc/passwd",
-		out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, TEST_ROOTFS_FD);
 	test_str_eq(out, "etc/passwd");   /* clamped, not host-relative */
@@ -518,7 +535,8 @@ test(orch_absolute_symlink_is_clamped_via_resolver)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/etc/secret", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/etc/secret", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, TEST_ROOTFS_FD);
 	test_str_eq(out, "etc/passwd");
@@ -533,7 +551,8 @@ test(orch_null_guest_path_is_efault)
 	};
 	char out[16];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, 0, out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, 0, out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, -14);
 }
 
@@ -546,7 +565,8 @@ test(orch_null_out_suffix_is_efault)
 		.rootfs_base_fd = TEST_ROOTFS_FD, .oracle = &ora_empty,
 	};
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/foo", 0, 16, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/foo", 0, 16, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, -14);
 }
 
@@ -557,7 +577,8 @@ test(orch_zero_capacity_is_efault)
 	};
 	char out[16];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/foo", out, 0, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/foo", out, 0, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, -14);
 }
 
@@ -816,7 +837,8 @@ test(orch_memo_loop_terminates_at_eight_hops)
 	};
 	char out[16];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/a", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/a", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	/* After 8 hops alternating a↔b, the suffix is one of "a" or "b". */
 	int landed = (out[0] == 'a' || out[0] == 'b') && out[1] == 0;
@@ -838,7 +860,8 @@ test(orch_empty_path_is_enoent)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, -2);
 }
 
@@ -869,7 +892,8 @@ test(orch_memo_refold_overflow_is_enametoolong)
 	};
 	static char out[8192];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, in, out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, in, out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, -36);
 }
 
@@ -893,7 +917,8 @@ test(orch_memo_multicomponent_src_uses_root_anchored_target)
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
 		&ctx, "/usr/sbin/pacman", out, sizeof out,
-		TAWCROOT_PATH_FOLLOW);
+		TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "usr/bin/pacman");
 }
@@ -914,7 +939,8 @@ test(orch_memo_dotdot_target_refolds)
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
 		&ctx, "/var/run/dbus", out, sizeof out,
-		TAWCROOT_PATH_FOLLOW);
+		TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "run/dbus");
 }
@@ -936,7 +962,8 @@ test(orch_memo_shrinking_target_keeps_tail)
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
 		&ctx, "/very/long/prefix/bash", out, sizeof out,
-		TAWCROOT_PATH_FOLLOW);
+		TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "p/bash");
 }
@@ -954,14 +981,16 @@ test(orch_trailing_slash_survives_into_suffix)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/etc/probe/", out, sizeof out, TAWCROOT_PATH_FOLLOW);
+		&ctx, "/etc/probe/", out, sizeof out, TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "etc/probe/");
 
 	/* Slash runs and '/.' tails collapse to one appended slash. */
 	r = tawcroot_path_translate_with_ctx(
 		&ctx, "/etc/probe//.//", out, sizeof out,
-		TAWCROOT_PATH_FOLLOW);
+		TAWCROOT_PATH_FOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "etc/probe/");
 }
@@ -977,19 +1006,22 @@ test(orch_trailing_slash_follows_leaf_symlink_under_nofollow)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "real/");
 
 	/* '/.' tail forces the same follow. */
 	r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lnk/.", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/lnk/.", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "real/");
 
 	/* Without the tail, NOFOLLOW still operates on the symlink. */
 	r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lnk", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/lnk", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "lnk");
 }
@@ -1008,12 +1040,14 @@ test(orch_trailing_slash_keeps_leaf_verbatim_for_parent_modes)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_PARENT_REMOVE);
+		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_PARENT_REMOVE,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "lnk/");
 
 	r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_PARENT_CREATE);
+		&ctx, "/lnk/", out, sizeof out, TAWCROOT_PATH_PARENT_CREATE,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "lnk/");
 }
@@ -1029,7 +1063,8 @@ test(orch_trailing_slash_carries_through_bind)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/proc/self/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/proc/self/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, 200);
 	test_str_eq(out, "self/");
@@ -1051,12 +1086,14 @@ test(orch_trailing_slash_on_root_stays_empty_suffix)
 	for (size_t i = 0; i < 3; i++) {
 		tawcroot_path_result r = tawcroot_path_translate_with_ctx(
 			&ctx, roots[i], out, sizeof out,
-			TAWCROOT_PATH_NOFOLLOW);
+			TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 		test_int_eq(r.err, 0);
 		test_str_eq(out, "");
 	}
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/proc/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/proc/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_int_eq(r.base_fd, 200);
 	test_str_eq(out, "");
@@ -1078,7 +1115,8 @@ test(orch_trailing_slash_applies_sole_component_memo_under_nofollow)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/lib/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/lib/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "usr/lib/");
 }
@@ -1093,7 +1131,8 @@ test(orch_trailing_slash_relative_path)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "sub/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "sub/", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "srv/sub/");
 }
@@ -1108,12 +1147,14 @@ test(orch_dot_heavy_names_are_not_trailing_markers)
 	};
 	char out[256];
 	tawcroot_path_result r = tawcroot_path_translate_with_ctx(
-		&ctx, "/etc/name.", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/etc/name.", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "etc/name.");
 
 	r = tawcroot_path_translate_with_ctx(
-		&ctx, "/etc/...", out, sizeof out, TAWCROOT_PATH_NOFOLLOW);
+		&ctx, "/etc/...", out, sizeof out, TAWCROOT_PATH_NOFOLLOW,
+		TAWCROOT_PATH_INTENT_READ);
 	test_int_eq(r.err, 0);
 	test_str_eq(out, "etc/...");
 }

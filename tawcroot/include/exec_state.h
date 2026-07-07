@@ -78,8 +78,11 @@ extern "C" {
  * Version 5: adds the hardlink-emulation store path (store_host_off,
  * linkstore.h). Ferried explicitly — NOT re-derived from rootfs_host,
  * which after a guest chroot is the chrooted root, not the store's
- * sibling. */
-#define TAWCROOT_EXEC_STATE_VERSION 5
+ * sibling.
+ * Version 6: adds per-bind read-only flags (bind_ro[]) and the
+ * root-view RO bit (root_ro, set when the guest chrooted into an RO
+ * bind dst) so RO enforcement survives a guest execve. */
+#define TAWCROOT_EXEC_STATE_VERSION 6
 /* MAX_ARGS at 4096: shell glob expansions, linker invocations, and
  * pacman hooks routinely pass hundreds-to-thousands of args; the kernel
  * allows ~2 MB of argv strings. MAX_ENV at 1024 covers the busiest bash
@@ -110,6 +113,10 @@ typedef struct {
 	uint32_t n_binds;
 	uint32_t bind_src_off[TAWCROOT_EXEC_STATE_MAX_BINDS];
 	uint32_t bind_dst_off[TAWCROOT_EXEC_STATE_MAX_BINDS];
+	/* v6: per-bind read-only flags (parallel to bind_*_off) and the
+	 * root-view RO bit (path.h tawcroot_root_ro). */
+	uint8_t  bind_ro[TAWCROOT_EXEC_STATE_MAX_BINDS];
+	uint32_t root_ro;
 	/* /dev/shm name table. fd numbers are inherited verbatim because
 	 * the internal memfds are non-CLOEXEC and survive execveat. */
 	uint32_t n_shm;
@@ -147,6 +154,8 @@ typedef struct {
 	uint32_t     n_binds;
 	const char  *bind_src[TAWCROOT_EXEC_STATE_MAX_BINDS];
 	const char  *bind_dst[TAWCROOT_EXEC_STATE_MAX_BINDS];
+	unsigned char bind_ro[TAWCROOT_EXEC_STATE_MAX_BINDS];
+	uint32_t     root_ro;
 	uint32_t     n_shm;
 	const char  *shm_name[TAWCROOT_EXEC_STATE_MAX_SHM];
 	int          shm_fd[TAWCROOT_EXEC_STATE_MAX_SHM];
@@ -163,6 +172,8 @@ typedef struct {
 	uint32_t           n_binds;
 	const char *const *bind_src;        /* size n_binds */
 	const char *const *bind_dst;        /* size n_binds */
+	const unsigned char *bind_ro;       /* size n_binds; NULL = all RW */
+	uint32_t           root_ro;
 	uint32_t           n_shm;
 	const char *const *shm_name;        /* size n_shm */
 	const int         *shm_fd;          /* size n_shm */

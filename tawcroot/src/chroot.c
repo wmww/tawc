@@ -90,8 +90,11 @@
 
 /* Translate the guest's chroot target to (base_fd, suffix) and open
  * an O_PATH dirfd for it. On success returns >=0 (the new fd, not yet
- * reserved); on failure returns -errno. */
-static long open_chroot_target(const char *guest_path)
+ * reserved) and sets *ro_out to the translation's RO bit; on failure
+ * returns -errno. Chroot itself is a read operation and is ALLOWED
+ * into an RO bind (like the kernel); the bit is what makes the whole
+ * root view read-only after the swap. */
+static long open_chroot_target(const char *guest_path, int *ro_out)
 {
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	char *path_buf = scratch->buf[0];
@@ -102,8 +105,9 @@ static long open_chroot_target(const char *guest_path)
 	char *suffix = scratch->buf[1];
 	tawcroot_path_result r = tawcroot_path_translate(
 		path_buf, suffix, TAWCROOT_PATH_SCRATCH_SIZE,
-		TAWCROOT_PATH_FOLLOW);
+		TAWCROOT_PATH_FOLLOW, TAWCROOT_PATH_INTENT_READ);
 	if (r.err) return r.err;
+	*ro_out = r.ro;
 
 	/* tawcroot_path_translate writes "" into suffix when the request
 	 * resolves to the directory base_fd already refers to (e.g.,
@@ -122,7 +126,8 @@ static long handle_chroot(const tawcroot_syscall_args *args, ucontext_t *uc)
 	const char *gpath = (const char *)(uintptr_t)args->a;
 	if (!gpath) return TAWC_EFAULT;
 
-	long new_fd = open_chroot_target(gpath);
+	int new_root_ro = 0;
+	long new_fd = open_chroot_target(gpath, &new_root_ro);
 	if (new_fd < 0) return new_fd;
 
 	long resv = tawcroot_fd_reserve((int)new_fd);
@@ -175,6 +180,14 @@ static long handle_chroot(const tawcroot_syscall_args *args, ucontext_t *uc)
 	tawcroot_rootfs_host_path[new_host_len] = 0;
 	tawcroot_rootfs_host_path_len = new_host_len;
 	tawcroot_rootfs_fd = new_root_fd;
+	/* Chroot into an RO bind dst makes the whole view read-only:
+	 * after the swap, routing goes through rootfs_fd rather than the
+	 * (now re-anchored / deactivated) bind, so the flag must ride the
+	 * root-view globals. Chroot into an RW target from an RO root
+	 * un-sets it, like the kernel's mount flags would. An RW bind
+	 * nested under the RO dst stays writable via the surviving
+	 * re-anchored bind entry — longest-prefix match, no extra code. */
+	tawcroot_root_ro = new_root_ro;
 
 	/* Re-memoize against the new root. The old memos (lib → usr/lib
 	 * etc.) point at the OUTER root's symlinks; rebuilding picks up

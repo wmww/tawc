@@ -2,9 +2,21 @@
 
 #pragma once
 
+#include "path.h"
+
 /* Register the path-bearing fs handler set in the dispatch table.
  * Called from tawcroot_dispatch_init. */
 void tawcroot_fs_register(void);
+
+/* Pure openat/openat2 flags→intent classifier for the read-only-bind
+ * check (unit-tested; see path.h tawcroot_path_intent). Write iff the
+ * accmode is not O_RDONLY (accmode 3 fails closed), or O_TRUNC, or
+ * O_CREAT. O_PATH opens are reads regardless (kernel-faithful — an
+ * O_PATH fd can't write; the kernel ignores the other flags).
+ * O_APPEND alone is NOT write intent (the kernel allows
+ * O_RDONLY|O_APPEND on an RO fs; append only matters on write-mode
+ * fds, which RO binds never grant). */
+tawcroot_path_intent tawcroot_openat_intent(int flags);
 
 struct statx;
 

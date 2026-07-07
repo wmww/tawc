@@ -315,6 +315,15 @@ covered by unit/hosted/smoke tests.)
   leaves the kernel's answer untouched. Zero cost on ≥5.8 kernels.
   `MNT_ID_UNIQUE` itself (kernel 6.8) is not synthesized — nothing
   needs it and fdinfo has no unique id to parse.
+- **Read-only-bind errno shapes** (see notes/tawcroot/
+  path-translation.md §"Read-only binds" for the full table): linkat
+  with a *source* in an RO bind returns `EXDEV` even same-fs — the
+  host link would succeed and mint a writable rootfs-named hardlink
+  to RO content, so we refuse on purpose (tools degrade to copy);
+  renameat into/out of an RO bind is uniform `EROFS` where the
+  kernel's cross-mount flavor would be `EXDEV`; and
+  `open(missing, O_CREAT)` under an RO bind reports `EROFS` even
+  when the *parent* is missing (kernel: `ENOENT`).
 - **`execveat(AT_SYMLINK_NOFOLLOW)` → `-ENOSYS`.** Honest placeholder
   in syscalls_exec.c. Nothing we run uses the flag (`fexecve(3)` is
   AT_EMPTY_PATH), and -ENOSYS is safer than silently following the

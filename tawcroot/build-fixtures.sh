@@ -107,6 +107,7 @@ build_static  static_argc_random
 build_static  static_execve_exit42
 build_static  static_open_creat_argv1
 build_static  static_open_rdonly_argv1
+build_static  static_expect_erofs_argv1
 build_static  static_sleep_open_creat_argv1
 build_static  static_fork_open_argv1
 build_static  static_small_stack_open_argv1

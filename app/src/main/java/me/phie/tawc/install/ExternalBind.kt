@@ -14,8 +14,11 @@ import org.json.JSONObject
  * methods ignore the list (chroot uses real kernel mounts whose
  * uninstall interaction hasn't been reviewed).
  *
- * No `writable` flag: tawcroot's `-b src:dst` bind table has no
- * read-only mode. Add one here when tawcroot grows support.
+ * No `writable` flag yet, but tawcroot now supports it: `-b
+ * src:dst:ro` marks a bind read-only (notes/tawcroot/
+ * path-translation.md §"Read-only binds"). Add the flag here + the
+ * Manage-binds UI toggle when a workload wants it; bindSpecs then
+ * emits the `:ro` suffix.
  */
 data class ExternalBind(
     /** Absolute host directory, e.g. `/storage/emulated/0`. Picked by

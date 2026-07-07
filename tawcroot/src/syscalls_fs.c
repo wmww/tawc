@@ -99,6 +99,10 @@ static long guest_path_is_empty(const char *gpath)
 struct fs_path {
 	int         fd;
 	int         is_root;
+	int         ro;    /* result.ro mirror — fidelity only (statfs,
+	                    * linkat src), never enforcement. 0 on the
+	                    * dirfd-passthrough branch (outside-view fds
+	                    * aren't ours to police). */
 	const char *path;
 };
 
@@ -106,9 +110,11 @@ struct fs_path {
  * and `slot + 1`; `out->path` points into `slot + 1`. */
 static long translate_at(struct tawcroot_path_scratch *scratch, int slot,
 			 int dirfd, const char *guest_path,
-			 tawcroot_path_mode mode, struct fs_path *out);
+			 tawcroot_path_mode mode, tawcroot_path_intent intent,
+			 struct fs_path *out);
 static long translate_local(struct tawcroot_path_scratch *scratch, int slot,
 			    int dirfd, tawcroot_path_mode mode,
+			    tawcroot_path_intent intent,
 			    struct fs_path *out);
 static void decorate_stat(struct stat *st);
 
@@ -134,6 +140,92 @@ static tawcroot_path_mode openat_mode(int flags)
 		return (flags & O_EXCL) ? TAWCROOT_PATH_PARENT_CREATE
 					: TAWCROOT_PATH_FOLLOW;
 	return TAWCROOT_PATH_FOLLOW;
+}
+
+/* See syscalls_fs.h. Non-static so the cleat unit table can exercise
+ * it directly. */
+tawcroot_path_intent tawcroot_openat_intent(int flags)
+{
+	if (flags & O_PATH) return TAWCROOT_PATH_INTENT_READ;
+	if ((flags & O_ACCMODE) != O_RDONLY)
+		return TAWCROOT_PATH_INTENT_WRITE;
+	if (flags & (O_TRUNC | O_CREAT))
+		return TAWCROOT_PATH_INTENT_WRITE;
+	return TAWCROOT_PATH_INTENT_READ;
+}
+
+/* ---- Read-only binds, stage 2: fd-based metadata residue ----------
+ *
+ * Path-layer enforcement (the central check in path_orchestrate.c)
+ * plus the kernel's fd-access-mode backstop covers every data write
+ * and namespace mutation. What's left is syscalls that mutate
+ * METADATA through an fd legitimately opened read-only through an RO
+ * bind (fchmod/fchown/futimens/f*xattr), plus the /proc magic-link
+ * write-mode re-open. All are cold; each derives its verdict from
+ * kernel ground truth at call time — readlink /proc/self/fd/<n>,
+ * longest-prefix-match against the RO bind srcs — no taint table,
+ * nothing to propagate, works for inherited and SCM_RIGHTS-passed
+ * fds. */
+
+/* Fast gate: any RO surface in the current view at all? Skips the
+ * per-call readlink for the (universal today) all-RW configuration. */
+static int view_has_ro(void)
+{
+	if (tawcroot_root_ro) return 1;
+	for (size_t i = 0; i < tawcroot_n_binds; i++)
+		if (tawcroot_binds[i].active && tawcroot_binds[i].read_only)
+			return 1;
+	return 0;
+}
+
+/* 1 iff `fd`'s kernel-side path lies in an RO part of the view. */
+static int fd_in_ro_bind(int fd)
+{
+	if (!view_has_ro()) return 0;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *hostp = scratch->buf[0];
+	long n = tawcroot_proc_fd_to_host_path(fd, hostp,
+					       TAWCROOT_PATH_SCRATCH_SIZE);
+	if (n <= 0) return 0;
+	return tawcroot_host_path_in_ro_bind(hostp, (size_t)n);
+}
+
+/* 1 iff `fd` is the src fd of an active bind of host /proc — the one
+ * place where a suffix can be a kernel magic link that re-opens an
+ * inode with fresh access mode. */
+static int fd_is_proc_bind(int fd)
+{
+	for (size_t i = 0; i < tawcroot_n_binds; i++) {
+		const struct tawcroot_bind *b = &tawcroot_binds[i];
+		if (!b->active || b->src_fd != fd) continue;
+		return b->src_len == 5 && memcmp(b->src, "/proc", 5) == 0;
+	}
+	return 0;
+}
+
+/* Match a /proc-relative suffix of the magic-link shape
+ * (self|thread-self|<pid>)/(fd|map_files)/<entry>[/...]. Returns the
+ * byte length of the 3-component magic-link prefix (so callers can
+ * readlink exactly the link, even when the open resolves THROUGH it),
+ * or 0 for no match. */
+static size_t proc_fd_magic_prefix(const char *suf)
+{
+	size_t i = 0;
+	if (tawc_starts_with(suf, "self/")) {
+		i = 5;
+	} else if (tawc_starts_with(suf, "thread-self/")) {
+		i = 12;
+	} else {
+		while (suf[i] >= '0' && suf[i] <= '9') i++;
+		if (i == 0 || suf[i] != '/') return 0;
+		i++;
+	}
+	if (tawc_starts_with(suf + i, "fd/"))              i += 3;
+	else if (tawc_starts_with(suf + i, "map_files/"))  i += 10;
+	else return 0;
+	size_t start = i;
+	while (suf[i] && suf[i] != '/') i++;
+	return i == start ? 0 : i;
 }
 
 /* Probe (dirfd, path)'s leaf for an emulated name and open the OBJECT
@@ -239,8 +331,53 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * /dev/shm dir would do. */
 
 	struct fs_path t;
-	long e = translate_local(scratch, 0, dirfd, openat_mode(flags), &t);
+	long e = translate_local(scratch, 0, dirfd, openat_mode(flags),
+				 tawcroot_openat_intent(flags), &t);
+
+	/* O_CREAT-on-existing-file fidelity: POSIX/Linux allow
+	 * open(existing, O_RDONLY|O_CREAT) on an RO fs — the create is a
+	 * no-op when the file exists. The classifier calls any O_CREAT a
+	 * write, so the central check EROFSes it; retry with O_CREAT
+	 * dropped and READ intent when the flags are a write-free accmode
+	 * without O_EXCL/O_TRUNC. A resulting ENOENT (nothing to open —
+	 * the create WOULD have been needed) is rewritten to EROFS below,
+	 * matching the kernel's create-on-RO-fs answer. */
+	int erofs_creat_retry = 0;
+	if (e == TAWC_EROFS && (flags & O_CREAT) && !(flags & O_EXCL) &&
+	    (flags & O_ACCMODE) == O_RDONLY && !(flags & O_TRUNC)) {
+		erofs_creat_retry = 1;
+		flags &= ~O_CREAT;
+		e = translate_local(scratch, 0, dirfd, openat_mode(flags),
+				    TAWCROOT_PATH_INTENT_READ, &t);
+		if (e == TAWC_ENOENT) return TAWC_EROFS;
+	}
 	if (e) return e;
+
+	/* Stage 2: /proc/<pid>/fd/<n> (and map_files) write-mode re-open.
+	 * A guest holding an RO-bind file open O_RDONLY can ask for
+	 * open("/proc/self/fd/<n>", O_RDWR); the path routes through the
+	 * /proc bind and the KERNEL re-opens the inode writable — the
+	 * host mount is RW, so it won't refuse the way a real RO mount
+	 * would. Readlink the magic link (kernel ground truth — this is
+	 * the one check that cannot live in the orchestrator) and
+	 * RO-prefix-check the target. Sibling-guest pids are covered by
+	 * the same readlink; opens that resolve THROUGH the fd link
+	 * (self/fd/<n>/sub) readlink just the link prefix. */
+	if (tawcroot_openat_intent(flags) != TAWCROOT_PATH_INTENT_READ &&
+	    !t.is_root && view_has_ro() && fd_is_proc_bind(t.fd)) {
+		size_t ml = proc_fd_magic_prefix(t.path);
+		char lnk[64];
+		if (ml > 0 && ml < sizeof lnk) {
+			for (size_t i = 0; i < ml; i++) lnk[i] = t.path[i];
+			lnk[ml] = 0;
+			char *tgt = scratch->buf[2];
+			long ln = tawc_readlinkat(t.fd, lnk, tgt,
+						  TAWCROOT_PATH_SCRATCH_SIZE);
+			if (ln > 0 && ln < (long)TAWCROOT_PATH_SCRATCH_SIZE &&
+			    tawcroot_host_path_in_ro_bind(tgt, (size_t)ln))
+				return TAWC_EROFS;
+		}
+	}
 
 	/* Empty t.path → guest asked for "/" or for a bind dst's root.
 	 * Pass "." so the kernel resolves it to the dir t.fd points at;
@@ -325,6 +462,9 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		long ofd = open_emulated_leaf(t.fd, p, flags, mode);
 		if (ofd != TAWC_ENOENT) return ofd;
 	}
+	/* See the O_CREAT retry above: the leaf turned out not to exist,
+	 * so the create the guest asked for would have been real — EROFS. */
+	if (erofs_creat_retry && fd == TAWC_ENOENT) return TAWC_EROFS;
 	return fd;
 }
 
@@ -494,7 +634,8 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 		: TAWCROOT_PATH_FOLLOW;
 
 	struct fs_path t;
-	long e = translate_local(scratch, 0, dirfd, pmode, &t);
+	long e = translate_local(scratch, 0, dirfd, pmode,
+				 TAWCROOT_PATH_INTENT_READ, &t);
 	if (e) return e;
 
 	const char *resolved = t.path;
@@ -567,12 +708,14 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
  * passthrough — there's nothing in our view to escape into. */
 static long translate_local(struct tawcroot_path_scratch *scratch, int slot,
 			    int dirfd, tawcroot_path_mode mode,
+			    tawcroot_path_intent intent,
 			    struct fs_path *out)
 {
 	char  *path_buf   = scratch->buf[slot];
 	char  *suffix     = scratch->buf[slot + 1];
 	size_t suffix_cap = TAWCROOT_PATH_SCRATCH_SIZE;
 	out->path = suffix;
+	out->ro   = 0;
 
 	if (dirfd != AT_FDCWD) {
 		if (path_buf[0] != '/') {
@@ -622,10 +765,12 @@ static long translate_local(struct tawcroot_path_scratch *scratch, int slot,
 					tawcroot_path_result r =
 						tawcroot_path_translate(
 							abs, suffix,
-							suffix_cap, mode);
+							suffix_cap, mode,
+							intent);
 					if (r.err) return r.err;
 					out->fd      = r.base_fd;
 					out->is_root = (suffix[0] == 0);
+					out->ro      = r.ro;
 					return 0;
 				}
 				/* Outside-rootfs dirfd (-ENOENT) or readlink
@@ -659,22 +804,25 @@ static long translate_local(struct tawcroot_path_scratch *scratch, int slot,
 	}
 
 	tawcroot_path_result r =
-		tawcroot_path_translate(path_buf, suffix, suffix_cap, mode);
+		tawcroot_path_translate(path_buf, suffix, suffix_cap, mode,
+					intent);
 	if (r.err) return r.err;
 	out->fd      = r.base_fd;
 	out->is_root = (suffix[0] == 0);
+	out->ro      = r.ro;
 	return 0;
 }
 
 static long translate_at(struct tawcroot_path_scratch *scratch, int slot,
 			 int dirfd, const char *guest_path,
-			 tawcroot_path_mode mode, struct fs_path *out)
+			 tawcroot_path_mode mode, tawcroot_path_intent intent,
+			 struct fs_path *out)
 {
 	long n = tawc_copy_string_from_guest(scratch->buf[slot],
 					     TAWCROOT_PATH_SCRATCH_SIZE,
 					     guest_path);
 	if (n < 0) return n;
-	return translate_local(scratch, slot, dirfd, mode, out);
+	return translate_local(scratch, slot, dirfd, mode, intent, out);
 }
 
 
@@ -744,7 +892,8 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 
 	struct fs_path t;
 	long e = translate_local(scratch, 0, dirfd,
-				 TAWCROOT_PATH_NOFOLLOW, &t);
+				 TAWCROOT_PATH_NOFOLLOW,
+				 TAWCROOT_PATH_INTENT_READ, &t);
 	if (e) return e;
 	/* When the guest path resolves exactly to a bind dst (or rootfs root),
 	 * translate_at gives us (reserved_dir_fd, ""). The kernel
@@ -895,8 +1044,15 @@ static long handle_faccessat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		if (kind == SHM_PEEK_DIR)  return tawcroot_shm_access_dir();
 	}
 
+	/* W_OK probes declare write intent: the kernel answers EROFS for
+	 * access(W_OK) on a read-only fs, which is exactly what the
+	 * central check produces. R_OK/X_OK/F_OK observe only. */
 	struct fs_path t;
-	long e = translate_local(scratch, 0, dirfd, TAWCROOT_PATH_FOLLOW, &t);
+	long e = translate_local(scratch, 0, dirfd, TAWCROOT_PATH_FOLLOW,
+				 (mode & 2 /*W_OK*/)
+					 ? TAWCROOT_PATH_INTENT_WRITE
+					 : TAWCROOT_PATH_INTENT_READ,
+				 &t);
 	if (e) return e;
 	/* Empty t.path → guest asked for "/" or for a bind dst's root.
 	 * Pass "." so the kernel resolves it to the dir t.fd points at;
@@ -924,7 +1080,8 @@ static long handle_chdir(const tawcroot_syscall_args *args, ucontext_t *uc)
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, AT_FDCWD, gpath,
-			      TAWCROOT_PATH_FOLLOW, &t);
+			      TAWCROOT_PATH_FOLLOW,
+			      TAWCROOT_PATH_INTENT_READ, &t);
 	if (e) return e;
 
 	/* Empty t.path → guest asked for "/", which is the directory the
@@ -982,7 +1139,7 @@ static long handle_getcwd(const tawcroot_syscall_args *args, ucontext_t *uc)
  * guest's dirfd is currently passed through (fd provenance comes later)
  * and the path is translated. */
 
-#define DECLARE_AT_PASS(name, sysnr, narg, pmode)                         \
+#define DECLARE_AT_PASS(name, sysnr, narg, pmode, pintent)                \
 static long handle_##name(const tawcroot_syscall_args *args,             \
 			  ucontext_t *uc)                                 \
 {                                                                         \
@@ -992,7 +1149,7 @@ static long handle_##name(const tawcroot_syscall_args *args,             \
 	if (!gpath) return TAWC_EFAULT;                                       \
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);                                  \
 	struct fs_path t;                                                     \
-	long e = translate_at(scratch, 0, dirfd, gpath, pmode, &t);           \
+	long e = translate_at(scratch, 0, dirfd, gpath, pmode, pintent, &t);  \
 	if (e) return e;                                                  \
 	const char *p = t.is_root ? "." : t.path;                         \
 	return TAWC_RAW(sysnr, t.fd, (long)p,                             \
@@ -1001,7 +1158,8 @@ static long handle_##name(const tawcroot_syscall_args *args,             \
 			(narg) > 5 ? args->f : 0);                        \
 }
 
-DECLARE_AT_PASS(mkdirat,    TAWC_SYS_mkdirat,    3, TAWCROOT_PATH_PARENT_CREATE)
+DECLARE_AT_PASS(mkdirat,    TAWC_SYS_mkdirat,    3, TAWCROOT_PATH_PARENT_CREATE,
+		TAWCROOT_PATH_INTENT_WRITE)
 
 /* mknodat: translate and attempt the host call. FIFOs, sockets and
  * regular files succeed as the app uid; S_IFCHR/S_IFBLK needs
@@ -1031,7 +1189,8 @@ static long handle_mknodat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, dirfd, gpath,
-			      TAWCROOT_PATH_PARENT_CREATE, &t);
+			      TAWCROOT_PATH_PARENT_CREATE,
+			      TAWCROOT_PATH_INTENT_WRITE, &t);
 	if (e) return e;
 	const char *p = t.is_root ? "." : t.path;
 	long rv = TAWC_RAW(TAWC_SYS_mknodat, t.fd, (long)p,
@@ -1075,7 +1234,8 @@ static long handle_fchmodat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, dirfd, gpath,
-			      TAWCROOT_PATH_FOLLOW, &t);
+			      TAWCROOT_PATH_FOLLOW,
+			      TAWCROOT_PATH_INTENT_WRITE, &t);
 	if (e) return e;
 	const char *p = t.is_root ? "." : t.path;
 	long rv = TAWC_RAW(TAWC_SYS_fchmodat, t.fd, (long)p, args->c, 0, 0, 0);
@@ -1113,7 +1273,8 @@ static long handle_unlinkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 
 	struct fs_path t;
 	long e = translate_local(scratch, 0, dirfd,
-				 TAWCROOT_PATH_PARENT_REMOVE, &t);
+				 TAWCROOT_PATH_PARENT_REMOVE,
+				 TAWCROOT_PATH_INTENT_WRITE, &t);
 	if (e) return e;
 	/* Path resolved to the rootfs/bind root itself: match kernel
 	 * errno for operating on "/". rmdir("/") → EBUSY, unlink("/") →
@@ -1162,8 +1323,11 @@ static long handle_utimensat(const tawcroot_syscall_args *args,
 		/* Linux-extension: NULL pathname → operate on dirfd. The
 		 * dirfd is one of ours (translated openat handed it back);
 		 * forward unchanged — but reserved fds must answer EBADF
-		 * (fdtab.h contract), like every other dirfd anchor. */
+		 * (fdtab.h contract), like every other dirfd anchor. An
+		 * RO-bind fd is a metadata write through the fd: EROFS
+		 * (stage 2). */
 		if (tawcroot_fd_is_reserved(dirfd)) return TAWC_EBADF;
+		if (fd_in_ro_bind(dirfd)) return TAWC_EROFS;
 		return TAWC_RAW(TAWC_SYS_utimensat, dirfd, 0,
 				args->c, flags, 0, 0);
 	}
@@ -1173,7 +1337,7 @@ static long handle_utimensat(const tawcroot_syscall_args *args,
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, dirfd, gpath,
-			      pmode, &t);
+			      pmode, TAWCROOT_PATH_INTENT_WRITE, &t);
 	if (e) return e;
 	const char *p = t.is_root ? "." : t.path;
 
@@ -1237,7 +1401,7 @@ static long handle_fchownat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, dirfd, gpath,
-			      pmode, &t);
+			      pmode, TAWCROOT_PATH_INTENT_WRITE, &t);
 	if (e) return e;
 	const char *p = t.is_root ? "" : t.path;
 	int sflags = (flags & AT_SYMLINK_NOFOLLOW) | (t.is_root ? AT_EMPTY_PATH : 0);
@@ -1277,6 +1441,11 @@ static long handle_fchmod(const tawcroot_syscall_args *args, ucontext_t *uc)
 	(void)uc;
 	int fd = (int)args->a;
 	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
+	/* RO-bind fd (stage 2): the host fs is writable, so without this
+	 * the chmod would succeed straight through the bind src. EROFS
+	 * before the fake-root swallow — root gets EROFS on a real RO fs
+	 * too. */
+	if (fd_in_ro_bind(fd)) return TAWC_EROFS;
 	long rv = TAWC_RAW(TAWC_SYS_fchmod, fd, args->b, 0, 0, 0, 0);
 	if ((rv == TAWC_EPERM || rv == TAWC_EACCES) &&
 	    tawcroot_identity_euid() == 0)
@@ -1294,6 +1463,11 @@ static long handle_fchown(const tawcroot_syscall_args *args, ucontext_t *uc)
 	(void)uc;
 	int fd = (int)args->a;
 	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
+	/* RO-bind fd (stage 2): EROFS on BOTH branches — the fake-root
+	 * branch must not fake success (root chowning on a real RO fs
+	 * gets EROFS), and the forwarding branch must not write through
+	 * the host-RW bind src. */
+	if (fd_in_ro_bind(fd)) return TAWC_EROFS;
 	if (tawcroot_identity_euid() != 0)
 		return TAWC_RAW(TAWC_SYS_fchown, fd, args->b, args->c,
 				0, 0, 0);
@@ -1333,7 +1507,8 @@ static long handle_symlinkat(const tawcroot_syscall_args *args,
 		return TAWC_EPERM;
 	struct fs_path t;
 	long e = translate_at(scratch, 0, newdirfd, linkpath,
-			      TAWCROOT_PATH_PARENT_CREATE, &t);
+			      TAWCROOT_PATH_PARENT_CREATE,
+			      TAWCROOT_PATH_INTENT_WRITE, &t);
 	if (e) return e;
 	if (t.is_root) return TAWC_EINVAL; /* can't create / */
 	return TAWC_RAW(TAWC_SYS_symlinkat, (long)tgt, t.fd,
@@ -1541,7 +1716,8 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 		: TAWCROOT_PATH_FOLLOW;
 
 	struct fs_path t;
-	long e = translate_local(scratch, 0, dirfd, pmode, &t);
+	long e = translate_local(scratch, 0, dirfd, pmode,
+				 TAWCROOT_PATH_INTENT_READ, &t);
 	if (e) return e;
 
 	const char *resolved = t.is_root ? "" : t.path;
@@ -1635,7 +1811,7 @@ static long handle_inotify_add_watch(const tawcroot_syscall_args *args,
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, AT_FDCWD, gpath,
-			      pmode, &t);
+			      pmode, TAWCROOT_PATH_INTENT_READ, &t);
 	if (e) return e;
 	char *host_path = scratch->buf[2];
 	long bp = tawc_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
@@ -1734,7 +1910,8 @@ static long linkat_empty_path(struct tawcroot_path_scratch *scratch,
 
 	struct fs_path tnew;
 	long e = translate_at(scratch, 0, newdirfd, newpath,
-			      TAWCROOT_PATH_PARENT_CREATE, &tnew);
+			      TAWCROOT_PATH_PARENT_CREATE,
+			      TAWCROOT_PATH_INTENT_WRITE, &tnew);
 	if (e) return e;
 	if (tnew.is_root) return TAWC_ENOENT;
 
@@ -1748,6 +1925,14 @@ static long linkat_empty_path(struct tawcroot_path_scratch *scratch,
 	long hn = tawcroot_proc_fd_to_host_path(olddirfd, hostp,
 						TAWCROOT_PATH_SCRATCH_SIZE);
 	if (hn <= 0) hostp[0] = 0;
+
+	/* RO-bind source (AT_EMPTY_PATH spelling): a same-fs host linkat
+	 * would mint a rootfs-named hardlink whose content stays writable —
+	 * the classic RO-bind hardlink escape. EXDEV, like the path form
+	 * below (tools degrade to copy). Same stateless host-path ground
+	 * truth as the stage-2 fd checks. */
+	if (hn > 0 && tawcroot_host_path_in_ro_bind(hostp, (size_t)hn))
+		return TAWC_EXDEV;
 
 	char tok[TAWCROOT_LINK_TOKEN_MAX];
 	if (tawcroot_link_host_path_token(hostp, tok, sizeof tok)) {
@@ -1867,15 +2052,32 @@ static long handle_linkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 						 newdirfd, newpath, flags);
 	}
 
+	/* Source translates with READ intent — translation must succeed
+	 * for us to learn told.ro; the write-refusal decision is the
+	 * handler-level EXDEV below, not the central EROFS. The dst's
+	 * PARENT_CREATE is forced write, so both-in-RO EROFSes there
+	 * first. */
 	struct fs_path told, tnew;
-	long e1 = translate_at(scratch, 0, olddirfd, oldpath, src_mode, &told);
+	long e1 = translate_at(scratch, 0, olddirfd, oldpath, src_mode,
+			       TAWCROOT_PATH_INTENT_READ, &told);
 	if (e1) return e1;
 	long e2 = translate_at(scratch, 2, newdirfd, newpath,
-			       TAWCROOT_PATH_PARENT_CREATE, &tnew);
+			       TAWCROOT_PATH_PARENT_CREATE,
+			       TAWCROOT_PATH_INTENT_WRITE, &tnew);
 	if (e2) return e2;
 	/* Kernel: a root/empty operand to link is ENOENT (the empty-name
 	 * lookup), not EINVAL. */
 	if (told.is_root || tnew.is_root) return TAWC_ENOENT;
+
+	/* RO-bind source: refuse with EXDEV, deliberately. Kernel-faithful
+	 * for every cross-fs RO bind (system partitions, shared storage;
+	 * `cp -al` and git degrade to copy on EXDEV). For a SAME-fs RO
+	 * bind the host linkat would succeed and hand out a rootfs-named
+	 * hardlink whose content is then writable — the classic
+	 * RO-bind-mount hardlink escape — so we diverge from kernel
+	 * fidelity on purpose and refuse. Documented divergence
+	 * (notes/tawcroot/path-translation.md §"Read-only binds"). */
+	if (told.ro) return TAWC_EXDEV;
 
 	/* A LATENT process may be running beside one that already minted
 	 * the store (it is created lazily, so any long-lived guest that
@@ -2016,12 +2218,18 @@ static long do_renameat(int olddirfd, const char *oldpath,
 			unsigned int rflags)
 {
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	/* Both operands are forced-write modes → uniform EROFS when
+	 * either lands in an RO bind, BEFORE any host attempt or
+	 * emulation branch. (Kernel gives EXDEV for the cross-mount
+	 * flavor; uniform EROFS is equally terminal for `mv`.) */
 	struct fs_path told, tnew;
 	long e1 = translate_at(scratch, 0, olddirfd, oldpath,
-			       TAWCROOT_PATH_PARENT_REMOVE, &told);
+			       TAWCROOT_PATH_PARENT_REMOVE,
+			       TAWCROOT_PATH_INTENT_WRITE, &told);
 	if (e1) return e1;
 	long e2 = translate_at(scratch, 2, newdirfd, newpath,
-			       TAWCROOT_PATH_PARENT_CREATE, &tnew);
+			       TAWCROOT_PATH_PARENT_CREATE,
+			       TAWCROOT_PATH_INTENT_WRITE, &tnew);
 	if (e2) return e2;
 	if (told.is_root || tnew.is_root) return TAWC_EINVAL;
 
@@ -2098,7 +2306,8 @@ static long handle_truncate(const tawcroot_syscall_args *args,
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, AT_FDCWD, gpath,
-			      TAWCROOT_PATH_FOLLOW, &t);
+			      TAWCROOT_PATH_FOLLOW,
+			      TAWCROOT_PATH_INTENT_WRITE, &t);
 	if (e) return e;
 	/* t.fd is a directory in every translation path (rootfs or a
 	 * bind src, both opened O_DIRECTORY at init), so empty t.path means
@@ -2227,7 +2436,8 @@ static long utimensat_via_translate(int dirfd, const char *gpath,
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, dirfd, gpath,
-			      TAWCROOT_PATH_FOLLOW, &t);
+			      TAWCROOT_PATH_FOLLOW,
+			      TAWCROOT_PATH_INTENT_WRITE, &t);
 	if (e) return e;
 	const char *p = t.is_root ? "." : t.path;
 	return TAWC_RAW(TAWC_SYS_utimensat, t.fd, (long)p,
@@ -2303,21 +2513,45 @@ static long handle_mknod(const tawcroot_syscall_args *args, ucontext_t *uc)
  * O_PATH` + fstatfs, but on Android-shipped 5.4 kernels fstatfs against
  * an O_PATH fd returns -EBADF. The /proc/self/fd path gets the same
  * effect (kernel resolves through the fd) with no version surprises. */
+/* LP64 kernel `struct statfs` mirror (asm-generic/statfs.h; identical
+ * on aarch64 and x86_64 — every field is 8 bytes). Local so the
+ * ST_RDONLY decoration below can stage the kernel result without
+ * pulling <sys/statfs.h> into the freestanding build. */
+struct tawc_statfs64 {
+	long f_type, f_bsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree;
+	int  f_fsid[2];
+	long f_namelen, f_frsize, f_flags, f_spare[4];
+};
+#define TAWC_ST_RDONLY 0x0001
+
 static long handle_statfs(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
 	const char *gpath = (const char *)(uintptr_t)args->a;
-	if (!gpath) return TAWC_EFAULT;
+	void       *out   = (void *)(uintptr_t)args->b;
+	if (!gpath || !out) return TAWC_EFAULT;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	struct fs_path t;
 	long e = translate_at(scratch, 0, AT_FDCWD, gpath,
-			      TAWCROOT_PATH_FOLLOW, &t);
+			      TAWCROOT_PATH_FOLLOW,
+			      TAWCROOT_PATH_INTENT_READ, &t);
 	if (e) return e;
 	char *host_path = scratch->buf[2];
 	long bp = tawc_proc_fd_path(host_path, TAWCROOT_PATH_SCRATCH_SIZE,
 				    t.fd, t.path);
 	if (bp < 0) return bp;
-	return TAWC_RAW(TAWC_SYS_statfs, (long)host_path, args->b, 0, 0, 0, 0);
+	/* Stage the kernel result locally so an RO route can OR
+	 * ST_RDONLY into f_flags — `df`, pacman's free-space check, and
+	 * RO-detecting installers then see the truth instead of the host
+	 * mount's RW answer. Cost vs. the old direct-to-guest write: one
+	 * copy_to_guest round-trip on a cold syscall. */
+	struct tawc_statfs64 local;
+	long rv = TAWC_RAW(TAWC_SYS_statfs, (long)host_path, (long)&local,
+			   0, 0, 0, 0);
+	if (rv != 0) return rv;
+	if (t.ro) local.f_flags |= TAWC_ST_RDONLY;
+	long ce = tawc_copy_to_guest(out, &local, sizeof local);
+	return ce < 0 ? ce : 0;
 }
 
 /* Path-bearing xattr handlers. The xattr syscalls don't have an *at
@@ -2344,7 +2578,7 @@ static long handle_statfs(const tawcroot_syscall_args *args, ucontext_t *uc)
  * (Android app-private storage doesn't carry xattrs); the value of
  * trapping is that the guest sees the right errno against the right
  * path rather than a host-relative error. */
-#define DECLARE_PATH_XATTR(name, sysnr, narg, pmode)                      \
+#define DECLARE_PATH_XATTR(name, sysnr, narg, pmode, pintent)             \
 static long handle_##name(const tawcroot_syscall_args *args, ucontext_t *uc) \
 {                                                                          \
 	(void)uc;                                                          \
@@ -2352,7 +2586,7 @@ static long handle_##name(const tawcroot_syscall_args *args, ucontext_t *uc) \
 	if (!gpath) return TAWC_EFAULT;                                        \
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);                                   \
 	struct fs_path t;                                                      \
-	long e = translate_at(scratch, 0, AT_FDCWD, gpath, pmode, &t);         \
+	long e = translate_at(scratch, 0, AT_FDCWD, gpath, pmode, pintent, &t); \
 	if (e) return e;                                                   \
 	if (t.is_root && (pmode) == TAWCROOT_PATH_NOFOLLOW) {                  \
 		return TAWC_EOPNOTSUPP; /* see big comment above */            \
@@ -2368,14 +2602,49 @@ static long handle_##name(const tawcroot_syscall_args *args, ucontext_t *uc) \
 			(narg) > 5 ? args->f : 0);                         \
 }
 
-DECLARE_PATH_XATTR(setxattr,     TAWC_SYS_setxattr,     5, TAWCROOT_PATH_FOLLOW)
-DECLARE_PATH_XATTR(lsetxattr,    TAWC_SYS_lsetxattr,    5, TAWCROOT_PATH_NOFOLLOW)
-DECLARE_PATH_XATTR(getxattr,     TAWC_SYS_getxattr,     4, TAWCROOT_PATH_FOLLOW)
-DECLARE_PATH_XATTR(lgetxattr,    TAWC_SYS_lgetxattr,    4, TAWCROOT_PATH_NOFOLLOW)
-DECLARE_PATH_XATTR(listxattr,    TAWC_SYS_listxattr,    3, TAWCROOT_PATH_FOLLOW)
-DECLARE_PATH_XATTR(llistxattr,   TAWC_SYS_llistxattr,   3, TAWCROOT_PATH_NOFOLLOW)
-DECLARE_PATH_XATTR(removexattr,  TAWC_SYS_removexattr,  2, TAWCROOT_PATH_FOLLOW)
-DECLARE_PATH_XATTR(lremovexattr, TAWC_SYS_lremovexattr, 2, TAWCROOT_PATH_NOFOLLOW)
+DECLARE_PATH_XATTR(setxattr,     TAWC_SYS_setxattr,     5, TAWCROOT_PATH_FOLLOW,
+		   TAWCROOT_PATH_INTENT_WRITE)
+DECLARE_PATH_XATTR(lsetxattr,    TAWC_SYS_lsetxattr,    5, TAWCROOT_PATH_NOFOLLOW,
+		   TAWCROOT_PATH_INTENT_WRITE)
+DECLARE_PATH_XATTR(getxattr,     TAWC_SYS_getxattr,     4, TAWCROOT_PATH_FOLLOW,
+		   TAWCROOT_PATH_INTENT_READ)
+DECLARE_PATH_XATTR(lgetxattr,    TAWC_SYS_lgetxattr,    4, TAWCROOT_PATH_NOFOLLOW,
+		   TAWCROOT_PATH_INTENT_READ)
+DECLARE_PATH_XATTR(listxattr,    TAWC_SYS_listxattr,    3, TAWCROOT_PATH_FOLLOW,
+		   TAWCROOT_PATH_INTENT_READ)
+DECLARE_PATH_XATTR(llistxattr,   TAWC_SYS_llistxattr,   3, TAWCROOT_PATH_NOFOLLOW,
+		   TAWCROOT_PATH_INTENT_READ)
+DECLARE_PATH_XATTR(removexattr,  TAWC_SYS_removexattr,  2, TAWCROOT_PATH_FOLLOW,
+		   TAWCROOT_PATH_INTENT_WRITE)
+DECLARE_PATH_XATTR(lremovexattr, TAWC_SYS_lremovexattr, 2, TAWCROOT_PATH_NOFOLLOW,
+		   TAWCROOT_PATH_INTENT_WRITE)
+
+/* fd-based xattr WRITERS (stage 2). Previously untrapped by design —
+ * the kernel's fd resolution is already correct — but an fd opened
+ * read-only through an RO bind still accepts metadata writes on the
+ * host-RW mount, so trap, RO-check, and pass through raw otherwise.
+ * The read-side f*xattr (fgetxattr/flistxattr) stay untrapped. Mostly
+ * EOPNOTSUPP on app-data anyway; same-fs RO binds need the refusal. */
+static long handle_fsetxattr(const tawcroot_syscall_args *args,
+			     ucontext_t *uc)
+{
+	(void)uc;
+	int fd = (int)args->a;
+	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
+	if (fd_in_ro_bind(fd)) return TAWC_EROFS;
+	return TAWC_RAW(TAWC_SYS_fsetxattr, args->a, args->b, args->c,
+			args->d, args->e, 0);
+}
+
+static long handle_fremovexattr(const tawcroot_syscall_args *args,
+				ucontext_t *uc)
+{
+	(void)uc;
+	int fd = (int)args->a;
+	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
+	if (fd_in_ro_bind(fd)) return TAWC_EROFS;
+	return TAWC_RAW(TAWC_SYS_fremovexattr, args->a, args->b, 0, 0, 0, 0);
+}
 
 void tawcroot_fs_register(void)
 {
@@ -2435,6 +2704,10 @@ void tawcroot_fs_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_llistxattr,  handle_llistxattr);
 	tawcroot_dispatch_install(TAWC_SYS_removexattr, handle_removexattr);
 	tawcroot_dispatch_install(TAWC_SYS_lremovexattr,handle_lremovexattr);
+	/* fd-based xattr writers — trapped for the RO-bind stage-2 check
+	 * only; non-RO fds pass through raw. */
+	tawcroot_dispatch_install(TAWC_SYS_fsetxattr,   handle_fsetxattr);
+	tawcroot_dispatch_install(TAWC_SYS_fremovexattr,handle_fremovexattr);
 
 #if defined(__x86_64__)
 	/* Legacy x86_64 syscalls — the lp64-`access`-on-x86_64 set that

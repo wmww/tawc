@@ -43,6 +43,11 @@ extern int tawcroot_rootfs_fd;
 typedef struct {
 	int   base_fd;
 	long  err;       /* 0 on success, -errno otherwise */
+	int   ro;        /* final route landed on a read-only bind (or an
+	                  * RO root view). Informational for the few
+	                  * fidelity consumers (statfs ST_RDONLY, linkat's
+	                  * src EXDEV) — NEVER for enforcement, which
+	                  * already happened inside the translator. */
 } tawcroot_path_result;
 
 /* Resolution mode — see notes/tawcroot/path-translation.md §"Translation rules" for the
@@ -74,6 +79,20 @@ typedef enum {
 	TAWCROOT_PATH_PARENT_REMOVE  = 3,
 } tawcroot_path_mode;
 
+/* Caller-declared access intent, enforced against read-only binds at
+ * the single point in tawcroot_path_translate_with_ctx (after the
+ * final bind route is known). Deliberately zero-defaulting to WRITE:
+ * a forgotten/zero-initialized intent in future code degrades to a
+ * visible -EROFS on RO binds — a testable functional break — never a
+ * silent write-through. The two mutating modes (PARENT_CREATE /
+ * PARENT_REMOVE) force write intent inside the translator regardless
+ * of the declaration, so create/remove/rename syscalls are covered
+ * even by a mislabeled call site. */
+typedef enum {
+	TAWCROOT_PATH_INTENT_WRITE = 0,  /* mutates metadata/namespace/data */
+	TAWCROOT_PATH_INTENT_READ  = 1,  /* observes only */
+} tawcroot_path_intent;
+
 /* Translate a guest path. `out_suffix` must point to a buffer of at
  * least `out_cap` bytes (PATH_MAX is sane). On success, the suffix is
  * NUL-terminated; on failure, contents are unspecified.
@@ -86,10 +105,13 @@ typedef enum {
  * Relative paths (no leading `/`) reverse-translate through the
  * kernel cwd, then re-run the absolute translator on the joined path.
  *
- * `mode` controls final-component handling — see `tawcroot_path_mode`. */
+ * `mode` controls final-component handling — see `tawcroot_path_mode`.
+ * `intent` declares read vs write access for the RO-bind check (see
+ * `tawcroot_path_intent`); a write route into an RO bind is -EROFS. */
 tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 					     char *out_suffix, size_t out_cap,
-					     tawcroot_path_mode mode);
+					     tawcroot_path_mode mode,
+					     tawcroot_path_intent intent);
 
 /* Configure paths to the host root and to the in-rootfs `/proc` mirror
  * for reverse-translation. Set at init from main.c / rootfs_smoke.c. */
@@ -109,6 +131,11 @@ extern size_t tawcroot_rootfs_host_path_len;
 
 struct tawcroot_bind {
 	int    src_fd;               /* O_PATH | O_DIRECTORY of the host src */
+	int    read_only;            /* 1 → write-intent translations into
+	                              * this bind refuse with -EROFS (checked
+	                              * centrally in path_orchestrate.c).
+	                              * Survives chroot re-anchoring (structs
+	                              * are edited in place). */
 	int    active;               /* 0 → ignored by every iterator; the
 	                              * bind has been re-anchored out of the
 	                              * current root view by chroot. The
@@ -134,14 +161,25 @@ struct tawcroot_bind {
 extern struct tawcroot_bind tawcroot_binds[TAWCROOT_MAX_BINDS];
 extern size_t               tawcroot_n_binds;
 
+/* Read-only bit for the CURRENT root view itself. 0 at init (the
+ * rootfs is always writable); set by the chroot handler when the guest
+ * chroots INTO an RO bind dst — after that swap the whole root view IS
+ * the bind src, but routing goes through tawcroot_rootfs_fd rather
+ * than the bind table, so the flag must live beside the other
+ * current-root-view globals. Ferried through exec_state (root_ro)
+ * because a guest can exec after chrooting. */
+extern int tawcroot_root_ro;
+
 /* Add a bind. `dst` is normalized through the lexical fold (leading
  * '/' optional; trailing '/', '//' runs, and '.'/'..' components are
  * collapsed) so it matches folded suffixes at lookup time. Returns 0
  * on success, -errno on failure (no slot left, src open failed, dst
  * too long or empty after folding). Must be called BEFORE the seccomp
  * filter is installed; the call opens the src dir via raw `openat`.
- * The new bind is added with `active = 1`. */
-long tawcroot_path_add_bind(const char *src_host, const char *dst_guest);
+ * The new bind is added with `active = 1`. Non-zero `read_only` marks
+ * the bind RO (write-intent translations into it are -EROFS). */
+long tawcroot_path_add_bind(const char *src_host, const char *dst_guest,
+                            int read_only);
 
 /* Re-anchor every bind in `binds[0..n_binds]` for a chroot to
  * `new_root_host`.
@@ -211,6 +249,17 @@ long tawcroot_fd_to_guest_abs(int fd, char *out, size_t out_cap);
  * prefix, so a chdir into a bind dst broke every relative path. */
 long tawcroot_host_path_to_guest_abs(const char *host, size_t n,
 				     char *out, size_t out_cap);
+
+/* True iff the HOST path `host[0..n)` lies (by longest-prefix match
+ * against the rootfs host path and active bind srcs) in a read-only
+ * part of the view: an RO bind src, or the rootfs itself while
+ * tawcroot_root_ro is set. Nested RW-under-RO wins by longest prefix,
+ * same as translation. Outside-view paths are 0 (not ours to police).
+ * Stateless ground truth for the fd-based metadata residue (stage 2):
+ * callers feed it the /proc/self/fd readlink of the fd in question —
+ * no taint table, nothing to propagate, works for inherited and
+ * SCM_RIGHTS-passed fds. */
+int tawcroot_host_path_in_ro_bind(const char *host, size_t n);
 
 /* Reverse-translate the kernel cwd into a guest-absolute path.
  * Returns the written length, -ENOENT when the cwd is outside the

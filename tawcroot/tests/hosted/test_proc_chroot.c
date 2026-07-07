@@ -261,7 +261,7 @@ test(hosted_readlink_proc_fd_link_returns_guest_path)
 
 	/* Route guest /proc to the host's (in production /proc is a
 	 * bind) so the translated readlink reaches the real magic link. */
-	test_int_eq(tawcroot_path_add_bind("/proc", "/proc"), 0);
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
 
 	/* In-view directory fd: link reads back as the GUEST path. */
 	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc/sub",
@@ -352,7 +352,7 @@ test(hosted_readlink_other_process_exe_not_substituted)
 
 	/* Route guest /proc to the host's so /proc/<pid>/exe is reachable
 	 * through translation (in production /proc is a bind). */
-	test_int_eq(tawcroot_path_add_bind("/proc", "/proc"), 0);
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
 
 	char real_exe[4096];
 	long rn = readlink("/proc/self/exe", real_exe, sizeof real_exe - 1);

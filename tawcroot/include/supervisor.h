@@ -38,10 +38,12 @@ struct tawcroot_supervisor_args {
 	/* Bind table — parallel arrays of n_binds (src, dst) pairs.
 	 * src is a host-absolute path; dst is a guest-absolute path.
 	 * Strings must outlive this call (the host bytes are copied into
-	 * the bind table by tawcroot_path_add_bind). */
-	const char *const *bind_src;
-	const char *const *bind_dst;
-	size_t              n_binds;
+	 * the bind table by tawcroot_path_add_bind). bind_ro is a
+	 * parallel array of read-only flags, or NULL for all-RW. */
+	const char *const   *bind_src;
+	const char *const   *bind_dst;
+	const unsigned char *bind_ro;
+	size_t               n_binds;
 
 	/* Host path of the hardlink-emulation store (linkstore.h), or
 	 * NULL for no store (emulation degrades to the v1 symlink

@@ -173,7 +173,20 @@ int tawcroot_rootfs_smoke_main_argv(int argc, char **argv, const char *rootfs)
 		for (k = 0; k < colon && k + 1 < sizeof src; k++) src[k] = spec[k];
 		src[k] = 0;
 		const char *dst = spec + colon + 1;
-		long br = tawcroot_path_add_bind(src, dst);
+		/* Optional third field: ":ro" (mirrors prod parse_bind_spec). */
+		char dst_buf[1024];
+		int ro = 0;
+		size_t d = 0;
+		while (dst[d] && dst[d] != ':' && d + 1 < sizeof dst_buf) {
+			dst_buf[d] = dst[d];
+			d++;
+		}
+		dst_buf[d] = 0;
+		if (dst[d] == ':' && tawc_streq(dst + d + 1, "ro")) {
+			ro  = 1;
+			dst = dst_buf;
+		}
+		long br = tawcroot_path_add_bind(src, dst, ro);
 		if (br < 0) {
 			tawc_io_str("[rootfs-smoke] bind add failed for '");
 			tawc_io_str(spec);

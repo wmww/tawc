@@ -54,6 +54,13 @@ struct tawcroot_path_translate_ctx {
 	 * pass a sentinel value (e.g. -100) and assert on the field. */
 	int    rootfs_base_fd;
 
+	/* Non-zero when the root view itself is read-only (the guest
+	 * chrooted into an RO bind dst). Production fills this from
+	 * tawcroot_root_ro; tests set it directly. Rootfs-routed
+	 * write-intent translations then refuse with -EROFS exactly like
+	 * RO-bind-routed ones. */
+	int    rootfs_ro;
+
 	/* Bind table. Empty (`n_binds == 0`) is fine. */
 	const struct tawcroot_bind         *binds;
 	size_t                              n_binds;
@@ -104,4 +111,4 @@ struct tawcroot_path_translate_ctx {
 tawcroot_path_result tawcroot_path_translate_with_ctx(
 	const struct tawcroot_path_translate_ctx *ctx,
 	const char *guest_path, char *out_suffix, size_t out_cap,
-	tawcroot_path_mode mode);
+	tawcroot_path_mode mode, tawcroot_path_intent intent);

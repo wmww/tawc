@@ -51,8 +51,10 @@ typedef struct {
 
 /* Add a bind: creates <root>-bind-<n>/ as the host src dir (with a
  * probe.txt inside), then routes guest `dst` to it. Returns the host
- * src path (static buffer — valid until the next add_bind). */
-#define th_add_bind(v, dst) th_view_add_bind_impl(test_ctx, (v), (dst))
+ * src path (static buffer — valid until the next add_bind). The _ro
+ * variant marks the bind read-only. */
+#define th_add_bind(v, dst) th_view_add_bind_impl(test_ctx, (v), (dst), 0)
+#define th_add_bind_ro(v, dst) th_view_add_bind_impl(test_ctx, (v), (dst), 1)
 
 /* Undo everything setup did: reset the raw-syscall hook, close every
  * reserved fd, clear the bind table and root-view globals, restore the
@@ -71,7 +73,7 @@ typedef struct {
 
 void th_view_setup_impl(TestCtx *test_ctx, th_view *v, const char *tag);
 const char *th_view_add_bind_impl(TestCtx *test_ctx, th_view *v,
-				  const char *dst);
+				  const char *dst, int ro);
 void th_view_teardown_impl(TestCtx *test_ctx, th_view *v);
 long th_sys_impl(TestCtx *test_ctx, long nr, long a, long b, long c,
 		 long d, long e, long f);
