@@ -606,9 +606,9 @@ Why Zink over native gfxstream-GL:
   command-buffer submits, which is exactly the access pattern
   gfxstream's protocol amortizes well. So Zink isn't just GL
   fallback — it's the right answer to the IPC-cost question.
-- **Already in our plans.** `plans/desktop-gl-dispatch.md` is the
-  libhybris-side version of the same idea (Zink-on-libhybris-vulkan
-  for desktop GL). Bridge inherits it for free.
+- **Already implemented on the libhybris side.** The `libhybris-zink`
+  backend ([libhybris-zink.md](libhybris-zink.md)) is the same idea
+  (Zink-on-libhybris-vulkan). Bridge inherits it for free.
 - **Distros already ship Zink** as part of Mesa, no extra packaging.
 
 Caveats: Zink's GL compat profile is good in 2026 but not 100% —
@@ -1300,9 +1300,9 @@ Remaining GL/GLES and x86_64 AVD work lives in [gfxstream-bridge-remaining-work.
   stay needed for users on the `libhybris` backend (which we ship
   indefinitely alongside the bridge — see "Coexistence with
   libhybris" above).
-- `plans/desktop-gl-dispatch.md` — design for routing desktop-GL
-  apps through Zink-on-Vulkan. Originally framed against
-  libhybris-vulkan; under the bridge backend the same routing maps
+- `notes/libhybris-zink.md` — Zink-on-libhybris-vulkan, the
+  implemented libhybris-side version of routing GL through
+  Zink-on-Vulkan. Under the bridge backend the same routing maps
   onto Zink-on-gfxstream-vk and is in fact the *primary* GL path
   for that backend (not just a desktop-GL fallback). May be
   obsoletable on the bridge side by `MESA_LOADER_DRIVER_OVERRIDE=zink`

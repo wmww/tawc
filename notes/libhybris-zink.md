@@ -26,9 +26,10 @@ The existing `Hybris` backend stays untouched as the GLES fast path.
 `Hybris` is GLES-only; desktop-GL apps (kitty, alacritty, supertuxkart,
 anything with `#version 140` shaders) fail to render. The `gl-shims/`
 trick papers over linkage but can't make a GLES driver run desktop-GL
-shaders. [`desktop-gl-dispatch.md`](../plans/desktop-gl-dispatch.md)
-proposed a per-context dispatcher in
-libhybris's libEGL — ~1k LOC of new C with a long bug tail.
+shaders. A retired plan (`desktop-gl-dispatch.md`, deleted 2026-07-06;
+see "Relationship to the retired dispatcher plan" below) proposed a
+per-context dispatcher in libhybris's libEGL — ~1k LOC of new C with a
+long bug tail.
 
 Zink translates desktop GL *and* GLES to Vulkan inside Mesa. If we
 route that Vulkan back through libhybris-vulkan (which already works
@@ -226,17 +227,42 @@ app landing as AHB via libhybris's Vulkan WSI).
   runtime. Only the `LIBHYBRIS_ZINK` branch in `RootfsEnv` excludes
   it from `LD_LIBRARY_PATH`. We delete `gl-shims/` outright only if
   `LIBHYBRIS_ZINK` replaces `LIBHYBRIS` as the default.
+- **Possible tawcroot interaction with mesa init.** An observation
+  from ~May 2026 (retired dispatcher plan): mesa-rendered kitty
+  crashed inside `libtawcroot.so+0x3988` regardless of Zink/llvmpipe,
+  suspected tawcroot syscall-handler issue in the mesa init path.
+  Unverified since and tawcroot has changed a lot; re-check if kitty
+  misbehaves once a Zink-capable device lands.
 
-## Relationship to the desktop GL dispatcher plan
+## Relationship to the retired dispatcher plan
 
-The dispatcher plan exists to add desktop-GL **without** regressing
-GLES, by routing per-context. This plan accepts a small GLES
-regression in exchange for ~1k LOC of complexity going away.
+`plans/desktop-gl-dispatch.md` (deleted 2026-07-06) proposed adding
+desktop-GL **without** regressing GLES: a per-context dispatcher inside
+libhybris's libEGL routing GLES contexts to today's libhybris code and
+desktop-GL contexts to mesa+Zink-on-libhybris-vulkan. Retired because:
 
-The question is empirical: how much does Zink-on-libhybris-vulkan
-actually cost on GLES workloads? If it's small (<5% on realistic apps),
-`LIBHYBRIS_ZINK` replaces both the dispatcher plan and the `gl-shims/`
-hack outright, and the [desktop GL dispatcher plan](../plans/desktop-gl-dispatch.md)
-dies. If GLES regression is unacceptable, the dispatcher plan comes back. We can't measure this
-yet — no device exposes a Zink-capable Vulkan to libhybris — but the
-plumbing is in place for the day one does.
+- This backend delivers the same capability via config alone, and the
+  dispatcher's mesa backend is the same Zink path — it fails the same
+  Vulkan 1.3 feature gate on every device we have.
+- The desktop-GL gap on Vulkan 1.1 devices is now
+  [plans/gl-on-gles-translator.md](../plans/gl-on-gles-translator.md).
+- If Zink's GLES overhead ever proves unacceptable on 1.3+ hardware
+  (still unmeasured — no capable device), the cheap mitigation is
+  per-spawn backend selection (`LIBHYBRIS` for GLES apps, this backend
+  for desktop-GL apps), not ~1k LOC of handle-wrapping C.
+
+Durable design facts from the plan, should per-context routing ever
+come back:
+
+- EGL's API choice lives on the **context**, not the display — one
+  `EGLDisplay` can host GLES and desktop-GL contexts simultaneously.
+  Any GLES/GL split must therefore dispatch inside whatever library
+  answers `libEGL.so.1`, tagging configs at `eglChooseConfig` and
+  propagating the tag to contexts/surfaces. Wrapped handles for
+  config/context/surface/image/sync; display shared unwrapped.
+- libhybris has an unused glvnd vendor dir (`hybris/egl/glvnd/`).
+  Activating it would register libhybris as a proper glvnd vendor and
+  replace the `gl-shims/libGL.so.1 → libGLESv2.so.2` symlink and the
+  `libgl-shim.c` GLX-NULL stubs.
+- When a config request matches both backends, tie-break toward hybris
+  — apps often blindly take `configs[0]`.
