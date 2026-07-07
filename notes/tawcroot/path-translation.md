@@ -421,7 +421,10 @@ the target user. The privilege predicate everywhere is virtual
   `/proc` bind/connect quirk resurfaces, over-budget paths fail there
   (ENOENT instead of the old ENAMETOOLONG) — everything under-budget
   stays on tier 1; revisit with supervisor-assisted bind if a real
-  workload hits it.
+  workload hits it. Verified 2026-07 on the physical device from app
+  context (arch rootfs): tier 2/3 bind/connect/getsockname/getpeername
+  round-trips and over-budget datagram sendto all work — the
+  pacman-key ENOENT quirk does not hit these `/proc` spellings there.
 
 - `socket` (`syscalls_socket.c`): `AF_NETLINK` + `NETLINK_AUDIT`
   returns `-EPROTONOSUPPORT` — what a kernel without `CONFIG_AUDIT`
