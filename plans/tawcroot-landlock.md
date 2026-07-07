@@ -308,6 +308,4 @@ Per the maintenance contract (notes/tawcroot/status.md §"Maintenance contract")
   real §"Optional Landlock containment" describing the probe, allow-set,
   install position, and the honesty boundary; update §"Confirmed
   environment" with the Landlock probe result per kernel.
-- plans/tawcroot-future-work.md: remove the Landlock/sandboxing bullet
-  (or point it here) once this starts.
 - This plan is deleted and folded into notes/tawcroot/ when done.

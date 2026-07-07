@@ -218,8 +218,10 @@ here so we don't ship MVP and discover them at runtime.
    5.4 and doesn't have it. Manual symlink-aware
    canonicalization in the handler is therefore the main code
    path for *all* path-bearing syscalls on *all* current
-   devices. `openat2` is an optional fast path for newer kernels
-   (probe at init, use when available). The well-known-directory
+   devices. (An `openat2` fast path on newer kernels was later
+   tried and reverted — it breaks cross-bind absolute symlinks;
+   see `include/path_resolve.h`. Guests calling `openat2` get
+   `-ENOSYS` and fall back.) The well-known-directory
    memoization cache (`/lib` → `usr/lib`, `/lib64` → `usr/lib`,
    `/bin` → `usr/bin`, `/sbin` → `usr/bin`, etc.) described in
    §"Translation rules" is essential for hot-path performance,
@@ -361,7 +363,44 @@ covered by unit/hosted/smoke tests.)
 
 ## Future work
 
-Deferred tawcroot syscall, proc-shadow, and performance ideas live in [tawcroot-future-work.md](../plans/tawcroot-future-work.md).
+Deferred ideas; none are scheduled. Project policy: no alternative
+code paths keyed on kernel version unless required for correctness or
+backed by a very large profiled win.
+
+- **io_uring full interception.** Today `io_uring_setup`/`enter`/
+  `register` are denied with `-ENOSYS` (syscalls_control.c) so guests
+  fall back to plain syscalls — passing io_uring through would let
+  path-bearing SQEs (`OPENAT`, `STATX`, …) bypass path translation.
+  If a real workload ever needs io_uring throughput: trap
+  setup/register/enter plus ring mmap; reject `IORING_SETUP_SQPOLL`
+  (`untrusted_app` lacks `CAP_SYS_NICE`, and rejecting it keeps
+  `io_uring_enter` the chokepoint); on enter, rewrite path-bearing SQE
+  operands to owned translated buffers freed when matching CQEs
+  complete; treat unknown opcodes as explicit allow/warn/deny
+  decisions. Roughly 500–1000 LOC in a self-contained `src/uring.c`.
+- **More `/proc` shadows.** Extend the existing memfd-shadow pattern
+  (proc_shadow.c) only when a workload needs it. Likely candidates:
+  `/proc/<pid>/cmdline`, `/proc/<pid>/auxv`,
+  `/proc/<pid>/task/<tid>/maps`.
+- **Path-component negative cache** (perf; profile first). Cache
+  recent "not a symlink" prefix components so the resolver skips
+  repeated `readlinkat` calls. Bounded table, invalidated on root-view
+  changes and relevant `symlinkat` calls.
+- **fd-provenance table** (perf; profile first). Track
+  fd → rootfs/bind/host provenance at fd creation/dup sites to avoid
+  `/proc/self/fd/<n>` readlinks on fd-relative path operations.
+
+Considered and rejected — don't re-propose without new evidence:
+
+- **`PR_SET_SYSCALL_USER_DISPATCH` (kernel 5.11+)** as a seccomp-BPF
+  replacement: a whole parallel trapping path for a modest win —
+  per-syscall BPF evaluation is cheap next to SIGSYS delivery on
+  trapped calls. (Would also have let newer kernels drop the non-PIE
+  requirement.)
+- **`openat2(RESOLVE_IN_ROOT)` (kernel 5.6+) resolver fast path**:
+  tried and reverted — it re-roots cross-bind absolute symlink
+  targets at the bind src dirfd (broke `/system/lib64` → `/apex`
+  bionic). See the history note atop `include/path_resolve.h`.
 
 ## Confirmed environment
 
