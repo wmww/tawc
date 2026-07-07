@@ -1633,6 +1633,80 @@ static int test_legacy_mknod_fifo(void)
 #endif
 #endif
 
+/* Device-node mknod under fake root: S_IFCHR/S_IFBLK needs CAP_MKNOD
+ * (denied for the unprivileged host uid, SELinux-denied on Android),
+ * so the handler degrades the refused mknod to an empty regular-file
+ * placeholder and reports 0. Under real root (rooted adbd) the host
+ * mknod genuinely succeeds instead — both shapes land rv == 0 with a
+ * node present. Existing names stay honest EEXIST, and a genuine
+ * identity drop surfaces the real error. */
+static int test_mknodat_chr_fake_root_placeholder(void)
+{
+	int fails = 0;
+	long rv;
+	/* S_IFCHR | 0644, dev = 1:3 (mem/null major) */
+	const long mode = 0020000 | 0644;
+	const long dev = (1 << 8) | 3;
+	INLINE_SYS6(TAWC_SYS_mknodat, AT_FDCWD, "/tawcroot-mknod-chr",
+		    mode, dev, 0, 0, rv);
+	fails += tawc_io_step(
+		"mknodat(chr 1:3) under fake root -> 0", rv == 0);
+	tawc_io_kv_dec("    rv", rv);
+
+	struct stat st;
+	long sr = inline_fstatat(AT_FDCWD, "/tawcroot-mknod-chr", &st, 0);
+	fails += tawc_io_step("fstatat sees the node", sr == 0);
+	long fmt = (long)(st.st_mode & 0170000);
+	if (smoke_real_euid == 0)
+		fails += tawc_io_step(
+			"real root: node is a real char device",
+			sr == 0 && fmt == 0020000);
+	else
+		fails += tawc_io_step(
+			"placeholder is a regular file",
+			sr == 0 && fmt == 0100000);
+	tawc_io_kv_dec("    st_mode & S_IFMT", fmt);
+
+	/* The degrade must not mask EEXIST. */
+	INLINE_SYS6(TAWC_SYS_mknodat, AT_FDCWD, "/tawcroot-mknod-chr",
+		    mode, dev, 0, 0, rv);
+	fails += tawc_io_step("mknodat(chr) on existing name -> EEXIST",
+			      rv == TAWC_EEXIST);
+	tawc_io_kv_dec("    rv", rv);
+
+	INLINE_SYS6(TAWC_SYS_unlinkat, AT_FDCWD, "/tawcroot-mknod-chr",
+		    0, 0, 0, 0, rv);
+	fails += tawc_io_step("unlinkat(chr node) -> 0", rv == 0);
+
+	/* A genuine identity drop surfaces the real error (virtual-only
+	 * under rooted adbd, where the host mknod would just succeed). */
+	INLINE_SYS6(TAWC_SYS_setresgid, 994, 994, 994, 0, 0, 0, rv);
+	fails += tawc_io_step("drop gids to 994", rv == 0);
+	INLINE_SYS6(TAWC_SYS_setresuid, 994, 994, 994, 0, 0, 0, rv);
+	fails += tawc_io_step("drop uids to 994", rv == 0);
+	if (smoke_real_euid == 0) {
+		tawc_io_skip(
+			"dropped mknodat(chr) -> real EPERM/EACCES",
+			"real euid 0 (rooted adbd): drop is virtual-only");
+	} else {
+		INLINE_SYS6(TAWC_SYS_mknodat, AT_FDCWD,
+			    "/tawcroot-mknod-chr-dropped", mode, dev,
+			    0, 0, rv);
+		fails += tawc_io_step(
+			"dropped mknodat(chr) -> real EPERM/EACCES",
+			rv == TAWC_EPERM || rv == TAWC_EACCES);
+		tawc_io_kv_dec("    rv", rv);
+		long dr = inline_fstatat(AT_FDCWD,
+					 "/tawcroot-mknod-chr-dropped",
+					 &st, 0);
+		fails += tawc_io_step(
+			"dropped mknodat left no placeholder",
+			dr == TAWC_ENOENT);
+	}
+	tawcroot_identity_reset();
+	return fails;
+}
+
 /* statfs: should route through translation and return 0 against an
  * in-rootfs path. The struct-statfs contents we don't validate
  * here — that depends on the host fs the fixture lives on. The
@@ -4986,6 +5060,7 @@ int tawcroot_rootfs_smoke_main(const char *rootfs)
 	fails += test_legacy_mknod_fifo();
 # endif
 #endif
+	fails += test_mknodat_chr_fake_root_placeholder();
 	fails += test_statfs_in_rootfs();
 	fails += test_xattr_dispatch();
 	fails += test_fchownat_fake_root();

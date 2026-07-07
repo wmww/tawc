@@ -87,6 +87,19 @@ fn test_prodenv_identity_dropped_devnull_eperm() {
     assert_guest_exit("static_drop_ids_devnull_eperm", &out, 42);
 }
 
+/// Device-node mknod under fake root: untrusted_app never has
+/// CAP_MKNOD, so this is where the S_IFCHR refusal actually fires
+/// (rooted test environments succeed and can't see it). The handler
+/// must degrade to a regular-file placeholder in rootfs paths, swallow
+/// to bare success in the host-/dev bind, keep EEXIST honest, and
+/// surface the real error after a genuine identity drop.
+#[test]
+fn test_prodenv_mknod_chr_fake_root() {
+    test_init();
+    let out = run_guest(&["/dev:/dev"], &["/bin/static_mknod_chr_fake"], &[]).expect("broker spawn");
+    assert_guest_exit("static_mknod_chr_fake", &out, 42);
+}
+
 /// The hardlink publish idiom (git's object finalize shape). Under
 /// `untrusted_app`, Android SELinux denies hardlink creation in app
 /// data on both targets, so this exercises the v1 rename+symlink

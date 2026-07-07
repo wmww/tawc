@@ -1002,7 +1002,56 @@ static long handle_##name(const tawcroot_syscall_args *args,             \
 }
 
 DECLARE_AT_PASS(mkdirat,    TAWC_SYS_mkdirat,    3, TAWCROOT_PATH_PARENT_CREATE)
-DECLARE_AT_PASS(mknodat,    TAWC_SYS_mknodat,    4, TAWCROOT_PATH_PARENT_CREATE)
+
+/* mknodat: translate and attempt the host call. FIFOs, sockets and
+ * regular files succeed as the app uid; S_IFCHR/S_IFBLK needs
+ * CAP_MKNOD, which untrusted_app never has, so device nodes get EPERM
+ * in production (rooted test environments succeed and can't see this).
+ * The concrete hit is distro postinst/makedev tooling and debootstrap
+ * second stage populating /dev — a raw EPERM aborts package installs.
+ *
+ * Under virtual euid 0, degrade a refused device mknod to an empty
+ * regular file at the name (proot's fake_id0 behaviour): the script
+ * proceeds, later opens of the fake node fail at use time. A regular
+ * file, not a FIFO — opening a peerless FIFO blocks, a regular file
+ * fails benignly. If even the placeholder is refused (guest /dev is a
+ * bind of host /dev, where the app can't create anything), report
+ * success with nothing created — same swallow contract as fchmodat/
+ * fchownat; common /dev names exist on the host side and return EEXIST
+ * before reaching this point. Known limit: overlay-style whiteouts
+ * (char 0:0) become plain files. Non-permission errors (EEXIST,
+ * ENOENT, EROFS, ...) pass through from whichever attempt raised them. */
+static long handle_mknodat(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	int dirfd = (int)args->a;
+	const char *gpath = (const char *)(uintptr_t)args->b;
+	unsigned int mode = (unsigned int)args->c;
+	if (!gpath) return TAWC_EFAULT;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	struct fs_path t;
+	long e = translate_at(scratch, 0, dirfd, gpath,
+			      TAWCROOT_PATH_PARENT_CREATE, &t);
+	if (e) return e;
+	const char *p = t.is_root ? "." : t.path;
+	long rv = TAWC_RAW(TAWC_SYS_mknodat, t.fd, (long)p,
+			   args->c, args->d, 0, 0);
+	unsigned int ifmt = mode & S_IFMT;
+	if ((rv != TAWC_EPERM && rv != TAWC_EACCES) ||
+	    (ifmt != S_IFCHR && ifmt != S_IFBLK) ||
+	    tawcroot_identity_euid() != 0)
+		return rv;
+	long fd = TAWC_RAW(TAWC_SYS_openat, t.fd, (long)p,
+			   O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+			   mode & 07777, 0, 0);
+	if (fd >= 0) {
+		TAWC_RAW(TAWC_SYS_close, fd, 0, 0, 0, 0, 0);
+		return 0;
+	}
+	if (fd == TAWC_EPERM || fd == TAWC_EACCES)
+		return 0;
+	return fd;
+}
 
 /* fchmodat: translate and ATTEMPT the host chmod — modes matter inside
  * the rootfs (executable bits, go-w checks) and the app uid owns rootfs

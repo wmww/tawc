@@ -48,6 +48,7 @@ const STAGED_PROGRAMS: &[&str] = &[
     "static_io_uring_deny",
     "static_drop_ids_devnull_eperm",
     "static_link_publish_argv12",
+    "static_mknod_chr_fake",
     "dynamic_exit42",
 ];
 

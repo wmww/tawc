@@ -453,6 +453,16 @@ $(OUT)/programs/static_link_publish_argv12: $(SRC_TS)/integration/programs/stati
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
 
+# static_mknod_chr_fake: device-node mknod degradation under fake
+# root — refused S_IFCHR mknod degrades to a regular-file placeholder
+# in rootfs paths, swallows to bare success in the host-/dev bind, and
+# surfaces the real error after a genuine identity drop. Needs a /dev
+# bind; the tawcroot prod-env device suite is where the refusal
+# actually fires (untrusted_app, no CAP_MKNOD).
+$(OUT)/programs/static_mknod_chr_fake: $(SRC_TS)/integration/programs/static_mknod_chr_fake_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
+
 # static_io_uring_deny: probe io_uring_setup, io_uring_enter, and
 # io_uring_register; expect -ENOSYS from each. Validates the
 # defense-in-depth deny that closes the inheritance edge case in

@@ -357,9 +357,17 @@ the target user. The privilege predicate everywhere is virtual
 
 - `mknod`, `mknodat`, `statfs` — trapped, translated, dispatched.
   `mknod`/`mknodat` route to the modern `mknodat` against
-  `(base_fd, suffix)`; FIFO/socket nodes succeed on tmpfs; char/
-  block devices typically fail `-EPERM` because Android
-  `untrusted_app` doesn't permit `mknod`. `statfs` dispatches via
+  `(base_fd, suffix)`; FIFO/socket nodes succeed on tmpfs. Char/
+  block devices fail `-EPERM`/`-EACCES` in production (Android
+  `untrusted_app` has no CAP_MKNOD); under virtual euid 0 the
+  handler degrades a refused device mknod to an empty regular-file
+  placeholder (proot's fake_id0 behaviour — postinst/makedev
+  scripts proceed, opens of the fake node fail at use time), and if
+  even the placeholder is refused (guest `/dev` is a host-`/dev`
+  bind where the app can't create anything) swallows to bare
+  success, matching the fchmodat/fchownat contract. EEXIST and
+  other non-permission errors stay honest; a genuinely dropped
+  identity sees the real error. `statfs` dispatches via
   `/proc/self/fd/<base_fd>/<suffix>` (no `*at` form, and `fstatfs`
   on an `O_PATH` fd is unreliable on Android-shipped 5.4 kernels).
   `fstatfs` (fd-based) stays untrapped.
