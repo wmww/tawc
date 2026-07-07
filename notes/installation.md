@@ -452,7 +452,10 @@ The engine does, in order:
    retry for root-owned droppings from interleaved debug `su` use.
    This is the long step (multi-GB tree); a cancel from the UI lands
    here.
-7. **explicit metadata + container teardown** — pass 2 removes
+7. **explicit metadata + container teardown** — pass 2 removes the
+   `tawcroot/` state dir (hardlink-emulation store, sibling of
+   `rootfs/`, created lazily by the tawcroot method —
+   `notes/tawcroot/link-emulation.md`), the `ando/` broker dir,
    `metadata.json.tmp`, `metadata.json`, then `rmdir`s the empty
    `<installDir>/`, in that order. Split out from pass 1 so a cancel
    mid-wipe leaves the slot recognisable on the home screen for
