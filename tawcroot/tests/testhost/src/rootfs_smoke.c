@@ -2358,9 +2358,39 @@ static int test_legacy_x86_64_wrappers(void)
 		    0, 0, 0, 0, rv);
 	fails += tawc_io_step("rename(\"/etc/probe-l3\" -> \"/etc/probe-l4\") (legacy)",
 			      rv == 0);
-	INLINE_SYS6(TAWC_SYS_unlink, "/etc/probe-l4",
-		    0, 0, 0, 0, 0, rv);
-	fails += tawc_io_step("unlink(\"/etc/probe-l4\") (legacy)", rv == 0);
+
+	/* Cleanup must be v1-aware, exactly like test_linkat_happy_path:
+	 * under on-device SELinux hardlink denial the v1 fallback left
+	 * the real file at the NEW name and a back-symlink at
+	 * /etc/probe, and the rename above moved the real file to -l4 —
+	 * so the back-symlink now dangles and unlinking -l4 would
+	 * destroy the shared fixture for every later step (and, in
+	 * test_androidfilter.c, later suite variants). Rename the real
+	 * file back over the symlink; with a true hardlink just unlink
+	 * the second name. (Legacy unlink keeps its own coverage via
+	 * /legacy-symlink and legacy-creat below.) */
+	struct stat lst;
+	long sr;
+	sr = inline_fstatat(AT_FDCWD, "/etc/probe", &lst,
+			    0x100 /*AT_SYMLINK_NOFOLLOW*/);
+	if (sr == 0 && S_ISLNK(lst.st_mode)) {
+		INLINE_SYS6(TAWC_SYS_rename, "/etc/probe-l4", "/etc/probe",
+			    0, 0, 0, 0, rv);
+	} else {
+		INLINE_SYS6(TAWC_SYS_unlink, "/etc/probe-l4",
+			    0, 0, 0, 0, 0, rv);
+	}
+	/* Post-condition: the fixture survived. A cleanup regression
+	 * here otherwise surfaces dozens of steps later as unrelated
+	 * /etc/probe ENOENTs. */
+	{
+		long pfd = inline_openat(AT_FDCWD, "/etc/probe",
+					 O_RDONLY, 0);
+		fails += tawc_io_step(
+			"/etc/probe intact after legacy link cleanup",
+			pfd >= 0);
+		if (pfd >= 0) tawc_close((int)pfd);
+	}
 
 	INLINE_SYS6(TAWC_SYS_symlink, "etc/probe", "/legacy-symlink",
 		    0, 0, 0, 0, rv);

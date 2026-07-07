@@ -303,25 +303,32 @@ libhybris/AHB syscall coverage.
 
 ### Device-environment sensitivities (learned the hard way)
 
-- **Rooted adbd (emulator default)**: the testhost runs as real
-  uid 0, so the "dropped identity → real EPERM/EACCES" smoke steps
-  can't hold — the drop is virtual-only and real root chmods/chowns
-  root-owned `/dev/null` fine. The smoke captures the real euid
-  pre-filter and `tawc_io_skip`s those steps under real root.
-- **Unrooted device shell (physical)**: host `link(2)` is
-  SELinux-denied, so linkat surfaces that pass through untouched on
-  host/rooted devices actually engage emulation here — formerly the
-  only standing environment that exercised the v1 rename+symlink
-  fallback end-to-end (the prod-env layer now does, deliberately, on
-  both targets). Two consequences already burned in:
-  `test_linkat_happy_path` must restore `/etc/probe` v1-aware (v1
-  leaves a back-symlink at the OLD name; unlinking the NEW name
-  dangles it, and the smoke fixture is shared by every later step
-  and, in `test_androidfilter.c`, later suite variants — which now
-  also rebuild the fixture between runs), and the O_TMPFILE|O_EXCL
-  magic-link publish returns the emulation's anonymous-source EXDEV
-  instead of the kernel's nlink-0 ENOENT (the SELinux denial fires
-  before the kernel's nlink check).
+- **Rooted adbd (rooted emulator variant)**: the testhost runs as
+  real uid 0, so the "dropped identity → real EPERM/EACCES" smoke
+  steps can't hold — the drop is virtual-only and real root
+  chmods/chowns root-owned `/dev/null` fine. The smoke captures the
+  real euid pre-filter and `tawc_io_skip`s those steps under real
+  root.
+- **Unrooted shell (physical device, rootless emulator)**: host
+  `link(2)` is SELinux-denied, so linkat surfaces that pass through
+  untouched on host/rooted-emulator runs actually engage emulation
+  here — formerly the only standing environments that exercised the
+  v1 rename+symlink fallback end-to-end (the prod-env layer now
+  does, deliberately, on both targets). Three consequences already
+  burned in: `test_linkat_happy_path` must restore `/etc/probe`
+  v1-aware (v1 leaves a back-symlink at the OLD name; unlinking the
+  NEW name dangles it, and the smoke fixture is shared by every
+  later step and, in `test_androidfilter.c`, later suite variants —
+  which now also rebuild the fixture between runs); the legacy
+  x86_64 `link`/`rename` block in `test_legacy_x86_64_wrappers`
+  needs the same v1-aware restore (only the rootless **x86_64**
+  emulator combines legacy syscalls with link denial — the physical
+  device is aarch64, the rooted emulator has no denial — so this
+  dangle hid until that variant first ran and took out 84 downstream
+  `/etc/probe` consumers, including every mt thread-mask iteration);
+  and the O_TMPFILE|O_EXCL magic-link publish returns the
+  emulation's anonymous-source EXDEV instead of the kernel's nlink-0
+  ENOENT (the SELinux denial fires before the kernel's nlink check).
 
 Both variance classes are artifacts of *where the adb-shell suite
 runs*, not of production. The prod-env layer (above) runs the same
