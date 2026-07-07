@@ -2,6 +2,7 @@
 
 #include "rootfs_helpers.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -126,4 +127,39 @@ bool rh_poll_for_path(const char *path, int ticks)
 		nanosleep(&ts, NULL);
 	}
 	return false;
+}
+
+int rh_count_dir_entries(const char *path)
+{
+	DIR *d = opendir(path);
+	if (!d) return -1;
+	int n = 0;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (strcmp(e->d_name, ".") == 0 ||
+		    strcmp(e->d_name, "..") == 0)
+			continue;
+		n++;
+	}
+	closedir(d);
+	return n;
+}
+
+bool rh_unlink_by_suffix(const char *dir, const char *suffix)
+{
+	DIR *d = opendir(dir);
+	if (!d) return false;
+	size_t sn = strlen(suffix);
+	bool removed = false;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		size_t n = strlen(e->d_name);
+		if (n < sn || strcmp(e->d_name + n - sn, suffix) != 0)
+			continue;
+		char p[PATH_MAX + 300];
+		snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+		if (unlink(p) == 0) removed = true;
+	}
+	closedir(d);
+	return removed;
 }

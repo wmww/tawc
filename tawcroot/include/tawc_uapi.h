@@ -32,3 +32,11 @@
 #if __STDC_HOSTED__
 #include <sys/stat.h>
 #endif
+
+/* O_TMPFILE as userspace passes it: __O_TMPFILE plus O_DIRECTORY (both
+ * glibc and bionic define the composite; the kernel requires both bits
+ * and EINVALs O_CREAT alongside). Defined here because pre-6.4 uapi
+ * headers spell the composite while newer ones dropped O_DIRECTORY
+ * from it — pin the userspace-visible shape, arch-correct via
+ * O_DIRECTORY. */
+#define TAWC_O_TMPFILE (020000000 | O_DIRECTORY)

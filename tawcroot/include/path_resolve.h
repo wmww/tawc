@@ -60,3 +60,18 @@
 long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 				    tawcroot_path_mode mode,
 				    const struct tawcroot_path_oracle *oracle);
+
+/* Token-aware variant (hardlink emulation, linkstore.h): when a
+ * readlink probe surfaces the opaque `tawcroot:link:<token>` target,
+ * the walk stops, `suf` is rewritten to `<token><remainder>` (the
+ * remainder keeps trailing components so a mid-path token — a file
+ * used as a directory — yields the kernel's own ENOTDIR downstream),
+ * and `*token_hit` is set. The caller (orchestrator) re-bases the
+ * result at the store's link/ dirfd. With `token_hit == NULL` this is
+ * exactly the legacy function: token targets are treated as ordinary
+ * relative targets (only reachable in unit tests — production always
+ * passes the flag). */
+long tawcroot_path_resolve_symlinks_tok(char *suf, size_t cap,
+					tawcroot_path_mode mode,
+					const struct tawcroot_path_oracle *oracle,
+					int *token_hit);

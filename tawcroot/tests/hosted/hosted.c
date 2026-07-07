@@ -13,6 +13,7 @@
 
 #include "dispatch.h"
 #include "fdtab.h"
+#include "linkstore.h"
 #include "path.h"
 #include "shm.h"
 #include "usercopy.h"
@@ -124,6 +125,10 @@ void th_view_teardown_impl(TestCtx *test_ctx, th_view *v)
 	tawcroot_rootfs_host_path_len = 0;
 	tawcroot_set_guest_exe_path(NULL);
 	tawcroot_shm_reset();
+	/* Forget any linkstore state (fds were closed by the reserved
+	 * loop above). Tests that opened a store also rm -rf their store
+	 * dir themselves. */
+	tawcroot_linkstore_configure(NULL);
 
 	test_int_eq(chdir(v->saved_cwd), 0);
 

@@ -10,7 +10,11 @@
 #include "dirent_filter.h"
 
 #define DIRENT64_RECLEN_OFF  16
+#define DIRENT64_TYPE_OFF    18
 #define DIRENT64_NAME_OFF    19
+
+#define TAWC_DT_UNKNOWN 0
+#define TAWC_DT_LNK     10
 
 int tawcroot_dirent_filter_is_proc_fd_link(const char *link, long n)
 {
@@ -99,4 +103,24 @@ malformed:
 	 * returning the original length would hand the guest a corrupted
 	 * stream; drop the malformed tail instead. */
 	return out == in ? n : out;
+}
+
+long tawcroot_dirent_filter_delink_types(void *buf, long n)
+{
+	if (!buf || n <= 0) return n;
+	unsigned char *p = (unsigned char *)buf;
+	long in = 0;
+	while (in < n) {
+		unsigned short reclen;
+		__builtin_memcpy(&reclen, p + in + DIRENT64_RECLEN_OFF, 2);
+		/* Guest memory: bail on a malformed record. Flips already
+		 * made stay (they're valid records); the tail is left
+		 * exactly as the kernel wrote it. */
+		if (reclen < DIRENT64_NAME_OFF + 1 || in + (long)reclen > n)
+			break;
+		if (p[in + DIRENT64_TYPE_OFF] == TAWC_DT_LNK)
+			p[in + DIRENT64_TYPE_OFF] = TAWC_DT_UNKNOWN;
+		in += reclen;
+	}
+	return n;
 }

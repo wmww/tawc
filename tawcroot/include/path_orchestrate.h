@@ -62,6 +62,24 @@ struct tawcroot_path_translate_ctx {
 	const struct tawcroot_symlink_memo *memos;
 	size_t                              n_memos;
 
+	/* link/ dirfd of the hardlink-emulation store (linkstore.h), or
+	 * <= 0 when no store is open. When the resolver surfaces an
+	 * opaque `tawcroot:link:<token>` target, the result is re-based
+	 * here (base_fd = store_link_fd, suffix = token). With no store,
+	 * such a hit yields -ENOENT — the dangling-symlink semantics the
+	 * degraded mode promises. Zero-initialized contexts (tests)
+	 * behave exactly as before: fd 0 counts as "none" and token
+	 * targets are treated as ordinary relative targets. */
+	int    store_link_fd;
+
+	/* Optional: called on a token hit when store_link_fd is <= 0.
+	 * Production wires tawcroot_linkstore_latent_upgrade so a process
+	 * that started before the store existed (LATENT) opens it the
+	 * first time it actually MEETS a token, instead of ENOENTing reads
+	 * until its first mutation. Returns the (now-open) link/ dirfd or
+	 * -1; cold — only runs on token hits. May be NULL (tests). */
+	int  (*store_upgrade)(void);
+
 	/* Readlink oracle for the manual symlink resolver. May be NULL,
 	 * in which case the resolver pass is skipped entirely (the
 	 * orchestration only does fold + memo + bind, no symlink

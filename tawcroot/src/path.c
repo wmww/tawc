@@ -30,6 +30,7 @@
 #include "errno_neg.h"
 #include "fdtab.h"
 #include "io.h"
+#include "linkstore.h"
 #include "path.h"
 #include "path_oracle.h"
 #include "path_orchestrate.h"
@@ -406,9 +407,27 @@ static long prod_readlink(void *ctx, const char *suffix,
 	return n;
 }
 
+/* Hardlink emulation: readlink a link object by token (only consulted
+ * on token hits — a hardlinked SYMLINK's target must continue the
+ * guest-side walk instead of terminating in the store). A missing
+ * store fd here means a token was met while LATENT: upgrade in place
+ * (cold — token hits only) so the symlink-object splice, and the
+ * orchestrator's rebase after us, both see the live store. */
+static long prod_readlink_store(void *ctx, const char *token,
+				char *out, size_t out_cap)
+{
+	(void)ctx;
+	int fd = tawcroot_store_link_fd;
+	if (fd < 0) fd = tawcroot_linkstore_latent_upgrade();
+	if (fd < 0) return TAWC_ENOENT;
+	return TAWC_RAW(TAWC_SYS_readlinkat, fd,
+			(long)token, (long)out, (long)out_cap, 0, 0);
+}
+
 static const struct tawcroot_path_oracle prod_oracle = {
-	.ctx      = 0,
-	.readlink = prod_readlink,
+	.ctx            = 0,
+	.readlink       = prod_readlink,
+	.readlink_store = prod_readlink_store,
 };
 
 /* Kernel-cwd-to-guest-absolute resolver: read the kernel cwd via raw
@@ -480,6 +499,8 @@ tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 		.n_binds          = tawcroot_n_binds,
 		.memos            = g_memo,
 		.n_memos          = g_n_memo,
+		.store_link_fd    = tawcroot_store_link_fd,
+		.store_upgrade    = tawcroot_linkstore_latent_upgrade,
 		.oracle           = &prod_oracle,
 		.cwd_to_guest_abs = prod_cwd_to_guest_abs,
 		.cwd_ctx          = 0,

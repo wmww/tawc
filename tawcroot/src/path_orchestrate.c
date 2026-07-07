@@ -372,11 +372,28 @@ tawcroot_path_result tawcroot_path_translate_with_ctx(
 	route_through_binds(&r, out_suffix, ctx->binds, ctx->n_binds);
 	if (r.base_fd != ctx->rootfs_base_fd) goto done;
 
-	/* Manual symlink resolver. See path_resolve.h banner. */
+	/* Manual symlink resolver. See path_resolve.h banner. Token
+	 * detection is enabled only when a store is open — without one,
+	 * a hit surfaces as ENOENT (dangling), and with token_hit == NULL
+	 * the resolver treats the literal as an ordinary relative target
+	 * (pre-store behavior, kept for zero-initialized test ctxs). */
 	if (ctx->oracle) {
-		long er = tawcroot_path_resolve_symlinks(out_suffix, out_cap,
-							 walk_mode, ctx->oracle);
+		int token_hit = 0;
+		long er = tawcroot_path_resolve_symlinks_tok(
+			out_suffix, out_cap, walk_mode, ctx->oracle,
+			&token_hit);
 		if (er < 0) { r.err = er; return r; }
+		if (token_hit) {
+			int sfd = ctx->store_link_fd;
+			if (sfd <= 0 && ctx->store_upgrade)
+				sfd = ctx->store_upgrade();
+			if (sfd > 0) {
+				r.base_fd = sfd;
+				goto done;
+			}
+			r.err = TAWC_ENOENT;
+			return r;
+		}
 	}
 
 	/* Final bind pass — memo may have surfaced a match. */

@@ -74,8 +74,12 @@ extern "C" {
  * don't maintain back-compat.
  * Version 4: adds the virtual identity snapshot (has_identity +
  * identity) so a guest that dropped privileges keeps its tracked
- * uid/gid across execve. */
-#define TAWCROOT_EXEC_STATE_VERSION 4
+ * uid/gid across execve.
+ * Version 5: adds the hardlink-emulation store path (store_host_off,
+ * linkstore.h). Ferried explicitly — NOT re-derived from rootfs_host,
+ * which after a guest chroot is the chrooted root, not the store's
+ * sibling. */
+#define TAWCROOT_EXEC_STATE_VERSION 5
 /* MAX_ARGS at 4096: shell glob expansions, linker invocations, and
  * pacman hooks routinely pass hundreds-to-thousands of args; the kernel
  * allows ~2 MB of argv strings. MAX_ENV at 1024 covers the busiest bash
@@ -102,6 +106,7 @@ typedef struct {
 	 * meaningless. */
 	uint32_t rootfs_host_off;
 	uint32_t guest_exe_off;
+	uint32_t store_host_off;   /* hardlink-emulation store; 0 = absent */
 	uint32_t n_binds;
 	uint32_t bind_src_off[TAWCROOT_EXEC_STATE_MAX_BINDS];
 	uint32_t bind_dst_off[TAWCROOT_EXEC_STATE_MAX_BINDS];
@@ -138,6 +143,7 @@ typedef struct {
 	 * test path doesn't carry a rootfs view; production -r mode does). */
 	const char  *rootfs_host;       /* may be NULL */
 	const char  *guest_exe;         /* may be NULL */
+	const char  *store_host;        /* may be NULL */
 	uint32_t     n_binds;
 	const char  *bind_src[TAWCROOT_EXEC_STATE_MAX_BINDS];
 	const char  *bind_dst[TAWCROOT_EXEC_STATE_MAX_BINDS];
@@ -153,6 +159,7 @@ typedef struct {
 typedef struct {
 	const char        *rootfs_host;     /* may be NULL */
 	const char        *guest_exe;       /* may be NULL */
+	const char        *store_host;      /* may be NULL */
 	uint32_t           n_binds;
 	const char *const *bind_src;        /* size n_binds */
 	const char *const *bind_dst;        /* size n_binds */

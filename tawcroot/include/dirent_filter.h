@@ -41,3 +41,13 @@ int tawcroot_dirent_filter_dname_is_reserved(const char *name,
 long tawcroot_dirent_filter_compact(void *buf, long n,
 				    const int *reserved_fds,
 				    size_t n_reserved);
+
+/* Rewrite d_type DT_LNK → DT_UNKNOWN in a linux_dirent64 buffer, in
+ * place (hardlink emulation: emulated names are symlinks on disk, but
+ * DT_LNK would let type-trusting walkers — find's FTS_NOSTAT, fd,
+ * ripgrep — classify them without ever statting into the fixed-up
+ * stat handlers). DT_UNKNOWN forces the lstat. Applied to rootfs-view
+ * directories only, and it degrades every symlink's d_type there —
+ * the accepted cost. Same malformed-record bail as compact, except no
+ * bytes ever move, so the return is always `n`. */
+long tawcroot_dirent_filter_delink_types(void *buf, long n);

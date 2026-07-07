@@ -182,6 +182,7 @@ SRC_C_PROD=(
     "$TAWCROOT_DIR/src/identity.c"
     "$TAWCROOT_DIR/src/syscalls_fs.c"
     "$TAWCROOT_DIR/src/syscalls_fd.c"
+    "$TAWCROOT_DIR/src/linkstore.c"
     "$TAWCROOT_DIR/src/dirent_filter.c"
     "$TAWCROOT_DIR/src/syscalls_control.c"
     "$TAWCROOT_DIR/src/chroot.c"

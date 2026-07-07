@@ -22,10 +22,13 @@
 #include <stddef.h>
 
 #include "errno_neg.h"
+#include "io.h"
+#include "linkstore.h"
 #include "path.h"
 #include "path_oracle.h"
 #include "path_resolve.h"
 #include "path_scratch.h"
+#include "tawc_string.h"
 
 /* Linux's SYMLOOP_MAX is 40. Match it so an in-rootfs chain of
  * symlinks fails identically to a no-tawcroot equivalent. */
@@ -110,6 +113,14 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 				    tawcroot_path_mode mode,
 				    const struct tawcroot_path_oracle *oracle)
 {
+	return tawcroot_path_resolve_symlinks_tok(suf, cap, mode, oracle, 0);
+}
+
+long tawcroot_path_resolve_symlinks_tok(char *suf, size_t cap,
+					tawcroot_path_mode mode,
+					const struct tawcroot_path_oracle *oracle,
+					int *token_hit)
+{
 	if (!oracle || !oracle->readlink) return TAWC_EINVAL;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 
@@ -190,6 +201,62 @@ long tawcroot_path_resolve_symlinks(char *suf, size_t cap,
 				return TAWC_ENOENT;
 			}
 			target[n] = 0;
+
+			/* Hardlink-emulation token: the target is an opaque
+			 * literal, never a path. If the object is itself a
+			 * symlink (hardlink-of-a-symlink), splice ITS target
+			 * here and keep walking the guest view — a relative
+			 * object target resolves against the NAME's parent
+			 * directory, exactly like a real hardlinked symlink.
+			 * Otherwise rewrite the walked prefix to the bare
+			 * token (plus any trailing components — a mid-path
+			 * token names a file used as a directory and must
+			 * ENOTDIR downstream) and hand the re-basing to the
+			 * orchestrator. */
+			if (token_hit) {
+				const char *tok;
+				if (tawcroot_link_target_is_token(target,
+								  &tok)) {
+					char *st = scratch->buf[2];
+					long sn = oracle->readlink_store
+						? oracle->readlink_store(
+							oracle->ctx, tok, st,
+							TAWCROOT_PATH_SCRATCH_SIZE)
+						: TAWC_EINVAL;
+					if (sn > 0 &&
+					    (size_t)sn <
+					    TAWCROOT_PATH_SCRATCH_SIZE) {
+						char *tmp = scratch->buf[1];
+						long sr = splice_target(
+							suf, suf_len,
+							comp_start, comp_end,
+							st, (size_t)sn, tmp,
+							TAWCROOT_PATH_SCRATCH_SIZE);
+						if (sr < 0) return sr;
+						long fr2 = tawcroot_path_fold_absolute(
+							tmp, suf, cap);
+						if (fr2 < 0) return fr2;
+						walked_symlink = 1;
+						break;
+					}
+					char *tmp = scratch->buf[1];
+					size_t pos = 0;
+					long te = tawc_str_append(
+						tmp,
+						TAWCROOT_PATH_SCRATCH_SIZE,
+						&pos, tok);
+					if (!te && comp_end < suf_len)
+						te = tawc_str_append(
+							tmp,
+							TAWCROOT_PATH_SCRATCH_SIZE,
+							&pos, suf + comp_end);
+					if (te) return te;
+					long ce = tawc_str_copy(suf, cap, tmp);
+					if (ce < 0) return ce;
+					*token_hit = 1;
+					return 0;
+				}
+			}
 
 			char *tmp = scratch->buf[1];
 			long sr = splice_target(suf, suf_len,

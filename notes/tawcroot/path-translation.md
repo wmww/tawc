@@ -295,21 +295,22 @@ the target user. The privilege predicate everywhere is virtual
 - `symlink`, `symlinkat`.
 - `link`, `linkat` — translate both paths. If the host `linkat`
   fails with `EACCES`/`EPERM` under Android app-data SELinux policy,
-  emulate the link: `renameat2(src → dst, RENAME_NOREPLACE)` moves
-  the real file to the new name, then a guest-absolute symlink is
-  left at the old name (rolled back if the symlink fails). In the
-  spirit of proot's `--link2symlink`, required for the ALARM hardlink
-  cases documented in `notes/proot.md`. The direction (real file at
-  the NEW name) matters: git finalizes objects/packs with
-  `link(tmp, final); unlink(tmp)`, and a symlink at `final` would
-  dangle after the `unlink` — every fetched object vanished and
-  clones died with `fatal: bad object <HEAD>`. Directory sources are
-  stat-checked and keep the kernel's own EPERM (never rename a
-  directory away). The emulation is deliberately partial (st_nlink
-  stays 1, NOFOLLOW stats see a symlink, unlink-of-destination
-  dangles the source); gaps and the full design live in
-  `plans/tawcroot-full-link-emulation.md`. Hosted fault-injection
-  coverage: `hosted_linkat_fallback_*` in `test_hook_faults.c`.
+  emulate a FULL hardlink through the out-of-tree link store: the
+  file's data moves to `distros/<id>/tawcroot/link/<token>` and every
+  guest name becomes an opaque `tawcroot:link:<token>` symlink the
+  resolver and NOFOLLOW handlers map back to the object — shared
+  inode, live `st_nlink`, any-order unlink, crash-safe counted
+  mutations. See [link-emulation.md](link-emulation.md) for the store
+  format, source-detection ordering, O_TMPFILE publish, and accepted
+  deviations. Directory sources are stat-checked and keep the
+  kernel's own EPERM (never rename a directory away). Where the store
+  cannot exist (no store path, cross-fs bind source) the pre-store v1
+  fallback still applies: `renameat2(src → dst, RENAME_NOREPLACE)`
+  plus a guest-absolute symlink at the old name — direction matters
+  (git publishes via `link(tmp, final); unlink(tmp)`; a symlink at
+  `final` would dangle after the unlink). v1 coverage:
+  `hosted_linkat_fallback_*` in `test_hook_faults.c`; store coverage:
+  `tests/hosted/test_linkstore*.c`.
 - `rename`, `renameat`, `renameat2`.
 - `readlink`, `readlinkat`.
 - `truncate`.

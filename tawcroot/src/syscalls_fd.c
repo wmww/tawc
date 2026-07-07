@@ -16,13 +16,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/stat.h>
+
 #include "dirent_filter.h"
 #include "dispatch.h"
 #include "errno_neg.h"
 #include "fdtab.h"
 #include "io.h"
+#include "linkstore.h"
+#include "path.h"
+#include "path_scratch.h"
 #include "raw_sys.h"
 #include "sysnr.h"
+#include "tawc_string.h"
 #include "tawc_uapi.h"
 #include "usercopy.h"
 
@@ -42,7 +48,18 @@ long tawcroot_fd_reserve(int fd)
 	long r = tawc_fcntl(fd, F_DUPFD_CLOEXEC, TAWCROOT_RESERVED_FD_BASE);
 	if (r < 0) return r;
 	tawc_close(fd);
-	tawcroot_reserved_fds[tawcroot_n_reserved_fds++] = (int)r;
+	/* The SIGSYS handler reads this table lock-free from sibling
+	 * threads, and post-init reserves happen from handler context too
+	 * (shm_open, chroot swap, lazy linkstore fds): write the slot
+	 * first, publish the count with release order, so a concurrent
+	 * tawcroot_fd_is_reserved never reads a torn entry. The window
+	 * where the dup exists but is not yet published is inherent (the
+	 * fd is born in the kernel before any store) — a sibling thread's
+	 * close_fds-style sweep in exactly that instant can still close
+	 * it; bounded, unfixable without stopping the world. */
+	tawcroot_reserved_fds[tawcroot_n_reserved_fds] = (int)r;
+	__atomic_store_n(&tawcroot_n_reserved_fds,
+			 tawcroot_n_reserved_fds + 1, __ATOMIC_RELEASE);
 	return r;
 }
 
@@ -187,9 +204,6 @@ static long handle_fcntl(const tawcroot_syscall_args *args, ucontext_t *uc)
  * adds complexity for negligible gain — non-procfs callers eat one
  * tiny extra syscall and move on. */
 
-/* Cap the readlink probe; "/proc/<10-digit pid>/fd" fits in 22 bytes. */
-#define PROC_FD_LINK_MAX     32
-
 static long handle_getdents64(const tawcroot_syscall_args *args,
 			      ucontext_t *uc)
 {
@@ -202,16 +216,57 @@ static long handle_getdents64(const tawcroot_syscall_args *args,
 	                  (long)count, 0, 0, 0);
 	if (n <= 0 || tawcroot_n_reserved_fds == 0) return n;
 
-	/* Cheap check: only filter when the dirfd resolves to
-	 * /proc/<self|digits>/fd. Non-proc dirfds short-circuit. */
-	char proc_link[PROC_FD_LINK_MAX];
+	/* Classify the dirfd via its /proc link (one readlinkat per
+	 * getdents64 call — the probe buffer must be big enough to
+	 * classify rootfs-view dirs too, not just the /proc/<pid>/fd
+	 * shape, so it lives in a scratch slot). */
 	char self_path[32];
 	if (tawc_proc_fd_path(self_path, sizeof self_path, fd, 0) < 0)
 		return n;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *proc_link = scratch->buf[0];
 	long ln = tawc_readlinkat(AT_FDCWD, self_path,
-	                          proc_link, sizeof proc_link);
-	if (ln <= 0) return n;
-	if (!tawcroot_dirent_filter_is_proc_fd_link(proc_link, ln)) return n;
+	                          proc_link, TAWCROOT_PATH_SCRATCH_SIZE);
+	if (ln <= 0 || ln >= (long)TAWCROOT_PATH_SCRATCH_SIZE) return n;
+
+	/* Hardlink emulation: emulated names must not advertise DT_LNK
+	 * (type-trusting walkers would never stat into the fixed-up stat
+	 * handlers — the file would silently vanish from find/rg results).
+	 * Rewrite DT_LNK → DT_UNKNOWN for rootfs-view dirs — in-buffer
+	 * byte flip, zero extra syscalls beyond the probe that already
+	 * ran. Only when a store is open; without one the flip would cost
+	 * lstats for nothing. */
+	if (tawcroot_store_link_fd >= 0 &&
+	    tawcroot_rootfs_host_path_len > 0 &&
+	    (size_t)ln >= tawcroot_rootfs_host_path_len &&
+	    memcmp(proc_link, tawcroot_rootfs_host_path,
+	           tawcroot_rootfs_host_path_len) == 0 &&
+	    ((size_t)ln == tawcroot_rootfs_host_path_len ||
+	     proc_link[tawcroot_rootfs_host_path_len] == '/'))
+		return tawcroot_dirent_filter_delink_types(buf, n);
+
+	if (!tawcroot_dirent_filter_is_proc_fd_link(proc_link, ln)) {
+		/* Bind dirs need the same rewrite — the NOFOLLOW stat
+		 * fixups apply inside binds, so a token name there (legacy
+		 * of the pre-gate code; linkat no longer plants them) would
+		 * otherwise say DT_LNK while fstatat says S_IFREG. Gate on
+		 * the store's own fs first: cross-fs binds (/system,
+		 * procfs) cannot hold objects, so they skip both the
+		 * reverse-translation walk and the flip. */
+		if (tawcroot_store_link_fd >= 0 && tawcroot_store_dev) {
+			struct stat dst;
+			char *gv = scratch->buf[1];
+			if (TAWC_RAW(TAWC_SYS_fstat, fd, (long)&dst,
+				     0, 0, 0, 0) == 0 &&
+			    (unsigned long)dst.st_dev == tawcroot_store_dev &&
+			    tawcroot_host_path_to_guest_abs(
+				    proc_link, (size_t)ln, gv,
+				    TAWCROOT_PATH_SCRATCH_SIZE) > 0)
+				return tawcroot_dirent_filter_delink_types(
+					buf, n);
+		}
+		return n;
+	}
 
 	/* Re-issue until a batch survives filtering or the kernel truly
 	 * EOFs. A batch containing ONLY reserved-fd entries (tiny guest

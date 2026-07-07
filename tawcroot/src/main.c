@@ -41,6 +41,7 @@
 #include "exec_handler.h"
 #include "filter.h"
 #include "io.h"
+#include "linkstore.h"
 #include "loader_exec.h"
 #include "path.h"
 #include "raw_sys.h"
@@ -261,17 +262,51 @@ static void prod_rootfs_init(const char *rootfs,
 		bind_dst[i] = dst;
 	}
 
+	/* Hardlink-emulation store: sibling of the rootfs on the same fs
+	 * (production layout distros/<id>/{rootfs,tawcroot}). Derived only
+	 * here at the top-level entry — --exec-child receives the original
+	 * path via exec_state, because a guest chroot changes the rootfs
+	 * view but never the store. Derivation failure (rootfs directly
+	 * under "/", overlong path) leaves the store off; link falls back
+	 * to the v1 symlink emulation. */
+	static char store_path[4096];
+	const char *store = 0;
+	{
+		long n = tawc_str_copy(store_path, sizeof store_path, rootfs);
+		if (n > 0) {
+			/* Strip trailing '/', truncate to the parent dir
+			 * (keeping its '/'), append the store name. */
+			size_t parent = (size_t)n;
+			while (parent > 1 && store_path[parent - 1] == '/')
+				parent--;
+			while (parent > 0 && store_path[parent - 1] != '/')
+				parent--;
+			store_path[parent] = 0;
+			size_t pos = parent;
+			if (parent > 0 &&
+			    tawc_str_append(store_path, sizeof store_path,
+					    &pos, "tawcroot") == 0)
+				store = store_path;
+		}
+	}
+
 	struct tawcroot_supervisor_args sa = {
 		.rootfs_host_path = rootfs,
 		.bind_src         = bind_src,
 		.bind_dst         = bind_dst,
 		.n_binds          = n_binds,
+		.store_host_path  = store,
 		/* No inherited shm at top-level entry. */
 		.shm_names        = 0,
 		.shm_fds          = 0,
 		.n_shm            = 0,
 	};
 	tawcroot_supervisor_init(&sa);
+
+	/* Age-gated stray-temp sweep — top-level entry only (--exec-child
+	 * runs per guest exec, and guests from OTHER sessions may still
+	 * hold live temps; see linkstore.h). */
+	tawcroot_linkstore_tmp_sweep();
 
 	/* PR_SET_NO_NEW_PRIVS is sticky: set once, inherited by every
 	 * fork+execve descendant including the --exec-child re-exec.

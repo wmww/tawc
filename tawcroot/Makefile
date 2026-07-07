@@ -145,6 +145,7 @@ PROD_C := \
     $(SRC_T)/src/identity.c \
     $(SRC_T)/src/syscalls_fs.c \
     $(SRC_T)/src/syscalls_fd.c \
+    $(SRC_T)/src/linkstore.c \
     $(SRC_T)/src/dirent_filter.c \
     $(SRC_T)/src/syscalls_control.c \
     $(SRC_T)/src/chroot.c \

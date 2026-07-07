@@ -42,6 +42,7 @@ This design + implementation note is split across:
 - [architecture.md](architecture.md) — architecture overview and process layout.
 - [sigsys-handler.md](sigsys-handler.md) — the `SIGSYS` handler: guest memory access, saved registers, issuing host syscalls, non-PIE, threading/`vfork`, signal/seccomp control, async-signal-safety, coding conventions.
 - [path-translation.md](path-translation.md) — translation rules, which syscalls need trapping, `execve`, `/proc/self/exe`, `/proc/<pid>/fd/<n>` and `getcwd` reverse translation, chroot emulation.
+- [link-emulation.md](link-emulation.md) — full hardlink emulation: the `distros/<id>/tawcroot/` link store format, locking/intent crash safety, O_TMPFILE publish, accepted deviations.
 - [seccomp-filter.md](seccomp-filter.md) — the seccomp filter and non-root filter installation.
 - [bootstrap-and-modules.md](bootstrap-and-modules.md) — bootstrap & entry, module layout.
 - [build-and-install.md](build-and-install.md) — build integration and installer integration.

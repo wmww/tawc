@@ -39,6 +39,7 @@
 #include "fdtab.h"
 #include "identity.h"
 #include "io.h"
+#include "linkstore.h"
 #include "path.h"
 #include "path_scratch.h"
 #include "proc_shadow.h"
@@ -133,6 +134,23 @@ static tawcroot_path_mode openat_mode(int flags)
 		return (flags & O_EXCL) ? TAWCROOT_PATH_PARENT_CREATE
 					: TAWCROOT_PATH_FOLLOW;
 	return TAWCROOT_PATH_FOLLOW;
+}
+
+/* Probe (dirfd, path)'s leaf for an emulated name and open the OBJECT
+ * with the guest's flags. One helper for handle_openat's two NOFOLLOW
+ * shapes (O_PATH pre-probe / reactive post-ELOOP) so their flag
+ * handling can't diverge. O_CREAT/O_EXCL are masked off the object
+ * open — resolver-side store writes don't exist in any mode; -ENOENT
+ * (not a token, or a dangling one) tells the caller to keep the name's
+ * plain-symlink behavior, visible and unlinkable for cleanup. */
+static long open_emulated_leaf(int dirfd, const char *path, int flags,
+			       int mode)
+{
+	char tok[TAWCROOT_LINK_TOKEN_MAX];
+	if (tawcroot_link_leaf_token(dirfd, path, tok, sizeof tok) != 1)
+		return TAWC_ENOENT;
+	return tawc_openat(tawcroot_store_link_fd, tok,
+			   flags & ~(O_CREAT | O_EXCL), mode);
 }
 
 static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
@@ -230,6 +248,57 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * only landed in 6.6, kernel 5.4 device doesn't have it). */
 	const char *p = t.is_root ? "." : t.path;
 
+	/* O_TMPFILE (plan stage 4). With O_EXCL ("will never be linked"):
+	 * pure passthrough — anonymous file creation is allowed (only
+	 * link is denied), fstat nlink 0 is exact, and a later linkat
+	 * fails ENOENT in-kernel like the real thing. The linkable form
+	 * needs a NAME the publish rename can move, so the file is
+	 * created at <store>/tmp/<ino> and its fd returned; linkat
+	 * detects tmp-resident sources by host path and publishes with
+	 * one atomic NOREPLACE rename. O_CREAT alongside stays on the
+	 * passthrough (kernel EINVAL); no store (EAGAIN sentinel) falls
+	 * through too — scratch keeps working, publish degrades to the
+	 * documented EXDEV. */
+	if ((flags & TAWC_O_TMPFILE) == TAWC_O_TMPFILE &&
+	    !(flags & (O_EXCL | O_CREAT)) &&
+	    tawcroot_linkstore_state() != TAWCROOT_STORE_OFF &&
+	    tawcroot_linkstore_state() != TAWCROOT_STORE_DEGRADED) {
+		long tf = tawcroot_link_tmpfile_open(t.fd, p,
+						     flags & ~TAWC_O_TMPFILE,
+						     mode);
+		if (tf != TAWC_EAGAIN) return tf;
+	}
+
+	/* Hardlink emulation: the resolver followed an emulated name into
+	 * the store. Plain O_CREAT through a *dangling* token (object lost
+	 * to a partial host copy, a crashed-NEW window, or degraded mode)
+	 * must NOT create a fresh uncounted object in link/ — return
+	 * ENOENT, matching "not linked yet". A live object drops O_CREAT
+	 * (it exists; a concurrent teardown then surfaces as ENOENT, same
+	 * story). O_CREAT|O_EXCL never reaches here: PARENT_CREATE mode
+	 * keeps the leaf un-resolved and the kernel EEXISTs the symlink. */
+	if (t.fd == tawcroot_store_link_fd && tawcroot_store_link_fd >= 0 &&
+	    (flags & O_CREAT)) {
+		struct stat probe;
+		if (TAWC_RAW(TAWC_SYS_fstatat, t.fd, (long)p, (long)&probe,
+			     AT_SYMLINK_NOFOLLOW, 0, 0) != 0)
+			return TAWC_ENOENT;
+		flags &= ~(O_CREAT | O_EXCL);
+	}
+
+	/* Hardlink emulation, NOFOLLOW leaf. O_PATH|O_NOFOLLOW must be
+	 * pre-probed: the kernel opens the token symlink itself (O_PATH
+	 * opens symlinks — no ELOOP to react to), where the guest expects
+	 * an O_PATH fd to the shared file. Opening the object instead is
+	 * right for symlink objects too: an O_PATH fd to the symlink,
+	 * exactly what a real hardlinked symlink gives. Plain O_NOFOLLOW
+	 * is reactive (below): non-symlink hot paths pay nothing. */
+	if ((flags & O_NOFOLLOW) && (flags & O_PATH) &&
+	    tawcroot_store_link_fd >= 0 && !t.is_root) {
+		long ofd = open_emulated_leaf(t.fd, p, flags, mode);
+		if (ofd != TAWC_ENOENT) return ofd;
+	}
+
 	/* Plain openat — the kernel chases a leaf symlink against the
 	 * process's actual fs root. Non-leaf in-rootfs symlinks are
 	 * pre-folded by tawcroot_path_resolve_symlinks during translate
@@ -244,7 +313,95 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * needs the kernel to follow through the host root, not the
 	 * bind src. See test_prod_rootfs.c::prod_rootfs_cross_bind_abs_symlink
 	 * and notes/tawcroot/path-translation.md "Cross-bind absolute symlinks". */
-	return tawc_openat(t.fd, p, flags, mode);
+	long fd = tawc_openat(t.fd, p, flags, mode);
+
+	/* Reactive O_NOFOLLOW: the kernel just ELOOPed a leaf symlink; if
+	 * it is an emulated name, open the object KEEPING O_NOFOLLOW — a
+	 * regular object opens (the name "is" a regular file), a symlink
+	 * object still ELOOPs, correctly. Dangling (ENOENT) returns the
+	 * original ELOOP, matching a plain dangling symlink. */
+	if (fd == TAWC_ELOOP && (flags & O_NOFOLLOW) &&
+	    tawcroot_store_link_fd >= 0 && !t.is_root) {
+		long ofd = open_emulated_leaf(t.fd, p, flags, mode);
+		if (ofd != TAWC_ENOENT) return ofd;
+	}
+	return fd;
+}
+
+/* Hardlink emulation, stat side. An emulated name is a symlink whose
+ * target is the opaque `tawcroot:link:<token>` literal (linkstore.h).
+ * NOFOLLOW stats must report the *object*: real mode, shared st_ino,
+ * st_nlink from the sidecar count. Detection is reactive — only paid
+ * when the leaf actually stat'd as a symlink (+1 readlinkat), so
+ * non-symlink hot paths pay nothing.
+ *
+ * Returns 1 when `local` was replaced with the object's stat, 0 when
+ * the entry is not an emulated name (or the object is missing — the
+ * dangling name then keeps behaving as a plain symlink, which keeps it
+ * visible and unlinkable for cleanup). */
+static int stat_fixup_emulated(int fd, const char *path, struct stat *local)
+{
+	if (tawcroot_store_link_fd < 0) return 0;
+	if (!S_ISLNK(local->st_mode)) return 0;
+	char tok[TAWCROOT_LINK_TOKEN_MAX];
+	if (tawcroot_link_leaf_token(fd, path, tok, sizeof tok) != 1)
+		return 0;
+	struct stat ost;
+	long rv = TAWC_RAW(TAWC_SYS_fstatat, tawcroot_store_link_fd,
+			   (long)tok, (long)&ost, AT_SYMLINK_NOFOLLOW, 0, 0);
+	if (rv != 0) return 0;
+	ost.st_nlink = (__typeof__(ost.st_nlink))
+		tawcroot_link_count_for_stat(tok);
+	*local = ost;
+	return 1;
+}
+
+/* FOLLOW stats that landed in the store (the resolver mapped a token):
+ * the kernel already stat'd the object; only st_nlink needs the
+ * sidecar count. */
+static void stat_fix_nlink_in_store(int fd, const char *path,
+				    struct stat *local)
+{
+	if (fd != tawcroot_store_link_fd || tawcroot_store_link_fd < 0)
+		return;
+	local->st_nlink = (__typeof__(local->st_nlink))
+		tawcroot_link_count_for_stat(path);
+}
+
+/* fd-based stats (fstat, AT_EMPTY_PATH fstatat/statx) of an open link
+ * OBJECT need the sidecar count too. The plan first accepted fd-nlink
+ * staying 1 ("no known consumer compares fd-nlink to path-nlink...
+ * revisit only on evidence") — the evidence arrived immediately: GNU
+ * tar CREATE registers hardlinks from the fstat of the fd it just
+ * opened, not the fstatat it walked with, so an object fd reporting
+ * nlink 1 silently dissolves hardlink structure at archive time (tar
+ * stored both names with full data). Cost gates: only S_ISREG/S_ISLNK
+ * with kernel nlink 1 ON THE STORE'S OWN FILESYSTEM (objects cannot
+ * live elsewhere — skips /system binds, memfds) while a store is open
+ * pays one /proc/self/fd readlink; the sidecar read happens on actual
+ * store hits only. Returns the count, or 0 for "not an object". */
+/* Rebuild st_dev from statx's split major/minor (the kernel's
+ * new_encode_dev layout, which newfstatat's st_dev uses on both our
+ * arches) so statx callers can compare against tawcroot_store_dev. */
+#define TAWC_MKDEV(maj, min)                                              \
+	(((unsigned long)((min) & 0xffu)) |                               \
+	 ((unsigned long)(maj) << 8) |                                    \
+	 ((unsigned long)((min) & ~0xffu) << 12))
+
+static unsigned long fd_object_nlink(int fd, unsigned int mode,
+				     unsigned long nlink, unsigned long dev)
+{
+	if (tawcroot_store_link_fd < 0) return 0;
+	if (nlink != 1 || dev != tawcroot_store_dev) return 0;
+	if (!S_ISREG(mode) && !S_ISLNK(mode)) return 0;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *hostp = scratch->buf[0];
+	long n = tawcroot_proc_fd_to_host_path(fd, hostp,
+					       TAWCROOT_PATH_SCRATCH_SIZE);
+	if (n <= 0) return 0;
+	char tok[TAWCROOT_LINK_TOKEN_MAX];
+	if (!tawcroot_link_host_path_token(hostp, tok, sizeof tok)) return 0;
+	return tawcroot_link_count_for_stat(tok);
 }
 
 /* Decorate uid/gid in a kernel `struct stat` to look root-owned. The
@@ -301,6 +458,13 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 			if (tawcroot_fd_is_reserved(dirfd)) return TAWC_EBADF;
 			long rv = TAWC_RAW(TAWC_SYS_fstatat, dirfd, (long)"",
 					   (long)&local, flags, 0, 0);
+			if (rv == 0) {
+				unsigned long c = fd_object_nlink(
+					dirfd, local.st_mode, local.st_nlink,
+					(unsigned long)local.st_dev);
+				if (c) local.st_nlink =
+					(__typeof__(local.st_nlink))c;
+			}
 			return finish_stat(rv, &local, out);
 		}
 	}
@@ -342,6 +506,12 @@ static long handle_newfstatat(const tawcroot_syscall_args *args,
 
 	long rv = TAWC_RAW(TAWC_SYS_fstatat, t.fd, (long)resolved,
 			   (long)&local, rv_flags, 0, 0);
+	if (rv == 0) {
+		if (pmode == TAWCROOT_PATH_NOFOLLOW)
+			(void)stat_fixup_emulated(t.fd, t.path, &local);
+		else
+			stat_fix_nlink_in_store(t.fd, t.path, &local);
+	}
 	return finish_stat(rv, &local, out);
 }
 
@@ -610,17 +780,51 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 	 * In both, the kernel returns libtawcroot.so's path; the guest's
 	 * view doesn't contain it, so a follow-up stat()/open() ENOENTs.
 	 *
-	 * Truncation note: if the guest's `size` is shorter than our host
-	 * path, the kernel-returned bytes are truncated, the equality test
-	 * fails, and the truncated host path falls through unsubstituted.
-	 * This is harmless in practice — every realpath caller passes a
-	 * PATH_MAX-sized buffer — but worth knowing. */
+	 * The read uses the FULL scratch cap regardless of the guest's
+	 * `size`, clamping only at copy time: every post-processing step
+	 * needs the untruncated target — a guest-sized read could truncate
+	 * an emulated name's token literal mid-token, miss the object
+	 * lookup, and leak the half-token into guest-readable output
+	 * (which the forgery guard's cleanliness argument forbids), and
+	 * the exe-substitution equality test would silently fail the same
+	 * way. The kernel's own contract (return min(bufsiz, len) bytes,
+	 * silent truncation) is reproduced by the final clamp. */
 	char *readlink_scratch = scratch->buf[0];
-	int   scratch_cap = (size > TAWCROOT_PATH_SCRATCH_SIZE)
-	                    ? TAWCROOT_PATH_SCRATCH_SIZE : size;
 	long n = tawc_readlinkat(t.fd, p, readlink_scratch,
-				 (size_t)scratch_cap);
+				 TAWCROOT_PATH_SCRATCH_SIZE);
 	if (n < 0) return n;
+
+	/* Hardlink emulation: an emulated name is "a regular file" to the
+	 * guest — readlink answers EINVAL, and the opaque token literal
+	 * must never appear in guest-readable output (that's what keeps
+	 * legit tar archives free of forgeable targets). Exceptions: a
+	 * symlink *object* (hardlink-of-a-symlink) forwards the object's
+	 * real target; a dangling token (object lost) keeps plain-symlink
+	 * behavior so the name stays visible and unlinkable. */
+	if (tawcroot_store_link_fd >= 0 && n > 0 &&
+	    n < (long)TAWCROOT_PATH_SCRATCH_SIZE) {
+		readlink_scratch[n] = 0;
+		const char *tokp;
+		if (tawcroot_link_target_is_token(readlink_scratch, &tokp)) {
+			struct stat ost;
+			long orv = TAWC_RAW(TAWC_SYS_fstatat,
+					    tawcroot_store_link_fd,
+					    (long)tokp, (long)&ost,
+					    AT_SYMLINK_NOFOLLOW, 0, 0);
+			if (orv == 0 && S_ISLNK(ost.st_mode)) {
+				char tok[TAWCROOT_LINK_TOKEN_MAX];
+				long ce2 = tawc_str_copy(tok, sizeof tok,
+							 tokp);
+				if (ce2 < 0) return TAWC_EINVAL;
+				n = tawc_readlinkat(tawcroot_store_link_fd,
+						    tok, readlink_scratch,
+						    TAWCROOT_PATH_SCRATCH_SIZE);
+				if (n < 0) return n;
+			} else if (orv == 0) {
+				return TAWC_EINVAL;
+			}
+		}
+	}
 	if (link_cls != TAWCROOT_PROC_LINK_EXE_OTHER &&
 	    tawcroot_guest_exe_path_len > 0 &&
 	    tawcroot_self_host_path_len > 0 &&
@@ -655,6 +859,7 @@ static long handle_readlinkat(const tawcroot_syscall_args *args,
 			return gn;
 		}
 	}
+	if (n > (long)size) n = size;
 	long ce = tawc_copy_to_guest(buf, readlink_scratch, (size_t)n);
 	if (ce < 0) return ce;
 	return n;
@@ -866,6 +1071,19 @@ static long handle_unlinkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * EISDIR (not the EINVAL an empty t.path would otherwise yield). */
 	if (t.is_root)
 		return (flag & AT_REMOVEDIR) ? TAWC_EBUSY : TAWC_EISDIR;
+
+	/* Hardlink emulation: unlinking an emulated name is a counted DEL
+	 * (park → decrement → delete object at zero). Probe only when a
+	 * store is open; AT_REMOVEDIR passes through (kernel ENOTDIRs a
+	 * symlink leaf itself). A non-READY store (newer version) gets a
+	 * plain unlink of the name symlink — object leaks, safe. */
+	if (!(flag & AT_REMOVEDIR) && tawcroot_store_link_fd >= 0) {
+		char tok[TAWCROOT_LINK_TOKEN_MAX];
+		if (tawcroot_link_leaf_token(t.fd, t.path, tok,
+					     sizeof tok) == 1 &&
+		    tawcroot_linkstore_state() == TAWCROOT_STORE_READY)
+			return tawcroot_link_del(tok, t.fd, t.path);
+	}
 	return TAWC_RAW(TAWC_SYS_unlinkat, t.fd, (long)t.path, flag, 0, 0, 0);
 }
 
@@ -907,6 +1125,22 @@ static long handle_utimensat(const tawcroot_syscall_args *args,
 			      pmode, &t);
 	if (e) return e;
 	const char *p = t.is_root ? "." : t.path;
+
+	/* Hardlink emulation: NOFOLLOW times on an emulated name land on
+	 * the object (the shared file's real mtime, visible through every
+	 * name). A dangling token (ENOENT) falls through — the name keeps
+	 * plain-symlink behavior. */
+	if ((flags & AT_SYMLINK_NOFOLLOW) && tawcroot_store_link_fd >= 0 &&
+	    !t.is_root) {
+		char tok[TAWCROOT_LINK_TOKEN_MAX];
+		if (tawcroot_link_leaf_token(t.fd, t.path, tok,
+					     sizeof tok) == 1) {
+			long rv = TAWC_RAW(TAWC_SYS_utimensat,
+					   tawcroot_store_link_fd, (long)tok,
+					   args->c, flags, 0, 0);
+			if (rv != TAWC_ENOENT) return rv;
+		}
+	}
 	return TAWC_RAW(TAWC_SYS_utimensat, t.fd, (long)p,
 			args->c, flags, 0, 0);
 }
@@ -956,6 +1190,23 @@ static long handle_fchownat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	if (e) return e;
 	const char *p = t.is_root ? "" : t.path;
 	int sflags = (flags & AT_SYMLINK_NOFOLLOW) | (t.is_root ? AT_EMPTY_PATH : 0);
+	/* Hardlink emulation: NOFOLLOW chown on an emulated name targets
+	 * the object. Only the unprivileged branch issues a real chown —
+	 * the fake-root branch's existence probe is already correct
+	 * against the name (present name → success, dangling included:
+	 * plain-symlink behavior). ENOENT (dangling) falls through. */
+	if (!priv && (flags & AT_SYMLINK_NOFOLLOW) &&
+	    tawcroot_store_link_fd >= 0 && !t.is_root) {
+		char tok[TAWCROOT_LINK_TOKEN_MAX];
+		if (tawcroot_link_leaf_token(t.fd, t.path, tok,
+					     sizeof tok) == 1) {
+			long rv = TAWC_RAW(TAWC_SYS_fchownat,
+					   tawcroot_store_link_fd, (long)tok,
+					   args->c, args->d,
+					   AT_SYMLINK_NOFOLLOW, 0);
+			if (rv != TAWC_ENOENT) return rv;
+		}
+	}
 	if (!priv)
 		return TAWC_RAW(TAWC_SYS_fchownat, t.fd, (long)p,
 				args->c, args->d, sflags, 0);
@@ -985,8 +1236,15 @@ static long handle_fchown(const tawcroot_syscall_args *args, ucontext_t *uc)
 
 /* symlinkat: translate the destination only (the source is the
  * symlink's literal target string, NOT a host path — the kernel writes
- * those bytes into the new inode and validates EFAULT on its end).
- * The destination is a not-yet-existing leaf, so PARENT_CREATE. */
+ * those bytes into the new inode). The destination is a
+ * not-yet-existing leaf, so PARENT_CREATE.
+ *
+ * Forgery guard (hardlink emulation): a guest-authored target in the
+ * `tawcroot:` namespace would be a phantom referrer — an emulated name
+ * whose unlink decrements a count it never contributed to, the one
+ * route to data loss. EPERM, unconditionally (targets minted while no
+ * store is open would go live the moment one is). Fetching the target
+ * here also preserves the kernel's EFAULT contract. */
 static long handle_symlinkat(const tawcroot_syscall_args *args,
 			     ucontext_t *uc)
 {
@@ -994,13 +1252,23 @@ static long handle_symlinkat(const tawcroot_syscall_args *args,
 	const char *target = (const char *)(uintptr_t)args->a;
 	int newdirfd = (int)args->b;
 	const char *linkpath = (const char *)(uintptr_t)args->c;
+	if (!target) return TAWC_EFAULT;
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *tgt = scratch->buf[2];
+	long tn = tawc_copy_string_from_guest(tgt,
+					      TAWCROOT_PATH_SCRATCH_SIZE,
+					      target);
+	if (tn < 0) return tn;
+	if (tn >= TAWCROOT_LINK_GUARD_PREFIX_LEN &&
+	    memcmp(tgt, TAWCROOT_LINK_GUARD_PREFIX,
+		   TAWCROOT_LINK_GUARD_PREFIX_LEN) == 0)
+		return TAWC_EPERM;
 	struct fs_path t;
 	long e = translate_at(scratch, 0, newdirfd, linkpath,
 			      TAWCROOT_PATH_PARENT_CREATE, &t);
 	if (e) return e;
 	if (t.is_root) return TAWC_EINVAL; /* can't create / */
-	return TAWC_RAW(TAWC_SYS_symlinkat, (long)target, t.fd,
+	return TAWC_RAW(TAWC_SYS_symlinkat, (long)tgt, t.fd,
 			(long)t.path, 0, 0, 0);
 }
 
@@ -1016,6 +1284,9 @@ static long handle_symlinkat(const tawcroot_syscall_args *args,
 #endif
 #ifndef STATX_GID
 # define STATX_GID 0x00000100U
+#endif
+#ifndef STATX_NLINK
+# define STATX_NLINK 0x00000004U
 #endif
 /* statx flavour of finish_stat: zero uid/gid AND set the mask bits so
  * the guest sees the fields as populated (review C11). */
@@ -1053,6 +1324,17 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 			if (tawcroot_fd_is_reserved(dirfd)) return TAWC_EBADF;
 			long rv = TAWC_RAW(TAWC_SYS_statx, dirfd, (long)"", flags,
 					   mask, (long)&local, 0);
+			if (rv == 0) {
+				unsigned long c = fd_object_nlink(
+					dirfd, local.stx_mode,
+					local.stx_nlink,
+					TAWC_MKDEV(local.stx_dev_major,
+						   local.stx_dev_minor));
+				if (c) {
+					local.stx_nlink = (unsigned int)c;
+					local.stx_mask |= STATX_NLINK;
+				}
+			}
 			return finish_statx(rv, &local, out);
 		}
 	}
@@ -1095,6 +1377,34 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 
 	long rv = TAWC_RAW(TAWC_SYS_statx, t.fd, (long)resolved,
 			   rv_flags, mask, (long)&local, 0);
+	/* Hardlink emulation — same two fixups as handle_newfstatat:
+	 * NOFOLLOW leaf that is an emulated name → statx the object and
+	 * report the sidecar count; FOLLOW result landing in the store →
+	 * count fix only. */
+	if (rv == 0 && tawcroot_store_link_fd >= 0) {
+		if (pmode == TAWCROOT_PATH_NOFOLLOW &&
+		    (local.stx_mode & S_IFMT) == S_IFLNK) {
+			char tok[TAWCROOT_LINK_TOKEN_MAX];
+			if (tawcroot_link_leaf_token(t.fd, t.path, tok,
+						     sizeof tok) == 1) {
+				struct statx ox;
+				long orv = TAWC_RAW(TAWC_SYS_statx,
+					tawcroot_store_link_fd, (long)tok,
+					AT_SYMLINK_NOFOLLOW, mask,
+					(long)&ox, 0);
+				if (orv == 0) {
+					ox.stx_nlink = (unsigned int)
+						tawcroot_link_count_for_stat(tok);
+					ox.stx_mask |= STATX_NLINK;
+					local = ox;
+				}
+			}
+		} else if (t.fd == tawcroot_store_link_fd && !t.is_root) {
+			local.stx_nlink = (unsigned int)
+				tawcroot_link_count_for_stat(t.path);
+			local.stx_mask |= STATX_NLINK;
+		}
+	}
 	return finish_statx(rv, &local, out);
 }
 
@@ -1111,6 +1421,12 @@ static long handle_fstat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	if (!out) return TAWC_EFAULT;
 	struct stat local;
 	long rv = TAWC_RAW(TAWC_SYS_fstat, fd, (long)&local, 0, 0, 0, 0);
+	if (rv == 0) {
+		unsigned long c = fd_object_nlink(fd, local.st_mode,
+						  local.st_nlink,
+						  (unsigned long)local.st_dev);
+		if (c) local.st_nlink = (__typeof__(local.st_nlink))c;
+	}
 	return finish_stat(rv, &local, out);
 }
 
@@ -1144,57 +1460,202 @@ static long handle_inotify_add_watch(const tawcroot_syscall_args *args,
 			(long)host_path, mask, 0, 0, 0);
 }
 
-/* link_with_symlink_fallback: issue host linkat, and on EACCES/EPERM
- * (typical under Android `untrusted_app` SELinux for hardlinks across
- * subtrees) emulate the link in the spirit of proot's --link2symlink:
- * move the real file to the NEW name (RENAME_NOREPLACE preserves
- * link()'s EEXIST) and leave a guest-absolute symlink at the OLD name.
- * The direction matters: the link(tmp, final) + unlink(tmp) publish
- * idiom (git object/pack finalize) must leave real data at the final
- * name — a symlink at the final name would dangle once tmp is
- * unlinked. */
-static long link_with_symlink_fallback(int src_fd, const char *src_suf,
-				       int dst_fd, const char *dst_suf,
-				       int flags)
+/* v1 link fallback tail (pre-store emulation, kept for stores that
+ * cannot exist: no store path configured, store dir uncreatable, or a
+ * cross-fs bind source that cannot reach the store by rename): move
+ * the real file to the NEW name (RENAME_NOREPLACE preserves link()'s
+ * EEXIST) and leave a guest-absolute symlink at the OLD name. The
+ * direction matters: the link(tmp, final) + unlink(tmp) publish idiom
+ * (git object/pack finalize) must leave real data at the final name.
+ * `orig_rv` is the host linkat's failure, reported when the fallback
+ * itself cannot proceed. */
+static long link_fallback_v1(int src_fd, const char *src_suf,
+			     int dst_fd, const char *dst_suf, long orig_rv)
 {
-	long rv = TAWC_RAW(TAWC_SYS_linkat, src_fd, (long)src_suf,
-			   dst_fd, (long)dst_suf, flags, 0);
-	if (rv == 0 || (rv != TAWC_EACCES && rv != TAWC_EPERM)) {
-		return rv;
-	}
-	/* link(2) on a directory is the kernel's own EPERM, indistinguishable
-	 * from an SELinux denial by errno alone — emulating it would
-	 * "hardlink" the directory by renaming it away. Stat and pass the
-	 * kernel's error through. */
-	struct stat st;
-	long te = TAWC_RAW(TAWC_SYS_fstatat, src_fd, (long)src_suf,
-			   (long)&st, AT_SYMLINK_NOFOLLOW, 0, 0);
-	if (te || S_ISDIR(st.st_mode)) return rv;
 	long re = TAWC_RAW(TAWC_SYS_renameat2, src_fd, (long)src_suf,
 			   dst_fd, (long)dst_suf, RENAME_NOREPLACE, 0);
 	/* EEXIST/EXDEV are errors link() itself defines — surface them.
 	 * Anything else means the emulation can't work here; report the
 	 * original link failure. */
 	if (re == TAWC_EEXIST || re == TAWC_EXDEV) return re;
-	if (re) return rv;
+	if (re) return orig_rv;
+	/* Compose the back-symlink's GUEST-absolute target by reverse-
+	 * translating the destination's host path. "/" + dst_suf is only
+	 * right when dst_fd is the rootfs — for a destination under a
+	 * bind the suffix is bind-relative, and the mis-aimed symlink
+	 * would dangle the original name (the publish idiom then unlinks
+	 * the only working path to the data). A destination we cannot
+	 * reverse-translate gets the rollback, not a wrong target. */
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
-	char *abs_target = scratch->buf[0];
-	size_t pos = 0;
-	long se = tawc_str_append(abs_target, TAWCROOT_PATH_SCRATCH_SIZE,
-				  &pos, "/");
-	if (!se) se = tawc_str_append(abs_target, TAWCROOT_PATH_SCRATCH_SIZE,
-				      &pos, dst_suf);
-	if (!se) se = TAWC_RAW(TAWC_SYS_symlinkat, (long)abs_target, src_fd,
-			       (long)src_suf, 0, 0, 0);
+	char *host       = scratch->buf[0];
+	char *abs_target = scratch->buf[1];
+	long se = TAWC_EINVAL;
+	long hn = tawcroot_proc_fd_to_host_path(dst_fd, host,
+						TAWCROOT_PATH_SCRATCH_SIZE);
+	if (hn > 0) {
+		size_t pos = (size_t)hn;
+		if (!tawc_str_append(host, TAWCROOT_PATH_SCRATCH_SIZE,
+				     &pos, "/") &&
+		    !tawc_str_append(host, TAWCROOT_PATH_SCRATCH_SIZE,
+				     &pos, dst_suf) &&
+		    tawcroot_host_path_to_guest_abs(host, pos, abs_target,
+						    TAWCROOT_PATH_SCRATCH_SIZE)
+			    > 0)
+			se = TAWC_RAW(TAWC_SYS_symlinkat, (long)abs_target,
+				      src_fd, (long)src_suf, 0, 0, 0);
+	}
 	if (!se) return 0;
 	/* Symlink-back failed: roll the rename back so the failed link
 	 * leaves the tree unchanged. */
 	TAWC_RAW(TAWC_SYS_renameat2, dst_fd, (long)dst_suf,
 		 src_fd, (long)src_suf, 0, 0);
-	return rv;
+	return orig_rv;
 }
 
-/* linkat: translate both operands. */
+/* True when a translate result landed inside the guest view but NOT
+ * the rootfs — i.e. on a bind src dirfd. Emulated names must not be
+ * planted there: the orchestrator skips the symlink resolver for
+ * bind-routed paths, so a token symlink inside a bind is unresolvable
+ * on FOLLOW opens (the data would be marooned in the store while
+ * lstat claims a regular file). linkat instead degrades: NEW takes
+ * the v1 fallback (both names stay real/openable), ADD returns EXDEV
+ * (tools fall back to copy). Guest-supplied dirfd passthroughs are
+ * not reserved and fall through unchanged. */
+static int fs_path_in_bind(const struct fs_path *t)
+{
+	return t->fd != tawcroot_rootfs_fd &&
+	       t->fd != tawcroot_store_link_fd &&
+	       tawcroot_fd_is_reserved(t->fd);
+}
+
+/* linkat AT_EMPTY_PATH source: the file `olddirfd` itself refers to.
+ * A store-resident fd (an open link object) is detected BEFORE the
+ * host attempt — a host linkat from an object fd would mint an
+ * uncounted referrer on any device whose policy allows it. A named
+ * in-view source emulates via NEW on its host-real path (the fd's
+ * /proc link tracks renames, so this is the current name); a nameless
+ * source (memfd, O_TMPFILE, fully unlinked) gets a deliberate EXDEV
+ * per the plan (accepted until the tmp/ stage lands).
+ *
+ * The host attempt's emulation gate includes ENOENT: the kernel
+ * refuses unprivileged AT_EMPTY_PATH linkat with ENOENT (the
+ * CAP_DAC_READ_SEARCH check), not EPERM — and uses ENOENT for
+ * nlink==0 sources too, which the fstat below routes to EXDEV. */
+static long linkat_empty_path(struct tawcroot_path_scratch *scratch,
+			      int olddirfd, int newdirfd,
+			      const char *newpath, int flags)
+{
+	if (tawcroot_fd_is_reserved(olddirfd)) return TAWC_EBADF;
+
+	struct fs_path tnew;
+	long e = translate_at(scratch, 0, newdirfd, newpath,
+			      TAWCROOT_PATH_PARENT_CREATE, &tnew);
+	if (e) return e;
+	if (tnew.is_root) return TAWC_ENOENT;
+
+	/* Same LATENT upgrade as handle_linkat: the host-path compares
+	 * below need the canonical store path only store_open derives. */
+	if (tawcroot_store_link_fd < 0 &&
+	    tawcroot_linkstore_state() == TAWCROOT_STORE_LATENT)
+		(void)tawcroot_linkstore_latent_upgrade();
+
+	char *hostp = scratch->buf[2];
+	long hn = tawcroot_proc_fd_to_host_path(olddirfd, hostp,
+						TAWCROOT_PATH_SCRATCH_SIZE);
+	if (hn <= 0) hostp[0] = 0;
+
+	char tok[TAWCROOT_LINK_TOKEN_MAX];
+	if (tawcroot_link_host_path_token(hostp, tok, sizeof tok)) {
+		if (tawcroot_linkstore_state() != TAWCROOT_STORE_READY)
+			return TAWC_EPERM;
+		/* Emulated names never land in binds (fs_path_in_bind). */
+		if (fs_path_in_bind(&tnew)) return TAWC_EXDEV;
+		return tawcroot_link_add(tok, tnew.fd, tnew.path);
+	}
+	/* Linkable O_TMPFILE fd: publish (the idiom this flag exists
+	 * for — linkat(fd, "", dst, AT_EMPTY_PATH)). */
+	if (tawcroot_link_host_path_tmp(hostp, tok, sizeof tok))
+		return tawcroot_link_publish_tmp(tok, tnew.fd, tnew.path);
+
+	long rv = TAWC_RAW(TAWC_SYS_linkat, olddirfd, (long)"",
+			   tnew.fd, (long)tnew.path, flags, 0);
+	if (rv == 0 ||
+	    (rv != TAWC_EACCES && rv != TAWC_EPERM && rv != TAWC_ENOENT))
+		return rv;
+
+	struct stat st;
+	if (TAWC_RAW(TAWC_SYS_fstat, olddirfd, (long)&st, 0, 0, 0, 0) != 0)
+		return rv;
+	if (S_ISDIR(st.st_mode)) return rv;
+	if (st.st_nlink == 0 || hostp[0] != '/') return TAWC_EXDEV;
+
+	/* The /proc link is best-effort: verify it still names THIS inode
+	 * (a racing rename/unlink or a " (deleted)" suffix must not make
+	 * NEW move some other file into the store), and that it lies
+	 * inside the guest view (rootfs or a bind) — moving an arbitrary
+	 * app-reachable host file into the store would strand a token
+	 * symlink nothing outside tawcroot can read. */
+	struct stat pst;
+	if (TAWC_RAW(TAWC_SYS_fstatat, AT_FDCWD, (long)hostp, (long)&pst,
+		     AT_SYMLINK_NOFOLLOW, 0, 0) != 0 ||
+	    pst.st_dev != st.st_dev || pst.st_ino != st.st_ino)
+		return TAWC_EXDEV;
+	char *gview = scratch->buf[3];
+	if (tawcroot_host_path_to_guest_abs(hostp, (size_t)hn, gview,
+					    TAWCROOT_PATH_SCRATCH_SIZE) <= 0)
+		return TAWC_EXDEV;
+
+	/* Either name landing in a bind: v1, not token symlinks
+	 * (fs_path_in_bind). The source side is judged by host path —
+	 * in-view but not under the rootfs prefix means a bind. */
+	int src_in_bind =
+		!(hn >= (long)tawcroot_rootfs_host_path_len &&
+		  memcmp(hostp, tawcroot_rootfs_host_path,
+			 tawcroot_rootfs_host_path_len) == 0 &&
+		  ((size_t)hn == tawcroot_rootfs_host_path_len ||
+		   hostp[tawcroot_rootfs_host_path_len] == '/'));
+	if (fs_path_in_bind(&tnew) || src_in_bind)
+		return link_fallback_v1(AT_FDCWD, hostp,
+					tnew.fd, tnew.path, rv);
+
+	switch (tawcroot_linkstore_state()) {
+	case TAWCROOT_STORE_READY:
+	case TAWCROOT_STORE_LATENT: {
+		long nrv = tawcroot_link_new(AT_FDCWD, hostp,
+					     tnew.fd, tnew.path);
+		if (nrv == TAWC_EPERM &&
+		    tawcroot_linkstore_state() == TAWCROOT_STORE_DEGRADED)
+			return rv;
+		if (nrv == TAWC_EXDEV || nrv == TAWC_EPERM)
+			return link_fallback_v1(AT_FDCWD, hostp,
+						tnew.fd, tnew.path, rv);
+		return nrv;
+	}
+	case TAWCROOT_STORE_DEGRADED:
+		return rv;
+	default:
+		return link_fallback_v1(AT_FDCWD, hostp,
+					tnew.fd, tnew.path, rv);
+	}
+}
+
+/* linkat: translate both operands, then emulate.
+ *
+ * Order matters (notes/tawcroot/link-emulation.md):
+ *   1. Emulated-name source is detected BEFORE the host attempt —
+ *      symlinks are a different SELinux class (lnk_file), so a host
+ *      linkat could *succeed* and hardlink the token symlink itself:
+ *      a phantom referrer the count never learns about. (The emulator
+ *      policy denies lnk_file link too, but other devices may not.)
+ *   2. A source already inside the store is store-aware: ADD with the
+ *      token from the path. The resolver catches token names in the
+ *      rootfs view (FOLLOW lands on link/); the O_PATH backstop below
+ *      catches every other FOLLOW spelling (/proc/self/fd/N through a
+ *      /proc bind is the live one). NEW must never rename a
+ *      store-resident source — that would rename the object itself
+ *      out of link/, dangling the whole cluster.
+ *   3. Otherwise host linkat first; only EACCES/EPERM engages the
+ *      emulation, and a directory source keeps the kernel's EPERM. */
 static long handle_linkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
@@ -1212,6 +1673,15 @@ static long handle_linkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		: TAWCROOT_PATH_NOFOLLOW;
 
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+
+	if (flags & AT_EMPTY_PATH) {
+		long empty = guest_path_is_empty(oldpath);
+		if (empty < 0) return empty;
+		if (empty)
+			return linkat_empty_path(scratch, olddirfd,
+						 newdirfd, newpath, flags);
+	}
+
 	struct fs_path told, tnew;
 	long e1 = translate_at(scratch, 0, olddirfd, oldpath, src_mode, &told);
 	if (e1) return e1;
@@ -1222,8 +1692,131 @@ static long handle_linkat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * lookup), not EINVAL. */
 	if (told.is_root || tnew.is_root) return TAWC_ENOENT;
 
-	return link_with_symlink_fallback(told.fd, told.path,
-					  tnew.fd, tnew.path, flags);
+	/* A LATENT process may be running beside one that already minted
+	 * the store (it is created lazily, so any long-lived guest that
+	 * started before the distro's first emulated hardlink is LATENT).
+	 * Open it BEFORE source detection: with the store fds closed the
+	 * probes below all skip, and an existing token name would be
+	 * treated as a plain symlink source — a phantom referrer where
+	 * host policy allows lnk_file links, a nested token object (both
+	 * names ENOENT) where it doesn't. Cold: linkat only, and one
+	 * existence probe per call while LATENT. */
+	if (tawcroot_store_link_fd < 0 &&
+	    tawcroot_linkstore_state() == TAWCROOT_STORE_LATENT)
+		(void)tawcroot_linkstore_latent_upgrade();
+
+	if (tawcroot_store_link_fd >= 0) {
+		int  ready = tawcroot_linkstore_state()
+			     == TAWCROOT_STORE_READY;
+		char tok[TAWCROOT_LINK_TOKEN_MAX];
+		const char *add_tok = 0;
+		if (told.fd == tawcroot_store_link_fd) {
+			/* FOLLOW resolution landed in the store. A residual
+			 * '/' means a token was used as a directory. */
+			for (const char *q = told.path; *q; q++)
+				if (*q == '/') return TAWC_ENOTDIR;
+			add_tok = told.path;
+		} else if (src_mode == TAWCROOT_PATH_NOFOLLOW &&
+			   tawcroot_link_leaf_token(told.fd, told.path, tok,
+						    sizeof tok) == 1) {
+			add_tok = tok;
+		} else if (src_mode == TAWCROOT_PATH_FOLLOW) {
+			/* Mandatory backstop: FOLLOW spellings the resolver
+			 * never sees can still land on an object —
+			 * /proc/self/fd/N routes through the /proc bind
+			 * (binds skip the resolver) and its magic-link
+			 * target is the raw store path. O_PATH-open the
+			 * source (kernel chases the leaf, magic links
+			 * included) and compare its host path against
+			 * <store>/link/. Guest-authored absolute symlinks
+			 * can't forge this: the resolver folds their
+			 * targets into the guest view before we get here. */
+			long pfd = tawc_openat(told.fd, told.path,
+					       O_PATH | O_CLOEXEC, 0);
+			if (pfd >= 0) {
+				char *hostp = scratch->buf[0];
+				long hn = tawcroot_proc_fd_to_host_path(
+					(int)pfd, hostp,
+					TAWCROOT_PATH_SCRATCH_SIZE);
+				tawc_close((int)pfd);
+				if (hn > 0 &&
+				    tawcroot_link_host_path_token(
+					    hostp, tok, sizeof tok))
+					add_tok = tok;
+				/* Linkable O_TMPFILE via the magic-link
+				 * spelling (open(2)'s documented publish
+				 * idiom): one atomic rename. */
+				else if (hn > 0 &&
+					 tawcroot_link_host_path_tmp(
+						 hostp, tok, sizeof tok))
+					return tawcroot_link_publish_tmp(
+						tok, tnew.fd, tnew.path);
+			}
+		}
+		if (add_tok) {
+			/* Degraded store: mutations refuse; raw EPERM. */
+			if (!ready) return TAWC_EPERM;
+			/* Emulated names never land in binds (see
+			 * fs_path_in_bind). */
+			if (fs_path_in_bind(&tnew)) return TAWC_EXDEV;
+			return tawcroot_link_add(add_tok, tnew.fd, tnew.path);
+		}
+	}
+
+	long rv = TAWC_RAW(TAWC_SYS_linkat, told.fd, (long)told.path,
+			   tnew.fd, (long)tnew.path, flags, 0);
+	if (rv == 0 || (rv != TAWC_EACCES && rv != TAWC_EPERM))
+		return rv;
+
+	/* link(2) on a directory is the kernel's own EPERM,
+	 * indistinguishable from an SELinux denial by errno alone —
+	 * emulating it would "hardlink" the directory by renaming it
+	 * away. Stat and pass the kernel's error through. */
+	struct stat st;
+	long te = TAWC_RAW(TAWC_SYS_fstatat, told.fd, (long)told.path,
+			   (long)&st, AT_SYMLINK_NOFOLLOW, 0, 0);
+	if (te || S_ISDIR(st.st_mode)) return rv;
+
+	/* A plain-symlink NOFOLLOW source becomes a symlink OBJECT: NEW
+	 * renames the symlink itself into link/ (fstatat above is
+	 * NOFOLLOW, so the token is the symlink's inode), and the
+	 * resolver splices the object's target back into the guest walk
+	 * (readlink_store oracle member) — real hardlinked-symlink
+	 * semantics, relative targets resolving against each NAME's
+	 * directory. */
+
+	/* Either operand on a bind: v1 keeps both names real/openable
+	 * where NEW's token symlinks would be unresolvable (see
+	 * fs_path_in_bind). */
+	if (fs_path_in_bind(&told) || fs_path_in_bind(&tnew))
+		return link_fallback_v1(told.fd, told.path,
+					tnew.fd, tnew.path, rv);
+
+	switch (tawcroot_linkstore_state()) {
+	case TAWCROOT_STORE_READY:
+	case TAWCROOT_STORE_LATENT: {
+		long nrv = tawcroot_link_new(told.fd, told.path,
+					     tnew.fd, tnew.path);
+		/* EXDEV: the source cannot reach the store by rename
+		 * (cross-fs bind) — degrade to the v1 emulation, both
+		 * ends stay on the bind's fs. EPERM: the store could not
+		 * be created/locked — v1 keeps today's behavior — UNLESS
+		 * the lock-time version re-check just flipped the store
+		 * to DEGRADED (newer format): then raw EPERM, no writes. */
+		if (nrv == TAWC_EPERM &&
+		    tawcroot_linkstore_state() == TAWCROOT_STORE_DEGRADED)
+			return rv;
+		if (nrv == TAWC_EXDEV || nrv == TAWC_EPERM)
+			return link_fallback_v1(told.fd, told.path,
+						tnew.fd, tnew.path, rv);
+		return nrv;
+	}
+	case TAWCROOT_STORE_DEGRADED:
+		return rv;  /* newer store: raw EPERM, zero corruption */
+	default:
+		return link_fallback_v1(told.fd, told.path,
+					tnew.fd, tnew.path, rv);
+	}
 }
 
 /* renameat2 — translate both operands; old is PARENT_REMOVE, new is
@@ -1246,6 +1839,36 @@ static long do_renameat(int olddirfd, const char *oldpath,
 			       TAWCROOT_PATH_PARENT_CREATE, &tnew);
 	if (e2) return e2;
 	if (told.is_root || tnew.is_root) return TAWC_EINVAL;
+
+	/* Hardlink emulation. Only the plain-replace shape needs work:
+	 *  - both names resolve to the same token → POSIX same-inode
+	 *    no-op (return 0, both names remain; the kernel does this by
+	 *    inode, we do it by token);
+	 *  - dst is an emulated name → CLOBBER: rename under the store
+	 *    lock, then decrement the clobbered cluster.
+	 * NOREPLACE gets the kernel's EEXIST off the symlink itself;
+	 * EXCHANGE atomically swaps the two entries with no count change;
+	 * src-emulated needs nothing (opaque targets are location-
+	 * independent). */
+	if (tawcroot_store_link_fd >= 0 &&
+	    !(rflags & (RENAME_NOREPLACE | RENAME_EXCHANGE))) {
+		char ntok[TAWCROOT_LINK_TOKEN_MAX];
+		if (tawcroot_link_leaf_token(tnew.fd, tnew.path, ntok,
+					     sizeof ntok) == 1) {
+			char otok[TAWCROOT_LINK_TOKEN_MAX];
+			if (tawcroot_link_leaf_token(told.fd, told.path, otok,
+						     sizeof otok) == 1 &&
+			    tawc_streq(otok, ntok))
+				return 0;
+			if (tawcroot_linkstore_state()
+			    == TAWCROOT_STORE_READY)
+				return tawcroot_link_clobber(
+					told.fd, told.path,
+					tnew.fd, tnew.path, rflags);
+			/* Non-READY store: plain rename below — the
+			 * clobbered object leaks (overcount, safe). */
+		}
+	}
 	return TAWC_RAW(TAWC_SYS_renameat2, told.fd, (long)told.path,
 			tnew.fd, (long)tnew.path, rflags, 0);
 }

@@ -10,6 +10,7 @@
 #include "exec_state.h"
 #include "identity.h"
 #include "io.h"
+#include "linkstore.h"
 #include "loader_elf.h"
 #include "loader_exec.h"
 #include "path.h"
@@ -173,6 +174,12 @@ long tawcroot_exec_handler_prepare(const char *path, int argc,
 		 * dlopen's libxul.so relative to it) sees /bin/bash and prints
 		 * "Couldn't load XPCOM." */
 		extras.guest_exe   = (const char *)0;
+		/* Hardlink-emulation store: ferry the ORIGINAL store path.
+		 * Deriving from rootfs_host in the child would be wrong
+		 * after a guest chroot (rootfs_host is then the chrooted
+		 * root, not the store's sibling). */
+		extras.store_host = tawcroot_store_host_path_len > 0
+			? tawcroot_store_host_path : (const char *)0;
 		/* Source host paths come straight off the bind table.
 		 * Earlier revisions recovered them via readlinkat
 		 * /proc/self/fd/<src_fd>, which broke once gpgme's fork-child

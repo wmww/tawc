@@ -44,3 +44,11 @@ bool rh_make_marker_path(char *out, size_t cap, const char *tag);
  * process via waitpid (it's either orphaned or in a foreign process
  * tree). */
 bool rh_poll_for_path(const char *path, int ticks);
+
+/* Count directory entries (excluding "." and ".."). -1 when the dir
+ * cannot be opened. */
+int rh_count_dir_entries(const char *path);
+
+/* Unlink every entry in `dir` whose name ends with `suffix`. Returns
+ * true if at least one entry was removed. */
+bool rh_unlink_by_suffix(const char *dir, const char *suffix);

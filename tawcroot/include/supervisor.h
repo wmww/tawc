@@ -43,6 +43,14 @@ struct tawcroot_supervisor_args {
 	const char *const *bind_dst;
 	size_t              n_binds;
 
+	/* Host path of the hardlink-emulation store (linkstore.h), or
+	 * NULL for no store (emulation degrades to the v1 symlink
+	 * fallback). prod derives it from the -r argument's parent dir
+	 * (`<rootfs>/../tawcroot`); the child path receives the ORIGINAL
+	 * store path through exec_state — never re-derived, because a
+	 * guest chroot changes rootfs_host_path but not the store. */
+	const char *store_host_path;
+
 	/* Inherited /dev/shm name table for re-registration. NULL/0 iff
 	 * this is the top-level entry (no shm yet). The fds in shm_fds
 	 * must be valid open memfds in the calling process; supervisor

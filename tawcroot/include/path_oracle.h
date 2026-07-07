@@ -30,7 +30,19 @@
 typedef long (*tawcroot_path_readlink_fn)(void *ctx, const char *suffix,
 					  char *out, size_t out_cap);
 
+/* Hardlink emulation: readlink a link OBJECT by token (linkstore.h).
+ * Same return contract as `readlink` — -EINVAL when the object is not
+ * a symlink (the overwhelmingly common case), -ENOENT when it is
+ * missing (dangling token). Only consulted when a walk hits an opaque
+ * `tawcroot:link:<token>` target: a symlink object (hardlink-of-a-
+ * symlink) has its target spliced back into the guest-side walk —
+ * relative targets resolve against the NAME's directory, exactly like
+ * a real hardlinked symlink. May be NULL (no store). */
+typedef long (*tawcroot_path_readlink_store_fn)(void *ctx, const char *token,
+						char *out, size_t out_cap);
+
 struct tawcroot_path_oracle {
-	void                       *ctx;
-	tawcroot_path_readlink_fn   readlink;
+	void                            *ctx;
+	tawcroot_path_readlink_fn        readlink;
+	tawcroot_path_readlink_store_fn  readlink_store;  /* may be NULL */
 };

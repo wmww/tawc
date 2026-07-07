@@ -47,6 +47,7 @@ size_t tawcroot_exec_state_estimate_bytes(const char *path,
 	if (ex) {
 		if (ex->rootfs_host) s += strlen(ex->rootfs_host) + 1;
 		if (ex->guest_exe)   s += strlen(ex->guest_exe) + 1;
+		if (ex->store_host)  s += strlen(ex->store_host) + 1;
 		for (uint32_t i = 0; i < ex->n_binds; i++) {
 			if (ex->bind_src && ex->bind_src[i])
 				s += strlen(ex->bind_src[i]) + 1;
@@ -126,6 +127,9 @@ long tawcroot_exec_state_write(void *buf, size_t buf_cap,
 		if (ex->guest_exe)
 			h->guest_exe_off = emit_str(strings, &off,
 			                            ex->guest_exe);
+		if (ex->store_host)
+			h->store_host_off = emit_str(strings, &off,
+			                             ex->store_host);
 		h->n_binds = ex->n_binds;
 		for (uint32_t i = 0; i < ex->n_binds; i++) {
 			if (ex->bind_src && ex->bind_src[i])
@@ -200,6 +204,7 @@ long tawcroot_exec_state_read(const void *buf, size_t buf_size,
 	for (uint32_t i = 0; i < h->envc; i++) CHECK_REQUIRED(h->envp_off[i]);
 	CHECK_OPTIONAL(h->rootfs_host_off);
 	CHECK_OPTIONAL(h->guest_exe_off);
+	CHECK_OPTIONAL(h->store_host_off);
 	for (uint32_t i = 0; i < h->n_binds; i++) {
 		CHECK_OPTIONAL(h->bind_src_off[i]);
 		CHECK_OPTIONAL(h->bind_dst_off[i]);
@@ -224,6 +229,7 @@ long tawcroot_exec_state_read(const void *buf, size_t buf_size,
 
 	out->rootfs_host = h->rootfs_host_off ? strings + h->rootfs_host_off : (const char *)0;
 	out->guest_exe   = h->guest_exe_off   ? strings + h->guest_exe_off   : (const char *)0;
+	out->store_host  = h->store_host_off  ? strings + h->store_host_off  : (const char *)0;
 	out->n_binds     = h->n_binds;
 	for (uint32_t i = 0; i < h->n_binds; i++) {
 		out->bind_src[i] = h->bind_src_off[i] ? strings + h->bind_src_off[i] : (const char *)0;

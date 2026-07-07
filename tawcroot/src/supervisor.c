@@ -17,6 +17,7 @@
 #include "fdtab.h"
 #include "handler.h"
 #include "io.h"
+#include "linkstore.h"
 #include "path.h"
 #include "raw_sys.h"
 #include "shm.h"
@@ -116,6 +117,11 @@ void tawcroot_supervisor_init(const struct tawcroot_supervisor_args *args)
 			if (sr < 0) tawc_exit_group(95);
 		}
 	}
+
+	/* (5.5) Hardlink-emulation store (linkstore.h). Never fails hard:
+	 * a missing/uncreatable store degrades to the v1 link fallback.
+	 * Runs the O(1) session-start intent check when the store exists. */
+	tawcroot_linkstore_configure(args->store_host_path);
 
 	/* (6) Memoise well-known guest paths and initialise the dispatch
 	 * table BEFORE installing the handler. The handler reads both. */

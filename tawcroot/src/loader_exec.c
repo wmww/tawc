@@ -460,6 +460,7 @@ void tawcroot_loader_exec_child(int state_fd, const char *platform)
 			.bind_src         = st.bind_src,
 			.bind_dst         = st.bind_dst,
 			.n_binds          = st.n_binds,
+			.store_host_path  = st.store_host,
 			.shm_names        = st.shm_name,
 			.shm_fds          = st.shm_fd,
 			.n_shm            = st.n_shm,
