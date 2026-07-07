@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "errno_neg.h"
+#include "exec_state.h"
 #include "loader_stack.h"
 #include "tawc_string.h"
 
@@ -74,13 +75,18 @@ long tawc_loader_build_stack(void *region_low, size_t region_size,
 
 	/* envp/argv strings: walked in reverse logical order so that
 	 * argv[0] ends up at the lowest string address. We store each
-	 * string's eventual pointer in a fixed-size on-stack array
-	 * (bounded by MAX_ARGS so the stack frame is bounded; real
-	 * callers pass at most a few hundred). */
-#define MAX_ARGS 1024
-	if (in->argc > MAX_ARGS || envc > MAX_ARGS) return TAWC_EINVAL;
+	 * string's eventual pointer in a fixed-size on-stack array.
+	 * Caps MUST match the exec_state collection limits: anything the
+	 * collection layer accepted has already passed the E2BIG check
+	 * and the execveat commit — rejecting it here kills the exec'd
+	 * process instead of returning an error to the (long gone)
+	 * caller. A 1024 cap here vs 4096 at collection did exactly that
+	 * for 1025+-arg execs (`rm *` on a big directory). */
+#define MAX_ARGS TAWCROOT_EXEC_STATE_MAX_ARGS
+#define MAX_ENV  TAWCROOT_EXEC_STATE_MAX_ENV
+	if (in->argc > MAX_ARGS || envc > MAX_ENV) return TAWC_EINVAL;
 	uintptr_t argv_buf[MAX_ARGS];
-	uintptr_t envp_buf[MAX_ARGS];
+	uintptr_t envp_buf[MAX_ENV];
 
 	for (int i = envc - 1; i >= 0; i--) {
 		size_t n = strlen(in->envp[i]) + 1;

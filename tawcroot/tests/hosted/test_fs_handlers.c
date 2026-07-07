@@ -436,3 +436,25 @@ test(hosted_bind_dirfd_dotdot_clamps_at_bind_boundary)
 	test_int_eq(close((int)dfd), 0);
 	th_teardown(&v);
 }
+
+test(hosted_utimensat_null_path_reserved_dirfd_ebadf)
+{
+	th_view v;
+	th_setup(&v, "fs-utimefd");
+
+	/* NULL pathname (glibc futimens shape) operates on dirfd directly;
+	 * a reserved dirfd must answer EBADF (fdtab.h contract), not touch
+	 * the rootfs dir's timestamps. */
+	test_int_eq(th_sys(TAWC_SYS_utimensat, tawcroot_rootfs_fd,
+			   0 /*NULL path*/, 0 /*times=now*/, 0, 0, 0),
+		    TAWC_EBADF);
+
+	/* The same shape on an ordinary guest fd passes through. */
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc/probe",
+			 O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	test_int_eq(th_sys(TAWC_SYS_utimensat, fd, 0, 0, 0, 0, 0), 0);
+	test_int_eq(close((int)fd), 0);
+
+	th_teardown(&v);
+}

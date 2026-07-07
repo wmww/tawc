@@ -62,7 +62,13 @@ static long classify_elf(int fd)
 	if (n != (long)sizeof ebuf) return TAWC_ENOEXEC;
 	struct tawc_loader_image img;
 	if (tawc_loader_parse_ehdr(ebuf, sizeof ebuf, &img) != 0)
-		return TAWC_ENOEXEC;  /* bad magic / class / wrong machine */
+		return TAWC_ENOEXEC;  /* bad magic / class / unknown machine */
+	/* The parser accepts both supported machines (its unit tests are
+	 * cross-arch); the RUN decision is ours. Without this, an x86_64
+	 * binary in an aarch64 rootfs passes the probe and the loader
+	 * jumps into foreign code post-commit — SIGILL instead of the
+	 * kernel-shaped ENOEXEC a shell needs for its fallback. */
+	if (img.e_machine != TAWC_EM_HOST) return TAWC_ENOEXEC;
 	if (img.e_type != TAWC_ET_EXEC && img.e_type != TAWC_ET_DYN)
 		return TAWC_ENOEXEC;
 	return 0;

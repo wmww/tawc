@@ -314,3 +314,40 @@ test(hosted_linkat_fallback_cross_device_exdev)
 
 	th_teardown(&v);
 }
+
+/* fd-based fchmod mirrors fchmodat's fake-root contract: a real chmod
+ * is attempted (modes matter inside the rootfs), but an SELinux-style
+ * EPERM must not reach a virtual-root guest — sshd chmods its pty via
+ * path OR fd depending on version. Reserved fds answer EBADF. */
+test(hosted_fchmod_swallows_eperm_under_virtual_root)
+{
+	th_view v;
+	th_setup(&v, "inj-fchmod");
+
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/etc/probe",
+			 O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+
+	/* Real attempt goes through and actually changes the mode. */
+	test_int_eq(th_sys(TAWC_SYS_fchmod, fd, 0640, 0, 0, 0, 0), 0);
+	struct stat st;
+	test_int_eq(fstat((int)fd, &st), 0);
+	test_int_eq((int)(st.st_mode & 07777), 0640);
+
+	/* SELinux-style denial: swallowed for the virtual-root guest. */
+	install_fail(TAWC_SYS_fchmod, TAWC_EPERM);
+	test_int_eq(th_sys(TAWC_SYS_fchmod, fd, 0600, 0, 0, 0, 0), 0);
+	test_true(fail_hits > 0);
+
+	/* Non-permission errors pass through. */
+	install_fail(TAWC_SYS_fchmod, TAWC_EIO);
+	test_int_eq(th_sys(TAWC_SYS_fchmod, fd, 0600, 0, 0, 0, 0), TAWC_EIO);
+	tawcroot_test_raw_hook = NULL;
+
+	/* Reserved fds answer EBADF per the fdtab contract. */
+	test_int_eq(th_sys(TAWC_SYS_fchmod, tawcroot_rootfs_fd,
+			   0700, 0, 0, 0, 0), TAWC_EBADF);
+
+	test_int_eq(close((int)fd), 0);
+	th_teardown(&v);
+}

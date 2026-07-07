@@ -95,6 +95,16 @@ typedef struct {
 #define TAWC_EM_X86_64   62
 #define TAWC_EM_AARCH64  183
 
+/* The machine this build runs guests for. The parser stays arch-
+ * agnostic (unit tests parse both machines on one host); every RUN
+ * decision must compare against this, or a cross-arch ELF sails past
+ * the exec probe and dies post-commit in the loader. */
+#if defined(__x86_64__)
+# define TAWC_EM_HOST TAWC_EM_X86_64
+#elif defined(__aarch64__)
+# define TAWC_EM_HOST TAWC_EM_AARCH64
+#endif
+
 /* p_type */
 #define TAWC_PT_LOAD     1
 #define TAWC_PT_DYNAMIC  2

@@ -292,6 +292,10 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 	long rc = parse_image((int)bin_fd, &bin_img, ebuf, sizeof ebuf,
 	                      pbuf, sizeof pbuf, PAGE, &stage);
 	if (rc) LOADER_FAIL(stage == PARSE_IMAGE_EHDR ? 61 : 62);
+	/* Post-commit backstop for the exec handler's pre-probe: never map
+	 * and jump into a wrong-machine image (TOCTOU replacement, or a
+	 * direct --exec-child invocation that skipped the probe). */
+	if (bin_img.e_machine != TAWC_EM_HOST) LOADER_FAIL(63);
 	if (bin_img.e_type != TAWC_ET_EXEC && bin_img.e_type != TAWC_ET_DYN)
 		LOADER_FAIL(63);
 
@@ -330,7 +334,8 @@ void tawcroot_loader_exec(const struct tawc_loader_exec_args *args)
 		if (parse_image((int)ld_fd, &ld_img, ebuf, sizeof ebuf,
 		                pbuf, sizeof pbuf, PAGE, &ld_stage) != 0)
 			LOADER_FAIL(66);
-		if (ld_img.e_type != TAWC_ET_DYN || ld_img.interp_present)
+		if (ld_img.e_machine != TAWC_EM_HOST ||
+		    ld_img.e_type != TAWC_ET_DYN || ld_img.interp_present)
 			LOADER_FAIL(67);
 
 		struct tawc_loader_placement ld_pl;

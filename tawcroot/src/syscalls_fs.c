@@ -1112,7 +1112,9 @@ static long handle_utimensat(const tawcroot_syscall_args *args,
 	if (!gpath) {
 		/* Linux-extension: NULL pathname → operate on dirfd. The
 		 * dirfd is one of ours (translated openat handed it back);
-		 * forward unchanged. */
+		 * forward unchanged — but reserved fds must answer EBADF
+		 * (fdtab.h contract), like every other dirfd anchor. */
+		if (tawcroot_fd_is_reserved(dirfd)) return TAWC_EBADF;
 		return TAWC_RAW(TAWC_SYS_utimensat, dirfd, 0,
 				args->c, flags, 0, 0);
 	}
@@ -1214,6 +1216,23 @@ static long handle_fchownat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	long rv = TAWC_RAW(TAWC_SYS_fstatat, t.fd, (long)p,
 			   (long)&probe, sflags, 0, 0);
 	return rv < 0 ? rv : 0;  /* exists → fake-root no-op */
+}
+
+/* fd-only fchmod: same EPERM/EACCES-swallow contract as fchmodat
+ * (SELinux setattr denials — app ptys are the known case — must not
+ * reach a fake-root guest as permission errors), same fd validation
+ * as fchown below. Non-permission errors pass through; the chmod is
+ * genuinely attempted first because modes matter inside the rootfs. */
+static long handle_fchmod(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	int fd = (int)args->a;
+	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
+	long rv = TAWC_RAW(TAWC_SYS_fchmod, fd, args->b, 0, 0, 0, 0);
+	if ((rv == TAWC_EPERM || rv == TAWC_EACCES) &&
+	    tawcroot_identity_euid() == 0)
+		return 0;
+	return rv;
 }
 
 /* fd-only fchown, used by GNU tar when dpkg-deb extracts package
@@ -2225,6 +2244,7 @@ void tawcroot_fs_register(void)
 	tawcroot_dispatch_install(TAWC_SYS_unlinkat,    handle_unlinkat);
 	tawcroot_dispatch_install(TAWC_SYS_symlinkat,   handle_symlinkat);
 	tawcroot_dispatch_install(TAWC_SYS_fchmodat,    handle_fchmodat);
+	tawcroot_dispatch_install(TAWC_SYS_fchmod,      handle_fchmod);
 	tawcroot_dispatch_install(TAWC_SYS_fchown,      handle_fchown);
 	tawcroot_dispatch_install(TAWC_SYS_fchownat,    handle_fchownat);
 	tawcroot_dispatch_install(TAWC_SYS_utimensat,   handle_utimensat);

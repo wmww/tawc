@@ -124,7 +124,14 @@ long tawc_loader_map(const struct tawc_loader_image *img,
 	for (unsigned i = 0; i < img->n_loads; i++) {
 		const struct tawc_loader_seg *s = &img->loads[i];
 
-		/* Need write while we memset the BSS partial-page slice. */
+		/* Need write while we memset the BSS partial-page slice.
+		 * ORDER IS LOAD-BEARING under SELinux (untrusted_app): the
+		 * initial mmap must carry PROT_EXEC (checked as app_data_file
+		 * `execute`, allowed) so the later mprotect only DROPS write.
+		 * Mapping rw- first and mprotecting r-x after the memset
+		 * would instead trigger the `execmod` check (exec on a
+		 * modified private mapping) — denied for app domains,
+		 * EACCES on every guest text segment, production only. */
 		int has_partial = s->bss_partial_hi > s->bss_partial_lo;
 		int needs_temp_w = has_partial && !(s->prot & TAWC_LOADER_PROT_W);
 		int seg_prot = loader_prot_to_mmap(s->prot);

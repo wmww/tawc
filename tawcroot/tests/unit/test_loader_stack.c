@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/mman.h>
 
+#include "exec_state.h"
 #include "loader_stack.h"
 
 /* Allocate a stack region the test can write to. We use mmap so we
@@ -352,4 +353,35 @@ test(stack_with_many_args)
 	test_ptr_eq(got_envp[N], NULL);
 
 	munmap(region, 64 * 1024);
+}
+
+test(stack_accepts_collection_layer_max_args)
+{
+	/* The exec_state collection layer accepts up to
+	 * TAWCROOT_EXEC_STATE_MAX_ARGS args; by the time the loader runs,
+	 * the caller has already been destroyed by the execveat commit, so
+	 * the loader must accept the same count (a lower cap here killed
+	 * 1025+-arg execs like `rm *` on a big directory). */
+	enum { N = TAWCROOT_EXEC_STATE_MAX_ARGS };
+	static const char *argv[N + 1];
+	const char *envp[2] = { "VAR=value", NULL };
+	for (int i = 0; i < N; i++)
+		argv[i] = "a";
+	argv[N] = NULL;
+
+	struct tawc_loader_stack_input in = make_input(N, argv, envp);
+
+	enum { REGION = 256 * 1024 };
+	uint8_t *region = alloc_region(REGION);
+	struct tawc_loader_stack_out out;
+	test_int_eq((int)tawc_loader_build_stack(region, REGION, &in, &out), 0);
+
+	int got_argc;
+	char *const *got_argv;
+	tawc_loader_walk_stack(out.sp, &got_argc, &got_argv, NULL, NULL);
+	test_int_eq(got_argc, N);
+	test_str_eq(got_argv[N - 1], "a");
+	test_ptr_eq(got_argv[N], NULL);
+
+	munmap(region, REGION);
 }

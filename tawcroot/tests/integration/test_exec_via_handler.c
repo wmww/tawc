@@ -26,10 +26,13 @@
 #include <stc/cstr.h>
 
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "loader_elf.h"
 
 #ifndef TAWCROOT_TEST_TMPDIR
 # define TAWCROOT_TEST_TMPDIR "/tmp"
@@ -137,6 +140,44 @@ test(exec_via_handler_non_elf_text_returns_50)
 	const char *args[] = { "--exec-via-handler", p, NULL };
 	test_int_eq(run(args), 50);
 	(void)unlink(p);
+}
+
+test(exec_via_handler_wrong_arch_elf_returns_50)
+{
+	/* A structurally valid ELF64 for the OTHER machine: real execve
+	 * returns -ENOEXEC. Pre-fix, classify_elf checked only e_type, so
+	 * the probe passed a cross-arch binary through to the commit and
+	 * the loader mapped and jumped into foreign code (SIGILL — a
+	 * destroyed caller instead of a shell's `cannot execute binary
+	 * file`). Header fields other than e_machine are all valid so
+	 * only the machine check can reject it. */
+	unsigned char eh[64] = {
+		0x7f, 'E', 'L', 'F',
+		2,  /* ELFCLASS64 */
+		1,  /* ELFDATA2LSB */
+		1,  /* EV_CURRENT */
+	};
+	uint16_t wrong = (TAWC_EM_HOST == TAWC_EM_X86_64)
+		? TAWC_EM_AARCH64 : TAWC_EM_X86_64;
+	eh[16] = 2;                          /* e_type = ET_EXEC */
+	eh[18] = (unsigned char)(wrong & 0xff);      /* e_machine */
+	eh[19] = (unsigned char)(wrong >> 8);
+	eh[20] = 1;                          /* e_version = EV_CURRENT */
+	eh[32] = 64;                         /* e_phoff = sizeof(ehdr) */
+	eh[54] = 56;                         /* e_phentsize = sizeof(phdr) */
+	eh[56] = 1;                          /* e_phnum = 1 */
+
+	static char path[256];
+	snprintf(path, sizeof path, "%s/tawcroot-classify-xarch",
+	         TAWCROOT_TEST_TMPDIR);
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+	test_true(fd >= 0);
+	test_true(write(fd, eh, sizeof eh) == (ssize_t)sizeof eh);
+	close(fd);
+
+	const char *args[] = { "--exec-via-handler", path, NULL };
+	test_int_eq(run(args), 50);
+	(void)unlink(path);
 }
 
 test(exec_via_handler_shebang_missing_interp_returns_50)

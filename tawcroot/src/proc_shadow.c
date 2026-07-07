@@ -82,9 +82,14 @@ static int is_my_tid(long n)
 	return 0;
 }
 
-/* If `path` is "/proc/self/<x>" or "/proc/<tid>/<x>", return a pointer
- * to "<x>" and set `*tid_out` to the effective tid: -1 for a literal
- * "self", else the numeric tid. Ownership is NOT resolved here — the
+/* If `path` is "/proc/self/<x>", "/proc/thread-self/<x>" or
+ * "/proc/<tid>/<x>", return a pointer to "<x>" and set `*tid_out` to
+ * the effective tid: -1 for a literal "self"/"thread-self" (both name
+ * our process; every synthesized target — maps, exe, cwd, fd — is
+ * per-mm/per-process, so the thread distinction doesn't matter here,
+ * and letting thread-self fall through leaked untranslated host paths
+ * via thread-self/maps and libtawcroot.so via thread-self/exe), else
+ * the numeric tid. Ownership is NOT resolved here — the
  * caller decides via resolve_mine(), so classifications that don't
  * care (fd links) skip the /proc/<n>/status read entirely. Also peels
  * an optional "task/<tid>/" segment after `self/` or `<tid>/`, since
@@ -108,6 +113,11 @@ static const char *strip_proc_pid_prefix(const char *path, long *tid_out)
 	if (t[0] == 's' && t[1] == 'e' && t[2] == 'l' && t[3] == 'f' &&
 	    t[4] == '/') {
 		after_pid = t + 5;
+	} else if (t[0] == 't' && t[1] == 'h' && t[2] == 'r' &&
+		   t[3] == 'e' && t[4] == 'a' && t[5] == 'd' &&
+		   t[6] == '-' && t[7] == 's' && t[8] == 'e' &&
+		   t[9] == 'l' && t[10] == 'f' && t[11] == '/') {
+		after_pid = t + 12;
 	} else if (t[0] >= '0' && t[0] <= '9') {
 		long n = 0;
 		const char *p = t;

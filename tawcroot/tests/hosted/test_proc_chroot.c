@@ -58,6 +58,33 @@ test(hosted_proc_self_maps_shadow_synthesized)
 	th_teardown(&v);
 }
 
+test(hosted_proc_thread_self_maps_shadow_synthesized)
+{
+	th_view v;
+	th_setup(&v, "proc-tsmaps");
+
+	/* /proc/thread-self/maps is per-mm — identical content class to
+	 * /proc/self/maps — and must hit the same shadow. Untranslated,
+	 * it leaks raw host paths the guest view doesn't contain. */
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/proc/thread-self/maps",
+			 O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+
+	/* Discriminate shadow from a passed-through procfs open: the
+	 * shadow is a fully-materialized memfd with a real size, while
+	 * procfs maps files stat as size 0. */
+	struct stat st;
+	test_int_eq(fstat((int)fd, &st), 0);
+	test_true(st.st_size > 0);
+
+	char buf[512] = {0};
+	test_true(read((int)fd, buf, sizeof buf - 1) > 0);
+	test_nonnull(strchr(buf, '-'));
+
+	test_int_eq(close((int)fd), 0);
+	th_teardown(&v);
+}
+
 test(hosted_proc_overflowuid_shadow_content)
 {
 	th_view v;
