@@ -54,7 +54,7 @@ libxshmfence	https://gitlab.freedesktop.org/xorg/lib/libxshmfence.git	89f0647485
 xkbcomp	https://gitlab.freedesktop.org/xorg/app/xkbcomp.git	e26102f28f08e5432b1ad44bbaef7f32aff199f6	xkbcomp-1.4.7	deps/xwayland-src/xkbcomp
 xkeyboard-config	https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config.git	a8b1be93168cbd3246359c724f090e821079b313	xkeyboard-config-2.45	deps/xwayland-src/xkeyboard-config
 xwayland	https://gitlab.freedesktop.org/xorg/xserver.git	a0241c1d38297a800d2aae3d8ca7213b7b873879	xwayland-24.1.11	deps/xwayland-src/xwayland
-smithay	https://github.com/wmww/smithay.git	7bd83809b52e6a151bd9b2303884f2ae7d6ec8fa	tawc-patches	deps/smithay
+smithay	https://github.com/wmww/smithay.git	29d3dd3b6fb0e4557a93916b9996768831df81db	tawc-patches	deps/smithay
 
 # gfxstream-bridge deps (Phase 1.1+; see notes/gfxstream-bridge.md)
 mesa	https://gitlab.freedesktop.org/mesa/mesa.git	06f9e28304d5d3f109c33535c1c25b9df5769af2	mesa-25.3.6	deps/mesa

@@ -91,6 +91,19 @@ Kotlin side (`app/src/main/java/me/phie/tawc/`):
 - `dispatch_clients()` runs only from the Wayland fd `Generic` source; the frame
   timer flushes pending writes but does not dispatch. Smithay's calloop integration
   wakes the fd source whenever a client message arrives.
+- calloop `LoopHandle` is a strong `Rc` into the loop's own source list, and
+  `EventLoop::drop` does not clear that list — so any source callback that
+  captures a handle clone leaks every source (Display, client fds, the X11
+  lock) past compositor stop, until Android kills the cached process. Two
+  guards: tawc callbacks must reach the loop via `TawcState::loop_handle()`
+  instead of capturing clones (convention only — nothing enforces it), and
+  the smithay fork's `X11Wm` stores its `RegistrationToken`s plus a
+  type-erased remover and deregisters its sources (event channel, focus
+  ping, pending selection transfers) in `Drop`, since its callbacks do
+  capture handles. Symptom when regressed: after a notification-exit with
+  X11 used, the next in-process start logs "Failed to acquire lock
+  display=0" and X11 clients get "Can't open display :0"; a clean stop
+  logs smithay's "Cleaning up X11 lock.".
 - Renderable xdg and X11 windows live in Smithay `Window`s mapped into
   `Space<Window>`. Smithay renderer surface state owns committed buffer
   metadata and texture import; tawc wraps the resulting render elements only
