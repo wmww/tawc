@@ -67,7 +67,7 @@
     <string name="manage_binds_add">Add bind</string>
     <string name="manage_binds_add_title">Add bind</string>
     <string name="manage_binds_edit_title">Edit bind</string>
-    <string name="manage_binds_guest_label">Guest path (inside the distro)</string>
+    <string name="manage_binds_guest_label">Guest path (inside the distro; ~ = /root)</string>
     <string name="manage_binds_host_label">Host directory (Android)</string>
     <string name="manage_binds_browse">Browse&#8230;</string>
     <string name="manage_binds_host_missing">Host directory \'%1$s\' does not exist</string>

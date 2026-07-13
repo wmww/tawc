@@ -368,7 +368,7 @@ class ManageBindsActivity : AppCompatActivity() {
                 hostPath = hostField.text.toString().trim().let {
                     if (it.length > 1) it.trimEnd('/') else it
                 },
-                guestPath = guestField.text.toString().trim().let {
+                guestPath = expandGuestHome(guestField.text.toString().trim()).let {
                     if (it.length > 1) it.trimEnd('/') else it
                 },
             )
@@ -381,6 +381,17 @@ class ManageBindsActivity : AppCompatActivity() {
             commit()
             dialog.dismiss()
         }
+    }
+
+    /** Expand a leading `~` in a typed guest path to the guest home.
+     * Saved binds stay absolute so downstream consumers (persistence,
+     * tawcroot `-b` specs) never see a tilde. Other forms (`~user`)
+     * pass through and fail the must-be-absolute check. Host paths get
+     * no expansion — Android has no meaningful `~`. */
+    private fun expandGuestHome(path: String): String = when {
+        path == "~" -> RootfsEnv.GUEST_HOME
+        path.startsWith("~/") -> RootfsEnv.GUEST_HOME + path.substring(1)
+        else -> path
     }
 
     private fun validate(candidate: ExternalBind, editIndex: Int?): String? {

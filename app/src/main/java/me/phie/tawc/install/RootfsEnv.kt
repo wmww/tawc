@@ -41,12 +41,16 @@ import me.phie.tawc.Settings
 internal object RootfsEnv {
     enum class Method { TAWCROOT, PROOT, CHROOT }
 
+    /** Guest home dir: the guest runs as fake root. Also what a typed
+     * `~` expands to in the manage-binds guest-path field. */
+    const val GUEST_HOME = "/root"
+
     fun build(method: Method): Map<String, String> =
         build(method, Settings.graphicsBackend)
 
     fun build(method: Method, backend: GraphicsBackend): Map<String, String> = buildMap {
         put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games")
-        put("HOME", "/root")
+        put("HOME", GUEST_HOME)
         // login(1) normally sets USER/LOGNAME; we exec bash directly,
         // and bash doesn't, so scripts (and distro title-setting
         // PROMPT_COMMANDs) would otherwise see them empty.

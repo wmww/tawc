@@ -97,7 +97,9 @@ mid-install.
   Pictures, Music, Movies→`/root/Videos`, plus non-XDG DCIM). Unbound
   common dirs (matched by guest path, skipping host dirs that
   verifiably don't exist) render below the active binds as suggestion
-  cards with a one-tap accent Add. Two modes: editing an
+  cards with a one-tap accent Add. A typed guest path may start with
+  `~`/`~/`; the save handler expands it to `RootfsEnv.GUEST_HOME`
+  (`/root`) so persisted binds stay absolute. Two modes: editing an
   existing install's metadata (from `DistroInfoActivity`, gated to
   READY/FAILED so edits don't race the service's metadata writes;
   FAILED included because editing binds is how a user recovers a
