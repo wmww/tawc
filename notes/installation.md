@@ -98,7 +98,13 @@ Transition table — rows are current state, cells say what each request does:
 | READY          | refused      | → UNINSTALLING | —           | —        |
 | UNINSTALLING   | refused      | restart op     | → (no dir)  | → FAILED |
 | FAILED         | refused      | → UNINSTALLING | —           | —        |
-| CORRUPT        | refused      | → UNINSTALLING | —           | —        |
+| CORRUPT        | refused      | wipe runs*     | → (no dir)  | stays CORRUPT |
+
+\* The uninstall runs normally from CORRUPT, but the on-disk state
+never moves — `setState` goes through `update()`, which refuses to
+write through a CORRUPT record — so the slot reads CORRUPT until the
+wipe removes the dir (and stays CORRUPT if the wipe fails or is
+cancelled, rather than parking in FAILED).
 
 CORRUPT is a pseudo-state, never written to disk: when
 `metadata.json` exists but won't parse (corrupt file, or a
