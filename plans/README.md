@@ -3,6 +3,7 @@
 Future work and speculative implementation plans live here. Keep current-state
 design, build, and operational notes in [`../notes/`](../notes/).
 
+- [usecase_tests/](usecase_tests/README.md) - one-shot agent-run usecase test plans; see that README for the procedure.
 - [audio.md](audio.md) - planned PipeWire/PulseAudio bridge to Android audio.
 - [gfxstream-bridge-remaining-work.md](gfxstream-bridge-remaining-work.md) - remaining GL/GLES and x86_64 AVD work for the gfxstream bridge backend.
 - [gl-on-gles-translator.md](gl-on-gles-translator.md) - possible in-house GL 3.3-core-on-ES 3.2 translator (glslang/SPIRV-Cross shader pipeline) for the modern-GL gap zink can't cover on Vulkan 1.1 devices.
