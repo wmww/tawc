@@ -26,6 +26,10 @@ The release build cannot be run by the agent: the signing keystore lives in a di
 3. Push `main` and the tag.
 4. `gh release create vN tawc-vN.apk --title "tawc vN" --notes-file <notes>`.
 
+## Debuggability over size
+
+Release builds are deliberately NOT minified, obfuscated, or stripped (release block + `packaging.jniLibs.keepDebugSymbols` in `app/build.gradle.kts`): user-reported Java stack traces are readable as-is, and native tombstones come out of the device symbolized — no mapping.txt archiving, no unstripped-artifact hunting. This roughly doubles the APK (~29 vs ~13 MB R8-minified); anything under ~50 MB is an acceptable trade. `proguard-rules.pro` stays correct regardless, so minifying is a one-flag change if a size ceiling ever appears.
+
 ## Keystore
 
 - The signing key is load-bearing: every release must be signed with the same key or users cannot upgrade without uninstalling — which deletes their app-private distro installs (real data loss).

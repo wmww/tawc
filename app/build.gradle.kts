@@ -113,6 +113,14 @@ android {
             buildConfigField("boolean", "TINT_BUFFERS_BY_TYPE_DEFAULT", "true")
         }
         getByName("release") {
+            // Deliberately unminified: R8 would roughly halve the APK
+            // (~13 vs ~29 MB, mostly BouncyCastle dex), but obfuscated
+            // crash traces need per-release mapping.txt juggling and we
+            // don't care about size below ~50 MB. Debugging beats
+            // megabytes. If this is ever flipped on, proguard-rules.pro
+            // already carries the keep rules R8 needs (zstd-jni JNI,
+            // line-number attributes). Native libs also ship unstripped
+            // — see packaging {} below.
             isMinifyEnabled = false
             isShrinkResources = false
             proguardFiles(
@@ -231,9 +239,21 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // AGP strips jniLibs by default; keep symbol tables instead
+            // so debuggerd emits symbolized native tombstones straight
+            // from the device — no hunting for the matching unstripped
+            // artifact. Same debugging-beats-megabytes call as the
+            // unminified release block above.
+            keepDebugSymbols.add("**/*.so")
         }
         resources {
             pickFirsts.add("META-INF/versions/9/OSGI-INF/MANIFEST.MF")
+            // bcprov data blobs for classes we never reach (R8 strips the
+            // classes but not their java resources): ~1.2 MB of picnic
+            // post-quantum matrices + CertPathReviewer message catalogs.
+            // The PGP verify path (SignatureVerifier) touches neither.
+            excludes.add("org/bouncycastle/pqc/**")
+            excludes.add("org/bouncycastle/x509/*.properties")
         }
     }
 
@@ -846,4 +866,16 @@ if (xwaylandPackaged) {
         dependsOn(xwaylandStageTasks)
         dependsOn(packXwaylandShareTask)
     }
+}
+
+// assets/xwayland must contain exactly share.tar. Generated files under
+// src/main/assets ship silently, so a stale artifact from a retired
+// packaging scheme rides along in every APK unnoticed (the pre-jniLibs
+// arm64-v8a.tar shipped ~3.6 MB of dead weight for two months). Prune
+// anything else before packaging.
+val pruneStaleXwaylandAssets = tasks.register<Delete>("pruneStaleXwaylandAssets") {
+    delete(fileTree("src/main/assets/xwayland") { exclude("share.tar") })
+}
+tasks.named("preBuild") {
+    dependsOn(pruneStaleXwaylandAssets)
 }
