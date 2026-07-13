@@ -54,6 +54,28 @@ sshd may not). Finding out is the point.
 - No `systemctl` — daemons must be started by hand; a `System has not been
   booted with systemd` error from `systemctl` is expected behavior.
 
+## Run status — 2026-07-13, physical OnePlus (device 50f4ca18), Arch tawcroot
+
+**Partial pass.** openssh does NOT work; dropbear does. Issue filed:
+[issues/usecase_tests/openssh-seccomp-sandbox-eperm-kills-preauth-child.md](../../issues/usecase_tests/openssh-seccomp-sandbox-eperm-kills-preauth-child.md).
+
+- openssh-10.4p1: installs, `ssh-keygen -A` ok, `sshd -D -e -p 2222`
+  binds/listens fine, but every connection resets during kex. `-e` log:
+  `ssh_sandbox_child: prctl(PR_SET_SECCOMP): Operation not permitted
+  [preauth]` — tawcroot denies guest seccomp (EPERM), sshd's preauth
+  sandbox child treats that as fatal. `-o UsePrivilegeSeparation=no` is
+  a removed/deprecated no-op in 10.x and there is no runtime sandbox
+  toggle, so openssh cannot be made to serve on tawcroot as shipped.
+- dropbear-2026.91: full pass. Key-authed session works loopback AND
+  from the host via `adb forward tcp:2222` (`uid=0(root)`, correct
+  `uname`). Reuses `/root/.ssh/authorized_keys`; `-R` self-generates
+  host keys. Proves sockets + fake-root login are healthy; the failure
+  is specific to openssh's seccomp sandbox.
+- Port 22 negative check: bind fails "Permission denied" for both
+  servers (no CAP_NET_BIND_SERVICE) — expected, not a bug.
+
+Not added to Completed (openssh gap). Left as a Problems-outcome run.
+
 ## Cleanup
 
 Kill sshd/dropbear, `adb forward --remove tcp:2222`, delete
