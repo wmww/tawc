@@ -52,3 +52,20 @@ unix control socket in `/tmp`, and session persistence.
 ## Cleanup
 
 `tmux kill-server`, remove test files, `pacman -Rns tmux vim htop`.
+
+## Run log
+
+- 2026-07-13, physical (50f4ca18), Arch tawcroot — **FAILED, bug found.**
+  tmux 3.7b installs fine (`pacman -S tmux vim htop` clean via proxy) and the
+  server starts, but **every** tmux client is rejected with `access not
+  allowed` (exit 0), so no session is ever usable — vim/htop could not be
+  exercised. Root cause is a tawcroot uid-emulation gap: tmux's server checks
+  the client's `SO_PEERCRED` uid against its own `getuid()`; tawcroot fakes
+  `getuid()`→0 but does not intercept `getsockopt`, so `SO_PEERCRED` returns
+  the real app uid (10250) and the check fails. `/dev/ptmx`, `/tmp`
+  (`XDG_RUNTIME_DIR=/tmp`), and pty allocation were all fine — the failure is
+  purely the peer-credential mismatch. See
+  `issues/usecase_tests/tmux-so-peercred-real-uid-breaks-peer-cred-check.md`.
+  Note: `tmux kill-server` is itself rejected; kill the lingering `tmux:
+  server` by pid (via `/proc/<pid>/comm`). Not simple/minor to fix, so no
+  code change attempted.
