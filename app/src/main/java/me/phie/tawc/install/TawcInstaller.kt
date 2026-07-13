@@ -84,6 +84,13 @@ internal object TawcInstaller {
             log("tawc-installer: $id has no metadata.json — skipping")
             return
         }
+        if (installation.state == Installation.State.CORRUPT) {
+            // Unparseable metadata: the manifest of previously-installed
+            // entries is unknown, so a refresh could neither wipe the old
+            // set nor record the new one (the store refuses writes).
+            log("tawc-installer: $id metadata is corrupt — skipping")
+            return
+        }
         val rootfs = store.rootfsDir(id)
         if (!rootfs.isDirectory) {
             log("tawc-installer: $id rootfs missing at $rootfs — skipping")

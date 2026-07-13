@@ -131,8 +131,14 @@ data class Installation(
      * for the full transition table; the gate that enforces it lives in
      * [InstallationService]. `READY` is the default for missing-field
      * legacy metadata so pre-state-machine installs aren't lost.
+     *
+     * `CORRUPT` is in-memory only: [InstallationStore] synthesizes it
+     * (via [corruptMarker]) for a slot whose `metadata.json` exists but
+     * can't be parsed, so the slot stays visible and uninstallable
+     * instead of silently vanishing. It is never written to disk —
+     * [InstallationStore.save] refuses it.
      */
-    enum class State { INSTALLING, READY, UNINSTALLING, FAILED }
+    enum class State { INSTALLING, READY, UNINSTALLING, FAILED, CORRUPT }
 
     companion object {
         const val DISTRO_ARCH = "arch"
@@ -191,8 +197,36 @@ data class Installation(
         // handle one.
         const val CURRENT_SCHEMA_VERSION = 1
 
+        /**
+         * Marker record for a slot whose `metadata.json` can't be
+         * parsed ([id] comes from the directory name, not the file —
+         * the file is untrusted). Never persisted; see [State.CORRUPT].
+         */
+        fun corruptMarker(id: String, detail: String?): Installation = Installation(
+            id = id,
+            label = id,
+            distro = "?",
+            arch = "?",
+            method = "?",
+            installedAtMillis = 0L,
+            sourceUrl = "",
+            state = State.CORRUPT,
+            failure = detail,
+        )
+
         fun fromJson(text: String): Installation {
             val obj = JSONObject(text)
+            // Forward-compat gate: a version we don't know means the
+            // record was written by a newer app; refuse it (the caller
+            // surfaces a CORRUPT slot) rather than mis-parse it. The
+            // schemaVersion dispatch site — grow a `when` on bump.
+            val schemaVersion = obj.optInt("schemaVersion", 1)
+            if (schemaVersion > CURRENT_SCHEMA_VERSION) {
+                throw IllegalArgumentException(
+                    "metadata schemaVersion $schemaVersion is newer than supported " +
+                        "$CURRENT_SCHEMA_VERSION (written by a newer app version?)"
+                )
+            }
             // distro / method default to the historical-only values
             // ("arch" / "chroot") so any pre-distro-field record loads
             // without a hard error. arch has no sensible default; if
@@ -211,7 +245,7 @@ data class Installation(
                 state = obj.optString("state", State.READY.name)
                     .let { runCatching { State.valueOf(it) }.getOrDefault(State.READY) },
                 failure = if (obj.has("failure") && !obj.isNull("failure")) obj.getString("failure") else null,
-                schemaVersion = obj.optInt("schemaVersion", 1),
+                schemaVersion = schemaVersion,
                 installedAtAppVersionCode = obj.optLong("installedAtAppVersionCode", 0L),
                 label = if (obj.has("label") && !obj.isNull("label")) obj.getString("label") else null,
                 tawcStamp = if (obj.has("tawcStamp") && !obj.isNull("tawcStamp"))
@@ -236,10 +270,15 @@ data class Installation(
         private fun parseTawcInstalls(arr: JSONArray): List<TawcInstall> = buildList {
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
+                // Unknown type (record written by a newer app): skip the
+                // entry rather than fail the whole record. Worst case one
+                // stale file is left behind on the next stamp refresh.
+                val type = runCatching { TawcInstall.Type.valueOf(o.getString("type")) }
+                    .getOrNull() ?: continue
                 add(TawcInstall(
                     src = o.getString("src"),
                     dest = o.getString("dest"),
-                    type = TawcInstall.Type.valueOf(o.getString("type")),
+                    type = type,
                 ))
             }
         }

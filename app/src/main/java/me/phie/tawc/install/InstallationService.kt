@@ -271,7 +271,8 @@ class InstallationService : Service() {
             Installation.State.READY,
             Installation.State.INSTALLING,
             Installation.State.UNINSTALLING,
-            Installation.State.FAILED -> {
+            Installation.State.FAILED,
+            Installation.State.CORRUPT -> {
                 rejectInstall(id, getString(R.string.install_reject_id_state, stateLabel(s)))
                 return
             }
@@ -823,6 +824,7 @@ class InstallationService : Service() {
             Installation.State.INSTALLING -> getString(R.string.install_state_installing)
             Installation.State.UNINSTALLING -> getString(R.string.install_state_uninstalling)
             Installation.State.FAILED -> getString(R.string.install_state_failed)
+            Installation.State.CORRUPT -> getString(R.string.install_state_corrupt)
         }
 
     private fun publishProgress(p: InstallProgress) {

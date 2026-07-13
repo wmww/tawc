@@ -185,7 +185,7 @@ class MainActivity : AppCompatActivity() {
         // Bottom row: Terminal icon button + search-apps stub. The stub
         // looks like a search field but never holds focus — tapping it
         // forwards into LauncherActivity, which is the real search UI.
-        // Hidden on FAILED (no usable launcher) and disabled while
+        // Hidden on FAILED/CORRUPT (no usable launcher) and disabled while
         // installing/uninstalling so it returns once ready.
         val topMargin = (8 * resources.displayMetrics.density).toInt()
         // BOTTOM, not CENTER_VERTICAL: the search box's underline sits
@@ -244,7 +244,8 @@ class MainActivity : AppCompatActivity() {
             )
         }
         bottomRow.addView(searchBox, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        val rowVisible = inst.state != Installation.State.FAILED
+        val rowVisible = inst.state != Installation.State.FAILED &&
+            inst.state != Installation.State.CORRUPT
         bottomRow.visibility = if (rowVisible) View.VISIBLE else View.GONE
         column.addView(
             bottomRow,
@@ -267,6 +268,7 @@ class MainActivity : AppCompatActivity() {
             Installation.State.INSTALLING -> getString(R.string.install_state_installing)
             Installation.State.UNINSTALLING -> getString(R.string.install_state_uninstalling)
             Installation.State.FAILED -> getString(R.string.install_state_failed)
+            Installation.State.CORRUPT -> getString(R.string.install_state_corrupt)
         }
 
     private companion object {

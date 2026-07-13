@@ -98,6 +98,20 @@ Transition table — rows are current state, cells say what each request does:
 | READY          | refused      | → UNINSTALLING | —           | —        |
 | UNINSTALLING   | refused      | restart op     | → (no dir)  | → FAILED |
 | FAILED         | refused      | → UNINSTALLING | —           | —        |
+| CORRUPT        | refused      | → UNINSTALLING | —           | —        |
+
+CORRUPT is a pseudo-state, never written to disk: when
+`metadata.json` exists but won't parse (corrupt file, or a
+`schemaVersion` from a newer app — see "Schema versioning"),
+`InstallationStore.list()`/`load()` return a synthetic marker record
+(`Installation.corruptMarker`, id from the directory name, `failure`
+= the parse error) instead of dropping the slot. The UI renders it
+like FAILED (visible card, size probe, Delete; no run/launcher), and
+the store refuses to write through it — `update()` no-ops and
+`save()` throws on a CORRUPT record — so the unparseable file stays
+byte-identical for manual recovery until the user uninstalls.
+`TawcInstaller.installInto` also skips CORRUPT slots (the manifest of
+previously-installed entries is unknowable).
 
 Two consequences shape every other piece of the system:
 
@@ -1027,7 +1041,14 @@ reference them, so treat moves as user-visible changes.
 forward-incompatible changes have a hook to dispatch on. The reader
 ([Installation.fromJson]) defaults missing `schemaVersion` to `1`
 and missing `installedAtAppVersionCode` to `0`, so pre-versioning
-records keep loading.
+records keep loading. A `schemaVersion` *newer* than
+`CURRENT_SCHEMA_VERSION` is refused outright (the slot surfaces as
+CORRUPT — see "State machine") rather than mis-parsed; that check in
+`fromJson` is the dispatch site to grow a `when` at on bump. Unknown
+enum values in v1 records are tolerated per-field instead: an
+unrecognized `state` falls back to READY, an unrecognized
+`tawcInstalls[].type` skips just that entry (worst case one stale
+file after the next stamp refresh).
 
 Bump `CURRENT_SCHEMA_VERSION` only when the new field can't safely
 default — e.g. removing a field, renaming one whose old name is

@@ -85,8 +85,7 @@ class DistroInfoActivity : AppCompatActivity() {
             return
         }
         renderContent(installation)
-        if (installation.state == Installation.State.READY ||
-            installation.state == Installation.State.FAILED) {
+        if (canProbeSize(installation)) {
             startSizeProbe()
         }
     }
@@ -134,7 +133,11 @@ class DistroInfoActivity : AppCompatActivity() {
         content.addView(
             infoRow(
                 getString(R.string.distro_info_row_installed),
-                DateFormat.getDateTimeInstance().format(Date(installation.installedAtMillis)),
+                // 0 means "never recorded" (legacy record or corrupt-
+                // metadata marker), not Jan 1 1970.
+                if (installation.installedAtMillis > 0) {
+                    DateFormat.getDateTimeInstance().format(Date(installation.installedAtMillis))
+                } else getString(R.string.distro_info_unknown),
             ),
             rowLp(pad),
         )
@@ -164,16 +167,8 @@ class DistroInfoActivity : AppCompatActivity() {
                 rowLp(pad),
             )
         }
-        // READY and FAILED slots both have stable on-disk content
-        // worth measuring — FAILED in particular is exactly when the
-        // user wants to know how much space the half-installed
-        // rootfs is sitting on. INSTALLING / UNINSTALLING are skipped
-        // because `du -sk` would fight the installer for IO and the
-        // number changes faster than we can render it.
-        val canProbeSize = installation.state == Installation.State.READY ||
-            installation.state == Installation.State.FAILED
         sizeValue = TextView(this).apply {
-            text = if (canProbeSize) {
+            text = if (canProbeSize(installation)) {
                 getString(R.string.distro_info_computing)
             } else {
                 getString(R.string.distro_info_size_unavailable)
@@ -415,7 +410,21 @@ class DistroInfoActivity : AppCompatActivity() {
             Installation.State.INSTALLING -> getString(R.string.install_state_installing)
             Installation.State.UNINSTALLING -> getString(R.string.install_state_uninstalling)
             Installation.State.FAILED -> getString(R.string.install_state_failed)
+            Installation.State.CORRUPT -> getString(R.string.install_state_corrupt)
         }
+
+    /**
+     * READY, FAILED, and CORRUPT slots all have stable on-disk content
+     * worth measuring — the broken states in particular are exactly
+     * when the user wants to know how much space the slot is sitting
+     * on. INSTALLING / UNINSTALLING are skipped because `du -sk` would
+     * fight the installer for IO and the number changes faster than we
+     * can render it.
+     */
+    private fun canProbeSize(installation: Installation): Boolean =
+        installation.state == Installation.State.READY ||
+            installation.state == Installation.State.FAILED ||
+            installation.state == Installation.State.CORRUPT
 
     private fun infoRow(label: String, value: String): LinearLayout =
         infoRowWithValue(label, TextView(this).apply {

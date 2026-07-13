@@ -1,6 +1,7 @@
 package me.phie.tawc.install
 
 import android.content.Context
+import android.util.Log
 import me.phie.tawc.AppPaths
 import java.io.File
 import java.io.IOException
@@ -72,7 +73,13 @@ class InstallationStore(context: Context) {
         return andoDir(id).apply { mkdirs() }.absolutePath
     }
 
-    /** Discover installations on disk by scanning [baseDir]. */
+    /**
+     * Discover installations on disk by scanning [baseDir]. A slot
+     * whose metadata exists but won't parse comes back as a
+     * [Installation.State.CORRUPT] marker instead of being dropped —
+     * the user must still see it (and be able to uninstall it) rather
+     * than have a multi-GB rootfs silently orphaned.
+     */
     fun list(): List<Installation> {
         val dir = baseDir
         if (!dir.exists()) return emptyList()
@@ -80,7 +87,7 @@ class InstallationStore(context: Context) {
             ?.mapNotNull { d ->
                 val meta = File(d, "metadata.json")
                 if (!meta.exists()) return@mapNotNull null
-                runCatching { Installation.fromJson(meta.readText()) }.getOrNull()
+                parseOrCorrupt(d.name, meta)
             }
             ?.sortedBy { it.id }
             ?: emptyList()
@@ -89,8 +96,14 @@ class InstallationStore(context: Context) {
     fun load(id: String): Installation? {
         val f = metadataFile(id)
         if (!f.exists()) return null
-        return runCatching { Installation.fromJson(f.readText()) }.getOrNull()
+        return parseOrCorrupt(id, f)
     }
+
+    private fun parseOrCorrupt(id: String, meta: File): Installation =
+        runCatching { Installation.fromJson(meta.readText()) }.getOrElse { e ->
+            Log.w(TAG, "unparseable metadata for '$id' ($meta)", e)
+            Installation.corruptMarker(id, e.message)
+        }
 
     /**
      * Persist [installation], creating its slot if absent. The write is
@@ -108,6 +121,12 @@ class InstallationStore(context: Context) {
      * ([update] calls this while holding it), so nesting is safe.
      */
     fun save(installation: Installation) {
+        // CORRUPT is an in-memory marker for a file we could NOT parse;
+        // persisting it would overwrite the user's real (possibly hand-
+        // recoverable) metadata with placeholder fields.
+        require(installation.state != Installation.State.CORRUPT) {
+            "refusing to persist CORRUPT marker for '${installation.id}'"
+        }
         synchronized(lockFor(installation.id)) {
             installationDir(installation.id).mkdirs()
             val finalFile = metadataFile(installation.id)
@@ -142,6 +161,10 @@ class InstallationStore(context: Context) {
     fun update(id: String, mutate: (Installation) -> Installation?): Installation? {
         synchronized(lockFor(id)) {
             val current = load(id) ?: return null
+            // A CORRUPT marker means load() couldn't parse the file;
+            // there is nothing meaningful to mutate and saving would
+            // clobber the original bytes. Leave the file untouched.
+            if (current.state == Installation.State.CORRUPT) return null
             val next = mutate(current) ?: return null
             save(next)
             return next
@@ -221,6 +244,8 @@ class InstallationStore(context: Context) {
     }
 
     companion object {
+        private const val TAG = "tawc"
+
         // Per-id write locks. InstallationStore is constructed ad-hoc
         // wherever metadata is touched, so the locks must be process-
         // global (here) rather than instance state, or two `new
