@@ -3,6 +3,7 @@ package me.phie.tawc.install
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
@@ -11,6 +12,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -22,8 +24,10 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import me.phie.tawc.R
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.primaryButton
+import me.phie.tawc.ui.tawcButtonSizePx
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.tonalButton
+import me.phie.tawc.ui.tonalIconButton
 import me.phie.tawc.ui.verticalLp
 import org.json.JSONArray
 
@@ -83,14 +87,6 @@ class ManageBindsActivity : AppCompatActivity() {
             TextView(this).apply {
                 text = getString(R.string.manage_binds_intro)
                 textSize = 14f
-            },
-            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2),
-        )
-        scaffold.content.addView(
-            TextView(this).apply {
-                text = getString(R.string.manage_binds_warning)
-                textSize = 14f
-                setTextColor(getColor(R.color.tawc_warning))
             },
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
@@ -220,14 +216,85 @@ class ManageBindsActivity : AppCompatActivity() {
             listColumn.addView(bindCard(bind, index, pad), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
         }
         // Unbound common dirs (matched by guest path) trail the active
-        // list as one-tap suggestions. Host dirs that verifiably don't
-        // exist are left out; without the grant they can't be stat'd,
-        // so all suggestions show.
-        for (common in AllFilesAccess.commonDirBinds()) {
-            if (binds.any { it.guestPath == common.guestPath }) continue
-            if (AllFilesAccess.hostDirVerifiablyMissing(common.hostPath)) continue
+        // list under a "Suggested binds" header as one-tap suggestions.
+        // Host dirs that verifiably don't exist are left out; without
+        // the grant they can't be stat'd, so all suggestions show.
+        val suggestions = AllFilesAccess.commonDirBinds().filter { common ->
+            binds.none { it.guestPath == common.guestPath } &&
+                !AllFilesAccess.hostDirVerifiablyMissing(common.hostPath)
+        }
+        if (suggestions.isNotEmpty()) {
+            listColumn.addView(
+                TextView(this).apply {
+                    text = getString(R.string.manage_binds_suggested)
+                    textSize = 14f
+                    setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
+                },
+                verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2).also { it.topMargin = pad / 2 },
+            )
+        }
+        for (common in suggestions) {
             listColumn.addView(suggestionCard(common, pad), verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
         }
+    }
+
+    /** Monospace path text with a small OS logo (Android host / Linux
+     * guest) on its left. */
+    private fun pathRow(
+        iconRes: Int,
+        path: String,
+        sizeSp: Float,
+        dim: Boolean,
+        selectable: Boolean,
+    ): LinearLayout {
+        val density = resources.displayMetrics.density
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(
+            ImageView(this).apply {
+                setImageResource(iconRes)
+                imageTintList = ColorStateList.valueOf(
+                    MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant)
+                )
+            },
+            LinearLayout.LayoutParams((16 * density).toInt(), (16 * density).toInt()).apply {
+                marginEnd = (8 * density).toInt()
+            },
+        )
+        row.addView(
+            TextView(this).apply {
+                text = path
+                textSize = sizeSp
+                typeface = Typeface.MONOSPACE
+                if (dim) {
+                    setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
+                }
+                setTextIsSelectable(selectable)
+            },
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
+        )
+        return row
+    }
+
+    private fun readOnlyLabel(): TextView = TextView(this).apply {
+        text = getString(R.string.manage_binds_read_only)
+        textSize = 12f
+        val color = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant)
+        setTextColor(color)
+        // Lock occupies the same 16dp icon slot as the pathRow logos so
+        // the icon column and text column both line up.
+        val density = resources.displayMetrics.density
+        val lock = androidx.appcompat.content.res.AppCompatResources
+            .getDrawable(context, R.drawable.ic_lock)?.mutate()?.apply {
+                val size = (16 * density).toInt()
+                setBounds(0, 0, size, size)
+                setTint(color)
+            }
+        setCompoundDrawablesRelative(lock, null, null, null)
+        compoundDrawablePadding = (8 * density).toInt()
+        gravity = Gravity.CENTER_VERTICAL
     }
 
     private fun bindCard(bind: ExternalBind, index: Int, pad: Int): android.view.View {
@@ -236,47 +303,34 @@ class ManageBindsActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(pad, pad / 2, pad, pad / 2)
         }
-        // Guest (Linux) path over a down arrow over the Android path
-        // it's linked to.
+        // Guest (Linux) path over the Android path it's linked to,
+        // each tagged with its OS logo.
         val paths = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        paths.addView(TextView(this).apply {
-            text = bind.guestPath
-            textSize = 16f
-            typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
-        })
-        paths.addView(TextView(this).apply {
-            text = "↓"
-            textSize = 14f
-            typeface = Typeface.MONOSPACE
-            setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
-        })
-        paths.addView(TextView(this).apply {
-            text = bind.hostPath
-            textSize = 14f
-            typeface = Typeface.MONOSPACE
-            setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
-            setTextIsSelectable(true)
-        })
-        if (bind.readOnly) {
-            paths.addView(TextView(this).apply {
-                text = getString(R.string.manage_binds_read_only)
-                textSize = 12f
-                setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
-            })
-        }
-        row.addView(paths, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        buttons.addView(
-            tonalButton(getString(R.string.action_edit)) { showEditDialog(index) },
+        paths.addView(
+            pathRow(R.drawable.ic_linux_logo, bind.guestPath, 16f, dim = false, selectable = true),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 4),
         )
+        paths.addView(
+            pathRow(R.drawable.ic_android_logo, bind.hostPath, 14f, dim = true, selectable = true),
+        )
+        if (bind.readOnly) {
+            paths.addView(readOnlyLabel())
+        }
+        row.addView(paths, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val btnSize = tawcButtonSizePx()
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(
-            tonalButton(getString(R.string.action_remove)) {
+            tonalIconButton(R.drawable.ic_settings_gear, getString(R.string.action_edit)) {
+                showEditDialog(index)
+            },
+            LinearLayout.LayoutParams(btnSize, btnSize).apply { marginEnd = pad / 4 },
+        )
+        buttons.addView(
+            tonalIconButton(R.drawable.ic_delete, getString(R.string.action_remove)) {
                 binds.removeAt(index)
                 commit()
             },
-            verticalLp(MATCH_PARENT, WRAP_CONTENT),
+            LinearLayout.LayoutParams(btnSize, btnSize),
         )
         row.addView(
             buttons,
@@ -294,6 +348,8 @@ class ManageBindsActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(pad, pad / 2, pad, pad / 2)
         }
+        // No OS logo here: suggestions show only the guest path, and the
+        // bare text keeps them visually distinct from active binds.
         val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         labels.addView(TextView(this).apply {
             text = bind.guestPath
@@ -302,24 +358,25 @@ class ManageBindsActivity : AppCompatActivity() {
             setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
         })
         if (bind.readOnly) {
-            labels.addView(TextView(this).apply {
-                text = getString(R.string.manage_binds_read_only)
-                textSize = 12f
-                setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
-            })
+            labels.addView(readOnlyLabel())
         }
         row.addView(labels, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val btnSize = tawcButtonSizePx()
         row.addView(
-            primaryButton(getString(R.string.action_add)) {
+            tonalIconButton(
+                R.drawable.ic_add,
+                getString(R.string.action_add),
+                backgroundColor = R.color.tawc_accent,
+            ) {
                 val problem = validate(bind, null)
                 if (problem != null) {
                     Toast.makeText(this, problem, Toast.LENGTH_LONG).show()
-                    return@primaryButton
+                    return@tonalIconButton
                 }
                 binds.add(bind)
                 commit()
             },
-            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = pad / 2 },
+            LinearLayout.LayoutParams(btnSize, btnSize).apply { marginStart = pad / 2 },
         )
         return tawcCard().apply { addView(row) }
     }
