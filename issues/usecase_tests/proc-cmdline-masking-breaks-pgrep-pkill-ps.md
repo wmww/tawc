@@ -47,6 +47,14 @@ cli-ssh-server.md, anything using pkill/pgrep/killall/ps/top) can't
 find its processes by name. cli-background-daemon.md step 2 ("`ps aux`
 shows the loop") will fail as written.
 
+Confirmed by the `cli-background-daemon.md` usecase test on the same
+physical OnePlus, 2026-07-13: `pgrep -f uc-daemon` returned no match
+(exit 1) for a live `nohup` loop, and `ps aux` printed
+"Unable to get system boot time" plus a masked `COMMAND` column. That
+test's daemon-lifecycle steps were exercised by tracking the loop's
+`$!` pid directly (pidfile / `/proc/<pid>`), which works. No new
+failure modes beyond this issue.
+
 ## Repro
 
 ```
