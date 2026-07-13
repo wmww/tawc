@@ -54,3 +54,25 @@ reporting rules.
 
 Quit the game, `pacman -Rns chocolate-doom freedoom`, delete
 screenshots on device and host.
+
+## Run result (2026-07-13, physical 50f4ca18, Arch tawcroot) — FAIL
+
+Blocked by the adjacent SDL issue; details appended to
+`issues/supertuxkart-sdl-no-displays.md`.
+
+Package availability: chocolate-doom, freedoom, prboom-plus, gzdoom and
+crispy-doom are **all absent from the Arch Linux ARM repos** (`pacman -Ssq`
+finds only `doomretro`). The plan's chocolate/prboom substitutes do not
+exist here. Substituted `doomretro` (SDL2 engine) + a freedoom1.wad v0.13.0
+fetched via the cache proxy to still exercise the SDL → Wayland → libhybris
+path. (A real user following this usecase on Arch ARM would hit the missing-
+package wall immediately — a doom-specific packaging gap, not a tawc bug.)
+
+Outcome: doomretro fails SDL video init 100% of the time (`SDL_GetNumVideoDisplays
+... "Video subsystem has not been initialized"`), under both
+`SDL_VIDEODRIVER=wayland` and `x11`. Only SDL's standalone error message box
+renders (Xwayland/SHM, magenta as expected); the game never launches, so no
+frame ever rendered, input/stability/clean-exit steps were not reached, and
+the `-nosound`/audio question could not be evaluated. WAYLAND_DEBUG shows the
+compositor advertises a complete wl_output that SDL binds and then discards.
+Full repro + diagnostics in the issue above. Not added to Completed.
