@@ -9,6 +9,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -257,6 +258,13 @@ class ManageBindsActivity : AppCompatActivity() {
             setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
             setTextIsSelectable(true)
         })
+        if (bind.readOnly) {
+            paths.addView(TextView(this).apply {
+                text = getString(R.string.manage_binds_read_only)
+                textSize = 12f
+                setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
+            })
+        }
         row.addView(paths, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         buttons.addView(
@@ -278,22 +286,29 @@ class ManageBindsActivity : AppCompatActivity() {
     }
 
     /** One-tap suggestion for an unbound common dir: guest path plus
-     * an accent Add button. */
+     * an accent Add button. Adding carries the suggestion's default
+     * read-only-ness (flagged on the card). */
     private fun suggestionCard(bind: ExternalBind, pad: Int): android.view.View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(pad, pad / 2, pad, pad / 2)
         }
-        row.addView(
-            TextView(this).apply {
-                text = bind.guestPath
-                textSize = 16f
-                typeface = Typeface.MONOSPACE
+        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        labels.addView(TextView(this).apply {
+            text = bind.guestPath
+            textSize = 16f
+            typeface = Typeface.MONOSPACE
+            setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
+        })
+        if (bind.readOnly) {
+            labels.addView(TextView(this).apply {
+                text = getString(R.string.manage_binds_read_only)
+                textSize = 12f
                 setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant))
-            },
-            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
-        )
+            })
+        }
+        row.addView(labels, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         row.addView(
             primaryButton(getString(R.string.action_add)) {
                 val problem = validate(bind, null)
@@ -351,6 +366,11 @@ class ManageBindsActivity : AppCompatActivity() {
             },
             verticalLp(WRAP_CONTENT, WRAP_CONTENT),
         )
+        val readOnlyBox = CheckBox(this).apply {
+            text = getString(R.string.manage_binds_read_only)
+            isChecked = existing?.readOnly ?: false
+        }
+        column.addView(readOnlyBox, verticalLp(WRAP_CONTENT, WRAP_CONTENT))
 
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(getString(
@@ -371,6 +391,7 @@ class ManageBindsActivity : AppCompatActivity() {
                 guestPath = expandGuestHome(guestField.text.toString().trim()).let {
                     if (it.length > 1) it.trimEnd('/') else it
                 },
+                readOnly = readOnlyBox.isChecked,
             )
             val problem = validate(candidate, editIndex)
             if (problem != null) {

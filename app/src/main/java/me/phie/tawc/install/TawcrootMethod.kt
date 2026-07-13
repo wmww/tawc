@@ -386,7 +386,9 @@ class TawcrootMethod(context: Context) : InstallationMethod {
             // dir, or that reaches any ando socket.
             andoHostDir?.let { add(BindSpec(it, GUEST_ANDO_DIR)) }
             add(BindSpec("$tawcShare/xtmp/.X11-unix", "/tmp/.X11-unix"))
-            for (bind in externalBinds) add(BindSpec(bind.hostPath, bind.guestPath))
+            for (bind in externalBinds) {
+                add(BindSpec(bind.hostPath, bind.guestPath, ro = bind.readOnly))
+            }
         }
     }
 }

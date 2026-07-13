@@ -31,12 +31,31 @@ class InstallationExternalBindsTest {
     @Test
     fun bindsRoundTripThroughJson() {
         val binds = listOf(
-            ExternalBind("/", "/android"),
+            ExternalBind("/", "/android", readOnly = true),
             ExternalBind("/storage/emulated/0", "/home/android"),
         )
         val inst = Installation.fromJson(minimalRecord()).copy(externalBinds = binds)
         val reparsed = Installation.fromJson(inst.toJson())
         assertEquals(binds, reparsed.externalBinds)
+    }
+
+    @Test
+    fun readOnlyParsesAndDefaultsFalse() {
+        val parsed = ExternalBind.fromJsonArray(JSONArray("""
+            [
+              {"hostPath": "/", "guestPath": "/android", "readOnly": true},
+              {"hostPath": "/a", "guestPath": "/b", "readOnly": false},
+              {"hostPath": "/c", "guestPath": "/d"}
+            ]
+        """.trimIndent()))
+        assertEquals(
+            listOf(
+                ExternalBind("/", "/android", readOnly = true),
+                ExternalBind("/a", "/b", readOnly = false),
+                ExternalBind("/c", "/d", readOnly = false),
+            ),
+            parsed,
+        )
     }
 
     @Test
@@ -106,9 +125,11 @@ class InstallationExternalBindsTest {
         // under the cap.
         assertEquals(common.size, common.map { it.guestPath }.toSet().size)
         assertTrue(common.size <= ExternalBind.MAX_BINDS)
-        // Android root and home.
-        assertTrue(common.any { it.hostPath == "/" && it.guestPath == "/android" })
+        // Android root and home. Only the browse-only root suggestion
+        // is read-only; the storage binds exist to be saved into.
+        assertTrue(common.any { it.hostPath == "/" && it.guestPath == "/android" && it.readOnly })
         assertTrue(common.any { it.hostPath == "/storage/emulated/0" && it.guestPath == "/home/android" })
+        assertTrue(common.filter { it.hostPath != "/" }.none { it.readOnly })
         // The two platform-specific renames in the XDG mapping.
         assertTrue(common.any { it.hostPath.endsWith("/Movies") && it.guestPath == "/root/Videos" })
         assertTrue(common.any { it.hostPath.endsWith("/Download") && it.guestPath == "/root/Downloads" })

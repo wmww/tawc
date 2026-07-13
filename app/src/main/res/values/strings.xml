@@ -60,7 +60,7 @@
     <string name="install_binds_grant_anyway">Install anyway</string>
 
     <string name="manage_binds_intro">Each bind makes an Android directory visible inside the distro at the guest path. Bound files survive uninstall.</string>
-    <string name="manage_binds_warning">Warning: binds allow Linux programs to modify or delete shared data</string>
+    <string name="manage_binds_warning">Warning: writable binds allow Linux programs to modify or delete shared data. Read-only binds block writes.</string>
     <string name="manage_binds_empty">No storage binds configured.</string>
     <string name="manage_binds_grant_banner">All files access is not granted. Binds to shared storage will refuse to launch until it is.</string>
     <string name="manage_binds_grant_button">Grant</string>
@@ -70,6 +70,7 @@
     <string name="manage_binds_guest_label">Guest path (inside the distro; ~ = /root)</string>
     <string name="manage_binds_host_label">Host directory (Android)</string>
     <string name="manage_binds_browse">Browse&#8230;</string>
+    <string name="manage_binds_read_only">Read-only</string>
     <string name="manage_binds_host_missing">Host directory \'%1$s\' does not exist</string>
     <string name="manage_binds_duplicate_guest">A bind for guest path \'%1$s\' already exists</string>
     <string name="manage_binds_too_many">At most %1$d external binds are supported</string>

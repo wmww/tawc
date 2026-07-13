@@ -13,13 +13,6 @@ import org.json.JSONObject
  * Consumed by [TawcrootMethod.bindSpecs] only; the chroot/proot debug
  * methods ignore the list (chroot uses real kernel mounts whose
  * uninstall interaction hasn't been reviewed).
- *
- * No `readOnly` flag yet, but the whole emit path exists: tawcroot
- * accepts `-b src:dst:ro` (notes/tawcroot/path-translation.md
- * §"Read-only binds") and [TawcrootMethod.bindSpecs] already builds
- * RO-capable [TawcrootMethod.BindSpec]s (the system-partition binds
- * use it). Add the flag here + the Manage-binds UI toggle when a
- * workload wants it — plans/tawcroot-user-ro-binds.md.
  */
 data class ExternalBind(
     /** Absolute host directory, e.g. `/storage/emulated/0`. Picked by
@@ -28,6 +21,14 @@ data class ExternalBind(
     /** Absolute in-rootfs path the host dir appears at. Pre-created
      * before each spawn. */
     val guestPath: String,
+    /** Guest writes/deletes into the bind fail with `EROFS` when true
+     * (tawcroot `-b src:dst:ro`, notes/tawcroot/path-translation.md
+     * §"Read-only binds"). Default false keeps legacy records and the
+     * canonical save-into-shared-storage use writable. The `:ro`
+     * suffix is appended only at argv-emit time in
+     * [TawcrootMethod.bindSpecs] — never stored in the paths, whose
+     * `:` rejection in [validationError] is load-bearing. */
+    val readOnly: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         // "kind" reserves room for non-path bind sources later;
@@ -35,6 +36,7 @@ data class ExternalBind(
         put("kind", KIND_PATH)
         put("hostPath", hostPath)
         put("guestPath", guestPath)
+        put("readOnly", readOnly)
     }
 
     /**
@@ -86,6 +88,7 @@ data class ExternalBind(
                 add(ExternalBind(
                     hostPath = o.getString("hostPath"),
                     guestPath = o.getString("guestPath"),
+                    readOnly = o.optBoolean("readOnly", false),
                 ))
             }
         }

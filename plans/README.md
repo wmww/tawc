@@ -8,5 +8,4 @@ design, build, and operational notes in [`../notes/`](../notes/).
 - [gl-on-gles-translator.md](gl-on-gles-translator.md) - possible in-house GL 3.3-core-on-ES 3.2 translator (glslang/SPIRV-Cross shader pipeline) for the modern-GL gap zink can't cover on Vulkan 1.1 devices.
 - [tawcroot-default-binds-ro.md](tawcroot-default-binds-ro.md) - make tawcroot's built-in binds read-only where the guest never writes (system partitions; app-asset copy→bind revert).
 - [tawcroot-landlock.md](tawcroot-landlock.md) - kernel-enforced path containment for tawcroot via Landlock (probe-and-enable, kernel 5.13+).
-- [tawcroot-user-ro-binds.md](tawcroot-user-ro-binds.md) - user-facing read-only flag + UX for external binds (`-b src:dst:ro`).
 - [tawcroot-prod-env-tests.md](tawcroot-prod-env-tests.md) - device tests running production tawcroot in the real app sandbox (broker-spawned, guest-program-based).

@@ -101,13 +101,19 @@ object AllFilesAccess {
      * own; XDG dirs with no Android equivalent (Desktop, Templates,
      * Public) are omitted. Nothing is bound by default.
      *
+     * The root suggestion is browse-only (read-only): writes into the
+     * Android root are nonsensical and mostly uid-denied anyway. The
+     * shared-storage binds stay writable — they exist so Linux apps
+     * can save into Android storage. The user can flip either in the
+     * manage-binds UI.
+     *
      * [sharedStorage] is injectable for unit tests, where
      * [Environment.getExternalStorageDirectory] is unavailable.
      */
     fun commonDirBinds(
         sharedStorage: String = Environment.getExternalStorageDirectory().absolutePath,
     ): List<ExternalBind> = buildList {
-        add(ExternalBind(hostPath = "/", guestPath = "/android"))
+        add(ExternalBind(hostPath = "/", guestPath = "/android", readOnly = true))
         add(ExternalBind(hostPath = sharedStorage, guestPath = "/home/android"))
         for ((androidDir, guestName) in listOf(
             // Literal Environment.DIRECTORY_* values (non-final

@@ -42,15 +42,22 @@ broker-backed VFS with poor POSIX fidelity.
 ## Data model
 
 `Installation.externalBinds` — a list of `ExternalBind(hostPath,
-guestPath)` persisted in `metadata.json` (absent on legacy records =
-empty). Entries carry `"kind": "path"`; unknown kinds are skipped on
-parse so future bind sources stay forward-compatible (ditto unknown
-keys, e.g. the retired `label`). There
-is intentionally no `writable` flag yet — tawcroot now supports
-read-only binds (`-b src:dst:ro`, notes/tawcroot/path-translation.md
-§"Read-only binds"); add the flag plus the Manage-binds UI toggle
-when a workload wants it, and have `TawcrootMethod.bindSpecs` emit
-the `:ro` suffix.
+guestPath, readOnly)` persisted in `metadata.json` (absent on legacy
+records = empty). Entries carry `"kind": "path"`; unknown kinds are
+skipped on parse so future bind sources stay forward-compatible (ditto
+unknown keys, e.g. the retired `label`).
+
+`readOnly` (JSON `"readOnly"`, absent = false so legacy records stay
+writable) makes guest writes/deletes into the bind fail with `EROFS`
+via tawcroot's `-b src:dst:ro` (notes/tawcroot/path-translation.md
+§"Read-only binds"). The `:ro` suffix is appended only at argv-emit
+time in `TawcrootMethod.bindSpecs`, never stored in the paths — the
+validator's `:` rejection stays load-bearing. There is no global
+default: RO-ness is per-bind (the `/ → /android` suggestion defaults
+RO, the save-into-storage binds RW) and user-toggleable. It is the
+first per-bind permission; if Landlock-style flags grow
+(plans/tawcroot-landlock.md), widen to a flags field — parse already
+tolerates new keys.
 
 `ExternalBind.validationError()` is the shared structural validator
 (absolute paths, no `..`, no `:` — a colon would split the `-b src:dst`
@@ -89,16 +96,21 @@ mid-install.
 
 ## UI
 
-- `ManageBindsActivity` — add/edit/remove. `AllFilesAccess.
+- `ManageBindsActivity` — add/edit/remove. Read-only binds show a
+  "Read-only" badge on their card; the flag is edited only via the
+  add/edit dialog's checkbox. `AllFilesAccess.
   commonDirBinds()` is the suggested set: `/android` ⇐ `/` (the Android
-  root; much of it unreadable to the app uid — expected),
-  `/home/android` ⇐ shared storage, and the shared-storage folders with
+  root; much of it unreadable to the app uid — expected; read-only by
+  default, it's browse-only), `/home/android` ⇐ shared storage, and the
+  shared-storage folders with
   a standard name on both sides (Download→`/root/Downloads`, Documents,
-  Pictures, Music, Movies→`/root/Videos`, plus non-XDG DCIM). Unbound
+  Pictures, Music, Movies→`/root/Videos`, plus non-XDG DCIM; all
+  writable by default — they exist to be saved into). Unbound
   common dirs (matched by guest path, skipping host dirs that
   verifiably don't exist) render below the active binds as suggestion
-  cards with a one-tap accent Add. A typed guest path may start with
-  `~`/`~/`; the save handler expands it to `RootfsEnv.GUEST_HOME`
+  cards with a one-tap accent Add that carries the suggestion's
+  default RO-ness (flagged on the card). A typed guest path may start
+  with `~`/`~/`; the save handler expands it to `RootfsEnv.GUEST_HOME`
   (`/root`) so persisted binds stay absolute. Two modes: editing an
   existing install's metadata (from `DistroInfoActivity`, gated to
   READY/FAILED so edits don't race the service's metadata writes;
@@ -114,7 +126,9 @@ mid-install.
 ## Testing
 
 - Unit: `app/src/test/.../InstallationExternalBindsTest.kt` (metadata
-  parse/round-trip/validator), `./gradlew :app:testDebugUnitTest`.
+  parse/round-trip/validator, `readOnly` defaults) and
+  `TawcrootBindSpecsTest.kt` (RO external binds emit `:ro`, writable
+  stay 2-field), `./gradlew :app:testDebugUnitTest`.
 - Integration: **deliberate coverage gap.** There used to be a full
   lifecycle test (`tests/integration/tests/external_binds.rs`, deleted
   2026-07) covering invalid-binds reject, metadata edits taking effect
