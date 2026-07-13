@@ -75,13 +75,14 @@ fn init_native_logging() {
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Debug)
             .with_tag("tawc-native")
-            // smithay's gles backend traces every frame at info level
-            // via tracing → log bridge ("renderer_gles2_frame; …"),
-            // which floods logcat at the framerate. Drop to warn so we
-            // still see real renderer errors.
+            // Dependencies are noisy below warn: smithay's gles backend
+            // traces every frame, smithay::input logs every keystroke /
+            // focus change, and the jni crate logs every thread
+            // attach/detach (one per reverse-JNI call, i.e. per tap).
+            // Default everything to warn and keep only our crate at debug.
             .with_filter(
                 android_logger::FilterBuilder::new()
-                    .parse("debug,smithay::backend::renderer::gles=warn")
+                    .parse("warn,compositor=debug")
                     .build(),
             ),
     );
