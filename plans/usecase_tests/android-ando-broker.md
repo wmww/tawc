@@ -3,6 +3,27 @@
 Read [README.md](README.md) first for shared procedure, cleanup, and
 reporting rules.
 
+## Run 2026-07-13 (physical OnePlus, Android 14): PARTIAL FAIL
+
+- Steps 1–3, 6, 7 passed exactly as written: clean fail-closed refusal
+  (exit 127 with enable instructions), broker enable/disable took
+  effect, `getprop` printed `14`, pipes/`head`/`wc` behaved like normal
+  pipes, refusal returned after disable.
+- Step 4's literal command `ando -s 'id; echo $USER'` fails by design:
+  `-s` uses the documented sudo-style join (notes/ando.md), same as
+  real sudo. Plan bug. Intent verified instead with `ando -s id` /
+  `ando /system/bin/sh -c 'id; echo $USER'` → real app uid 10250,
+  `untrusted_app`, vs fake root inside the rootfs; exit codes propagate
+  (`sh -c "exit 42"` → 42).
+- **Step 5 FAILED**: `ando am start …` (and the Settings substitute)
+  exits 255 silently — Android restricts `cmd activity` to root/shell;
+  identical failure as app uid outside ando via the debug broker, so
+  not an ando bug. `ando -r am start …` (rooted phone) worked and
+  Firefox came foreground with example.com (screenshot-verified).
+- Issue: [issues/usecase_tests/ando-am-start-app-uid-blocked.md](../../issues/usecase_tests/ando-am-start-app-uid-blocked.md).
+- Cleanup done: ando disabled, screenshots deleted (device + host),
+  device returned to home screen, nothing installed or left behind.
+
 **Target:** emulator or physical.
 **Usecase:** a Linux-side user scripts against Android: query properties, launch apps/URLs, glue the two worlds.
 
