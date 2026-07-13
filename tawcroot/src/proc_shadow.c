@@ -102,13 +102,9 @@ static int is_my_tid(long n)
  * Strict on the prefix bytes: paths like "/proc/foo/../self/exe" are
  * caught only after the guest's libc canonicalizes them (the typical
  * flow). */
-static const char *strip_proc_pid_prefix(const char *path, long *tid_out)
+static const char *strip_pid_prefix_rel(const char *t, long *tid_out)
 {
 	*tid_out = -1;
-	if (path[0] != '/' || path[1] != 'p' || path[2] != 'r' ||
-	    path[3] != 'o' || path[4] != 'c' || path[5] != '/')
-		return 0;
-	const char *t = path + 6;
 	const char *after_pid;
 	if (t[0] == 's' && t[1] == 'e' && t[2] == 'l' && t[3] == 'f' &&
 	    t[4] == '/') {
@@ -153,6 +149,52 @@ static const char *strip_proc_pid_prefix(const char *path, long *tid_out)
 		return p + 1;
 	}
 	return after_pid;
+}
+
+static const char *strip_proc_pid_prefix(const char *path, long *tid_out)
+{
+	*tid_out = -1;
+	if (path[0] != '/' || path[1] != 'p' || path[2] != 'r' ||
+	    path[3] != 'o' || path[4] != 'c' || path[5] != '/')
+		return 0;
+	return strip_pid_prefix_rel(path + 6, tid_out);
+}
+
+/* Byte length of the dir/entry MAGIC LINK prefix in a /proc-relative
+ * suffix (no leading "/proc/") — the shapes where a syscall acts on the
+ * host inode the link names (or resolves through) rather than on a
+ * procfs file:
+ *
+ *   (self|thread-self|<pid>)/(task/<tid>/)?(fd|map_files)/<entry>
+ *   (self|thread-self|<pid>)/(task/<tid>/)?(cwd|root)
+ *
+ * Callers readlink exactly the returned prefix (kernel ground truth,
+ * also right when the path resolves THROUGH the link, e.g.
+ * self/fd/3/sub or self/cwd/name). 0 = no match. Lives here, sharing
+ * strip_pid_prefix_rel, so the grammar can't drift from the shadow
+ * classifiers' (an earlier copy in syscalls_fs.c missed task/<tid>/). */
+size_t tawcroot_proc_magic_link_prefix(const char *suf)
+{
+	long tid;
+	const char *tail = strip_pid_prefix_rel(suf, &tid);
+	if (!tail) return 0;
+	const char *p;
+	if (tawc_starts_with(tail, "fd/")) {
+		p = tail + 3;
+	} else if (tawc_starts_with(tail, "map_files/")) {
+		p = tail + 10;
+	} else if (tail[0] == 'c' && tail[1] == 'w' && tail[2] == 'd' &&
+		   (tail[3] == 0 || tail[3] == '/')) {
+		return (size_t)(tail + 3 - suf);
+	} else if (tail[0] == 'r' && tail[1] == 'o' && tail[2] == 'o' &&
+		   tail[3] == 't' && (tail[4] == 0 || tail[4] == '/')) {
+		return (size_t)(tail + 4 - suf);
+	} else {
+		return 0;
+	}
+	const char *start = p;
+	while (*p && *p != '/') p++;
+	return p == start ? 0 : (size_t)(p - suf);
 }
 
 /* Resolve a strip_proc_pid_prefix tid to "names our process". -1

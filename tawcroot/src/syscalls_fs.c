@@ -147,85 +147,45 @@ static tawcroot_path_mode openat_mode(int flags)
 tawcroot_path_intent tawcroot_openat_intent(int flags)
 {
 	if (flags & O_PATH) return TAWCROOT_PATH_INTENT_READ;
+	if (flags & O_CREAT) return TAWCROOT_PATH_INTENT_CREATE;
 	if ((flags & O_ACCMODE) != O_RDONLY)
 		return TAWCROOT_PATH_INTENT_WRITE;
-	if (flags & (O_TRUNC | O_CREAT))
+	if (flags & O_TRUNC)
 		return TAWCROOT_PATH_INTENT_WRITE;
 	return TAWCROOT_PATH_INTENT_READ;
 }
 
 /* ---- Read-only binds, stage 2: fd-based metadata residue ----------
  *
- * Path-layer enforcement (the central check in path_orchestrate.c)
- * plus the kernel's fd-access-mode backstop covers every data write
- * and namespace mutation. What's left is syscalls that mutate
- * METADATA through an fd legitimately opened read-only through an RO
- * bind (fchmod/fchown/futimens/f*xattr), plus the /proc magic-link
- * write-mode re-open. All are cold; each derives its verdict from
- * kernel ground truth at call time — readlink /proc/self/fd/<n>,
- * longest-prefix-match against the RO bind srcs — no taint table,
- * nothing to propagate, works for inherited and SCM_RIGHTS-passed
- * fds. */
+ * Path-layer enforcement (the central check in path_orchestrate.c,
+ * plus its impure companions in tawcroot_path_translate — the /proc
+ * magic-link check and the missing-target errno fidelity, see path.c)
+ * and the kernel's fd-access-mode backstop cover every write spelled
+ * as an in-view path. What's left is syscalls that mutate METADATA
+ * through an fd legitimately opened read-only through an RO bind
+ * (fchmod/fchown/futimens/f*xattr). All cold; the verdict is kernel
+ * ground truth at call time — readlink /proc/self/fd/<n>, longest-
+ * prefix-match against the RO bind srcs — no taint table, nothing to
+ * propagate, works for inherited and SCM_RIGHTS-passed fds. */
 
-/* Fast gate: any RO surface in the current view at all? Skips the
- * per-call readlink for the (universal today) all-RW configuration. */
-static int view_has_ro(void)
+/* 1 iff `fd`'s kernel-side path lies in an RO part of the view.
+ * `opath_passes`: the callers whose raw syscall EBADFs an O_PATH fd
+ * (fchmod/fchown/f*xattr) pass 1 so the kernel produces that errno
+ * instead of a wrong EROFS; utimensat(fd, NULL) is the one metadata
+ * write that legitimately operates on O_PATH fds and passes 0. */
+static int fd_in_ro_bind(int fd, int opath_passes)
 {
-	if (tawcroot_root_ro) return 1;
-	for (size_t i = 0; i < tawcroot_n_binds; i++)
-		if (tawcroot_binds[i].active && tawcroot_binds[i].read_only)
-			return 1;
-	return 0;
-}
-
-/* 1 iff `fd`'s kernel-side path lies in an RO part of the view. */
-static int fd_in_ro_bind(int fd)
-{
-	if (!view_has_ro()) return 0;
+	if (!tawcroot_view_has_ro()) return 0;
+	if (opath_passes) {
+		long fl = tawc_fcntl(fd, F_GETFL, 0);
+		if (fl >= 0 && (fl & O_PATH)) return 0;
+	}
 	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
 	char *hostp = scratch->buf[0];
 	long n = tawcroot_proc_fd_to_host_path(fd, hostp,
 					       TAWCROOT_PATH_SCRATCH_SIZE);
 	if (n <= 0) return 0;
 	return tawcroot_host_path_in_ro_bind(hostp, (size_t)n);
-}
-
-/* 1 iff `fd` is the src fd of an active bind of host /proc — the one
- * place where a suffix can be a kernel magic link that re-opens an
- * inode with fresh access mode. */
-static int fd_is_proc_bind(int fd)
-{
-	for (size_t i = 0; i < tawcroot_n_binds; i++) {
-		const struct tawcroot_bind *b = &tawcroot_binds[i];
-		if (!b->active || b->src_fd != fd) continue;
-		return b->src_len == 5 && memcmp(b->src, "/proc", 5) == 0;
-	}
-	return 0;
-}
-
-/* Match a /proc-relative suffix of the magic-link shape
- * (self|thread-self|<pid>)/(fd|map_files)/<entry>[/...]. Returns the
- * byte length of the 3-component magic-link prefix (so callers can
- * readlink exactly the link, even when the open resolves THROUGH it),
- * or 0 for no match. */
-static size_t proc_fd_magic_prefix(const char *suf)
-{
-	size_t i = 0;
-	if (tawc_starts_with(suf, "self/")) {
-		i = 5;
-	} else if (tawc_starts_with(suf, "thread-self/")) {
-		i = 12;
-	} else {
-		while (suf[i] >= '0' && suf[i] <= '9') i++;
-		if (i == 0 || suf[i] != '/') return 0;
-		i++;
-	}
-	if (tawc_starts_with(suf + i, "fd/"))              i += 3;
-	else if (tawc_starts_with(suf + i, "map_files/"))  i += 10;
-	else return 0;
-	size_t start = i;
-	while (suf[i] && suf[i] != '/') i++;
-	return i == start ? 0 : i;
 }
 
 /* Probe (dirfd, path)'s leaf for an emulated name and open the OBJECT
@@ -337,11 +297,14 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 	/* O_CREAT-on-existing-file fidelity: POSIX/Linux allow
 	 * open(existing, O_RDONLY|O_CREAT) on an RO fs — the create is a
 	 * no-op when the file exists. The classifier calls any O_CREAT a
-	 * write, so the central check EROFSes it; retry with O_CREAT
-	 * dropped and READ intent when the flags are a write-free accmode
-	 * without O_EXCL/O_TRUNC. A resulting ENOENT (nothing to open —
-	 * the create WOULD have been needed) is rewritten to EROFS below,
-	 * matching the kernel's create-on-RO-fs answer. */
+	 * CREATE (refused like a write), so the central check EROFSes it;
+	 * retry with O_CREAT dropped and READ intent when the flags are a
+	 * write-free accmode without O_EXCL/O_TRUNC. A resulting ENOENT
+	 * (nothing to open — the create WOULD have been needed) is
+	 * rewritten to EROFS below, matching the kernel's create-on-RO-fs
+	 * answer. The same retry also covers a magic-link EROFS from
+	 * ro_check_proc_magic_link: O_RDONLY|O_CREAT on /proc/self/fd/<n>
+	 * legitimately re-opens read-only once O_CREAT is dropped. */
 	int erofs_creat_retry = 0;
 	if (e == TAWC_EROFS && (flags & O_CREAT) && !(flags & O_EXCL) &&
 	    (flags & O_ACCMODE) == O_RDONLY && !(flags & O_TRUNC)) {
@@ -352,32 +315,6 @@ static long handle_openat(const tawcroot_syscall_args *args, ucontext_t *uc)
 		if (e == TAWC_ENOENT) return TAWC_EROFS;
 	}
 	if (e) return e;
-
-	/* Stage 2: /proc/<pid>/fd/<n> (and map_files) write-mode re-open.
-	 * A guest holding an RO-bind file open O_RDONLY can ask for
-	 * open("/proc/self/fd/<n>", O_RDWR); the path routes through the
-	 * /proc bind and the KERNEL re-opens the inode writable — the
-	 * host mount is RW, so it won't refuse the way a real RO mount
-	 * would. Readlink the magic link (kernel ground truth — this is
-	 * the one check that cannot live in the orchestrator) and
-	 * RO-prefix-check the target. Sibling-guest pids are covered by
-	 * the same readlink; opens that resolve THROUGH the fd link
-	 * (self/fd/<n>/sub) readlink just the link prefix. */
-	if (tawcroot_openat_intent(flags) != TAWCROOT_PATH_INTENT_READ &&
-	    !t.is_root && view_has_ro() && fd_is_proc_bind(t.fd)) {
-		size_t ml = proc_fd_magic_prefix(t.path);
-		char lnk[64];
-		if (ml > 0 && ml < sizeof lnk) {
-			for (size_t i = 0; i < ml; i++) lnk[i] = t.path[i];
-			lnk[ml] = 0;
-			char *tgt = scratch->buf[2];
-			long ln = tawc_readlinkat(t.fd, lnk, tgt,
-						  TAWCROOT_PATH_SCRATCH_SIZE);
-			if (ln > 0 && ln < (long)TAWCROOT_PATH_SCRATCH_SIZE &&
-			    tawcroot_host_path_in_ro_bind(tgt, (size_t)ln))
-				return TAWC_EROFS;
-		}
-	}
 
 	/* Empty t.path → guest asked for "/" or for a bind dst's root.
 	 * Pass "." so the kernel resolves it to the dir t.fd points at;
@@ -1327,7 +1264,7 @@ static long handle_utimensat(const tawcroot_syscall_args *args,
 		 * RO-bind fd is a metadata write through the fd: EROFS
 		 * (stage 2). */
 		if (tawcroot_fd_is_reserved(dirfd)) return TAWC_EBADF;
-		if (fd_in_ro_bind(dirfd)) return TAWC_EROFS;
+		if (fd_in_ro_bind(dirfd, 0)) return TAWC_EROFS;
 		return TAWC_RAW(TAWC_SYS_utimensat, dirfd, 0,
 				args->c, flags, 0, 0);
 	}
@@ -1445,7 +1382,7 @@ static long handle_fchmod(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * the chmod would succeed straight through the bind src. EROFS
 	 * before the fake-root swallow — root gets EROFS on a real RO fs
 	 * too. */
-	if (fd_in_ro_bind(fd)) return TAWC_EROFS;
+	if (fd_in_ro_bind(fd, 1)) return TAWC_EROFS;
 	long rv = TAWC_RAW(TAWC_SYS_fchmod, fd, args->b, 0, 0, 0, 0);
 	if ((rv == TAWC_EPERM || rv == TAWC_EACCES) &&
 	    tawcroot_identity_euid() == 0)
@@ -1467,7 +1404,7 @@ static long handle_fchown(const tawcroot_syscall_args *args, ucontext_t *uc)
 	 * branch must not fake success (root chowning on a real RO fs
 	 * gets EROFS), and the forwarding branch must not write through
 	 * the host-RW bind src. */
-	if (fd_in_ro_bind(fd)) return TAWC_EROFS;
+	if (fd_in_ro_bind(fd, 1)) return TAWC_EROFS;
 	if (tawcroot_identity_euid() != 0)
 		return TAWC_RAW(TAWC_SYS_fchown, fd, args->b, args->c,
 				0, 0, 0);
@@ -2631,7 +2568,7 @@ static long handle_fsetxattr(const tawcroot_syscall_args *args,
 	(void)uc;
 	int fd = (int)args->a;
 	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
-	if (fd_in_ro_bind(fd)) return TAWC_EROFS;
+	if (fd_in_ro_bind(fd, 1)) return TAWC_EROFS;
 	return TAWC_RAW(TAWC_SYS_fsetxattr, args->a, args->b, args->c,
 			args->d, args->e, 0);
 }
@@ -2642,7 +2579,7 @@ static long handle_fremovexattr(const tawcroot_syscall_args *args,
 	(void)uc;
 	int fd = (int)args->a;
 	if (tawcroot_fd_is_reserved(fd)) return TAWC_EBADF;
-	if (fd_in_ro_bind(fd)) return TAWC_EROFS;
+	if (fd_in_ro_bind(fd, 1)) return TAWC_EROFS;
 	return TAWC_RAW(TAWC_SYS_fremovexattr, args->a, args->b, 0, 0, 0, 0);
 }
 

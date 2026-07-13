@@ -27,6 +27,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/stat.h>
+
 #include "errno_neg.h"
 #include "fdtab.h"
 #include "io.h"
@@ -36,7 +38,9 @@
 #include "path_orchestrate.h"
 #include "path_resolve.h"
 #include "path_scratch.h"
+#include "proc_shadow.h"
 #include "raw_sys.h"
+#include "sysnr.h"
 #include "tawc_uapi.h"
 
 int    tawcroot_rootfs_fd               = -1;
@@ -498,6 +502,110 @@ static long prod_cwd_to_guest_abs(void *ctx, char *out, size_t out_cap)
 }
 
 /* ---------------------------------------------------------------- */
+/* Read-only binds: impure companions to the orchestrator's central   */
+/* check. Both run in tawcroot_path_translate below — the wrapper     */
+/* every production translation passes through (handlers via          */
+/* translate_local, sockets, chroot, exec/loader) — so a future call  */
+/* site can't forget them. They stay out of the pure                  */
+/* tawcroot_path_translate_with_ctx: each needs kernel ground truth   */
+/* (a readlink / a stat) the ctx-driven unit tests don't model.       */
+
+/* Fast gate: any RO surface in the current view at all? Skips the
+ * per-call kernel probes for the (universal today) all-RW
+ * configuration. Shared with the fd-based stage-2 checks in
+ * syscalls_fs.c. */
+int tawcroot_view_has_ro(void)
+{
+	if (tawcroot_root_ro) return 1;
+	for (size_t i = 0; i < tawcroot_n_binds; i++)
+		if (tawcroot_binds[i].active && tawcroot_binds[i].read_only)
+			return 1;
+	return 0;
+}
+
+/* 1 iff `fd` is the src fd of an active bind of host /proc — the one
+ * place where a suffix can be a kernel magic link that re-opens an
+ * inode with fresh access mode or resolves through to a host dir. */
+static int fd_is_proc_bind(int fd)
+{
+	for (size_t i = 0; i < tawcroot_n_binds; i++) {
+		const struct tawcroot_bind *b = &tawcroot_binds[i];
+		if (!b->active || b->src_fd != fd) continue;
+		return b->src_len == 5 && tawc_starts_with(b->src, "/proc");
+	}
+	return 0;
+}
+
+/* Stage 2, /proc magic links: refuse write-intent translations whose
+ * final route is a /proc-bind magic link naming (or resolving through
+ * to) an RO part of the view. A guest holding an RO-bind file open
+ * O_RDONLY can ask for open("/proc/self/fd/<n>", O_RDWR) and the
+ * KERNEL re-opens the inode writable (the host mount is RW, so it
+ * won't refuse like a real RO mount); chmod through the same link, or
+ * any write through self/cwd/<name> after a cd into an RO bind, walks
+ * the same hole. This is the one check that cannot live in the
+ * orchestrator — only the kernel knows the link target. Readlink
+ * exactly the link prefix, join the resolve-through remainder, and
+ * RO-prefix-check the final host path (so an RW bind nested under an
+ * RO src still wins by longest prefix). */
+static long ro_check_proc_magic_link(tawcroot_path_mode mode,
+				     tawcroot_path_intent intent,
+				     int base_fd, const char *suffix)
+{
+	if (intent == TAWCROOT_PATH_INTENT_READ &&
+	    mode != TAWCROOT_PATH_PARENT_CREATE &&
+	    mode != TAWCROOT_PATH_PARENT_REMOVE)
+		return 0;
+	if (!tawcroot_view_has_ro() || !fd_is_proc_bind(base_fd))
+		return 0;
+	size_t ml = tawcroot_proc_magic_link_prefix(suffix);
+	char lnk[64];
+	if (ml == 0 || ml >= sizeof lnk) return 0;
+	for (size_t i = 0; i < ml; i++) lnk[i] = suffix[i];
+	lnk[ml] = 0;
+	TAWCROOT_PATH_SCRATCH_AUTO(scratch);
+	char *tgt = scratch->buf[0];
+	long ln = tawc_readlinkat(base_fd, lnk, tgt,
+				  TAWCROOT_PATH_SCRATCH_SIZE);
+	if (ln <= 0 || ln >= (long)TAWCROOT_PATH_SCRATCH_SIZE) return 0;
+	size_t pos = (size_t)ln;
+	if (suffix[ml]) {
+		if (tgt[pos - 1] == '/') pos--;  /* self/root is "/" */
+		size_t joined = pos;
+		if (tawc_str_append(tgt, TAWCROOT_PATH_SCRATCH_SIZE, &joined,
+				    suffix + ml) == 0)
+			pos = joined;
+		/* Overlong join: judge the link target alone. */
+	}
+	return tawcroot_host_path_in_ro_bind(tgt, pos) ? TAWC_EROFS : 0;
+}
+
+/* Central-EROFS errno fidelity: for FOLLOW/NOFOLLOW leaf-must-exist
+ * writes (chmod/chown/utimensat/truncate/setxattr/open-for-write/
+ * access(W_OK)) the kernel looks the target up BEFORE mnt_want_write,
+ * so a missing target earns ENOENT/ENOTDIR, not EROFS. Probe with the
+ * walk's own follow semantics. CREATE intent and the PARENT_* modes
+ * keep EROFS — there the kernel wants write access before the leaf
+ * lookup. Relies on the refusal being the orchestrator's LAST step,
+ * with (base_fd, out_suffix) fully built. Cold by definition. */
+static long ro_refusal_errno(int base_fd, const char *suffix,
+			     tawcroot_path_mode mode,
+			     tawcroot_path_intent intent)
+{
+	if (intent != TAWCROOT_PATH_INTENT_WRITE ||
+	    (mode != TAWCROOT_PATH_FOLLOW && mode != TAWCROOT_PATH_NOFOLLOW))
+		return TAWC_EROFS;
+	struct stat probe;
+	long pr = TAWC_RAW(TAWC_SYS_fstatat, base_fd,
+			   (long)(suffix[0] ? suffix : "."), (long)&probe,
+			   mode == TAWCROOT_PATH_NOFOLLOW
+				   ? AT_SYMLINK_NOFOLLOW : 0,
+			   0, 0);
+	if (pr == TAWC_ENOENT || pr == TAWC_ENOTDIR) return pr;
+	return TAWC_EROFS;
+}
+
+/* ---------------------------------------------------------------- */
 /* Public API                                                        */
 
 tawcroot_path_result tawcroot_path_translate(const char *guest_path,
@@ -539,7 +647,16 @@ tawcroot_path_result tawcroot_path_translate(const char *guest_path,
 		.cwd_to_guest_abs = prod_cwd_to_guest_abs,
 		.cwd_ctx          = 0,
 	};
-	return tawcroot_path_translate_with_ctx(&ctx, guest_path,
-						out_suffix, out_cap, mode,
-						intent);
+	r = tawcroot_path_translate_with_ctx(
+		&ctx, guest_path, out_suffix, out_cap, mode, intent);
+	/* RO-bind impure companions (see block comment above). The
+	 * orchestrator's EROFS is the only error that reaches here with
+	 * (base_fd, out_suffix) valid — every earlier error returns
+	 * before the central check populates them. */
+	if (r.err == TAWC_EROFS)
+		r.err = ro_refusal_errno(r.base_fd, out_suffix, mode, intent);
+	else if (r.err == 0)
+		r.err = ro_check_proc_magic_link(mode, intent, r.base_fd,
+						 out_suffix);
+	return r;
 }

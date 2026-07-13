@@ -64,6 +64,14 @@ int tawcroot_is_proc_self_cwd(const char *path);
  * back as guest paths (outside-view targets pass through verbatim). */
 int tawcroot_is_proc_fd_link(const char *path);
 
+/* Byte length of the dir/entry magic-link prefix in a /proc-RELATIVE
+ * suffix (no leading "/proc/"): (self|thread-self|<pid>)/(task/<tid>/)?
+ * then fd/<entry>, map_files/<entry>, cwd, or root. 0 = no match. Used
+ * by the read-only-bind stage-2 check (readlink exactly the prefix,
+ * RO-prefix-check the target); shares the pid/task grammar with the
+ * shadow classifiers above so two matchers can't disagree. */
+size_t tawcroot_proc_magic_link_prefix(const char *suf);
+
 /* Fast-out for fd-relative opens: can this relative leaf even compose
  * into a /proc path we shadow? Cheap first-byte test that skips the
  * readlinkat for the vast majority of fd-relative opens. */

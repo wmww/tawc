@@ -403,8 +403,27 @@ test(ro_proc_fd_write_reopen_erofs)
 	snprintf(p, sizeof p, "/proc/self/fd/%d", (int)fd);
 	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, p, O_RDWR, 0, 0, 0),
 		    TAWC_EROFS);
+	/* Same magic link, other spellings the kernel accepts: numeric
+	 * pid and the task/<tid>/ segment (main thread: tid == pid). */
+	snprintf(p, sizeof p, "/proc/%d/fd/%d", getpid(), (int)fd);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, p, O_RDWR, 0, 0, 0),
+		    TAWC_EROFS);
+	snprintf(p, sizeof p, "/proc/self/task/%d/fd/%d", getpid(), (int)fd);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, p, O_RDWR, 0, 0, 0),
+		    TAWC_EROFS);
+	/* Not just openat: every write-intent path syscall through the
+	 * link is checked (the check lives in translate_local). */
+	snprintf(p, sizeof p, "/proc/self/fd/%d", (int)fd);
+	test_int_eq(th_sys(TAWC_SYS_fchmodat, AT_FDCWD, p, 0600, 0, 0, 0),
+		    TAWC_EROFS);
 	/* Read-mode re-open stays legal. */
 	long rfd = th_sys(TAWC_SYS_openat, AT_FDCWD, p, O_RDONLY, 0, 0, 0);
+	test_true(rfd >= 0);
+	close((int)rfd);
+	/* O_CREAT-on-existing with a write-free accmode re-opens
+	 * read-only, like the kernel on a real RO mount (retry rule). */
+	rfd = th_sys(TAWC_SYS_openat, AT_FDCWD, p, O_RDONLY | O_CREAT,
+		     0644, 0, 0);
 	test_true(rfd >= 0);
 	close((int)rfd);
 
@@ -417,6 +436,125 @@ test(ro_proc_fd_write_reopen_erofs)
 	test_true(wfd >= 0);
 	close((int)wfd);
 	close((int)efd);
+
+	close((int)fd);
+	th_teardown(&v);
+}
+
+test(ro_proc_cwd_resolve_through_erofs)
+{
+	/* cd into an RO bind, then spell writes via /proc/self/cwd/<name>:
+	 * the kernel resolves THROUGH the cwd magic link to the host dir
+	 * (which is RW), so the same stage-2 readlink check must refuse. */
+	th_view v;
+	th_setup(&v, "ro-proccwd");
+	th_add_bind_ro(&v, "/ro");
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
+
+	test_int_eq(th_sys(TAWC_SYS_chdir, "/ro", 0, 0, 0, 0, 0), 0);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD,
+			   "/proc/self/cwd/probe.txt", O_WRONLY, 0, 0, 0),
+		    TAWC_EROFS);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD,
+			   "/proc/self/cwd/newfile",
+			   O_WRONLY | O_CREAT, 0644, 0, 0), TAWC_EROFS);
+	test_int_eq(th_sys(TAWC_SYS_fchmodat, AT_FDCWD,
+			   "/proc/self/cwd/probe.txt", 0600, 0, 0, 0),
+		    TAWC_EROFS);
+	test_int_eq(th_sys(TAWC_SYS_unlinkat, AT_FDCWD,
+			   "/proc/self/cwd/probe.txt", 0, 0, 0, 0),
+		    TAWC_EROFS);
+	/* Reads through the link stay legal. */
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD,
+			 "/proc/self/cwd/probe.txt", O_RDONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	close((int)fd);
+
+	/* No false positive: an RW cwd writes through the link fine.
+	 * (th_teardown restores the original host cwd.) */
+	test_int_eq(th_sys(TAWC_SYS_chdir, "/etc", 0, 0, 0, 0, 0), 0);
+	fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/proc/self/cwd/probe",
+		    O_WRONLY, 0, 0, 0);
+	test_true(fd >= 0);
+	close((int)fd);
+
+	th_teardown(&v);
+}
+
+test(ro_missing_target_errno_fidelity)
+{
+	/* FOLLOW/NOFOLLOW leaf-must-exist writes: the kernel looks the
+	 * target up before mnt_want_write, so a missing target earns
+	 * ENOENT/ENOTDIR, not EROFS. Create/remove ops take write access
+	 * on the PARENT mount before the leaf lookup and keep EROFS. */
+	th_view v;
+	th_setup(&v, "ro-noent");
+	const char *src = th_add_bind_ro(&v, "/ro");
+	char hp[4300];
+	snprintf(hp, sizeof hp, "%s/dangling", src);
+	test_int_eq(symlink("missing", hp), 0);
+
+	test_int_eq(th_sys(TAWC_SYS_fchmodat, AT_FDCWD, "/ro/missing",
+			   0600, 0, 0, 0), TAWC_ENOENT);
+	test_int_eq(th_sys(TAWC_SYS_fchownat, AT_FDCWD, "/ro/missing",
+			   0, 0, 0, 0), TAWC_ENOENT);
+	test_int_eq(th_sys(TAWC_SYS_utimensat, AT_FDCWD, "/ro/missing",
+			   0, 0, 0, 0), TAWC_ENOENT);
+	test_int_eq(th_sys(TAWC_SYS_truncate, "/ro/missing", 0,
+			   0, 0, 0, 0), TAWC_ENOENT);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, "/ro/missing",
+			   O_WRONLY, 0, 0, 0), TAWC_ENOENT);
+	test_int_eq(th_sys(TAWC_SYS_faccessat, AT_FDCWD, "/ro/missing",
+			   W_OK, 0, 0, 0), TAWC_ENOENT);
+	test_int_eq(th_sys(TAWC_SYS_setxattr, "/ro/missing", "user.x",
+			   "v", 1, 0, 0), TAWC_ENOENT);
+	/* FOLLOW through a dangling leaf symlink: ENOENT (the probe
+	 * chases like the kernel would); the NOFOLLOW flavor operates on
+	 * the symlink itself, which exists → EROFS. */
+	test_int_eq(th_sys(TAWC_SYS_fchmodat, AT_FDCWD, "/ro/dangling",
+			   0600, 0, 0, 0), TAWC_ENOENT);
+	test_int_eq(th_sys(TAWC_SYS_lsetxattr, "/ro/dangling", "user.x",
+			   "v", 1, 0, 0), TAWC_EROFS);
+	/* Non-dir mid-path: ENOTDIR passes through too. */
+	test_int_eq(th_sys(TAWC_SYS_fchmodat, AT_FDCWD, "/ro/probe.txt/x",
+			   0600, 0, 0, 0), TAWC_ENOTDIR);
+	/* Create/remove on the same missing name: EROFS, like the
+	 * kernel (mnt_want_write precedes the child lookup). */
+	test_int_eq(th_sys(TAWC_SYS_mkdirat, AT_FDCWD, "/ro/missing",
+			   0755, 0, 0, 0), TAWC_EROFS);
+	test_int_eq(th_sys(TAWC_SYS_unlinkat, AT_FDCWD, "/ro/missing",
+			   0, 0, 0, 0), TAWC_EROFS);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, "/ro/missing",
+			   O_WRONLY | O_CREAT, 0644, 0, 0), TAWC_EROFS);
+
+	th_teardown(&v);
+}
+
+test(ro_opath_fd_metadata_ebadf)
+{
+	/* fchmod/f*xattr on an O_PATH fd: the kernel says EBADF no matter
+	 * what fs the fd names, so the stage-2 check steps aside and lets
+	 * the raw syscall produce it. fchown hits the fake-root swallow
+	 * (euid 0 fakes success without a kernel call — same as rootfs
+	 * O_PATH fds). utimensat(fd, NULL) is the one metadata write
+	 * that legitimately works on O_PATH fds → still EROFS. */
+	th_view v;
+	th_setup(&v, "ro-opath");
+	th_add_bind_ro(&v, "/ro");
+
+	long fd = th_sys(TAWC_SYS_openat, AT_FDCWD, "/ro/probe.txt",
+			 O_PATH, 0, 0, 0);
+	test_true(fd >= 0);
+
+	test_int_eq(th_sys(TAWC_SYS_fchmod, (int)fd, 0600, 0, 0, 0, 0),
+		    TAWC_EBADF);
+	test_int_eq(th_sys(TAWC_SYS_fsetxattr, (int)fd, "user.x", "v", 1,
+			   0, 0), TAWC_EBADF);
+	test_int_eq(th_sys(TAWC_SYS_fremovexattr, (int)fd, "user.x",
+			   0, 0, 0, 0), TAWC_EBADF);
+	test_int_eq(th_sys(TAWC_SYS_fchown, (int)fd, 0, 0, 0, 0, 0), 0);
+	test_int_eq(th_sys(TAWC_SYS_utimensat, (int)fd, 0, 0, 0, 0, 0),
+		    TAWC_EROFS);
 
 	close((int)fd);
 	th_teardown(&v);
@@ -445,6 +583,14 @@ test(ro_chroot_into_ro_bind_sets_root_ro)
 			 O_RDONLY, 0, 0, 0);
 	test_true(fd >= 0);
 	close((int)fd);
+
+	/* chroot DEEPER inside the RO root stays RO: the target routes
+	 * through rootfs_fd (not the bind table), so the bit must come
+	 * from ctx->rootfs_ro this time. */
+	test_int_eq(th_sys(TAWC_SYS_chroot, "/sub", 0, 0, 0, 0, 0), 0);
+	test_int_eq(tawcroot_root_ro, 1);
+	test_int_eq(th_sys(TAWC_SYS_openat, AT_FDCWD, "/newfile",
+			   O_WRONLY | O_CREAT, 0644, 0, 0), TAWC_EROFS);
 
 	th_teardown(&v);
 }
@@ -485,6 +631,31 @@ test(ro_unix_bind_erofs)
 	memset(&sa, 0, sizeof sa);
 	sa.sun_family = AF_UNIX;
 	strcpy(sa.sun_path, "/ro/sock");
+	test_int_eq(th_sys(TAWC_SYS_bind, fd, &sa, sizeof sa, 0, 0, 0),
+		    TAWC_EROFS);
+	close(fd);
+
+	th_teardown(&v);
+}
+
+test(ro_unix_bind_through_proc_magic_link_erofs)
+{
+	/* The magic-link check lives in tawcroot_path_translate, so the
+	 * socket translation path gets it too: bind() spelled through
+	 * /proc/self/cwd while the cwd sits in an RO bind. Refused
+	 * before any host sock file — registers unconditionally. */
+	th_view v;
+	th_setup(&v, "ro-sockml");
+	th_add_bind_ro(&v, "/ro");
+	test_int_eq(tawcroot_path_add_bind("/proc", "/proc", 0), 0);
+	test_int_eq(th_sys(TAWC_SYS_chdir, "/ro", 0, 0, 0, 0, 0), 0);
+
+	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	test_true(fd >= 0);
+	struct sockaddr_un sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sun_family = AF_UNIX;
+	strcpy(sa.sun_path, "/proc/self/cwd/sock");
 	test_int_eq(th_sys(TAWC_SYS_bind, fd, &sa, sizeof sa, 0, 0, 0),
 		    TAWC_EROFS);
 	close(fd);

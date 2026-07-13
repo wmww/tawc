@@ -89,8 +89,15 @@ typedef enum {
  * of the declaration, so create/remove/rename syscalls are covered
  * even by a mislabeled call site. */
 typedef enum {
-	TAWCROOT_PATH_INTENT_WRITE = 0,  /* mutates metadata/namespace/data */
-	TAWCROOT_PATH_INTENT_READ  = 1,  /* observes only */
+	TAWCROOT_PATH_INTENT_WRITE  = 0,  /* mutates; leaf must exist */
+	TAWCROOT_PATH_INTENT_READ   = 1,  /* observes only */
+	TAWCROOT_PATH_INTENT_CREATE = 2,  /* mutates; may materialize the
+	                                   * leaf (openat O_CREAT). Same
+	                                   * refusal as WRITE; exempt from
+	                                   * the missing-target ENOENT
+	                                   * fidelity in translate_local —
+	                                   * the kernel EROFSes a create
+	                                   * before the leaf lookup. */
 } tawcroot_path_intent;
 
 /* Translate a guest path. `out_suffix` must point to a buffer of at
@@ -260,6 +267,11 @@ long tawcroot_host_path_to_guest_abs(const char *host, size_t n,
  * no taint table, nothing to propagate, works for inherited and
  * SCM_RIGHTS-passed fds. */
 int tawcroot_host_path_in_ro_bind(const char *host, size_t n);
+
+/* Fast gate for the stage-2 RO checks: any RO surface in the current
+ * view at all (an RO bind, or tawcroot_root_ro)? Lets the per-call
+ * kernel probes be skipped for the all-RW configuration. */
+int tawcroot_view_has_ro(void);
 
 /* Reverse-translate the kernel cwd into a guest-absolute path.
  * Returns the written length, -ENOENT when the cwd is outside the

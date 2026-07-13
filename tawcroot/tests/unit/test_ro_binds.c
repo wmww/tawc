@@ -332,15 +332,15 @@ test(openat_intent_classifier_table)
 		{ O_RDWR,                       TAWCROOT_PATH_INTENT_WRITE },
 		{ O_ACCMODE,                    TAWCROOT_PATH_INTENT_WRITE }, /* accmode 3 fails closed */
 		{ O_RDONLY | O_TRUNC,           TAWCROOT_PATH_INTENT_WRITE },
-		{ O_RDONLY | O_CREAT,           TAWCROOT_PATH_INTENT_WRITE },
-		{ O_RDONLY | O_CREAT | O_EXCL,  TAWCROOT_PATH_INTENT_WRITE },
+		{ O_RDONLY | O_CREAT,           TAWCROOT_PATH_INTENT_CREATE },
+		{ O_RDONLY | O_CREAT | O_EXCL,  TAWCROOT_PATH_INTENT_CREATE },
 		{ O_RDONLY | O_APPEND,          TAWCROOT_PATH_INTENT_READ  }, /* kernel allows RDONLY|APPEND on RO fs */
 		{ O_RDONLY | O_NOFOLLOW,        TAWCROOT_PATH_INTENT_READ  },
 		{ O_RDONLY | O_DIRECTORY,       TAWCROOT_PATH_INTENT_READ  },
 		{ O_PATH,                       TAWCROOT_PATH_INTENT_READ  },
 		{ O_PATH | O_RDWR,              TAWCROOT_PATH_INTENT_READ  }, /* kernel ignores accmode with O_PATH */
 		{ O_PATH | O_CREAT,             TAWCROOT_PATH_INTENT_READ  },
-		{ O_WRONLY | O_CREAT | O_TRUNC, TAWCROOT_PATH_INTENT_WRITE },
+		{ O_WRONLY | O_CREAT | O_TRUNC, TAWCROOT_PATH_INTENT_CREATE },
 	};
 	for (size_t i = 0; i < sizeof T / sizeof T[0]; i++) {
 		test_int_eq((int)tawcroot_openat_intent(T[i].flags),

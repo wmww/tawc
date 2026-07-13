@@ -844,16 +844,39 @@ check can't happen silently:
   taint table, nothing to propagate across dup/exec, and
   SCM_RIGHTS-passed fds are covered. Trapped/checked: `fchmod`,
   `fchown`, `utimensat(fd, NULL, …)`, `fsetxattr`, `fremovexattr` —
-  all cold. The `/proc/<pid>/fd/<n>` (and `map_files`) *write-mode
-  re-open* is refused in `handle_openat` by readlinking the magic
-  link and RO-prefix-checking the target — the one check that can't
-  live in the orchestrator (only the kernel knows the target).
+  all cold. Caveat: this host-path ground truth is dst-blind — the
+  same host dir bound twice (once `:ro`, once RW) resolves these fd
+  checks by longest-prefix then bind-table order, not by which dst
+  the fd was opened through. Path-level checks are per-route and
+  unaffected.
+- **/proc magic links (stage 2).** A /proc bind exposes kernel magic
+  links that act on *host* inodes: `fd/<n>`/`map_files/<n>` re-open
+  with fresh access mode (`open("/proc/self/fd/<n>", O_RDWR)` on an
+  fd opened read-only — the host mount is RW, so the kernel won't
+  refuse like a real RO mount), and `cwd`/`root` resolve *through*
+  to the host dir (`cd /ro-bind; > /proc/self/cwd/x`). Every
+  write-intent translation whose final route is the /proc bind is
+  checked in `tawcroot_path_translate` (path.c) — the impure
+  production wrapper every handler translation passes through
+  (fs handlers, socket bind, chroot, exec/loader), so a future call
+  site can't skip it; the pure `_with_ctx` orchestrator stays
+  kernel-probe-free for unit tests. It's the one check that can't
+  live in the orchestrator (only the kernel knows the link
+  target): match `(self|thread-self|<pid>)/(task/<tid>/)?
+  (fd|map_files/<n>|cwd|root)` via `tawcroot_proc_magic_link_prefix`
+  (proc_shadow.c, sharing the shadow classifiers' pid/task grammar so
+  two matchers can't drift), readlink exactly the link, join the
+  resolve-through remainder, and RO-prefix-check the final host path
+  (so an RW bind nested under an RO src still wins).
 
 Intent per call site: stats/readlink/getxattr/listxattr/access
 without W_OK/chdir/exec/statfs/open-for-read/chroot-target and
 AF_UNIX `connect`/`sendto`/`sendmsg` declare READ; everything that
 mutates declares WRITE (openat via a pure flags→intent classifier,
-`tawcroot_openat_intent`). `bind()` keeps `PARENT_CREATE` (it
+`tawcroot_openat_intent`), except openat with O_CREAT, which
+declares CREATE — refused exactly like WRITE, but exempt from the
+missing-target errno fidelity below (the kernel EROFSes a create
+before the leaf lookup). `bind()` keeps `PARENT_CREATE` (it
 creates the socket file) while connect/sendto/sendmsg moved to
 `FOLLOW`+READ — independently more kernel-faithful, since the
 kernel follows a leaf symlink when connecting.
@@ -862,6 +885,16 @@ Errno/fidelity notes:
 
 - `access(W_OK)` → EROFS (kernel behavior on RO fs; falls out of
   the intent table).
+- **Missing targets of leaf-must-exist writes → ENOENT/ENOTDIR.**
+  For FOLLOW/NOFOLLOW WRITE ops (chmod/chown/utimensat/truncate/
+  setxattr/open-for-write/access(W_OK)) the kernel looks the target
+  up *before* `mnt_want_write`, so only an existing target earns
+  EROFS. On a central EROFS, `tawcroot_path_translate` (path.c)
+  probes the translated path (with the walk's own follow semantics)
+  and passes ENOENT / ENOTDIR through; CREATE intent and the
+  PARENT_* modes skip the
+  probe and keep EROFS, matching the kernel's
+  write-access-before-child-lookup order for create/remove.
 - `open(existing, O_RDONLY|O_CREAT)` succeeds (POSIX: the create is
   a no-op). Implemented as a single retry in `handle_openat`: on a
   central EROFS with O_CREAT-sans-O_EXCL, write-free accmode, no
@@ -870,7 +903,15 @@ Errno/fidelity notes:
   missing *parent* also reports EROFS instead of the kernel's
   ENOENT — accepted.)
 - `statfs` ORs `ST_RDONLY` into `f_flags` when the path routed RO,
-  so `df` and RO-detecting installers see the truth.
+  so `df` and RO-detecting installers see the truth. `fstatfs` stays
+  untrapped (known divergence): an fd into an RO bind reports RW
+  even where `statfs` on the same path shows `ST_RDONLY`.
+- `fchmod`/`f*xattr` on an O_PATH fd → the kernel's EBADF, not
+  EROFS: the stage-2 fd check steps aside for O_PATH fds at those
+  call sites (and fchown hits the fake-root success swallow, same
+  as rootfs O_PATH fds). `utimensat(fd, NULL, …)` is the one
+  metadata write that legitimately operates on O_PATH fds, so it
+  keeps the EROFS check.
 - `renameat2`: uniform EROFS when either operand lands RO (the
   kernel gives EXDEV for the cross-mount flavor; equally terminal
   for `mv`).
