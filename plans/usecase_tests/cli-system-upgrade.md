@@ -57,3 +57,29 @@ message.
 Nothing to revert (upgrades are one-way). Remove any scratch files;
 clear pacman's package cache inside the rootfs
 (`pacman -Sc --noconfirm`) to return the disk space.
+
+## Run log
+
+**2026-07-13 — physical 50f4ca18, Arch Linux ARM tawcroot — BLOCKED.**
+
+The upgrade could not be exercised: **0 packages upgradable.** The install
+was bootstrapped through the dev cache proxy, which freezes repo dbs for
+365d, so `pacman -Sy` re-fetches the same db the install came from and
+`pacman -Qu` is empty. `pacman -Syu --noconfirm` printed
+`:: Starting full system upgrade... there is nothing to do`.
+
+Everything I *could* check was clean: rootfs healthy (455 pkgs before and
+after; bash 5.3.15 / git 2.55.0 / pacman 7.1.0 all work), tawc-managed
+files intact (`/usr/lib/hybris`, `/usr/local/bin/ando`), slimming held
+(`/usr/share/man` still absent), no `.pacnew`, mirrorlist still points at
+the proxy (6 lines), resolv.conf still `nameserver 8.8.8.8`. No warnings
+to triage because nothing was replaced. (`wayland-info`/`weston-info` are
+not installed on the slim Arch, so the optional GUI smoke was skipped.)
+
+The interesting failure surface (package replacement, hooks, setcap
+scriptlets, `.pacnew` drops) was NOT exercised. Getting real upgrades
+needs fresher proxy dbs (`cache-proxy.sh wipe '\.db$'`), which CLAUDE.md
+forbids a test agent from doing — must be a user action.
+
+See `issues/usecase_tests/syu-test-blocked-frozen-proxy-db-yields-zero-upgrades.md`.
+Not deleting this file / not marking Completed until a real `-Syu` runs.
