@@ -12,7 +12,7 @@
 #   --graphics=list
 #              override production graphics backend set
 #
-# Output: app/build/outputs/apk/release/app-release.apk
+# Output: app/build/outputs/apk/release/tawc-v<version>.apk
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +43,7 @@ BUILD_TOOLS_VER="$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
 [ -n "$BUILD_TOOLS_VER" ] || { echo "ERROR: no build-tools under $ANDROID_HOME/build-tools" >&2; exit 1; }
 ZIPALIGN="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VER/zipalign"
 APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VER/apksigner"
+AAPT2="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VER/aapt2"
 
 if [ -z "${KEYSTORE_PASS+x}" ]; then
     read -rsp "Keystore password (if any): " KEYSTORE_PASS
@@ -114,5 +115,10 @@ rm -f "$ALIGNED"
 echo "=== Verifying ==="
 "$APKSIGNER" verify --verbose "$SIGNED"
 
+VERSION="$("$AAPT2" dump badging "$SIGNED" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)"
+[ -n "$VERSION" ] || { echo "ERROR: could not read versionName from $SIGNED" >&2; exit 1; }
+FINAL="$(dirname "$SIGNED")/tawc-v$VERSION.apk"
+mv "$SIGNED" "$FINAL"
+
 echo
-echo "Signed APK: $SIGNED"
+echo "Signed APK: $FINAL"

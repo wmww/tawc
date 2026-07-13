@@ -92,8 +92,9 @@ android {
         applicationId = "me.phie.tawc"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // Plain release counter, single source of truth; see notes/release.md.
+        versionName = "1"
+        versionCode = versionName!!.toInt()
         ndk {
             abiFilters.addAll(tawcAbis)
         }

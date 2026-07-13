@@ -10,6 +10,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 - [testing.md](testing.md) - integration-test layout, backend pins, test deps, debug app, input injection.
 - [cache-proxy.md](cache-proxy.md) - dev mirror cache behavior and safety rules.
 - [emulator.md](emulator.md) - AVD setup, rooted/rootless workflows, x86_64 limitations.
+- [release.md](release.md) - versioning scheme, release prep/publish steps, keystore rules.
 
 ## Runtime Architecture
 
