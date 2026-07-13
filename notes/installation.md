@@ -357,17 +357,19 @@ reported as `InstallProgress` to the UI and per-line logged to logcat
    so future operations don't think they're installed. (Bind mounts
    are not a separate stage — they're set up inside the very `su`
    shell that runs each chroot command, see *Mount lifecycle* below.)
-7. **PKG_INSTALL** — `pacman -Syu --needed --noconfirm base-devel git
-   libtool wayland wayland-protocols pkg-config autoconf automake
-   patchelf weston gtk3 gtk3-demos` followed by `pacman -Scc
-   --noconfirm` to drop every cached `.pkg.tar.xz`. The combined
-   `-Syu --needed <pkgs>` form (rather than `-Syu` followed by `-S
-   --needed`) avoids a version-skew window where the in-chroot DB is
-   synced at T1 but the second `pacman` call at T2 fetches a tarball
-   the mirror has already rolled past — observed in practice as a
-   stable 404 on `weston-15.0.0-1-aarch64.pkg.tar.xz` minutes after
-   upstream rolled to 15.0.1. Every package is signature-verified
-   against the keyring populated above.
+7. **PKG_INSTALL** — `pacman -Syyu --needed --noconfirm <basePackages>`
+   followed by a package-cache clear (a `tawc` pacman hook drops the
+   cached `.pkg.tar.*`). The base set is deliberately **minimal**:
+   currently just `inetutils` (for `hostname`); see
+   `ArchPacmanCommon.DEFAULT_BASE_PACKAGES`. **No toolchain or desktop
+   stack is installed at bootstrap** — the guest ships without
+   `base-devel`/`gcc`/`make`, wayland, gtk, weston, autotools, etc.;
+   the user installs whatever they need afterwards with `pacman -S`.
+   The combined `-Syu --needed <pkgs>` form (rather than `-Syu`
+   followed by `-S --needed`) avoids a version-skew window where the
+   in-chroot DB is synced at T1 but the second `pacman` call at T2
+   fetches a tarball the mirror has already rolled past. Every package
+   is signature-verified against the keyring populated above.
 8. **(state write)** — `setState(READY)` only after every step above
    succeeds.
 
