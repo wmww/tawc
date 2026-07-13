@@ -77,13 +77,14 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      *
      *   /system/bin/setsid <tawcroot> -r <rootfs> \
      *       -b /dev:/dev -b /proc:/proc -b /sys:/sys \
-     *       -b /apex:/apex [-b /vendor:/vendor ...] \
+     *       -b /apex:/apex:ro [-b /vendor:/vendor:ro ...] \
      *       -b <appData>/share:/usr/share/tawc \
      *       -- /bin/bash -lc <command>
      *
      * Bind set mirrors [ProotMethod] minus the proot-only tweaks
-     * (`/dev/shm`, link2symlink, kill-on-exit). Libhybris bind dirs
-     * are filtered to existing host paths at class-load.
+     * (`/dev/shm`, link2symlink, kill-on-exit) and plus `:ro` on the
+     * system-partition binds (proot has no RO primitive). Libhybris
+     * bind dirs are filtered to existing host paths at class-load.
      *
      * `setsid` upholds the rootfs-session invariant
      * (notes/rootfs-sessions.md): every chroot invocation runs in
@@ -220,7 +221,7 @@ class TawcrootMethod(context: Context) : InstallationMethod {
     ): List<String> = buildList {
         add(tawcrootBin)
         addAll(listOf("-r", rootfs))
-        for ((src, dst) in bindSpecs(externalBinds, andoHostDir)) addAll(listOf("-b", "$src:$dst"))
+        for (spec in bindSpecs(externalBinds, andoHostDir)) addAll(listOf("-b", spec.arg()))
         add("--")
         addAll(RootfsEnv.envArgv(RootfsEnv.Method.TAWCROOT, graphics ?: Settings.graphicsBackend))
     }
@@ -294,47 +295,18 @@ class TawcrootMethod(context: Context) : InstallationMethod {
 
     // ---- internals ---------------------------------------------------
 
-    /** The full bind list, in declared order, as `(src, dst)` pairs.
-     *
-     * Order: /dev → /proc → /sys → libhybris dirs → tawc share → X11.
-     * No `/dev/shm` bind: tawcroot's SIGSYS handler emulates POSIX
-     * shm in-process via memfd_create (`tawcroot/src/shm.c`).
-     *
-     * The tawc share bind exposes JUST `<appData>/share/` (wayland
-     * socket, Xwayland's xtmp dir) at the in-rootfs canonical path
-     * `/usr/share/tawc/`. Deliberately not the whole `<appData>` —
-     * that would expose the libhybris asset extract, the proot
-     * scratch dir, and everything else under `<filesDir>` to
-     * in-rootfs writes. See notes/installation.md "/usr/share/tawc".
-     *
-     * The X11 bind also surfaces Xwayland's listening socket
-     * (`<appData>/share/xtmp/.X11-unix/X<n>`) at the canonical
-     * `/tmp/.X11-unix` path because libxcb hardcodes that path for
-     * the `:N` form of `$DISPLAY`. Asymmetric (src ≠ dst) — tawcroot's
-     * path-rewriting bind handles that natively.
-     *
-     * User-configured external binds (shared storage etc., see
-     * [ExternalBind]) ride after every built-in bind so they can't
-     * shadow the system/share set. */
+    /** One `-b` bind: host [src] exposed at in-rootfs [dst], read-only
+     *  when [ro]. */
+    data class BindSpec(val src: String, val dst: String, val ro: Boolean = false) {
+        /** tawcroot `-b` argument. RW keeps the 2-field form so
+         *  pre-RO spawn argv stays byte-identical. */
+        fun arg(): String = if (ro) "$src:$dst:ro" else "$src:$dst"
+    }
+
     private fun bindSpecs(
         externalBinds: List<ExternalBind>,
         andoHostDir: String?,
-    ): List<Pair<String, String>> = buildList {
-        add("/dev" to "/dev")
-        add("/proc" to "/proc")
-        add("/sys" to "/sys")
-        for (dir in LIBHYBRIS_BIND_DIRS) add(dir to dir)
-        add(tawcShare to GUEST_TAWC_SHARE_DIR)
-        // Per-distro ando socket dir ([InstallationStore.andoHostDir],
-        // non-null only when ando is enabled, read fresh per spawn) at
-        // its own guest path ([GUEST_ANDO_DIR]), deliberately NOT under
-        // the shared /usr/share/tawc bind — a disabled guest must have
-        // no path that falls through into the guest-writable shared
-        // dir, or that reaches any ando socket.
-        andoHostDir?.let { add(it to GUEST_ANDO_DIR) }
-        add("$tawcShare/xtmp/.X11-unix" to "/tmp/.X11-unix")
-        for (bind in externalBinds) add(bind.hostPath to bind.guestPath)
-    }
+    ): List<BindSpec> = bindSpecs(tawcShare, LIBHYBRIS_BIND_DIRS, externalBinds, andoHostDir)
 
     companion object {
         const val KEY = "tawcroot"
@@ -363,5 +335,58 @@ class TawcrootMethod(context: Context) : InstallationMethod {
             "/system_ext",
             "/linkerconfig",
         ).filter { File(it).exists() }
+
+        /** The full bind list, in declared order.
+         *
+         * Order: /dev → /proc → /sys → libhybris dirs → tawc share → X11.
+         * No `/dev/shm` bind: tawcroot's SIGSYS handler emulates POSIX
+         * shm in-process via memfd_create (`tawcroot/src/shm.c`).
+         *
+         * The libhybris system-partition binds are read-only: they are
+         * pure dlopen sources, host-RO on real Android, so `:ro` turns
+         * an accidental guest write into a kernel-faithful `EROFS`
+         * instead of the host's EROFS/EACCES grab-bag. `/dev`, `/proc`,
+         * `/sys` stay RW (ptmx, /proc/self, tunables).
+         *
+         * The tawc share bind exposes JUST `<appData>/share/` (wayland
+         * socket, Xwayland's xtmp dir) at the in-rootfs canonical path
+         * `/usr/share/tawc/`. Deliberately not the whole `<appData>` —
+         * that would expose the libhybris asset extract, the proot
+         * scratch dir, and everything else under `<filesDir>` to
+         * in-rootfs writes. See notes/installation.md "/usr/share/tawc".
+         *
+         * The X11 bind also surfaces Xwayland's listening socket
+         * (`<appData>/share/xtmp/.X11-unix/X<n>`) at the canonical
+         * `/tmp/.X11-unix` path because libxcb hardcodes that path for
+         * the `:N` form of `$DISPLAY`. Asymmetric (src ≠ dst) — tawcroot's
+         * path-rewriting bind handles that natively.
+         *
+         * User-configured external binds (shared storage etc., see
+         * [ExternalBind]) ride after every built-in bind so they can't
+         * shadow the system/share set.
+         *
+         * Static with [tawcShare]/[libhybrisDirs] injected so plain-JVM
+         * unit tests can pin the RO/RW split without a [Context]. */
+        internal fun bindSpecs(
+            tawcShare: String,
+            libhybrisDirs: List<String>,
+            externalBinds: List<ExternalBind>,
+            andoHostDir: String?,
+        ): List<BindSpec> = buildList {
+            add(BindSpec("/dev", "/dev"))
+            add(BindSpec("/proc", "/proc"))
+            add(BindSpec("/sys", "/sys"))
+            for (dir in libhybrisDirs) add(BindSpec(dir, dir, ro = true))
+            add(BindSpec(tawcShare, GUEST_TAWC_SHARE_DIR))
+            // Per-distro ando socket dir ([InstallationStore.andoHostDir],
+            // non-null only when ando is enabled, read fresh per spawn) at
+            // its own guest path ([GUEST_ANDO_DIR]), deliberately NOT under
+            // the shared /usr/share/tawc bind — a disabled guest must have
+            // no path that falls through into the guest-writable shared
+            // dir, or that reaches any ando socket.
+            andoHostDir?.let { add(BindSpec(it, GUEST_ANDO_DIR)) }
+            add(BindSpec("$tawcShare/xtmp/.X11-unix", "/tmp/.X11-unix"))
+            for (bind in externalBinds) add(BindSpec(bind.hostPath, bind.guestPath))
+        }
     }
 }

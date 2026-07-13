@@ -796,12 +796,15 @@ emulate. No targeted workload hits it.
 
 `-b SRC:DST:ro` marks a bind read-only: write-intent path
 translations into it refuse with `-EROFS`. The rootfs itself and
-2-field binds stay read/write. Consumers: user `ExternalBind`s that
+2-field binds stay read/write. Consumers: the built-in
+system-partition binds (`TawcrootMethod.bindSpecs` marks the
+`LIBHYBRIS_BIND_DIRS` set `:ro` — kernel-faithful `EROFS` on dirs
+that are host-RO on real Android), user `ExternalBind`s that
 expose shared storage without trusting every guest program with
-deletes, kernel-faithful errors on host-RO Android system binds, a
-future copy→bind revert for APK-shipped assets
-(notes/installation.md §"Why copy, not bind"), and the per-bind
-input plans/tawcroot-landlock.md threads into `allowed_access`.
+deletes (planned), a possible copy→bind revert for APK-shipped
+assets (notes/installation.md §"Why copy, not bind"), and the
+per-bind input plans/tawcroot-landlock.md threads into
+`allowed_access`.
 
 The kernel gives no RO for free here: the bind src fd is only the
 `dirfd` starting inode for `openat(dirfd, suffix, flags)` — the

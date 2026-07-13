@@ -10,11 +10,11 @@ Kotlin data-model + UI work. `ExternalBind`'s KDoc already reserves the
 hook (ExternalBind.kt:17-21), and notes/external-binds.md:44-53 records
 the intended shape.
 
-**Depends on** the `BindSpec(src, dst, ro)` emit refactor in
-[tawcroot-default-binds-ro.md](tawcroot-default-binds-ro.md) piece 1 —
-`bindSpecs()`/`rootfsArgv()` must be able to emit a `:ro` suffix before
-this plan can wire it to a per-bind flag. Do that refactor first (or as
-part of this).
+The `BindSpec(src, dst, ro)` emit refactor this depended on has
+shipped (2026-07): `TawcrootMethod.bindSpecs()` returns `BindSpec`s
+and `rootfsArgv()` emits `src:dst:ro` via `BindSpec.arg()`; the
+system-partition binds already use it. Only the per-`ExternalBind`
+flag + UI remain.
 
 ## Motivation
 
@@ -56,13 +56,11 @@ suggestion time and toggleable by the user.
 
 ## Spawn path
 
-`TawcrootMethod.bindSpecs()` (TawcrootMethod.kt:319-337) maps each
-`ExternalBind` to a `BindSpec` carrying its `readOnly` flag; the
-external-bind loop (`:336`) becomes
+`TawcrootMethod.bindSpecs()` already builds `BindSpec`s and
+`rootfsArgv()` already emits `src:dst:ro`; the only change is the
+external-bind loop becoming
 `add(BindSpec(bind.hostPath, bind.guestPath, ro = bind.readOnly))`.
-`rootfsArgv()` (`:223`) emits `src:dst:ro` when the flag is set. No
-change to `externalBindsFor()`'s validation/grant/exists checks
-(`:244-268`).
+No change to `externalBindsFor()`'s validation/grant/exists checks.
 
 ## Suggestion defaults
 

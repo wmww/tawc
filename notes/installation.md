@@ -553,6 +553,19 @@ this can revert to a whole-dir RO bind for everything except files
 that have to coexist with distro-managed siblings in the same dir
 (problem 2 is unchanged — bind = replacement, not merge). Decide in
 `TawcInstaller` whether the disk/update-churn win justifies it.
+Two further costs found when this was last assessed (2026-07,
+plans/tawcroot-default-binds-ro.md piece 2, deferred):
+
+- The manifest is method-agnostic. Dropping the libhybris COPY/LINK
+  entries removes `/usr/lib/hybris` from proot/chroot rootfses too —
+  proot has no RO primitive and doesn't bind the asset dir — so the
+  provider API would need to learn the install method first.
+- tawcroot opens every bind src at spawn and refuses to start if one
+  is missing. `<filesDir>/libhybris/` existence is only assured by the
+  `TawcInstaller` refresh path (`ensureLibhybrisExtracted` inside
+  `provider.entries`), which the stamp fast-path skips — a bound
+  asset dir needs its own spawn-time guard, which is exactly the
+  hot-path work `TawcInstaller`'s kdoc keeps off `startInside`.
 
 ## CLI command interface
 
