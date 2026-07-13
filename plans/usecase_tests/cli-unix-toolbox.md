@@ -46,3 +46,34 @@ Work under `/root/usecase-toolbox/`.
 ## Cleanup
 
 Remove `/root/usecase-toolbox/` and uninstall anything you added.
+
+## Run log (2026-07-13, physical, Arch tawcroot) — PROBLEM found
+
+Not passed. One real bug; everything else worked.
+
+Passed:
+- Step 1: 50 MB `/dev/urandom` file, `sha256sum` round-trips exactly
+  through `gzip`/`gunzip` and `xz`/`unxz`.
+- Step 2: tar of a tree with rel+abs symlinks, a hardlink, an
+  executable, and modes 600/750/4755. `diff -r` clean; extracted `stat`
+  matches modes, link counts, and symlink targets; hardlink pair shares
+  one inode after extract. setuid bit (4755) survived tar round-trip.
+- Step 3 (via recursion): `find -name '*.txt' | wc -l` = 2000,
+  `grep -rl` = 2000, `grep -rho | sort | uniq -c` frequency count
+  correct.
+- Steps 4/5: `mv` (size preserved), `cp -a` whole tree (2000 files),
+  `rm -rf`, `df -h /` and `du -sh .` all sane.
+- No packages installed (coreutils/tar/gzip/xz all present). No xattr
+  warnings hit in these steps.
+
+FAILED — large argv wall: any exec with more than ~256 arguments is
+silently destroyed. The natural Step-3/4 idioms `cat many/dir*/*.txt`
+and `grep pattern many/dir*/*.txt` (2000 file args) return empty / 0
+matches while looking successful; a direct `grep -q ... <2000 files>`
+exits 74. Root cause is a 264-slot `eff_argv[]` in the tawcroot loader's
+shebang stage, rejected *after* the execveat commit so the guest gets a
+bare exit code, no errno, no stderr — even though `getconf ARG_MAX`
+reports 2 MB and the collection layer accepts 4096 args.
+
+See issues/usecase_tests/tawcroot-argv-count-capped-at-256-silently-destroys-exec.md
+Re-run and (if fixed) verify the big-argv idioms, then this can pass.
