@@ -155,6 +155,10 @@ trampoline).
   shortcut store never holds an executable command.
 - Shortcut id is `"<installId>/<desktopId>"`; install ids can't
   contain `/`, so `EntryShortcuts.splitShortcutId` is unambiguous.
+  The id format and the `"installId"`/`"desktopId"`/`"label"` extras
+  keys live in the system launcher's pin store across app updates —
+  frozen wire format; see *Frozen identifiers* in
+  notes/installation.md.
   Re-pinning an already-pinned id calls `updateShortcuts` (refreshes
   label/icon in place) + a toast instead of `requestPinShortcut` —
   the Pixel launcher does *not* dedupe a re-request; it happily adds

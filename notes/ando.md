@@ -10,7 +10,10 @@ the spawned child is an ordinary app-uid process, so the normal Magisk
 su client/daemon flow applies (the Magisk app must grant
 me.phie.tawc).
 
-Production feature, all build types and install methods.
+Production feature, all build types and install methods. The command
+name, install path (`/usr/local/bin/ando`), and flag surface are a
+public CLI contract users script against — treat as frozen post-release
+(see *Frozen identifiers* in notes/installation.md).
 
 **Per-distro, default off.** ando is a per-install setting
 ([Installation.andoEnabled], default `false`; absent in legacy metadata

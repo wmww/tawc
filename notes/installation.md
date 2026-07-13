@@ -981,6 +981,45 @@ speculatively; the marker-based short-circuit it has today is fine
 for the install-only use case and a real reconfigure path will want
 to think more carefully about what's safe to overwrite.
 
+### Frozen identifiers (renaming breaks existing installs)
+
+These strings are persisted in user-owned state (metadata.json,
+inside rootfses, or Android's launcher pin store) and must be
+treated as a frozen wire format once a release ships — renaming
+one strands or breaks every existing install, and no app-side
+migration can fully repair it:
+
+- **Method keys** `"chroot"` / `"proot"` / `"tawcroot"`
+  (`metadata.method`, resolved by [InstallationMethod.forKey]).
+  Worst case of the lot: an unresolvable key makes launch silently
+  no-op and makes uninstall fall back to `defaultForHost`, i.e.
+  cleanup under the *wrong* method's assumptions.
+- **Distro keys** `"arch"` / `"manjaro"` / `"void"` / `"debian-sid"`
+  (`metadata.distro`, matched exactly in
+  [DistroRegistry.forInstallation] together with the ABI in
+  `metadata.arch`).
+- **Pinned-shortcut format**: shortcut id `"<installId>/<desktopId>"`
+  and the intent extras keys `"installId"` / `"desktopId"` /
+  `"label"` ([EntryShortcuts], [ShortcutLaunchActivity]). Persisted
+  by the system launcher, which the app cannot rewrite — a format
+  change turns every existing pin into a dead icon.
+- **`/usr/lib/tawc/bashrc`**: this absolute path is baked into the
+  one-time user-owned `/root/.bashrc` stub at configure time
+  ([ShellDefaults]); moving the app-owned file silently unsources
+  shell defaults in every existing rootfs.
+- **`/usr/local/bin/ando`** and the `ando` CLI surface — a public
+  command users script against (notes/ando.md).
+- Softer, prefs-only: `GraphicsBackend.key` values and the
+  `tawc-settings` pref keys ([Settings]). Unknown values already
+  fall back to defaults gracefully, so a rename only resets the
+  user's choice — avoid anyway.
+
+Tawc-owned rootfs paths shipped via [TawcInstaller]
+(`/usr/lib/hybris/`, `/usr/lib/gfxstream/`, `/usr/lib/mesa-zink/`)
+are *not* frozen at this level — the persisted install manifest
+wipes old dests and lays new ones on upgrade — but user scripts may
+reference them, so treat moves as user-visible changes.
+
 ### Schema versioning
 
 `metadata.json` carries a `schemaVersion` field
