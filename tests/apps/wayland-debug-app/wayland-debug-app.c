@@ -17,6 +17,9 @@
  *   text-input                  Minimal editable text-input-v3 surface
  *   text-input-no-surrounding   Text-input surface that never sends surrounding
  *   text-input-stale-newline    Reports cursor before trailing newlines
+ *   text-input-echo-preedit     Includes active preedit in surrounding text
+ *                               (Qt/KTextEditor style) and reports after
+ *                               preedit-only changes
  *   clipboard-copy <text>       Set wl_data_device clipboard text
  *   clipboard-copy-double <text> Set clipboard text twice per copy (GTK3 style)
  *   clipboard-copy-overcap      Set a clipboard source larger than 1 MiB
@@ -275,6 +278,7 @@ struct app {
     uint32_t content_hint;
     uint32_t content_purpose;
     int stale_trailing_newline_cursor;
+    int echo_preedit_in_surrounding;
     int touch_debug;
     int fullscreen;
     int report_scale;
@@ -335,6 +339,7 @@ struct wayland_mode {
     uint32_t content_hint;
     uint32_t content_purpose;
     int stale_trailing_newline_cursor;
+    int echo_preedit_in_surrounding;
     int touch_debug;
     int fullscreen;
     int report_scale;
@@ -454,6 +459,7 @@ static void sync_surrounding(struct app *app, uint32_t cause)
     if (!app->provide_surrounding || !app->text_input ||
         !app->text_input_enabled)
         return;
+    const char *text = app->text;
     int32_t cursor = (int32_t)app->cursor;
     if (app->stale_trailing_newline_cursor &&
         cause == ZWP_TEXT_INPUT_V3_CHANGE_CAUSE_INPUT_METHOD) {
@@ -464,9 +470,25 @@ static void sync_surrounding(struct app *app, uint32_t cause)
             cursor = (int32_t)stale_cursor;
     }
 
+    /* Qt/KTextEditor render preedit by inserting it into the document
+     * buffer, so their surrounding-text reports include the active
+     * preedit with the cursor after it — violating the protocol's
+     * "excluding the preedit text" rule. Model that so compositor-side
+     * echo tolerance has coverage (the Kate cumulative-commit bug). */
+    static char echo_buf[2 * MAX_TEXT];
+    if (app->echo_preedit_in_surrounding && app->preedit[0]) {
+        size_t pre_len = strlen(app->preedit);
+        memcpy(echo_buf, app->text, app->cursor);
+        memcpy(echo_buf + app->cursor, app->preedit, pre_len);
+        memcpy(echo_buf + app->cursor + pre_len, app->text + app->cursor,
+               app->text_len - app->cursor + 1);
+        text = echo_buf;
+        cursor = (int32_t)(app->cursor + pre_len);
+    }
+
     zwp_text_input_v3_set_text_change_cause(app->text_input, cause);
-    zwp_text_input_v3_set_surrounding_text(
-        app->text_input, app->text, cursor, cursor);
+    zwp_text_input_v3_set_surrounding_text(app->text_input, text, cursor,
+                                           cursor);
     zwp_text_input_v3_commit(app->text_input);
     app->text_input_commit_serial++;
     checked_flush(app->display);
@@ -526,10 +548,16 @@ static void apply_text_input_transaction(struct app *app)
 
     memset(pending, 0, sizeof(*pending));
 
-    if (changed)
+    if (changed) {
         changed_by_input_method(app);
-    else if (preedit_changed)
+    } else if (preedit_changed) {
+        /* Preedit-only change: Qt/KTextEditor still push a surrounding
+         * report because for them the preedit lives in the buffer. */
+        if (app->echo_preedit_in_surrounding)
+            sync_surrounding(app,
+                             ZWP_TEXT_INPUT_V3_CHANGE_CAUSE_INPUT_METHOD);
         request_redraw(app);
+    }
 }
 
 static void apply_surroundingless_text_input_transaction(struct app *app)
@@ -2389,6 +2417,7 @@ static void setup_wayland(struct app *app, const struct wayland_mode *mode)
     app->content_hint = mode->content_hint;
     app->content_purpose = mode->content_purpose;
     app->stale_trailing_newline_cursor = mode->stale_trailing_newline_cursor;
+    app->echo_preedit_in_surrounding = mode->echo_preedit_in_surrounding;
     app->touch_debug = mode->touch_debug;
     app->fullscreen = mode->fullscreen;
     app->report_scale = mode->report_scale;
@@ -2674,6 +2703,40 @@ static int cmd_text_input_stale_newline(int argc, char **argv)
         .editable = 1,
         .provide_surrounding = 1,
         .stale_trailing_newline_cursor = 1,
+    };
+
+    (void)argc;
+    (void)argv;
+
+    struct app app;
+    memset(&app, 0, sizeof(app));
+    signal_app = &app;
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+
+    setup_wayland(&app, &mode);
+
+    while (app.running) {
+        if (wl_display_dispatch(app.display) < 0) {
+            if (errno == EINTR && !app.running)
+                break;
+            fatal("wl_display_dispatch failed: %s", strerror(errno));
+        }
+    }
+
+    teardown_wayland(&app);
+    return 0;
+}
+
+static int cmd_text_input_echo_preedit(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "tawc wayland text-input echo-preedit debug",
+        .app_id = "wayland-debug-app-echo-preedit",
+        .use_text_input = 1,
+        .editable = 1,
+        .provide_surrounding = 1,
+        .echo_preedit_in_surrounding = 1,
     };
 
     (void)argc;
@@ -2997,6 +3060,9 @@ static const struct command commands[] = {
     { "text-input-no-surrounding",
       "Text-input surface that never sends surrounding",
       cmd_text_input_no_surrounding },
+    { "text-input-echo-preedit",
+      "Text-input surface that includes preedit in surrounding reports",
+      cmd_text_input_echo_preedit },
     { "text-input-stale-newline",
       "Text-input surface that reports cursor before trailing newlines",
       cmd_text_input_stale_newline },

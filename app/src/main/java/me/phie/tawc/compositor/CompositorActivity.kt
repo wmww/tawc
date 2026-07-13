@@ -218,10 +218,15 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
 
     internal fun activityIdForDev(): String = activityId
 
-    internal fun updateEditableTextFromCompositor(text: String, selStart: Int, selEnd: Int) {
+    internal fun updateEditableTextFromCompositor(
+        text: String,
+        selStart: Int,
+        selEnd: Int,
+        authoritative: Boolean,
+    ) {
         val ic = NativeBridge.activeInputConnection ?: return
         if (ic.targetsView(surfaceView)) {
-            ic.updateFromCompositor(text, selStart, selEnd)
+            ic.updateFromCompositor(text, selStart, selEnd, authoritative)
         }
     }
 

@@ -85,6 +85,7 @@ import me.phie.tawc.tasks.ProcessScanner
  * |--------|-------|
  * | `input-ready` | succeeds only when the focused Activity has an active IC |
  * | `focused-editor-info` | returns the last test-created EditorInfo input fields |
+ * | `ime-selection-updates` | dumps recorded `updateSelection` calls (what the editor told the IME) |
  * | `focused-activity-id` | returns the currently focused compositor Activity id |
  * | `focus-activity` | brings an existing compositor Activity document task forward |
  * | `test-init` | enter in-memory test settings, enable test input, close current client windows and lingering op log screens |
@@ -119,6 +120,7 @@ internal object InputActions {
         ActionRegistry.register("app-info", AppInfoAction)
         ActionRegistry.register("input-ready", InputReadyAction)
         ActionRegistry.register("focused-editor-info", FocusedEditorInfoAction)
+        ActionRegistry.register("ime-selection-updates", ImeSelectionUpdatesAction)
         ActionRegistry.register("focused-activity-id", FocusedActivityIdAction)
         ActionRegistry.register("focus-activity", FocusActivityAction)
         ActionRegistry.register("clipboard-set-text", ClipboardSetTextAction)
@@ -499,6 +501,29 @@ internal object InputActions {
                 ?.lastEditorInfoForDev()
                 ?: return ctx.fail("focused-editor-info: no test EditorInfo recorded")
             ctx.out("inputType=${info.first} imeOptions=${info.second}")
+            return 0
+        }
+    }
+
+    /**
+     * `ime-selection-updates` — dump every recorded
+     * [ImeOutput.updateSelection] call as `selStart,selEnd,composingStart,
+     * composingEnd` lines, oldest first. This is the editor→IME boundary a
+     * real system IME watches: `composingStart=composingEnd=-1` is the
+     * "composition ended" signal IMEs react to with a defensive
+     * `finishComposingText`. Tests model that reaction (and assert the
+     * signal is absent during uninterrupted composition) without putting
+     * the nondeterministic system IME back in the loop.
+     */
+    private object ImeSelectionUpdatesAction : BrokerAction {
+        override fun run(args: Map<String, String>, ctx: ActionContext): Int {
+            val recorder = NativeBridge.imeOutput as? RecordingImeOutput
+                ?: return ctx.fail("ime-selection-updates: not in test mode (run test-init first)")
+            recorder.calls
+                .filterIsInstance<RecordingImeOutput.Call.UpdateSelection>()
+                .forEach {
+                    ctx.out("${it.selStart},${it.selEnd},${it.composingStart},${it.composingEnd}")
+                }
             return 0
         }
     }

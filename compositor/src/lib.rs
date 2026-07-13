@@ -746,19 +746,20 @@ fn with_native_bridge_result<T>(
 /// `activity_id`. Called from the calloop thread whenever the focused client
 /// commits a `set_surrounding_text`. `sel_start`/`sel_end` are UTF-16
 /// code-unit offsets within `text` (Android's native editor measure).
-pub fn update_editable_text(activity_id: &str, text: &str, sel_start: i32, sel_end: i32) {
+pub fn update_editable_text(activity_id: &str, text: &str, sel_start: i32, sel_end: i32, authoritative: bool) {
     with_native_bridge("onUpdateEditableText", |env, class| {
         let activity_jstr = env.new_string(activity_id)?;
         let text_jstr = env.new_string(text)?;
         env.call_static_method(
             class,
             "onUpdateEditableText",
-            "(Ljava/lang/String;Ljava/lang/String;II)V",
+            "(Ljava/lang/String;Ljava/lang/String;IIZ)V",
             &[
                 (&activity_jstr).into(),
                 (&text_jstr).into(),
                 JValue::Int(sel_start),
                 JValue::Int(sel_end),
+                JValue::Bool(authoritative as u8),
             ],
         )?;
         Ok(())

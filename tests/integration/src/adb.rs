@@ -314,6 +314,56 @@ pub fn focused_editor_info() -> io::Result<(i32, i32)> {
     }
 }
 
+/// One recorded `ImeOutput.updateSelection` call — what the editor told
+/// the (test-recorded) IME about selection and composing region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImeSelectionUpdate {
+    pub sel_start: i32,
+    pub sel_end: i32,
+    pub composing_start: i32,
+    pub composing_end: i32,
+}
+
+impl ImeSelectionUpdate {
+    /// The "composition ended" shape real IMEs (Gboard, OpenBoard) react
+    /// to with a defensive `finishComposingText`.
+    pub fn signals_composition_ended(&self) -> bool {
+        self.composing_start == -1 && self.composing_end == -1
+    }
+}
+
+/// Dump every `updateSelection` call recorded by the test `ImeOutput`
+/// since `test-init`, oldest first. This is the editor→IME boundary the
+/// system IME watches; test-init removed that IME from the loop, so tests
+/// use this to assert (or model a reaction to) what it would have seen.
+pub fn ime_selection_updates() -> io::Result<Vec<ImeSelectionUpdate>> {
+    let output = broker_action("ime-selection-updates", &[])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|line| {
+            let fields: Vec<i32> = line
+                .split(',')
+                .map(|v| v.trim().parse())
+                .collect::<Result<_, _>>()
+                .map_err(|e| io::Error::other(format!("parse ime-selection-updates {line:?}: {e}")))?;
+            if fields.len() != 4 {
+                return Err(io::Error::other(format!(
+                    "ime-selection-updates line {line:?}: expected 4 fields"
+                )));
+            }
+            Ok(ImeSelectionUpdate {
+                sel_start: fields[0],
+                sel_end: fields[1],
+                composing_start: fields[2],
+                composing_end: fields[3],
+            })
+        })
+        .collect()
+}
+
 // ---- IC drivers ----------------------------------------------------------
 //
 // These mirror the [android.view.inputmethod.InputConnection] surface that

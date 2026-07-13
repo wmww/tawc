@@ -504,9 +504,40 @@ class TawcInputConnection(private val targetView: View) : BaseInputConnection(ta
      * own snapshot) stays in lockstep. In tests the recording impl drops
      * the call so the system IME never sees `composing=-1` and never
      * fires defensive `finishComposingText` reactions mid-test.
+     *
+     * # Mid-composition echoes are ignored
+     *
+     * While our own outbound preedit is active (`activePreeditUtf16Length
+     * > 0`), a non-authoritative report is the client echoing the edit
+     * we just sent — Qt/KTextEditor (Kate) even include the preedit in
+     * the reported text, since they render preedit by inserting it into
+     * the document buffer. Mirroring that echo would wipe the Editable's
+     * composing span and tell the IME `composing=-1,-1` ("composition
+     * ended"); real IMEs react with a defensive `finishComposingText`,
+     * force-committing every keystroke's preedit — Kate's "typing hello
+     * yields he hel hell hello hello" bug. During composition the IME
+     * owns the editor model, so the echo carries nothing we need; any
+     * genuine drift is reconciled by the report that follows the
+     * composition's end (commit/finish clears `activePreeditUtf16Length`).
+     *
+     * `authoritative` reports always resync: `cause=other` (user click,
+     * arrow keys — the protocol's explicit signal that the editor changed
+     * out from under the IME, so dropping the composition is correct) and
+     * the enable-cycle report of a freshly enabled field (an echo is
+     * structurally impossible there, and our preedit-active flag may be
+     * stale from a previous field — text-input leave/enable reset only
+     * compositor-side state, not this IC).
+     *
+     * Known residual race (harmless): if the IME ends the composition
+     * while the echo of its last preedit update is still in flight, the
+     * flag is already 0 when the stale echo lands and it gets mirrored as
+     * truth for one beat. The client's post-commit report follows on the
+     * same ordered path and corrects it, and delta-bearing edits are
+     * cursor-gated (`computeReplaceDeltas`) in the window.
      */
-    fun updateFromCompositor(text: String, selStart: Int, selEnd: Int) {
+    fun updateFromCompositor(text: String, selStart: Int, selEnd: Int, authoritative: Boolean) {
         val ed = editable ?: return
+        if (!authoritative && activePreeditUtf16Length > 0) return
         val newSelStart = selStart.coerceIn(0, text.length)
         val newSelEnd = selEnd.coerceIn(0, text.length)
         val curText = ed.toString()

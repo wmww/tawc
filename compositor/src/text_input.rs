@@ -105,8 +105,15 @@ fn hide_keyboard(activity_id: &str) {
 /// pokes `InputMethodManager.updateSelection`, so this single call
 /// covers both jobs — the IME sees the new text via Editable queries
 /// and the new selection via IMM in one round-trip.
-fn update_editable_text(activity_id: &str, text: &str, sel_start: i32, sel_end: i32) {
-    crate::update_editable_text(activity_id, text, sel_start, sel_end);
+///
+/// `authoritative` tells the Kotlin side this report must be applied
+/// even mid-composition: `cause=other` reports (out-of-band editor
+/// change) and enable-cycle reports (fresh field; an echo of our own
+/// preedit is structurally impossible). Non-authoritative reports may be
+/// the client echoing our own preedit — Qt/KTextEditor include it in
+/// surrounding text — and must not cancel an in-progress composition.
+fn update_editable_text(activity_id: &str, text: &str, sel_start: i32, sel_end: i32, authoritative: bool) {
+    crate::update_editable_text(activity_id, text, sel_start, sel_end, authoritative);
 }
 
 /// Push a new `EditorInfo.inputType` (and a small set of `imeOptions`
@@ -126,6 +133,15 @@ pub struct TextInputData;
 
 /// Surrounding text reported by a Wayland client via set_surrounding_text.
 /// All offsets are UTF-8 byte positions within `text`.
+///
+/// Caveat: the protocol says surrounding text excludes preedit, but
+/// Qt/KTextEditor clients include the active preedit (with the cursor
+/// after it) because they render preedit inside the document buffer. So
+/// while a preedit is outstanding, `text` may contain it. The one
+/// current consumer, `utf16_units_to_bytes` on the combined-delete path,
+/// only runs when no outbound preedit is active (the IC rejects
+/// delta-bearing edits until cursors resync); any new consumer must
+/// consider preedit pollution.
 #[derive(Clone)]
 struct SurroundingText {
     text: String,
@@ -355,8 +371,22 @@ impl TextInputState {
                 // composing region and refreshes its cached selection. One
                 // round-trip handles both for every cause — `cause=other`
                 // just means the IME also needs to drop its prediction model.
+                //
+                // `authoritative` marks reports the Kotlin side must apply
+                // even mid-composition (it otherwise ignores possible echoes
+                // of our own preedit, see updateFromCompositor):
+                //  - cause=other: the protocol's explicit out-of-band-change
+                //    signal; dropping the composition is correct.
+                //  - enable-cycle reports: enable resets all instance state,
+                //    so an echo is structurally impossible — and the Kotlin
+                //    IC may still hold a preedit-active flag from a previous
+                //    instance/focus (leave() only resets compositor state).
+                //    Without this bit, that stale flag would suppress the
+                //    fresh field's initial resync and a live IME could land
+                //    its in-flight word in the newly focused window.
+                let authoritative = change_cause == ChangeCause::Other || just_enabled;
                 if let Some(activity_id) = focused_activity_id {
-                    update_editable_text(activity_id, &text, sel_start, sel_end);
+                    update_editable_text(activity_id, &text, sel_start, sel_end, authoritative);
                 }
             }
         }

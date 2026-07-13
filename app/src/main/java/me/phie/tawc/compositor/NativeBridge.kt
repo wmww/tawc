@@ -427,13 +427,17 @@ object NativeBridge {
      * silently wrong.
      *
      * `selStart`/`selEnd` are UTF-16 code unit offsets within `text`.
+     * `authoritative` reports (cause=other, or the enable-cycle report of
+     * a freshly enabled field) must be applied even mid-composition;
+     * non-authoritative (cause=input_method) reports may be the echo of
+     * our own preedit and must not cancel an in-progress composition.
      */
     @JvmStatic
-    fun onUpdateEditableText(activityId: String, text: String, selStart: Int, selEnd: Int) {
+    fun onUpdateEditableText(activityId: String, text: String, selStart: Int, selEnd: Int, authoritative: Boolean) {
         mainHandler.post {
             serviceRef?.get()
                 ?.getActivity(activityId)
-                ?.updateEditableTextFromCompositor(text, selStart, selEnd)
+                ?.updateEditableTextFromCompositor(text, selStart, selEnd, authoritative)
         }
     }
 

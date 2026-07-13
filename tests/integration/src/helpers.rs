@@ -82,6 +82,26 @@ pub fn start_wayland_debug_text_input_no_surrounding(
     app
 }
 
+/// Start wayland-debug-app's Qt/KTextEditor-style text-input mode: the
+/// active preedit is included in `set_surrounding_text` reports (cursor
+/// after it), and preedit-only changes also push a report. Kate under Qt
+/// behaves this way; the compositor must tolerate the echo without
+/// telling the IME its composition ended.
+pub fn start_wayland_debug_text_input_echo_preedit(
+    backend: GraphicsBackend,
+    env: &str,
+) -> DebugApp {
+    let binary = ensure_wayland_debug_app();
+    let app = DebugApp::start(backend, &binary, "text-input-echo-preedit", env)
+        .expect("Failed to start echo-preedit wayland debug app");
+    app.wait_ready()
+        .expect("Echo-preedit wayland debug app did not become ready");
+    wait_for_keyboard_shown(TIMEOUT);
+    adb::wait_for_active_input_connection(TIMEOUT)
+        .expect("TawcInputConnection did not become active");
+    app
+}
+
 /// Start wayland-debug-app's text-input mode that reports the cursor before
 /// trailing newlines while still reporting the full surrounding text.
 pub fn start_wayland_debug_text_input_stale_newline(
