@@ -10,3 +10,8 @@ Likely fix: bottom padding on `listColumn` (plus `clipToPadding =
 false` on the ScrollView) equal to the button height, or move the
 button into the scroll content. Cosmetic only; not caused by the
 read-only-binds work, which merely made the list longer.
+
+Not reproduced on the physical device (2026-07-13, shared-storage-binds
+usecase test): in landscape with 3 binds + 5 suggestions overflowing,
+the last card scrolls fully clear of the Add button with a visible gap
+(bounds + screenshot review). May be emulator/screen-size specific.

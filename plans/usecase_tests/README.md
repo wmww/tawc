@@ -84,3 +84,4 @@ Leave the device as you found it:
 the same ground)
 
 - android-serve-http-to-browser — passed on physical (Arch tawcroot; browser render, tap-through, adb-forward host access, clean shutdown); side finding: issues/usecase_tests/proc-cmdline-masking-breaks-pgrep-pkill-ps.md
+- android-shared-storage-binds — passed on physical (Arch tawcroot; ManageBinds UI add/remove/suggestion/RO-dialog, both-direction RW round-trip, RO EROFS enforcement, revoked-grant fail-closed with actionable error + grant banner, live re-grant recovery; last-card-under-add-button issue not reproduced); side finding: issues/usecase_tests/manage-binds-dialog-triggers-password-autofill.md
