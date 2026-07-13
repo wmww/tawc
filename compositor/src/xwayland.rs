@@ -275,8 +275,6 @@ fn start_xwayland(
         handle.remove(token);
     }
 
-    let handle_for_wm = handle.clone();
-
     let dh = state.display_handle.clone();
     // Xwayland is a pure bionic process. libhybris/lib is intentionally
     // NOT on its LD_LIBRARY_PATH: libhybris ships glibc-built stub .sos
@@ -351,7 +349,7 @@ fn start_xwayland(
         XWaylandEvent::Ready { x11_socket, display_number } => {
             info!("xwayland: Ready, display={}", display_number);
             match X11Wm::start_wm(
-                handle_for_wm.clone(),
+                data.loop_handle(),
                 &dh_for_wm,
                 x11_socket,
                 xwayland_client_for_handler.clone(),

@@ -329,6 +329,12 @@ pub fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut event_loop: EventLoop<TawcState> = EventLoop::try_new()?;
     let loop_handle = event_loop.handle();
+    // Callbacks reach the loop via state, never by capturing LoopHandle
+    // clones — a captured handle sits inside the loop's own source list,
+    // creating an Rc cycle that leaks every source (and the Wayland
+    // listening socket's lock) past this function's return. See
+    // TawcState::loop_handle.
+    state.loop_handle = Some(loop_handle.clone());
 
     // --- Source 1: Wayland display fd ---
     // When clients send protocol messages, this fd becomes readable.
@@ -465,13 +471,12 @@ pub fn run(
     // a client pastes). Client-owned selections are pulled eagerly only after
     // Smithay has installed them in seat state; the selection handlers
     // queue PullSelection for this source to perform that deferred request.
-    let loop_handle_for_clipboard = loop_handle.clone();
     loop_handle.insert_source(clipboard_channel, move |event, _, data: &mut TawcState| {
         let evt = match event {
             ChannelEvent::Msg(e) => e,
             ChannelEvent::Closed => return,
         };
-        let handle = &loop_handle_for_clipboard;
+        let handle = &data.loop_handle();
 
         match evt {
             ClipboardEvent::AndroidClipAvailable { ts, own_write } => {
@@ -642,13 +647,12 @@ pub fn run(
     })?;
 
     // --- Source 6: Surface lifecycle events from Activities ---
-    let loop_handle_for_surface_events = loop_handle.clone();
     loop_handle.insert_source(surface_event_channel, move |event, _, data: &mut TawcState| {
         let evt = match event {
             ChannelEvent::Msg(e) => e,
             ChannelEvent::Closed => return,
         };
-        handle_surface_event(&loop_handle_for_surface_events, data, evt);
+        handle_surface_event(&data.loop_handle(), data, evt);
         if let Err(e) = data.display_handle.flush_clients() {
             error!("flush_clients error after surface event: {}", e);
         }
@@ -667,9 +671,8 @@ pub fn run(
     // the end of each tick so frame callbacks reach clients on idle ticks
     // (the fd-source dispatcher only flushes on incoming requests).
     let frame_timer = Timer::from_duration(Duration::from_millis(16));
-    let loop_handle_for_frame_timer = loop_handle.clone();
     loop_handle.insert_source(frame_timer, move |_, _, data: &mut TawcState| {
-        crate::xwayland::service_pending(&loop_handle_for_frame_timer, data);
+        crate::xwayland::service_pending(&data.loop_handle(), data);
 
         // New toplevels or dead toplevels need a repaint and focus update.
         // Consume the flag here so cleanup (step 4) can set it again for the
@@ -788,7 +791,7 @@ pub fn run(
         std::fs::Permissions::from_mode(0o777),
     );
     let listener_source = Generic::new(listener, Interest::READ, Mode::Level);
-    loop_handle.insert_source(listener_source, |_, source, data: &mut TawcState| {
+    let listener_token = loop_handle.insert_source(listener_source, |_, source, data: &mut TawcState| {
         while let Some(stream) = source.accept().map_err(std::io::Error::other)? {
             let client_state = ClientState::new(data.client_count.clone(), data.client_ids.clone());
             if let Err(e) = data
@@ -804,12 +807,24 @@ pub fn run(
 
     info!("Entering calloop event loop");
 
+    let mut loop_result: Result<(), Box<dyn std::error::Error>> = Ok(());
     while running.load(std::sync::atomic::Ordering::SeqCst) {
-        event_loop.dispatch(Some(Duration::from_millis(16)), &mut state)?;
+        if let Err(e) = event_loop.dispatch(Some(Duration::from_millis(16)), &mut state) {
+            loop_result = Err(e.into());
+            break;
+        }
     }
 
+    // Dropping `event_loop` does not reliably release the listening socket:
+    // any source callback still holding a LoopHandle (smithay's X11Wm ones
+    // do) keeps the loop's source list alive in an Rc cycle. Remove the
+    // listener explicitly so the socket and its lock are always released —
+    // a leaked lock makes the next in-process start fail with "Requested
+    // socket name is already in use".
+    loop_handle.remove(listener_token);
+
     info!("Event loop exited after {} frames", state.frame_count);
-    Ok(())
+    loop_result
 }
 
 fn render_visible_host(data: &mut TawcState) -> bool {

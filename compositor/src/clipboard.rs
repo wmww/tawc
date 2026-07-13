@@ -217,10 +217,9 @@ pub fn start_pull(
     }
     let id = NEXT_PULL_ID.fetch_add(1, Ordering::Relaxed);
 
-    let fd_handle = handle.clone();
     let fd_source = Generic::new(File::from(fd), Interest::READ, Mode::Level);
     let fd_token = match handle.insert_source(fd_source, move |_, file, data: &mut TawcState| {
-        Ok(pull_readable(&fd_handle, data, id, file.as_ref()))
+        Ok(pull_readable(&data.loop_handle(), data, id, file.as_ref()))
     }) {
         Ok(token) => token,
         Err(e) => {
@@ -229,7 +228,6 @@ pub fn start_pull(
         }
     };
 
-    let timer_handle = handle.clone();
     let timer = Timer::from_duration(PULL_TIMEOUT);
     // If the deadline and the pipe's final readable event land in the same
     // poll batch with the timer ordered first, a completed transfer is
@@ -237,7 +235,7 @@ pub fn start_pull(
     // the same wakeup as the 5s deadline, and costs one copy.
     let timer_token = match handle.insert_source(timer, move |_, _, data: &mut TawcState| {
         if let Some(pull) = take_pull_if_current(data, id) {
-            timer_handle.remove(pull.fd_token);
+            data.loop_handle().remove(pull.fd_token);
             warn!("clipboard: timed out waiting for {} selection source", pull.label);
             PULL_TIMEOUTS_TOTAL.fetch_add(1, Ordering::Relaxed);
         }

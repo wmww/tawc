@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use log::{error, info, warn};
 
-use smithay::reexports::calloop::RegistrationToken;
+use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::backend::renderer::{buffer_type, BufferType};
 use smithay::delegate_dispatch2;
@@ -92,6 +92,14 @@ pub struct WindowMetadata {
 /// same state type that owns protocol handlers.
 pub struct TawcState {
     pub display_handle: DisplayHandle,
+    /// Calloop handle, set by `event_loop::run` before any source can fire.
+    /// Callbacks must reach the loop through here (`data.loop_handle()`),
+    /// never by capturing a `LoopHandle` clone: captured handles live inside
+    /// the loop's own source list, forming an Rc cycle that keeps every
+    /// source alive after the loop is dropped — including the Wayland
+    /// listening socket, whose still-locked lock file makes the next
+    /// in-process compositor start fail with "socket name already in use".
+    pub loop_handle: Option<LoopHandle<'static, TawcState>>,
     pub compositor_state: CompositorState,
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
@@ -326,6 +334,7 @@ impl TawcState {
 
         Self {
             display_handle: dh,
+            loop_handle: None,
             compositor_state,
             shm_state,
             xdg_shell_state,
@@ -391,6 +400,14 @@ impl TawcState {
     /// Idempotent: a redundant update with the same surface fans out to
     /// `KeyboardHandle::set_focus` (Smithay deduplicates) and to
     /// `TextInputState::update_focus` (early-return on equal focus).
+    /// The calloop handle (cheap Rc clone). Only callable once the event
+    /// loop exists, i.e. from code running inside `event_loop::run`.
+    pub fn loop_handle(&self) -> LoopHandle<'static, TawcState> {
+        self.loop_handle
+            .clone()
+            .expect("loop_handle is set before the event loop runs")
+    }
+
     pub fn set_input_focus(&mut self, target: Option<&WlSurface>) {
         let target_owned = target.cloned();
         if let Some(keyboard) = self.seat.get_keyboard() {
