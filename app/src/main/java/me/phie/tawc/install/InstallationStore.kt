@@ -3,10 +3,9 @@ package me.phie.tawc.install
 import android.content.Context
 import android.util.Log
 import me.phie.tawc.AppPaths
+import me.phie.tawc.install.util.atomicWriteText
 import java.io.File
 import java.io.IOException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /**
  * On-disk layout for per-distro installations under
@@ -107,10 +106,13 @@ class InstallationStore(context: Context) {
 
     /**
      * Persist [installation], creating its slot if absent. The write is
-     * atomic: we stage the JSON in a sibling `metadata.json.tmp` and
-     * `rename(2)` it into place, so a crash mid-write leaves either the
-     * old contents or the new ones — never a half-written file that
-     * fromJson can't parse.
+     * atomic and durable ([atomicWriteText]): staged in a sibling
+     * `metadata.json.tmp`, fsynced, then `rename(2)`d into place, so a
+     * crash — or a power loss, which a bare write+rename does *not*
+     * survive — leaves either the old contents or the new ones, never
+     * a half-written file that fromJson can't parse. That matters
+     * doubly here because the only in-app exit from a CORRUPT slot is
+     * uninstalling the rootfs.
      *
      * This is the *create* entry point ([Installer] lays down the
      * initial INSTALLING record here). Every read-modify-write of an
@@ -129,10 +131,7 @@ class InstallationStore(context: Context) {
         }
         synchronized(lockFor(installation.id)) {
             installationDir(installation.id).mkdirs()
-            val finalFile = metadataFile(installation.id)
-            val tmpFile = File(finalFile.parentFile, finalFile.name + ".tmp")
-            tmpFile.writeText(installation.toJson())
-            Files.move(tmpFile.toPath(), finalFile.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            atomicWriteText(metadataFile(installation.id), installation.toJson())
         }
     }
 

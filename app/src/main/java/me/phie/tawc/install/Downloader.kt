@@ -68,6 +68,10 @@ object Downloader {
 
         try {
             val total = contentLength ?: conn.contentLengthLong.takeIf { it > 0 }
+            // For the truncation check below, the GET's own header is
+            // authoritative for the stream we actually read — a redirect
+            // can serve a different representation than the HEAD probe.
+            val expectedBytes = conn.contentLengthLong.takeIf { it > 0 } ?: total
             var read = 0L
             var lastReported = 0L
             conn.inputStream.use { input ->
@@ -99,6 +103,15 @@ object Downloader {
                 }
             }
             onProgress(read, total)
+            // A server closing the connection early looks identical to
+            // EOF, and renaming a short body into the cache would let
+            // later runs (and the HEAD-failed offline path above) treat
+            // it as complete. The integrity layer catches this today for
+            // every shipping distro, but keep truncation impossible to
+            // cache by mechanism, not policy.
+            if (expectedBytes != null && read != expectedBytes) {
+                throw IOException("Truncated download: got $read of $expectedBytes bytes for $url")
+            }
         } finally {
             conn.disconnect()
         }

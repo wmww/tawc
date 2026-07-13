@@ -50,16 +50,17 @@ import me.phie.tawc.ui.buildChildScreen
  *   callers, or `am start … --es operationId <id>` from adb to attach
  *   to a running op.
  *
- * **Threat model.** `exported="true"` is intentional so adb workflows
- * can attach. That means another installed app can launch this
- * activity for any [Operation.id] (it's just an intent extra) and
- * read the live log stream while the op is in flight. The op log is
- * therefore treated as "user-visible content," not a place to dump
- * sensitive material — install/uninstall log lines are limited to
- * filenames, package versions, and error messages, all of which are
- * already on logcat (`adb logcat -s tawc-install`). Mutating the op
- * still requires going through [Operation.cancel], which the on-screen
- * Cancel button calls but no intent extra triggers.
+ * **Threat model.** Exported in *debug builds only* (the
+ * `logScreenExported` manifest placeholder, set per build type in
+ * build.gradle.kts) so adb workflows can attach; in release no other
+ * app can launch it. Even where exported, the only input is the op-id
+ * extra: another app could at most pop the activity showing a live
+ * op's log *on the device screen* — there is no channel back to the
+ * caller, and mutating the op still requires [Operation.cancel], which
+ * the on-screen Cancel button calls but no intent extra triggers. Note
+ * the log itself is not guaranteed low-sensitivity: install logs stick
+ * to filenames/versions/errors, but [me.phie.tawc.install.RunCommandOp]
+ * ops carry the full stdout/stderr of a user-run rootfs command.
  */
 class LogScreenActivity : AppCompatActivity() {
 

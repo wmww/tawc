@@ -60,7 +60,19 @@ object EntryLauncher {
 
     /** Fire-and-forget launch of [entry] in [inst]'s rootfs. */
     fun launch(appContext: Context, inst: Installation, entry: LauncherEntry) {
-        val method = InstallationMethod.forKey(appContext, inst.method) ?: return
+        val method = InstallationMethod.forKey(appContext, inst.method)
+        if (method == null) {
+            // E.g. a proot install opened by a release build (which
+            // ships tawcroot only). A silent return here reads as a
+            // dead tap; say what's wrong instead.
+            Log.w(TAG, "launch ${entry.id}: method '${inst.method}' not in this build")
+            LaunchErrorActivity.start(
+                appContext,
+                appContext.getString(R.string.launcher_launch_failed_title, entry.name.ifEmpty { entry.id }),
+                appContext.getString(R.string.launcher_method_unavailable, inst.method),
+            )
+            return
+        }
         if (entry.terminal) {
             if (method is TawcrootMethod) {
                 appContext.startActivity(

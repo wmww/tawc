@@ -102,6 +102,10 @@ android {
 
     buildTypes {
         getByName("debug") {
+            // LogScreenActivity is exported in debug only — the export
+            // exists so `am start … --es operationId` from adb can
+            // attach to a running op; release keeps it app-internal.
+            manifestPlaceholders["logScreenExported"] = "true"
             buildConfigField("boolean", "METHOD_TAWCROOT_ENABLED", "${"tawcroot" in debugMethods}")
             buildConfigField("boolean", "METHOD_PROOT_ENABLED",    "${"proot" in debugMethods}")
             buildConfigField("boolean", "METHOD_CHROOT_ENABLED",   "${"chroot" in debugMethods}")
@@ -113,6 +117,7 @@ android {
             buildConfigField("boolean", "TINT_BUFFERS_BY_TYPE_DEFAULT", "true")
         }
         getByName("release") {
+            manifestPlaceholders["logScreenExported"] = "false"
             // Deliberately unminified: R8 would roughly halve the APK
             // (~13 vs ~29 MB, mostly BouncyCastle dex), but obfuscated
             // crash traces need per-release mapping.txt juggling and we

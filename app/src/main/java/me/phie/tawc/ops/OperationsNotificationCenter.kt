@@ -191,9 +191,19 @@ object OperationsNotificationCenter {
             .setContentText(message)
             .setOngoing(true)
         if (withActions) {
+            // Per-op data URI on both intents: notification ids (and so
+            // the request codes) are a 24-bit hash of the op id, and on
+            // a hash collision between two live ops FLAG_UPDATE_CURRENT
+            // would rewrite the colliding PendingIntent's extras in
+            // place (Intent.filterEquals ignores extras) — one
+            // notification's Cancel then cancels the *other* op. A
+            // distinct URI makes the intents non-equal, so each op
+            // keeps its own PendingIntent regardless of id collisions.
+            val opUri = android.net.Uri.parse("tawc://operation/" + android.net.Uri.encode(opId))
             val tap = PendingIntent.getActivity(
                 ctx, notificationIdFor(opId),
                 LogScreenActivity.intentFor(ctx, opId)
+                    .setData(opUri)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
@@ -201,6 +211,7 @@ object OperationsNotificationCenter {
                 ctx, notificationIdFor(opId) xor 0x1,
                 Intent(ctx, CancelOperationReceiver::class.java)
                     .setAction(CancelOperationReceiver.ACTION)
+                    .setData(opUri)
                     .putExtra(CancelOperationReceiver.EXTRA_OPERATION_ID, opId),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )

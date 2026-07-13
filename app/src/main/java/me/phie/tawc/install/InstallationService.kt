@@ -23,6 +23,7 @@ import kotlinx.coroutines.runInterruptible
 import me.phie.tawc.R
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroRegistry
+import me.phie.tawc.launcher.EntryShortcuts
 import me.phie.tawc.ops.CancelConfirmation
 import me.phie.tawc.ops.MutableOperation
 import me.phie.tawc.ops.OperationProgress
@@ -486,6 +487,17 @@ class InstallationService : Service() {
             try {
                 runInterruptible(Dispatchers.IO) {
                     installer.uninstall(::publishProgress, ::appendLog)
+                }
+                // Retire the distro's pinned home-screen shortcuts.
+                // Left alone they survive forever (erroring on tap) and
+                // silently alias into a different distro if the id is
+                // ever reused. Best-effort: a shortcut-manager hiccup
+                // must not fail a completed uninstall.
+                runCatching {
+                    EntryShortcuts.disablePinsFor(
+                        applicationContext, id,
+                        getString(R.string.shortcut_distro_uninstalled),
+                    )
                 }
             } catch (t: Throwable) {
                 handleUninstallThrow(store, id, t)

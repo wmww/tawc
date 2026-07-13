@@ -139,6 +139,8 @@
     <string name="shortcut_pin_updated">Updated the existing home-screen shortcut.</string>
     <string name="shortcut_install_not_ready">Installation is %1$s.</string>
     <string name="shortcut_entry_gone">This app is no longer installed in the distro.</string>
+    <string name="shortcut_distro_uninstalled">The distro was uninstalled.</string>
+    <string name="launcher_method_unavailable">Install method \'%1$s\' is not included in this build.</string>
     <string name="launcher_menu_add_entry">Add entry&#8230;</string>
     <string name="editor_title_new">Add entry</string>
     <string name="editor_title_edit">Edit program</string>
@@ -151,6 +153,7 @@
     <string name="editor_delete_confirm">Delete \'%1$s\'?</string>
     <string name="editor_foreign_warning">This file has settings the editor doesn\'t handle. Saving rewrites the file and drops them.</string>
     <string name="editor_save_failed">Saving failed: %1$s</string>
+    <string name="editor_load_failed">Couldn\'t read the file: %1$s</string>
     <string name="editor_delete_failed">Delete failed.</string>
     <string name="launcher_launch_failed_title">Launching %1$s failed</string>
 

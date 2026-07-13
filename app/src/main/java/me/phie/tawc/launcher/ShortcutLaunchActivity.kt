@@ -33,7 +33,10 @@ class ShortcutLaunchActivity : AppCompatActivity() {
         val desktopId = intent?.getStringExtra(EXTRA_DESKTOP_ID) ?: ""
         val label = intent?.getStringExtra(EXTRA_LABEL).takeUnless { it.isNullOrEmpty() } ?: desktopId
         val store = InstallationStore(this)
-        val inst = store.load(installId)
+        // Pinned-shortcut extras are the app's least-trusted input
+        // (the system replays them across updates); reject a malformed
+        // id before it reaches File(baseDir, id) path construction.
+        val inst = if (Installation.isValidId(installId)) store.load(installId) else null
         if (inst == null) {
             fail(label, getString(R.string.launcher_installation_not_found, installId))
             return

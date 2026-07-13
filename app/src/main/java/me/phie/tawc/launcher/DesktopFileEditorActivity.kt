@@ -17,6 +17,7 @@ import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.button.MaterialButton
 import me.phie.tawc.R
 import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.install.util.atomicWriteText
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.verticalLp
@@ -83,8 +84,27 @@ class DesktopFileEditorActivity : AppCompatActivity() {
                 return
             }
             editFile = f
-            loaded = runCatching { DesktopEntryFile.parse(f.readText()) }
-                .getOrDefault(loaded)
+            // A failed read must not fall through to the empty default
+            // draft: the form would open blank with no foreign-content
+            // warning, and Save would rewrite the file wholesale from
+            // nothing — silently wiping the entry. Refuse to edit what
+            // we couldn't read.
+            val bytes = try {
+                f.readBytes()
+            } catch (e: IOException) {
+                Toast.makeText(this, getString(R.string.editor_load_failed, e.message), Toast.LENGTH_LONG).show()
+                finish()
+                return
+            }
+            val text = String(bytes)
+            val parsed = DesktopEntryFile.parse(text)
+            // String() decodes malformed UTF-8 to U+FFFD without ever
+            // throwing, so a non-UTF-8 file would round-trip with
+            // silently corrupted values. Valid UTF-8 re-encodes byte-
+            // identically; anything else gets the foreign-content
+            // warning so the user knows saving rewrites the file.
+            loaded = if (text.toByteArray().contentEquals(bytes)) parsed
+            else parsed.copy(hasForeignContent = true)
         }
 
         val title = getString(
@@ -177,7 +197,10 @@ class DesktopFileEditorActivity : AppCompatActivity() {
         val file = editFile ?: DesktopEntryFile.newFile(managedDir, nameField.text.toString())
         try {
             managedDir.mkdirs()
-            file.writeText(DesktopEntryFile.serialize(draft()))
+            // Atomic: the filename is the entry id (pins and hidden-
+            // state reference it), so a truncated file from a mid-write
+            // kill would quietly break existing references.
+            atomicWriteText(file, DesktopEntryFile.serialize(draft()))
         } catch (e: IOException) {
             Toast.makeText(this, getString(R.string.editor_save_failed, e.message), Toast.LENGTH_LONG).show()
             return

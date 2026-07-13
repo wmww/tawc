@@ -76,12 +76,31 @@ object EntryShortcuts {
             .getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_PINNED)
             .any { it.id == info.id }
         return if (pinned) {
+            // Re-enable first: the pin may have been disabled by an
+            // uninstall ([disablePinsFor]) and the install id since
+            // reused. No-op for an already-enabled shortcut.
+            ShortcutManagerCompat.enableShortcuts(context, listOf(info))
             ShortcutManagerCompat.updateShortcuts(context, listOf(info))
             PinResult.UPDATED
         } else {
             ShortcutManagerCompat.requestPinShortcut(context, info, null)
             PinResult.REQUESTED
         }
+    }
+
+    /**
+     * Disable every pinned shortcut belonging to [installId]; launchers
+     * grey the pin out and show [message] on tap. Called after a
+     * successful uninstall — a stale pin would otherwise survive
+     * forever and, worse, silently launch into a *different* distro
+     * later installed under the same id. Re-pinning after a reinstall
+     * re-enables ([requestPin]).
+     */
+    fun disablePinsFor(context: Context, installId: String, message: String) {
+        val ids = ShortcutManagerCompat
+            .getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_PINNED)
+            .mapNotNull { info -> info.id.takeIf { splitShortcutId(it)?.first == installId } }
+        if (ids.isNotEmpty()) ShortcutManagerCompat.disableShortcuts(context, ids, message)
     }
 
     private fun pinIcon(context: Context, entry: LauncherEntry): IconCompat {

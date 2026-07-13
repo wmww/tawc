@@ -117,12 +117,14 @@
             android:label="@string/title_settings" />
 
         <!-- Generic per-operation log viewer. Pure viewer: opening it
-             never triggers any operation. Exported=true so an
-             am start with operationId from adb can attach to a running
-             op (e.g. one started via the dev exec broker). -->
+             never triggers any operation. Exported in debug builds
+             only (placeholder set per build type in build.gradle.kts)
+             so an am start with operationId from adb can attach to a
+             running op (e.g. one started via the dev exec broker);
+             release builds keep it app-internal. -->
         <activity
             android:name=".ops.LogScreenActivity"
-            android:exported="true"
+            android:exported="${logScreenExported}"
             android:label="@string/title_operation_log" />
 
         <!-- Notification "Cancel" action target. Looks up the named op

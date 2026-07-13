@@ -42,6 +42,12 @@ class SettingsActivity : AppCompatActivity() {
             buildSectionCard(getString(R.string.settings_graphics_driver), buildGraphicsBackendGroup()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
+        // "Debug rendering" ships in release on purpose: the magenta
+        // SHM tint is a supported diagnostic for GPU-fallback issues
+        // on user devices, not a debug-build-only tool. Only the
+        // default differs per build type
+        // (BuildConfig.TINT_BUFFERS_BY_TYPE_DEFAULT: on in debug, off
+        // in release).
         scaffold.content.addView(
             buildSectionCard(getString(R.string.settings_debug_rendering), buildTintBuffersCheckbox()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
