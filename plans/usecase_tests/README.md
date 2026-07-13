@@ -82,3 +82,5 @@ Leave the device as you found it:
 
 (one line per finished test; kept so future test authors don't re-cover
 the same ground)
+
+- android-serve-http-to-browser — passed on physical (Arch tawcroot; browser render, tap-through, adb-forward host access, clean shutdown); side finding: issues/usecase_tests/proc-cmdline-masking-breaks-pgrep-pkill-ps.md
