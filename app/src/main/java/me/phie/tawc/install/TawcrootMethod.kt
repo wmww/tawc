@@ -73,7 +73,11 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         script: String,
         onLine: ((String) -> Unit)?,
     ): MethodResult =
-        Sh.run("set -eu\n$script", onLine)
+        Sh.run(
+            "set -eu\n$script", 
+            onLine,
+            env = mapOf("TMPDIR" to appPaths.cacheDir.absolutePath)
+        )
 
     /**
      * Start a tawcroot subprocess running [command] inside [rootfs].
