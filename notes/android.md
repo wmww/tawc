@@ -146,6 +146,10 @@ never need the drawer.
   new distro. It and the ⋮ popup use `ThemeOverlay.Tawc.Surfaces`
   (neutral surface, accent-tinted selection) instead of Material3's
   lavender containers.
+- **Settings:** the first card, titled with the open distro's label, holds
+  its per-install settings (ando toggle, Manage binds; READY/FAILED only,
+  else a one-line note), rebuilt in `onResume`. Omitted with no install.
+  Every other card is global. Distro info is read-only plus Delete.
 - `TaskManagerActivity` stays cross-distro; launcher, terminal and
   shortcuts still take an install id.
 - Open ideas: make the home screen *be* the open distro's launcher

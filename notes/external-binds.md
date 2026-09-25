@@ -112,7 +112,7 @@ mid-install.
   default RO-ness (flagged on the card). A typed guest path may start
   with `~`/`~/`; the save handler expands it to `RootfsEnv.GUEST_HOME`
   (`/root`) so persisted binds stay absolute. Two modes: editing an
-  existing install's metadata (from `DistroInfoActivity`, gated to
+  existing install's metadata (from the open-distro card in `SettingsActivity`, gated to
   READY/FAILED so edits don't race the service's metadata writes;
   FAILED included because editing binds is how a user recovers a
   fail-closed slot), or round-tripping a JSON list via activity result

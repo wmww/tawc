@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.CheckBox
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -14,7 +15,14 @@ import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import me.phie.tawc.compositor.NativeBridge
+import me.phie.tawc.install.AllFilesAccess
 import me.phie.tawc.install.EnabledGraphicsBackends
+import me.phie.tawc.install.Installation
+import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.install.ManageBindsActivity
+import me.phie.tawc.install.TawcrootMethod
+import me.phie.tawc.install.buildAndoCommitRow
+import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.licenses.LicensesActivity
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.tawcCard
@@ -22,8 +30,9 @@ import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
 
 /**
- * App settings screen. Reachable from the home screen tonal "Settings"
- * button. Each section is its own card with a bold title at the top
+ * App settings screen. Reachable from the home screen's ⋮ menu. The
+ * first card holds the open distro's per-install settings
+ * ([OpenDistro]); the rest are global. Each section is its own card with a bold title at the top
  * followed by the section's controls. Add a new section by building a
  * card via [buildSectionCard] and adding it to `scaffold.content`.
  *
@@ -37,6 +46,15 @@ import me.phie.tawc.ui.verticalLp
  */
 class SettingsActivity : AppCompatActivity() {
 
+    private val store by lazy { InstallationStore(this) }
+
+    /** Serializes ando toggle commits so rapid taps land in click order. */
+    private val andoCommitExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** Holds the open-distro card; refilled in [onResume] so a distro
+     *  switch or uninstall while we were in the back stack re-renders. */
+    private lateinit var distroSlot: FrameLayout
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val scaffold = buildChildScreen(getString(R.string.title_settings))
@@ -44,6 +62,8 @@ class SettingsActivity : AppCompatActivity() {
         // Scroll so the last card isn't squeezed on short screens.
         val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
+        distroSlot = FrameLayout(this)
+        column.addView(distroSlot, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
         column.addView(
             buildSectionCard(getString(R.string.settings_graphics_driver), buildGraphicsBackendGroup()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
@@ -76,6 +96,70 @@ class SettingsActivity : AppCompatActivity() {
             LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT),
         )
         setContentView(scaffold.root)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        distroSlot.removeAllViews()
+        val inst = OpenDistro.resolve(store)
+        if (inst == null) {
+            distroSlot.visibility = android.view.View.GONE
+        } else {
+            distroSlot.visibility = android.view.View.VISIBLE
+            distroSlot.addView(buildDistroCard(inst))
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Queued commits still run; this only lets the worker exit.
+        andoCommitExecutor.shutdown()
+    }
+
+    /**
+     * Settings stored on the open install: ando (all methods) and
+     * storage binds (tawcroot, when this build declares all-files
+     * access). Both gated to READY/FAILED so an edit can't race the
+     * service's own metadata writes; FAILED stays editable since a bad
+     * bind is one way a slot fails.
+     */
+    private fun buildDistroCard(inst: Installation): android.view.View {
+        val pad = (12 * resources.displayMetrics.density).toInt()
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val title = DistroRegistry.displayLabel(inst)
+        // Distro line only when the label doesn't already say it, as
+        // on the home screen.
+        val displayName = DistroRegistry.forInstallation(inst)?.displayName
+            ?: "${inst.distro.replaceFirstChar { it.titlecase() }} (${inst.arch})"
+        if (title != displayName) {
+            body.addView(TextView(this).apply {
+                text = displayName
+                textSize = 14f
+                alpha = 0.7f
+            })
+        }
+        val editable = inst.state == Installation.State.READY || inst.state == Installation.State.FAILED
+        if (!editable) {
+            body.addView(TextView(this).apply {
+                text = getString(R.string.settings_distro_unavailable)
+                textSize = 14f
+                setPadding(0, pad / 2, 0, 0)
+            })
+        } else {
+            body.addView(
+                buildAndoCommitRow(this, store, inst, andoCommitExecutor),
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = pad / 2 },
+            )
+            if (inst.method == TawcrootMethod.KEY && AllFilesAccess.declared(this)) {
+                body.addView(
+                    tonalButton(getString(R.string.distro_info_manage_binds)) {
+                        startActivity(ManageBindsActivity.intentForInstall(this, inst.id))
+                    },
+                    LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = pad / 2 },
+                )
+            }
+        }
+        return buildSectionCard(title, body)
     }
 
     private fun buildSectionCard(title: String, body: android.view.View): android.view.View {

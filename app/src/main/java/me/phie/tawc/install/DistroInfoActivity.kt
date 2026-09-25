@@ -15,7 +15,6 @@ import androidx.appcompat.app.AppCompatActivity
 import android.content.DialogInterface
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import me.phie.tawc.AndoBrokers
 import me.phie.tawc.R
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroRegistry
@@ -31,7 +30,6 @@ import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.destructiveButton
 import me.phie.tawc.ui.plainIconButton
 import me.phie.tawc.ui.tawcButtonSizePx
-import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
 
 /**
@@ -40,9 +38,9 @@ import me.phie.tawc.ui.verticalLp
  * to fill in size, and exposes the (red, destructive) Delete button
  * (Are-You-Sure dialog → [InstallationService.startUninstall] +
  * [me.phie.tawc.ops.LogScreenActivity] for the live progress view).
- * Reached by tapping the home screen card's header; size lives here
- * (not on the home card) so opening the home screen doesn't pay the
- * multi-second su cost.
+ * Reached from the home ⋮ menu; size lives here (not on home) so
+ * opening the home screen doesn't pay the multi-second su cost.
+ * Editable per-install settings live in [me.phie.tawc.SettingsActivity].
  */
 class DistroInfoActivity : AppCompatActivity() {
 
@@ -51,10 +49,6 @@ class DistroInfoActivity : AppCompatActivity() {
 
     private lateinit var sizeValue: TextView
     private var sizeScope: CoroutineScope? = null
-
-    /** Serializes ando toggle commits so rapid taps land in click
-     *  order (see [buildAndoRow]). */
-    private val andoCommitExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private lateinit var scaffold: me.phie.tawc.ui.Scaffold
 
@@ -88,14 +82,6 @@ class DistroInfoActivity : AppCompatActivity() {
         super.onPause()
         sizeScope?.cancel()
         sizeScope = null
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        // Queued commits still run; shutdown() only stops new ones and
-        // lets the worker thread exit, so the executor doesn't outlive
-        // the activity.
-        andoCommitExecutor.shutdown()
     }
 
     private fun renderContent(installation: Installation) {
@@ -182,86 +168,10 @@ class DistroInfoActivity : AppCompatActivity() {
             android.view.View(this),
             LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f),
         )
-        // ando toggle (notes/ando.md). Applies to ALL install methods
-        // (unlike binds), state-gated to READY/FAILED like manage binds
-        // so a mid-mutation edit can't race the service's writes. Above
-        // the manage-binds button.
-        if (installation.state == Installation.State.READY ||
-            installation.state == Installation.State.FAILED
-        ) {
-            content.addView(
-                buildAndoRow(installation),
-                verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2),
-            )
-        }
-        // Manage binds is gated like Run plus FAILED: editing binds is
-        // exactly how the user recovers a slot that failed closed on a
-        // bad bind, but a mid-INSTALLING/UNINSTALLING edit would race
-        // the service's own metadata writes. Tawcroot-only — the other
-        // methods don't consume the list — and hidden when this build
-        // doesn't ship all-files access.
-        if (installation.method == TawcrootMethod.KEY && AllFilesAccess.declared(this) &&
-            (installation.state == Installation.State.READY ||
-                installation.state == Installation.State.FAILED)
-        ) {
-            content.addView(
-                tonalButton(getString(R.string.distro_info_manage_binds)) {
-                    startActivity(ManageBindsActivity.intentForInstall(this, installation.id))
-                },
-                verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2),
-            )
-        }
         content.addView(
             destructiveButton(getString(R.string.action_delete)) { confirmUninstall(installation) },
             verticalLp(MATCH_PARENT, WRAP_CONTENT),
         )
-    }
-
-    /**
-     * ando toggle row ([buildAndoToggleRow], notes/ando.md). Toggling
-     * read-modify-writes [Installation.andoEnabled] through [store] on
-     * [andoCommitExecutor] — single-threaded so rapid taps commit in
-     * click order instead of racing each other — re-checking the state
-     * gate at write time (mirrors [ManageBindsActivity.commit]) so a
-     * slot that slipped into INSTALLING/UNINSTALLING under us is left
-     * alone, then reconciles the broker via [AndoBrokers.refresh].
-     * Take-effect: disable is immediate (listener down, in-flight ando
-     * children killed); enable applies to the next rootfs spawn.
-     */
-    private fun buildAndoRow(installation: Installation): LinearLayout {
-        var reverting = false
-        return buildAndoToggleRow(this, installation.andoEnabled) { checkbox, checked ->
-            if (reverting) return@buildAndoToggleRow
-            andoCommitExecutor.execute {
-                // Gate + write atomically under the store's per-id lock:
-                // re-read inside [update] so a slot that slipped into
-                // INSTALLING/UNINSTALLING (or was uninstalled) under us
-                // is left alone rather than racing the service's writes.
-                val saved = store.update(installation.id) { current ->
-                    if (current.state == Installation.State.READY ||
-                        current.state == Installation.State.FAILED
-                    ) {
-                        current.copy(andoEnabled = checked)
-                    } else {
-                        null
-                    }
-                }
-                if (saved != null) {
-                    AndoBrokers.refresh(this)
-                } else {
-                    runOnUiThread {
-                        Toast.makeText(
-                            this,
-                            getString(R.string.ando_toggle_enable_failed),
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                        reverting = true
-                        checkbox.isChecked = !checked
-                        reverting = false
-                    }
-                }
-            }
-        }
     }
 
     private fun confirmUninstall(installation: Installation) {

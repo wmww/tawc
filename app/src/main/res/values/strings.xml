@@ -124,6 +124,7 @@
     <string name="distro_info_row_size">Size:</string>
     <string name="distro_info_row_external_binds">Storage binds:</string>
     <string name="distro_info_manage_binds">Manage binds</string>
+    <string name="settings_distro_unavailable">Not available while the distro is installing, uninstalling or broken.</string>
 
     <!-- ando toggle (notes/ando.md): shared across the install form and
          distro settings. -->
