@@ -9,6 +9,7 @@ import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -40,8 +41,10 @@ class SettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         val scaffold = buildChildScreen(getString(R.string.title_settings))
         val pad = (16 * resources.displayMetrics.density).toInt()
+        // Scroll so the last card isn't squeezed on short screens.
+        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        scaffold.content.addView(
+        column.addView(
             buildSectionCard(getString(R.string.settings_graphics_driver), buildGraphicsBackendGroup()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
@@ -51,23 +54,27 @@ class SettingsActivity : AppCompatActivity() {
         // default differs per build type
         // (BuildConfig.TINT_BUFFERS_BY_TYPE_DEFAULT: on in debug, off
         // in release).
-        scaffold.content.addView(
+        column.addView(
             buildSectionCard(getString(R.string.settings_debug_rendering), buildTintBuffersCheckbox()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
-        scaffold.content.addView(
+        column.addView(
             buildSectionCard(getString(R.string.settings_compatibility), buildCompatibilitySettings()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
-        scaffold.content.addView(
+        column.addView(
             buildOutputScaleCard(),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
-        scaffold.content.addView(
+        column.addView(
             buildSectionCard(getString(R.string.settings_about), buildAboutSettings()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
 
+        scaffold.content.addView(
+            ScrollView(this).apply { addView(column, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) },
+            LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT),
+        )
         setContentView(scaffold.root)
     }
 
