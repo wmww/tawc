@@ -25,6 +25,7 @@ object Settings {
     private const val KEY_OUTPUT_SCALE = "output_scale"
     private const val KEY_XWAYLAND = "xwayland"
     private const val KEY_GTK3_BROKEN_MENUS_WORKAROUND = "gtk3_broken_menus_workaround"
+    private const val KEY_OPEN_DISTRO = "open_distro"
 
     const val MIN_OUTPUT_SCALE = 0.5f
     const val MAX_OUTPUT_SCALE = 4.0f
@@ -38,6 +39,7 @@ object Settings {
         var outputScale: Float
         var xwayland: Boolean
         var gtk3BrokenMenusWorkaround: Boolean
+        var openDistroId: String?
     }
 
     private class SharedPreferencesStore(private val prefs: SharedPreferences) : Store {
@@ -73,6 +75,12 @@ object Settings {
             set(value) {
                 prefs.edit { putBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, value) }
             }
+
+        override var openDistroId: String?
+            get() = prefs.getString(KEY_OPEN_DISTRO, null)
+            set(value) {
+                prefs.edit { if (value == null) remove(KEY_OPEN_DISTRO) else putString(KEY_OPEN_DISTRO, value) }
+            }
     }
 
     private class TestStore : Store {
@@ -82,6 +90,7 @@ object Settings {
             set(value) { field = snapOutputScale(value) }
         @Volatile override var xwayland: Boolean = true
         @Volatile override var gtk3BrokenMenusWorkaround: Boolean = true
+        @Volatile override var openDistroId: String? = null
     }
 
     @Volatile private var store: Store? = null
@@ -149,6 +158,14 @@ object Settings {
     var gtk3BrokenMenusWorkaround: Boolean
         get() = requireStore().gtk3BrokenMenusWorkaround
         set(value) { requireStore().gtk3BrokenMenusWorkaround = value }
+
+    /**
+     * Install id the home screen shows. May be stale (uninstalled);
+     * read it through [OpenDistro.resolve], not directly.
+     */
+    var openDistroId: String?
+        get() = requireStore().openDistroId
+        set(value) { requireStore().openDistroId = value }
 
     fun snapOutputScale(value: Float): Float {
         if (!value.isFinite()) return DEFAULT_OUTPUT_SCALE

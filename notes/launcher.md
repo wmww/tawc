@@ -1,12 +1,13 @@
 # In-app launcher
 
 Per-distro app picker that reads `.desktop` files inside a chroot rootfs
-and lets the user search + launch. Reached from the home screen card's
-**Run** button.
+and lets the user search + launch. Reached from the home screen's
+search stub (for the open distro, notes/android.md "Home screen") and
+from pinned shortcuts.
 
 ## Pipeline
 
-1. **MainActivity** card → `LauncherActivity` Intent with `EXTRA_ID =
+1. **MainActivity** search stub → `LauncherActivity` Intent with `EXTRA_ID =
    <installation id>`.
 2. **LauncherActivity.loadApps()** → `LauncherEntry.scan(rootfs)` on
    `Dispatchers.IO` — the shared wrapper around

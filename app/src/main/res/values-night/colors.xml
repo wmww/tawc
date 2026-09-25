@@ -4,6 +4,7 @@
      both light and dark surfaces. -->
 <resources>
     <color name="tawc_accent">#B93710</color>
+    <color name="tawc_accent_container">#4A2416</color>
     <!-- Brighter green for dark mode so the "Installed" / "Deleted"
          status reads cleanly on the dark surface. -->
     <color name="tawc_success">#3BE646</color>

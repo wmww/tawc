@@ -2,17 +2,26 @@ package me.phie.tawc.ui
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.view.ContextThemeWrapper
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.android.material.navigation.NavigationView
+import com.google.android.material.shape.RelativeCornerSize
+import com.google.android.material.shape.ShapeAppearanceModel
 import me.phie.tawc.R
 
 /**
@@ -46,6 +55,64 @@ fun AppCompatActivity.buildHomeScreen(title: CharSequence): Scaffold =
         it.toolbar.setTitleCentered(true)
         it.toolbar.setTitleTextAppearance(this, R.style.TextAppearance_Tawc_HomeTitle)
     }
+
+/**
+ * [buildHomeScreen] inside a [DrawerLayout] with a start-edge
+ * [NavigationView]: hamburger in the toolbar opens it, Back closes it.
+ * [DrawerScreen.body] overlays the content column so a FAB can sit
+ * bottom-right. Set `setContentView(drawerScreen.drawer)`.
+ */
+class DrawerScreen(
+    val drawer: DrawerLayout,
+    val nav: NavigationView,
+    val scaffold: Scaffold,
+    val body: FrameLayout,
+)
+
+fun AppCompatActivity.buildDrawerScreen(title: CharSequence): DrawerScreen {
+    // System-bar insets stay on the main column (buildScreenInternal):
+    // the drawer runs under the status bar and pads its own contents.
+    val home = buildScreenInternal(title, withUp = false).also {
+        it.toolbar.setTitleCentered(true)
+        it.toolbar.setTitleTextAppearance(this, R.style.TextAppearance_Tawc_HomeTitle)
+    }
+    // Re-parent the content column into a FrameLayout so overlays
+    // (the FAB) can float over it.
+    home.root.removeView(home.content)
+    val body = FrameLayout(this)
+    body.addView(home.content, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+    home.root.addView(body, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+
+    val drawer = DrawerLayout(this)
+    drawer.addView(home.root, DrawerLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+    val surfaces = ContextThemeWrapper(this, R.style.ThemeOverlay_Tawc_Surfaces)
+    val nav = NavigationView(surfaces).apply {
+        fitsSystemWindows = true
+        // The inset scrims paint grey bands over the drawer's white.
+        isTopInsetScrimEnabled = false
+        isBottomInsetScrimEnabled = false
+    }
+    drawer.addView(
+        nav,
+        DrawerLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT).also { it.gravity = Gravity.START },
+    )
+    home.toolbar.popupTheme = R.style.ThemeOverlay_Tawc_Surfaces
+
+    home.toolbar.setNavigationIcon(R.drawable.ic_menu)
+    home.toolbar.setNavigationContentDescription(R.string.action_open_drawer)
+    home.toolbar.setNavigationOnClickListener { drawer.openDrawer(nav) }
+
+    val backCloses = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = drawer.closeDrawer(nav)
+    }
+    onBackPressedDispatcher.addCallback(this, backCloses)
+    drawer.addDrawerListener(object : DrawerLayout.SimpleDrawerListener() {
+        override fun onDrawerOpened(drawerView: View) { backCloses.isEnabled = true }
+        override fun onDrawerClosed(drawerView: View) { backCloses.isEnabled = false }
+    })
+
+    return DrawerScreen(drawer, nav, home, body)
+}
 
 private fun AppCompatActivity.buildScreenInternal(title: CharSequence, withUp: Boolean): Scaffold {
     val root = LinearLayout(this).apply {
@@ -164,8 +231,8 @@ fun Context.tonalButton(label: CharSequence, onClick: () -> Unit): MaterialButto
     }
 
 /**
- * Square icon-only variant of [tonalButton] (e.g. the per-distro
- * gear/Terminal buttons on the home screen). Fixed
+ * Square icon-only variant of [tonalButton]; base of
+ * [plainIconButton]. Fixed
  * [BUTTON_HEIGHT_DP]-square so every icon button matches the text
  * buttons' height regardless of icon size. MaterialButton centers a
  * TEXT_START icon when there's no text and iconPadding is 0.
@@ -255,6 +322,33 @@ fun Context.tawcCard(): MaterialCardView =
         cardElevation = 0f
         setCardBackgroundColor(getColor(R.color.tawc_card_bg))
     }
+
+/**
+ * Round accent floating action button for a screen's one headline
+ * action (the home screen's Terminal). Same accent/on-tonal pairing as
+ * the primary-styled install button. Add it to a [DrawerScreen.body]
+ * with [fabLp].
+ */
+fun Context.tawcFab(iconRes: Int, description: CharSequence, onClick: () -> Unit): FloatingActionButton =
+    FloatingActionButton(this).apply {
+        setImageResource(iconRes)
+        contentDescription = description
+        backgroundTintList = ColorStateList.valueOf(getColor(R.color.tawc_accent))
+        imageTintList = ColorStateList.valueOf(getColor(R.color.tawc_on_tonal))
+        shapeAppearanceModel = ShapeAppearanceModel.builder()
+            .setAllCornerSizes(RelativeCornerSize(0.5f))
+            .build()
+        setOnClickListener { onClick() }
+    }
+
+/** Bottom-end placement for [tawcFab] inside a FrameLayout. */
+fun Context.fabLp(): FrameLayout.LayoutParams {
+    val margin = (16 * resources.displayMetrics.density).toInt()
+    return FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).also {
+        it.gravity = Gravity.BOTTOM or Gravity.END
+        it.setMargins(margin, margin, margin, margin)
+    }
+}
 
 /** Convenience: vertical [LinearLayout.LayoutParams] with a bottom margin. */
 fun verticalLp(width: Int, height: Int, bottomMargin: Int = 0): LinearLayout.LayoutParams =

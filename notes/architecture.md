@@ -56,9 +56,10 @@ The compositor (`compositor/src/`) is split into:
 
 Kotlin side (`app/src/main/java/me/phie/tawc/`):
 
-- **MainActivity.kt** -- Home screen (only Activity in `category.LAUNCHER`). Renders
-  one card per installed distro (each with Info + Run buttons) plus "Task manager" /
-  "Install new distro" buttons. Nothing starts the compositor explicitly (see
+- **MainActivity.kt** -- Home screen (only Activity in `category.LAUNCHER`). Shows
+  the one open distro with a Terminal FAB, a drawer to switch distros or
+  install one, and ⋮ for Distro info / Run command / Task manager / Settings (notes/android.md
+  "Home screen"). Nothing starts the compositor explicitly (see
   "Compositor lifecycle" below); user-launched rootfs commands go through
   `UserRootfsSession`, which holds a session reason for the process's lifetime.
 - **launcher/LauncherActivity.kt** -- Per-distro app picker. Reads the rootfs's
@@ -76,14 +77,14 @@ Kotlin side (`app/src/main/java/me/phie/tawc/`):
   typing) doesn't slam the wrong bitmap into a recycled view.
 - **ui/Scaffold.kt** -- Helpers shared by the non-compositor activities — builds the
   `MaterialToolbar` (with back/up arrow on child screens) plus the content column, and
-  exposes the button factories. Buttons with text keep a visible fill
+  exposes the button factories. `buildDrawerScreen` is the home variant
+  (drawer + FAB overlay, `tawcFab`). Buttons with text keep a visible fill
   (`primaryButton` accent / `destructiveButton` red / `tonalButton` muted;
   `tonalIconButton` is the icon-only filled base). Narrow icon-only buttons use
   `plainIconButton`: no fill, circular ripple, and a 24dp `?attr/colorControlNormal`
   glyph — the same mark a toolbar's own up arrow draws, so back arrows match
-  wherever they appear. Two deliberate exceptions: the home card's gear/terminal
-  run at 28dp (`HOME_ICON_SIZE_DP` — the card's only controls, in open space) and
-  the launcher's ⋮ at 21dp (solid dots read heavier than the line icons). Colour
+  wherever they appear. One deliberate exception: the
+  launcher's ⋮ at 21dp (solid dots read heavier than the line icons). Colour
   carries meaning where it did before: the `+` on a bind suggestion is an
   accent-tinted glyph.
 - **compositor/CompositorService.kt** -- Bound (never started, not foreground) service

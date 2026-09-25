@@ -39,6 +39,28 @@
         <item name="android:textStyle">bold</item>
     </style>
 
+    <!-- Home drawer and ⋮ popup: the app's neutral surfaces and an
+         accent-tinted selection instead of Material3's lavender
+         containers. Applied as overlays so dialogs keep their look. -->
+    <style name="ThemeOverlay.Tawc.Surfaces" parent="">
+        <item name="colorSurfaceContainerLow">@color/tawc_card_bg</item>
+        <item name="colorSurfaceContainer">@color/tawc_card_bg</item>
+        <item name="colorSecondaryContainer">@color/tawc_accent_container</item>
+        <item name="colorOnSecondaryContainer">@color/tawc_on_tonal</item>
+        <item name="navigationViewStyle">@style/Widget.Tawc.NavigationView</item>
+    </style>
+
+    <!-- Selected-row pill at the app's 6dp button corners
+         (BUTTON_CORNER_DP in ui/Scaffold.kt), not Material3's full round. -->
+    <style name="Widget.Tawc.NavigationView" parent="Widget.Material3.NavigationView">
+        <item name="itemShapeAppearanceOverlay">@style/ShapeAppearance.Tawc.NavItem</item>
+    </style>
+
+    <style name="ShapeAppearance.Tawc.NavItem" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">6dp</item>
+    </style>
+
     <style name="Theme.Tawc.Launcher" parent="Theme.Tawc">
         <item name="android:windowIsFloating">true</item>
         <item name="android:windowCloseOnTouchOutside">true</item>

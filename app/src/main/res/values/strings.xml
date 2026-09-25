@@ -24,6 +24,8 @@
     <string name="action_manage">Manage</string>
     <string name="action_terminal">Terminal</string>
     <string name="action_run">Run</string>
+    <string name="action_run_command">Run command&#8230;</string>
+    <string name="action_open_drawer">Open distro list</string>
     <string name="action_stop">Stop</string>
     <string name="action_stop_all">Stop all</string>
     <string name="action_stopping">Stopping&#8230;</string>
@@ -34,6 +36,8 @@
     <string name="hint_search_apps">Search apps</string>
     <string name="hint_run_command">e.g. firefox</string>
 
+    <string name="home_drawer_item_state">%1$s · %2$s</string>
+    <string name="home_state_view_log">%1$s (view log)</string>
     <string name="home_empty_no_distros">You have no installed Linux distros, install one to get started.</string>
     <string name="install_state_installing">installing&#8230;</string>
     <string name="install_state_uninstalling">uninstalling&#8230;</string>

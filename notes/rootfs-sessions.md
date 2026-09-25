@@ -21,7 +21,7 @@ There is exactly one place that knows how to enter a rootfs:
 |---|---|
 | In-app installer (Installer pipeline) | `method.runInside` → `MethodRunHelper.runInside` → `method.startInside` |
 | In-app launcher (LauncherActivity) | `UserRootfsSession.runInside` → `method.startInside` |
-| In-app command runner (DistroInfoActivity) | `UserRootfsSession.startInside` → `method.startInside` |
+| In-app command runner (home ⋮ Run command, `RunCommandOp`) | `UserRootfsSession.startInside` → `method.startInside` |
 | Host scripts (`rootfs-run.sh`, `run-integration-tests.sh`) | broker `RUNINSIDE` request → `UserRootfsSession.startInside` → `method.startInside` |
 | Integration tests (`rootfs_run`, `rootfs_spawn`) | same broker path |
 

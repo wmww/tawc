@@ -1,7 +1,7 @@
 # Settings: per-distro section at the top
 
-Depends on [open-distro-home.md](open-distro-home.md) for
-`OpenDistro.resolve` / `Settings.openDistroId`.
+Builds on the open-distro home screen (done; notes/android.md "Home
+screen") for `OpenDistro.resolve` / `Settings.openDistroId`.
 
 ## Goal
 

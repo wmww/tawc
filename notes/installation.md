@@ -259,13 +259,13 @@ The package is split into three layers:
 | `InstallActions.kt`            | Broker action handlers (`install` / `uninstall`) registered from [TawcApplication.onCreate] (debug builds only). Validate args, call [InstallationService] companion-object helpers, open [LogScreenActivity] best-effort, and mirror the registered Operation's flows back to the broker socket until terminal. Host disconnect → `Operation.cancel()`. See `notes/exec-broker.md` for protocol. |
 | `InstallActivity.kt`           | Install form (distro radio, free-form Label EditText with live slug-derived id hint, vertical method radio in `tawcroot (recommended) / proot / chroot (requires root)` order, "What's the difference?" link to [InstallMethodInfoActivity]) → Install button → calls [InstallationService.startInstall], opens [LogScreenActivity], and finishes itself. The Install button is disabled while the label is empty / unslugifiable / collides with an existing installation. The activity is `exported="false"` — there is no CLI launch path. |
 | `InstallMethodInfoActivity.kt` | Read-only reference page describing the three install methods (tawcroot / proot / chroot). Linked from the install form's "What's the difference?" affordance so users can compare tradeoffs without leaving the app. |
-| `DistroInfoActivity.kt`        | Per-distro detail page (id, label, registry-resolved distro/arch, method, source URL, installed-at, state/failure, full rootfs path) + an async `du -sk` size readout (only for `READY`) + a red Delete button (Are-You-Sure dialog → [InstallationService.startUninstall] + opens [LogScreenActivity]). The view is rebuilt in `onResume` so a returning trip from a cancelled uninstall (FAILED) refreshes the State row instead of showing the stale READY pre-uninstall snapshot. Reached from a tap on a home-screen row. |
+| `DistroInfoActivity.kt`        | Per-distro detail page (id, label, registry-resolved distro/arch, method, source URL, installed-at, state/failure, full rootfs path) + an async `du -sk` size readout (only for `READY`) + a red Delete button (Are-You-Sure dialog → [InstallationService.startUninstall] + opens [LogScreenActivity]). The view is rebuilt in `onResume` so a returning trip from a cancelled uninstall (FAILED) refreshes the State row instead of showing the stale READY pre-uninstall snapshot. Reached from the home screen's ⋮ menu. Run moved to the home ⋮ menu (`RunCommandDialog.kt`). |
 
-The `MainActivity` home screen lists the on-disk installations
-(distro + arch only — size lives on [DistroInfoActivity] because
-`du -sk` over a multi-GB rootfs costs seconds via `su` and would slow
-down opening the launcher). Each row is tappable and opens the info
-page; the page itself hosts the Uninstall button.
+The `MainActivity` home screen shows the open installation (distro +
+arch only — size lives on [DistroInfoActivity] because `du -sk` over a
+multi-GB rootfs costs seconds via `su`); ⋮ → Distro info opens the
+info page, which hosts the Delete button. See notes/android.md "Home
+screen".
 
 The non-compositor activities (`MainActivity`, `InstallActivity`,
 `DistroInfoActivity`, [LogScreenActivity]) extend `AppCompatActivity`

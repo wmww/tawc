@@ -5,6 +5,7 @@ import android.graphics.Typeface
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import me.phie.tawc.OpenDistro
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -678,6 +679,9 @@ class InstallActivity : AppCompatActivity() {
                 this, targetId, methodKey, distroKey, labelText, mirrorProxyUrl, bindsJson, andoEnabled,
                 selectedBootstrap,
             )
+            // The new slot becomes the open distro so home shows its
+            // progress rather than the previous one.
+            OpenDistro.set(targetId)
             startActivity(LogScreenActivity.intentFor(this, "install:$targetId"))
             finish()
         }

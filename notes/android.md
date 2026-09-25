@@ -93,8 +93,9 @@ The Android app code (`app/src/main/java/me/phie/tawc/`) is split so that
 everything talking to the Rust compositor lives in its own package, separate from
 the rest of the app's UI/management features.
 
-- `MainActivity.kt` — home screen. Plain Android UI (no fullscreen, no Wayland).
-  Hosts buttons that launch the compositor and the installation manager.
+- `MainActivity.kt` — home screen (see "Home screen" below). Plain
+  Android UI (no fullscreen, no Wayland).
+- `OpenDistro.kt` — which install the home screen shows.
 - `compositor/` — everything that interacts with the Rust compositor:
   - `CompositorActivity.kt` — fullscreen immersive Activity that owns the
     `SurfaceView`, dispatches touch/IME, and registers the test broadcast
@@ -117,6 +118,39 @@ the rest of the app's UI/management features.
 When adding new app features (settings, app launcher, …), put them in
 their own packages under `me.phie.tawc.*` rather than mixing them into
 the compositor or install packages.
+
+
+## Home screen
+
+One distro is "open" at a time; the home screen shows only that one
+and a start-edge drawer switches. Most users have one install and
+never need the drawer.
+
+- **State:** `Settings.openDistroId` (pref `open_distro`; the test
+  store starts null). Always read through `OpenDistro.resolve`, which
+  falls back stored id → first READY → first install → null and writes
+  the fallback back. Screens resolve on `onResume`; none cache it.
+  Written by the drawer and by `InstallActivity` on Install (the new
+  slot opens so home shows its progress). Uninstall writes nothing.
+- **Layout:** `ui/Scaffold.kt` `buildDrawerScreen` (DrawerLayout +
+  NavigationView; Back closes the drawer). Toolbar: hamburger, title,
+  ⋮ (Distro info, Run command… when READY, Task manager, Settings).
+  Body, straight on the page (no card): the open distro's label and
+  distro line, a red state line for non-READY (INSTALLING/UNINSTALLING link to the live
+  `LogScreenActivity` op log), and the search stub into
+  `LauncherActivity`. Terminal is the round accent FAB (`tawcFab`), shown
+  only for READY tawcroot installs. No install: empty text plus the
+  accent Install button.
+- **Drawer:** one checkable row per install in `store.list()` order
+  (non-READY ones get a ` · state` suffix), a divider, then Install
+  new distro. It and the ⋮ popup use `ThemeOverlay.Tawc.Surfaces`
+  (neutral surface, accent-tinted selection) instead of Material3's
+  lavender containers.
+- `TaskManagerActivity` stays cross-distro; launcher, terminal and
+  shortcuts still take an install id.
+- Open ideas: make the home screen *be* the open distro's launcher
+  (changes `LauncherActivity`'s focus/finish-on-launch behaviour); a
+  permanent drawer on wide screens.
 
 ## Audio
 
