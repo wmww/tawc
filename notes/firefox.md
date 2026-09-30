@@ -95,6 +95,35 @@ seals) anywhere, so Firefox tabs may crash under those debug methods
 when the reopen is denied; setting it by hand in the guest env is the
 escape hatch.
 
+### Startup SIGSEGV: shim `DT_NEEDED` (fixed 2026-09-29)
+
+Firefox exiting 139 at startup, with
+`gGLGetString: not found` → `mozalloc_abort` in the log, was a link-flag
+ordering bug in our own build script — not a Firefox or libhybris bug.
+
+The `/usr/lib/hybris/gl-shims` shims resolve every entry point with
+`dlsym` at runtime, so they reference no GLES symbol at link time.
+GNU ld's default `--as-needed` therefore concludes the real library is
+unnecessary, drops it, and records no `DT_NEEDED`. The
+`-Wl,--no-as-needed` meant to prevent exactly that was written *after*
+the `-l:` it was supposed to apply to, and those flags are positional,
+so it did nothing at all.
+
+With the real library unloaded the failure is deceptively quiet:
+`dlopen` still succeeds and the `glX*` stubs still resolve, so the
+process looks healthy until the first real `gl*` call, which comes back
+NULL. Fixed by moving the flag before the `-l:` in
+`scripts/build-libhybris.sh`, which now also asserts the `DT_NEEDED`
+after linking so it cannot regress. Note that a `readelf -Ws` "does it
+export `glGetString`" check would be the wrong test — the shims
+intentionally do not re-export the GLES symbols.
+
+Worth telling apart from the shared-memory failure above, because the
+symptom looks similar and the fixes are unrelated: this one takes the
+**whole process** down at startup (exit 139, no window at all), whereas
+that one leaves the **parent** running and only kills content processes
+("Gah. Your tab just crashed"). The exit status tells them apart.
+
 ### Why GDK_GL=gles:always
 
 Set chroot-wide by `RootfsEnv.kt`. With `gles:always`, GTK uses

@@ -14,7 +14,15 @@
  *
  * This shim:
  *   - Exports GLX stubs so probes detect "no GLX, use EGL"
- *   - Links against libGL.so.1 (which in /tmp/gl-shims is a symlink to the
- *     libhybris GLES library) via DT_NEEDED, so `dlsym(handle, "glBindTexture")`
- *     resolves GLES symbols through the dependency chain.
+ *   - Links against libGL.so.1 (which in /usr/lib/hybris/gl-shims is a
+ *     symlink to the libhybris GLES library) via DT_NEEDED, so
+ *     `dlsym(handle, "glBindTexture")` resolves GLES symbols through
+ *     the dependency chain.
+ *
+ * The DT_NEEDED is load-bearing and is the whole point of the shim, so
+ * scripts/build-libhybris.sh asserts it. Note it is easy to lose: the
+ * shim references no symbol from libGL.so.1 at link time (everything
+ * is dlsym'd at runtime), so a DT_NEEDED of it needs -Wl,--no-as-needed
+ * *before* the -l, or GNU ld's default --as-needed drops the library.
+ * Without it dlopen succeeds and every GLES dlsym returns NULL.
  */
