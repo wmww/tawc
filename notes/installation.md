@@ -235,7 +235,7 @@ The package is split into three layers:
 | `RootfsTmpSweeper.kt`          | Age-based sweep (3 days, lstat mtimes, never follows symlinks, skips `/tmp/.X11-unix`) of every install's `<rootfs>/tmp`, run from `TawcApplication`'s startup thread — see *Rootfs /tmp sweep* below. |
 | `ChrootMounter.kt`             | Builds the bind-mount shell snippet (`mountScript`) used by [ChrootMethod.startInside], and provides defensive-cleanup `unmount` (used by [RootfsCleaner]). Mounts live inside a single `su` invocation's private namespace, not globally. |
 | `Installer.kt`                 | Generic install/uninstall orchestrator. Drives `setState(INSTALLING) → BootstrapCache.download → Archive.extractAsRoot → distro.configure → distro.initPackageManager → distro.installBasePackages → setState(READY)`. Distro-agnostic; per-distro behaviour comes from the [Distro] passed in. |
-| `distro/Distro.kt`             | Interface for a (distro × Linux arch). Owns `bootstrap` (URL/format/stripPrefix/verification), `cacheKey`, `basePackages`, the three policy hooks (`configure`, `initPackageManager`, `installBasePackages`), and `resolveBootstrap()` for distros with install-time URL/digest lookup (Manjaro/Void/Debian). Also defines `DistroBootstrap`. |
+| `distro/Distro.kt`             | Interface for a (distro × Linux arch). Owns `bootstrap` (URL/format/stripPrefix/verification), `cacheKey`, `basePackages`, the three policy hooks (`configure`, `initPackageManager`, `installBasePackages`), and `resolveBootstrap()` for distros with install-time URL/digest lookup (Manjaro/Void/Debian/Ubuntu). Also defines `DistroBootstrap`. |
 | `distro/DistroRegistry.kt`     | The only place that maps `(metadata.distro, metadata.arch)` → [Distro], `Build.SUPPORTED_ABIS` → installable [Distro] list, and the install activity's distro radio key → [Distro]. `availableForHost()` (supported-first) / `supportedForHost()` / `otherForHost()` / `defaultForHost()` / `forKey()`. |
 | `distro/arch/ArchPacmanCommon.kt` | Helpers shared by every Arch / Manjaro flavour: pacman.conf munging (SigLevel/DisableSandbox/CheckSpace/IgnorePkg), mirrorlist write, the `pacman-key --init` boilerplate, and `pacman -Syu` / `pacman -S --needed`. Also exports the canonical `DEFAULT_BASE_PACKAGES` list. |
 | `distro/arch/ArchLinuxX86_64.kt` | Arch Linux x86_64 (`pkgbuild.com` zstd bootstrap, `archlinux` keyring, geo-redirector mirrorlist). |
@@ -247,9 +247,12 @@ The package is split into three layers:
 | `distro/voidlinux/VoidReleaseKeys.kt` | Void's per-image-date minisign release public keys, bundled verbatim from `srcpkgs/void-release-keys/files/` in void-linux/void-packages, plus the `raw.githubusercontent.com` URL used to fetch a key for an image date newer than this APK. |
 | `distro/voidlinux/VoidLinuxX86_64.kt` | Void Linux x86_64 (glibc). Bootstrap is the dated `tar.xz` ROOTFS published under `live/current/`. |
 | `distro/voidlinux/VoidLinuxAarch64.kt` | Void Linux aarch64 (glibc). Same flow as the x86_64 flavour, different bootstrap URL and ABI. |
-| `distro/apt/AptCommon.kt`      | Shared apt-family helpers: deb822 sources, apt.conf, dpkg `path-exclude`, apt-family `/etc/profile.d/tawc.sh`, shell-default stubs, `apt-get update`, `apt-get dist-upgrade`, and base package install. |
+| `distro/apt/AptCommon.kt`      | Shared apt-family helpers: deb822 sources (`suites`/`components` are parameters — Debian passes `sid`/`main`, Ubuntu `noble noble-updates noble-security`/`main universe`), apt.conf, an optional apt pin file for `blockedPackages`, dpkg `path-exclude`, apt-family `/etc/profile.d/tawc.sh`, shell-default stubs, `apt-get update`, `apt-get dist-upgrade`, and base package install. Deletes the distro's own `sources.list` **and** its `sources.list.d/{debian,ubuntu}.sources` — leaving Ubuntu's would let apt fetch from `archive.ubuntu.com`, which carries no arm64 tree. |
 | `distro/debian/DebianDockerResolver.kt` | Pins the debuerreotype `dist-amd64` / `dist-arm64v8` branch tip to a commit SHA via the GitHub API, then fetches the OCI manifest at that commit and returns the `rootfs.tar.gz` URL plus layer SHA-256 — manifest and tarball are guaranteed to come from one tree state. |
 | `distro/debian/DebianSid.kt`   | Debian sid x86_64 / aarch64. Suite-driven apt-family implementation; future Debian suites should mostly be additional data objects. |
+| `distro/ubuntu/Ubuntu2404.kt`  | Ubuntu 24.04 LTS (noble) x86_64 / aarch64. Thin apt-family object: suites `noble noble-updates noble-security`, `Components: main universe` (the `systemd-standalone-*` pair is universe-only), keyring `/usr/share/keyrings/ubuntu-archive-keyring.gpg` from the tarball, and an apt pin refusing `snapd`. **arm64 is a ports architecture** — `Ubuntu2404Aarch64` uses `ports.ubuntu.com/ubuntu-ports`, not `archive.ubuntu.com`. `supported = true` since 2026-10-01 (first install device-verified; see [distro-options.md](distro-options.md)). |
+| `distro/ubuntu/UbuntuSha256Resolver.kt` | Fetches `SHA256SUMS` from `cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/`, verifies its detached PGP signature against the bundled cdimage key **before** trusting any digest from it, then picks the newest 24.04.x entry for this architecture (numeric point-release order, not line order). Yields a [BootstrapVerification.Sha256], same shape as Void's minisign flow. |
+| `distro/ubuntu/UbuntuReleaseKeys.kt` | The `Ubuntu CD Image Automatic Signing Key (2012)` (rsa4096, `8439 38DF … EFE2 1092`), bundled as a Kotlin constant with the same key from two keyservers. A constant rather than a `res/raw` key because `resolveBootstrap` runs before any `Context` exists; the Arch keys stay in `res/raw` because their check happens later, in [SignatureVerifier]. |
 | `util/HostArch.kt`             | `primaryAbi()` and `linuxArchFor(abi)` — the only place that knows the Android ABI ↔ Linux `uname -m` mapping. |
 | `util/HumanSize.kt`            | Byte-count → "1.2 MiB" formatter for download progress. |
 | `util/AppOwnership.kt`         | `chownAppDirNonRecursive` — resets a freshly-mkdir'd dir to app uid:gid so subsequent app-uid writes succeed. |
@@ -993,6 +996,7 @@ Hard rules:
 | ALARM aarch64 (`fl.us.mirror.archlinuxarm.org`, HTTPS) | PGP detached signature `<tarball>.sig`, against the Arch Linux ARM Build System key (`68B3 537F 39A3 13B3 E574 D067 7719 3F15 2BDB E6A6`) shipped at `res/raw/archlinuxarm_signing_key.asc` — the same key `pacman-key --populate archlinuxarm` pins for packages | `BootstrapVerification.Pgp` in `ArchLinuxArm.kt` |
 | Manjaro ARM aarch64 (`github.com/manjaro-arm/rootfs/releases`, HTTPS) | SHA-256 from the GitHub Releases REST API: `api.github.com/repos/manjaro-arm/rootfs/releases/latest` returns the asset's server-computed `digest: sha256:<hex>`. We fetch that JSON over HTTPS in `ManjaroArm.resolveBootstrap`, then verify the downloaded tarball's SHA-256 matches before extract | `BootstrapVerification.Sha256` (Manjaro path) in `ManjaroArm.kt` |
 | Void Linux x86_64 / aarch64 glibc (`repo-default.voidlinux.org/live/current/`, HTTPS) | SHA-256 from upstream `sha256sum.txt`, **and** the minisign (Ed25519) signature `sha256sum.sig` over that manifest, checked against the per-image-date Void release key — bundled in `VoidReleaseKeys` from void-packages on GitHub, i.e. a second origin. `VoidSha256Resolver.resolveLatest` verifies the signature before trusting any digest from the manifest, then the tarball's SHA-256 is checked before extract | `Minisign.kt` + `VoidSha256Resolver.kt`, yielding `BootstrapVerification.Sha256` in `VoidLinux{X86_64,Aarch64}.kt` |
+| Ubuntu 24.04 x86_64 / aarch64 (`cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/`, HTTPS) | SHA-256 from upstream `SHA256SUMS`, **and** the detached PGP signature `SHA256SUMS.gpg` over that manifest, checked against the *Ubuntu CD Image Automatic Signing Key (2012)* (`8439 38DF 228D 22F7 B374 2BC0 D94A A3F0 EFE2 1092`) bundled in `UbuntuReleaseKeys` — a different origin from the download (keyservers vs cdimage; the same key is also inside the tarball's own `trusted.gpg.d`, byte-identical). `UbuntuSha256Resolver` verifies the signature **before** parsing any digest out of the manifest, picks the newest 24.04.x entry for the architecture, and the tarball's SHA-256 is checked before extract. One `SHA256SUMS` covers every point release and architecture, so a point-release rollover needs no APK change | `SignatureVerifier.verifyDetached` (bytes seam) + `UbuntuSha256Resolver.kt`, yielding `BootstrapVerification.Sha256` in `Ubuntu2404.kt` |
 | Debian sid packages flavor (`deb.debian.org`, debug-only) | Clearsigned `dists/sid/InRelease` verified against the Debian Archive Automatic Signing Keys 12/bookworm + 13/trixie shipped at `res/raw/debian_archive_keyring.asc`; `Valid-Until` enforced (replay defence); `Packages.xz` fetched by-hash and digest-checked against the verified body; every `.deb` SHA-256-checked against the index before debootstrap sees it | `Clearsign.kt` / `DebianRelease.kt` / `PackageBootstrapInstaller.kt`; see *Bootstrap flavors* |
 | Debian sid x86_64 / aarch64 (`raw.githubusercontent.com/debuerreotype/docker-debian-artifacts`, HTTPS) | SHA-256 from the official debuerreotype Docker artifact OCI manifest. We resolve the `dist-amd64` / `dist-arm64v8` branch tip to a commit SHA via the GitHub API, fetch `image-manifest.json` at that pinned commit, read the single gzip layer digest, then verify `rootfs.tar.gz` (fetched from the same commit) against it before extract. Commit-pinning closes the mutable-branch race; the trust profile is still a single HTTPS origin (digest and tarball from the same repo) plus OCI digest sanity check | `BootstrapVerification.Sha256` (Debian path) in `DebianSid.kt` / `DebianDockerResolver.kt` |
 | In-chroot pacman packages | Default `SigLevel = Required DatabaseOptional`, against the keyring populated by `pacman-key --populate archlinux` / `archlinuxarm` / `archlinuxarm manjaro manjaro-arm` | `ArchPacmanCommon.kt` (the `Never` line was removed, `--populate` is no longer `\|\| true`'d) |
@@ -1098,6 +1102,59 @@ The upstream vectors (the real 20250202 `sha256sum.txt` +
 and exercised by `MinisignTest`, which also verifies every bundled key
 parses — a typo in `VoidReleaseKeys` fails the unit tests rather than
 an install.
+
+### Ubuntu: signed checksum manifest (PGP, second origin)
+
+Same shape as Void, different signature format. `SHA256SUMS` and the
+`ubuntu-base` tarball both live on `cdimage.ubuntu.com`, so the digest
+alone would only catch corruption; the detached `SHA256SUMS.gpg` over
+that manifest, checked against the *Ubuntu CD Image Automatic Signing
+Key (2012)*, is what makes the origin untrusted
+(`UbuntuSha256Resolver` + `UbuntuReleaseKeys`).
+
+- **One manifest, many releases.** `SHA256SUMS` covers every published
+  point release and every architecture, so `24.04.5` landing does not
+  need an APK change — the resolver takes the newest `24.04.x` for its
+  architecture by numeric order. A new **LTS** (26.04) is a deliberate
+  bump: URL directory, series regex, suite names, and a re-check that
+  the 2012 key still signs the new manifest. The key has no published
+  expiry, but that is not the same as it still being in use.
+- **Key location.** Bundled as a Kotlin constant rather than a
+  `res/raw` key, because this verification runs inside
+  `Distro.resolveBootstrap`, before any `Context` exists. The Arch keys
+  keep `res/raw` because their check happens later, in
+  `SignatureVerifier.verify`.
+- **Residual risk: rollback.** An attacker with origin control can serve
+  an older, genuinely signed `SHA256SUMS` plus its matching tarball —
+  accepted, same as Void; apt's own `Valid-Until` bounds staleness once
+  the first `apt update` has run. Don't build machinery for it.
+- **Single origin for the download.** cdimage can be slow; the signature
+  is what makes the mirror untrusted anyway, so serving the tarball from
+  another mirror later would not touch verification (same reasoning as
+  `issues/void-bootstrap-uses-slow-repo-default-mirror.md`).
+- Mid-rollover cache mismatches are handled by the existing
+  evict-and-retry loop in `Installer`; do not "fix" one by weakening the
+  verification.
+
+### Ubuntu: `snapd` is pinned out
+
+`Ubuntu2404` writes `/etc/apt/preferences.d/00-tawc-blocked` with `snapd`
+at `Pin-Priority: -1` (`AptCommon.blockedPackagesBody`). Not a
+preference — `snapd`'s postinst runs `setcap` on `snap-confine`, needs
+`CAP_SETFCAP`, and tawcroot's fake root has `CapEff: 0`. A failed
+postinst is not self-contained: dpkg leaves the package
+half-configured and **every subsequent apt transaction exits non-zero**,
+observed on a device right after a user installed Ubuntu's Firefox snap.
+
+`Pin: release *` blocks every origin on purpose (the package cannot work
+in this rootfs regardless of mirror), and nothing depends on it
+(`ubuntu-server` only *Recommends* it, and `AptCommon` sets
+`APT::Install-Recommends "0"`). The transitional `firefox` `.deb` needs
+no separate block: it `PreDepends: snapd (>= 2.54)`, so the same pin
+makes apt refuse it up front (`E: Package 'snapd' has no installation
+candidate`, seen on device) — a clear error instead of a browser stub.
+Real Firefox comes from the Mozilla tarball or PPA; see
+[firefox.md](firefox.md) "Ubuntu 24.04".
 
 ### ALARM bootstrap: from cross-mirror MD5 to PGP
 

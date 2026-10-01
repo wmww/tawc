@@ -155,6 +155,7 @@ data class Installation(
         const val DISTRO_MANJARO = "manjaro"
         const val DISTRO_VOID = "void"
         const val DISTRO_DEBIAN_SID = "debian-sid"
+        const val DISTRO_UBUNTU = "ubuntu"
         // Kept as constants for the metadata schema; the runtime
         // mapping to InstallationMethod implementations lives in
         // [InstallationMethod.forKey] and the impl objects' KEY fields.

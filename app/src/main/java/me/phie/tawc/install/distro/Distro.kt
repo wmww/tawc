@@ -14,10 +14,11 @@ import java.io.IOException
  * (`download → extract → configure → init pkgmgr → install pkgs`)
  * and one `Distro` per (distro family × Linux arch) plugs in here.
  *
- * Today's set includes Arch, Manjaro ARM, Void glibc, and Debian sid.
- * Adding e.g. Ubuntu is a fresh file in `distro/ubuntu/` plus shared
- * apt-family helpers; nothing in `Installer` / `InstallationService`
- * cares.
+ * Today's set includes Arch, Manjaro ARM, Void glibc, Debian sid, and
+ * Ubuntu 24.04. Adding another is a fresh directory under `distro/`
+ * plus whatever shared helpers its package manager already has (see
+ * `distro/ubuntu/` for the smallest example); nothing in `Installer` /
+ * `InstallationService` cares.
  */
 interface Distro {
     /**

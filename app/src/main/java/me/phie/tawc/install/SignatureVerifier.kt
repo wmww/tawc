@@ -134,12 +134,47 @@ object SignatureVerifier {
     ) {
         Log.d(TAG, "Verifying PGP signature for ${tarball.name}")
         val sigBytes = downloadBytes(mirrorProxy?.wrap(v.signatureUrl) ?: v.signatureUrl)
-        val signature = parseDetachedSignature(sigBytes)
         val keys = loadKeyRing(context, v.keyResource)
-        val key = resolveSigningKey(keys, signature, v.keyResource)
+        val keyId = verifyDetached(
+            keys = keys,
+            signatureBytes = sigBytes,
+            keyLabel = v.keyResource,
+            sourceLabel = tarball.name,
+            openData = { tarball.inputStream() },
+        )
+        Log.i(
+            TAG,
+            "Bootstrap PGP signature verified: ${tarball.name} signed by " +
+                "0x${java.lang.Long.toHexString(keyId).uppercase()}",
+        )
+    }
 
+    /**
+     * Verify a detached signature over [data] (or over [openData], for
+     * data too large to hold in memory) against [keyRing].
+     *
+     * The bytes-shaped sibling of [verifyPgp]: no `Context`, no `File`,
+     * no URL, so a distro that verifies a *manifest* at resolve time can
+     * use the exact same code path the tarball check does — see
+     * [me.phie.tawc.install.distro.ubuntu.UbuntuSha256Resolver], which
+     * runs before any `Context` exists. Keeping one implementation means
+     * the two cannot drift into different trust decisions.
+     *
+     * Throws [IOException] on a bad signature, a malformed signature
+     * blob, or a signer whose key is not in [keyRing]; returns the
+     * signing key id for logging.
+     */
+    internal fun verifyDetached(
+        keys: PGPPublicKeyRingCollection,
+        signatureBytes: ByteArray,
+        keyLabel: String,
+        sourceLabel: String,
+        openData: () -> InputStream,
+    ): Long {
+        val signature = parseDetachedSignature(signatureBytes)
+        val key = resolveSigningKey(keys, signature, keyLabel)
         signature.init(BcPGPContentVerifierBuilderProvider(), key)
-        tarball.inputStream().use { input ->
+        openData().use { input ->
             val buf = ByteArray(64 * 1024)
             while (true) {
                 if (Thread.interrupted()) throw InterruptedIOException("verify cancelled")
@@ -150,14 +185,31 @@ object SignatureVerifier {
         }
         if (!signature.verify()) {
             throw IOException(
-                "Bootstrap signature verification FAILED for ${tarball.name}. " +
-                    "Tarball is corrupt or tampered with.",
+                "PGP signature verification FAILED for $sourceLabel. " +
+                    "It is corrupt or tampered with.",
             )
         }
-        Log.i(
-            TAG,
-            "Bootstrap PGP signature verified: ${tarball.name} signed by " +
-                "0x${java.lang.Long.toHexString(signature.keyID).uppercase()}",
+        return signature.keyID
+    }
+
+    /**
+     * [verifyDetached] for an ASCII-armored keyring and an in-memory
+     * payload — the shape a resolver holding a bundled key and a fetched
+     * manifest needs.
+     */
+    internal fun verifyDetached(
+        keyRing: InputStream,
+        keyLabel: String,
+        signatureBytes: ByteArray,
+        data: ByteArray,
+        sourceLabel: String,
+    ): Long = parseKeyRing(keyRing, keyLabel).let { keys ->
+        verifyDetached(
+            keys = keys,
+            signatureBytes = signatureBytes,
+            keyLabel = keyLabel,
+            sourceLabel = sourceLabel,
+            openData = { ByteArrayInputStream(data) },
         )
     }
 

@@ -6,6 +6,8 @@ import me.phie.tawc.install.distro.arch.ArchLinuxX86_64
 import me.phie.tawc.install.distro.debian.DebianSidAarch64
 import me.phie.tawc.install.distro.debian.DebianSidX86_64
 import me.phie.tawc.install.distro.manjaro.ManjaroArm
+import me.phie.tawc.install.distro.ubuntu.Ubuntu2404Aarch64
+import me.phie.tawc.install.distro.ubuntu.Ubuntu2404X86_64
 import me.phie.tawc.install.distro.voidlinux.VoidLinuxAarch64
 import me.phie.tawc.install.distro.voidlinux.VoidLinuxX86_64
 import me.phie.tawc.install.util.HostArch
@@ -26,6 +28,8 @@ object DistroRegistry {
         VoidLinuxAarch64,
         DebianSidX86_64,
         DebianSidAarch64,
+        Ubuntu2404X86_64,
+        Ubuntu2404Aarch64,
     )
 
     /**

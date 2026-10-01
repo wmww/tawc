@@ -14,6 +14,28 @@ starting" recovery-dialog symptom and the tawcroot-side parent-process
 SEGV (Mozilla's `shm_open(3)` against an unbacked `/dev/shm`) are both
 fixed by the in-handler `/dev/shm` memfd emulation in `tawcroot/src/shm.c`.
 
+**Ubuntu 24.04 (2026-10-01, Galaxy Tab S9):** also works, with the same
+"no configuration" story — but Ubuntu ships **no usable Firefox package**
+(`firefox` is a snap transitional deb that `PreDepends: snapd`, and
+`snapd` is pinned out; see [distro-options.md](distro-options.md)
+"Ubuntu"). Install Mozilla's aarch64 tarball instead:
+
+```bash
+curl -fL -o /tmp/ff.tar.xz https://download-installer.cdn.mozilla.net/pub/firefox/releases/157.0/linux-aarch64/en-US/firefox-157.0.tar.xz
+tar -xJf /tmp/ff.tar.xz -C /opt     # needs xz-utils
+apt-get install -y libasound2t64 libdbus-glib-1-2 libxt6 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 libxshmfence1 libegl1 libgl1 libcups2
+```
+
+`libasound.so.2` is the one hard failure without that list
+(`XPCOMGlueLoad … Couldn't load XPCOM`). A `.desktop` entry pointing at
+`/opt/firefox/firefox --no-remote %u` then shows up in the in-app
+launcher. Verified on device: first-run UI, `example.com`, and
+`about:support` all render; `about:support` reports `GPU #1: Adreno (TM)
+740` active, `Display0: 2560x1516@60Hz scales:2.0`, `WEBRENDER available`,
+libhybris EGL (`EGL_VENDOR: Android`, `EGL_HYBRIS_WL_*`) and WebGL 2
+renderer `Qualcomm -- Adreno (TM) 740`.
+
 ## Launching
 
 ```bash

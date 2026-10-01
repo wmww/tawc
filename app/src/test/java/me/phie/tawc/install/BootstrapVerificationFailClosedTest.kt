@@ -104,6 +104,7 @@ class BootstrapVerificationFailClosedTest {
                             Installation.DISTRO_VOID,
                             Installation.DISTRO_MANJARO,
                             Installation.DISTRO_DEBIAN_SID,
+                            Installation.DISTRO_UBUNTU,
                         )
                         assertTrue(
                             "${distro.displayName} (${distro.linuxArch}) $flavor: static " +

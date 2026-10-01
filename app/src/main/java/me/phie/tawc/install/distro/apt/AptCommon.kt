@@ -52,14 +52,35 @@ internal object AptCommon {
         "systemd-standalone-tmpfiles",
     )
 
+    /** Rootfs-relative path of the apt pin file written for [blockedPackages]. */
+    private const val PREFERENCES_REL = "etc/apt/preferences.d/00-tawc-blocked"
+
+    /**
+     * apt preferences body pinning [packages] to `Pin-Priority: -1`, i.e.
+     * "never install this". Needed for packages whose postinst cannot run
+     * here and which leave dpkg half-configured behind them; see the
+     * Ubuntu flavour's `blockedPackages`.
+     */
+    fun blockedPackagesBody(packages: List<String>): String = packages.joinToString("\n\n") { pkg ->
+        listOf(
+            "Package: $pkg",
+            "Pin: release *",
+            "Pin-Priority: -1",
+        ).joinToString("\n")
+    }
+
     fun configure(
         method: InstallationMethod,
         rootfs: String,
-        suite: String,
+        suites: List<String>,
         repoUrl: String,
         signedBy: String,
         mirrorProxy: MirrorProxy?,
         log: (String) -> Unit,
+        /** apt `Components:`; Debian is `main`, noble needs `main universe`. */
+        components: String = "main",
+        /** Packages apt must refuse; see [blockedPackagesBody]. */
+        blockedPackages: List<String> = emptyList(),
     ) {
         val effectiveRepoUrl = mirrorProxy?.wrap(repoUrl) ?: repoUrl
         val pathExcludeLines = PATH_EXCLUDES.joinToString("\n") { "path-exclude=$it" }
@@ -74,11 +95,25 @@ internal object AptCommon {
             appendLine("cat > \"\$ROOTFS/etc/apt/sources.list.d/tawc.sources\" <<'SRC_EOF'")
             appendLine("Types: deb")
             appendLine("URIs: $effectiveRepoUrl")
-            appendLine("Suites: $suite")
-            appendLine("Components: main")
+            // deb822 takes whitespace-separated lists for both fields.
+            appendLine("Suites: ${suites.joinToString(" ")}")
+            appendLine("Components: $components")
             appendLine("Signed-By: $signedBy")
             appendLine("SRC_EOF")
-            appendLine("rm -f \"\$ROOTFS/etc/apt/sources.list.d/debian.sources\"")
+            // The distro's own source file must go with it: Debian ships
+            // `debian.sources`, Ubuntu's base image ships `ubuntu.sources`
+            // (pointing at the archive host, which is the *wrong* one for
+            // arm64 — that archive lives on `ports`). Leaving either in
+            // place means apt keeps fetching from a source we did not
+            // configure and did not pin.
+            appendLine("rm -f \"\$ROOTFS/etc/apt/sources.list.d/debian.sources\" \"\$ROOTFS/etc/apt/sources.list.d/ubuntu.sources\"")
+            if (blockedPackages.isNotEmpty()) {
+                appendLine("mkdir -p \"\$ROOTFS/etc/apt/preferences.d\"")
+                appendLine("cat > \"\$ROOTFS/$PREFERENCES_REL\" <<'PREF_EOF'")
+                appendLine("# tawc: packages that cannot work in this rootfs.")
+                appendLine(blockedPackagesBody(blockedPackages))
+                appendLine("PREF_EOF")
+            }
             appendLine("cat > \"\$ROOTFS/etc/apt/apt.conf.d/90tawc\" <<'APT_EOF'")
             appendLine("APT::Install-Recommends \"0\";")
             appendLine("APT::Install-Suggests \"0\";")
