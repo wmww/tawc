@@ -824,8 +824,22 @@ pub fn run(
     // (Source 1) — no separate dispatch_clients here. We do still flush at
     // the end of each tick so frame callbacks reach clients on idle ticks
     // (the fd-source dispatcher only flushes on incoming requests).
-    let frame_timer = Timer::from_duration(Duration::from_millis(16));
+    //
+    // The period follows the advertised refresh rate and is returned from
+    // every tick (`TimeoutAction::ToDuration`), so a changed rate retimes
+    // the loop immediately. A fixed 16 ms here is what used to cap the
+    // whole pipeline at ~60 fps on a 120 Hz panel: this timer is the only
+    // thing pacing renders, so frame callbacks — and with them every
+    // client's animation — inherited the ceiling.
+    let frame_timer = Timer::from_duration(crate::compositor::frame_period(
+        state.output_refresh_mhz,
+    ));
     loop_handle.insert_source(frame_timer, move |_, _, data: &mut TawcState| {
+        frame_tick(data);
+        TimeoutAction::ToDuration(crate::compositor::frame_period(data.output_refresh_mhz))
+    })?;
+
+    fn frame_tick(data: &mut TawcState) {
         crate::xwayland::service_pending(&data.loop_handle(), data);
 
         // New toplevels or dead toplevels need a repaint and focus update.
@@ -927,8 +941,7 @@ pub fn run(
             error!("flush_clients error: {}", e);
         }
 
-        TimeoutAction::ToDuration(Duration::from_millis(16))
-    })?;
+    }
 
     // Spawn Xwayland (best-effort: failure logs and continues — the
     // Wayland-only subset of the compositor still works without it).
@@ -1051,6 +1064,9 @@ fn render_visible_host(data: &mut TawcState) -> bool {
     if rendered {
         data.frame_count += 1;
         data.last_rendered_toplevels = toplevel_count(data);
+        // After the swap: this frame is on its way to the screen, so any
+        // `wp_presentation` feedback the clients asked for can be answered.
+        render::report_presentation_feedback(data, data.frame_count);
     }
     rendered
 }
@@ -1180,6 +1196,9 @@ fn handle_surface_event(
         }
         SurfaceEvent::OutputScaleChanged { scale } => {
             apply_output_scale(data, OutputScale::new(scale));
+        }
+        SurfaceEvent::OutputRefreshChanged { mhz } => {
+            data.set_output_refresh_mhz(mhz);
         }
         SurfaceEvent::XwaylandChanged { enabled } => {
             crate::xwayland::set_enabled(loop_handle, data, enabled);

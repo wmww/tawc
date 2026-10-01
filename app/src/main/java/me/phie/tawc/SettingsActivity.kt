@@ -16,6 +16,10 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.AllFilesAccess
+import android.view.Gravity
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Spinner
 import me.phie.tawc.install.EnabledGraphicsBackends
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
@@ -318,6 +322,7 @@ class SettingsActivity : AppCompatActivity() {
             clipToPadding = false
             addView(buildTerminalScaleSlider(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(buildOutputScaleSlider(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(buildRefreshRateRow(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         card.addView(column)
         return card
@@ -338,6 +343,68 @@ class SettingsActivity : AppCompatActivity() {
         Settings.MIN_TERMINAL_SCALE, Settings.MAX_TERMINAL_SCALE, Settings.TERMINAL_SCALE_STEP,
         Settings.terminalScale, Settings::snapTerminalScale, Settings::formatTerminalScale,
     ) { Settings.terminalScale = it }
+
+    /**
+     * Cap on the panel's refresh rate.
+     *
+     * The list is exactly what this display reports — no rate the panel
+     * would refuse — and the top entry means "follow the panel" rather
+     * than freezing today's maximum, so the setting keeps working when the
+     * device (or the panel's current mode) changes. Changing it pushes the
+     * new rate to a running compositor straight away; this Activity's own
+     * window preference is applied by `CompositorActivity` when it resumes.
+     */
+    private fun buildRefreshRateRow(): android.view.View {
+        val cardPad = (12 * resources.displayMetrics.density).toInt()
+        val title = TextView(this).apply {
+            text = getString(R.string.settings_refresh_rate)
+            textSize = 16f
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        }
+        val usable = RefreshRate.usableMhz(displayRefreshRatesMhz(this))
+        if (usable.isEmpty()) return row
+
+        // Index 0 is "follow the panel"; the rest are the concrete rates
+        // below its maximum, descending.
+        val caps = listOf(RefreshRate.MAX_MHZ) + usable.reversed().drop(1)
+        fun labelFor(capMhz: Int): String = if (capMhz == RefreshRate.MAX_MHZ) {
+            getString(R.string.settings_refresh_rate_max, RefreshRate.formatMhz(usable.last()))
+        } else {
+            RefreshRate.formatMhz(capMhz)
+        }
+        val spinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@SettingsActivity,
+                android.R.layout.simple_spinner_item,
+                caps.map { labelFor(it) },
+            ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+            contentDescription = getString(R.string.settings_refresh_rate)
+            setSelection(caps.indexOf(Settings.refreshRateCapMhz).coerceAtLeast(0), false)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    val picked = caps[position]
+                    if (picked == Settings.refreshRateCapMhz) return
+                    Settings.refreshRateCapMhz = picked
+                    RefreshRate.effectiveMhz(usable, picked)
+                        ?.let { NativeBridge.nativeSetOutputRefreshRate(it) }
+                }
+
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        row.addView(spinner, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, cardPad / 2, 0, cardPad / 2)
+            addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+        return column
+    }
 
     private fun buildScaleSlider(
         titleRes: Int,

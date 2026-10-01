@@ -292,6 +292,12 @@ object NativeBridge {
      *  this through wl_output, fractional-scale, and xdg configure events. */
     external fun nativeSetOutputScale(scale: Float)
 
+    /** Update the refresh rate advertised in `wl_output.mode` (mHz).
+     *  Clients that pace themselves by the output — WebRender, games,
+     *  `wl_surface.frame` callbacks — render at this rate, so it must
+     *  match what the Activity asks Android for (`preferredRefreshRate`). */
+    external fun nativeSetOutputRefreshRate(mhz: Int)
+
     /** Start/stop the compositor-owned Xwayland server live. */
     external fun nativeSetXwaylandEnabled(enabled: Boolean)
 

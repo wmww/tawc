@@ -9,9 +9,12 @@ import android.content.ServiceConnection
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.Display
+import android.view.Surface
 import android.os.IBinder
 import android.util.Log
 import android.view.InputDevice
@@ -38,7 +41,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.phie.tawc.RefreshRate
 import me.phie.tawc.Settings
+import me.phie.tawc.displayRefreshRatesMhz
 import java.io.File
 
 /**
@@ -187,6 +192,76 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         NativeBridge.nativeRegisterActivitySurface(
             activityId, holder.surface, frame.width(), frame.height()
         )
+        // The surface exists now, so the frame-rate request can land too.
+        applyRefreshRatePreference()
+    }
+
+    /**
+     * Ask Android for the configured refresh rate.
+     *
+     * A high-refresh panel only helps when the window asks for it: without
+     * a preference the system is free to sit at its idle rate (60 Hz on
+     * this tablet) even though the panel can do 120, and
+     * `setFrameRate(FIXED_SOURCE)` is what holds the rate instead of
+     * letting it drop while nothing animates. The compositor advertises the
+     * same number to clients (`nativeSetOutputRefreshRate` in
+     * `CompositorService`), so both halves come from one `Settings` read.
+     */
+    private fun applyRefreshRatePreference() {
+        val effective = RefreshRate.effectiveMhz(
+            displayRefreshRatesMhz(this),
+            Settings.refreshRateCapMhz,
+        ) ?: return
+        val hz = effective / 1000f
+        val attributes = window.attributes
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            attributes.preferredRefreshRate = hz
+        } else {
+            // API 29 has no per-window rate preference; name the mode.
+            getSystemService(DisplayManager::class.java)
+                ?.getDisplay(Display.DEFAULT_DISPLAY)
+                ?.supportedModes
+                ?.minByOrNull { kotlin.math.abs(it.refreshRate - hz) }
+                ?.let { attributes.preferredDisplayModeId = it.modeId }
+        }
+        window.attributes = attributes
+        // Advertising happens from here, not from CompositorService: since
+        // Android 12 a non-visual Context gets `null` from
+        // `DisplayManager.getDisplay()`, so the service cannot read the
+        // panel's modes at all (it silently produced an empty list and the
+        // output stayed at the 60 Hz default). The window may briefly
+        // advertise the default before this runs; clients handle the
+        // `wl_output.mode` update that follows.
+        // Persist it too: the compositor's *first* advertised mode must be
+        // right, and only this Activity can read the panel (see the note in
+        // CompositorService). A client that samples once at startup — as
+        // Firefox does for its refresh-driver target — otherwise keeps
+        // pacing at the 60 Hz default even after the mode is corrected.
+        Settings.outputRefreshMhz = effective
+        NativeBridge.nativeSetOutputRefreshRate(effective)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // The holder's Surface can already be gone — `onResume` runs
+            // after a torn-down window too — and `setFrameRate` throws on a
+            // released Surface, which crashed the Activity on resume and
+            // took the whole window (and the app's task) with it. `isValid`
+            // is a race against the surface thread, so the catch stays.
+            val surface = surfaceView.holder.surface
+            if (surface?.isValid == true) {
+                try {
+                    surface.setFrameRate(hz, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+                } catch (e: IllegalStateException) {
+                    Log.w(TAG, "surface released before setFrameRate($hz)", e)
+                } catch (e: IllegalArgumentException) {
+                    Log.w(TAG, "setFrameRate($hz) rejected by this display", e)
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Settings may have changed the cap while this Activity was paused.
+        applyRefreshRatePreference()
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {

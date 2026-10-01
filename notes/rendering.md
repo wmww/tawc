@@ -152,6 +152,49 @@ basic placement regressions in the Smithay element path.
 The canonical output scale factor lives in `TawcState::output_scale` as an
 `OutputScale`, not an integer. Do not hardcode a scale elsewhere.
 
+## Refresh Rate
+
+`TawcState::output_refresh_mhz` is the rate the single output mode
+advertises (default 60 Hz, the value every earlier build hardcoded). It
+matters because clients that pace themselves by the output — WebRender,
+games, `wl_surface.frame` callbacks — render at whatever
+`wl_output.mode` says, so a 120 Hz panel with a 60 Hz *advertisement*
+still caps them at 60 fps.
+
+Both halves of the feature read one `Settings.refreshRateCapMhz`:
+
+- **Android side** (`CompositorActivity.applyRefreshRatePreference`):
+  `WindowManager.LayoutParams.preferredRefreshRate` plus
+  `Surface.setFrameRate(FIXED_SOURCE)` on API 30+ (API 29 pinpoints a
+  mode with `preferredDisplayModeId` instead). Without the window
+  preference the system is free to stay at its idle rate even on a fast
+  panel, and without the surface request the rate drops while nothing
+  animates. Applied on resume, so returning from Settings picks up a new
+  cap.
+- **Compositor side** (`nativeSetOutputRefreshRate` →
+  `SurfaceEvent::OutputRefreshChanged` → `TawcState::set_output_refresh_mhz`):
+  re-publishes the mode, which is the same "only ever one mode" path a
+  size change takes, so a connected client learns the new rate
+  immediately. Pushed from `CompositorActivity` (on resume and on surface
+  creation) and from the settings row on change. The **resolution** never
+  happens in `CompositorService`: since Android 12 a non-visual Context
+  gets `null` from `DisplayManager.getDisplay()`, so the service cannot
+  read the panel's modes (the first version of this code "worked" there by
+  resolving an empty list and doing nothing). Instead the Activity
+  persists what it resolved in `Settings.outputRefreshMhz`, and the
+  service pushes *that* when it starts the compositor — otherwise the
+  first `wl_output.mode` a client sees is the 60 Hz default, and clients
+  that sample once at startup (Firefox's refresh-driver target) keep
+  pacing at 60 even after the mode is corrected.
+
+The rate offered in Settings is `RefreshRate.usableMhz(display modes)`
+(plausible, de-duplicated, ascending) with "Max" meaning *follow the
+panel* rather than today's top rate; `RefreshRate.effectiveMhz` resolves a
+cap to a concrete rate (highest at or below the cap, the slowest mode when
+the cap sits below every mode). Implausible values are dropped, not
+clamped: a display claiming 1 Hz or 10 kHz should not reach
+`wl_output.mode`.
+
 ## SHM Buffer Support
 
 SHM buffers (`wl_shm`) are supported alongside the AHB path. SHM matters even for

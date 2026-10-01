@@ -828,6 +828,23 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetTintBu
     render::TINT_BUFFERS_BY_TYPE.store(enabled != 0, Ordering::Relaxed);
 }
 
+/// Adopt a new advertised output refresh rate (mHz). Mirrors
+/// `nativeSetOutputScale`: the Activity window preference and this value
+/// are both derived from one `Settings` read, so the panel's real rate and
+/// what clients are told cannot drift apart.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetOutputRefreshRate(
+    _env: JNIEnv,
+    _class: JClass,
+    mhz: jint,
+) {
+    if mhz <= 0 {
+        log::error!("Ignoring invalid output refresh rate: {}", mhz);
+        return;
+    }
+    host::send_surface_event(SurfaceEvent::OutputRefreshChanged { mhz: mhz as u32 });
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetOutputScale(
     _env: JNIEnv,

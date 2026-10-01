@@ -30,6 +30,9 @@ use smithay::backend::renderer::utils::{
 use smithay::reexports::wayland_server::protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface};
 use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer as BufferCoord, Physical, Rectangle, Scale, Size, Transform};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::presentation::{PresentationFeedbackCachedState, Refresh};
+use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 
 use crate::compositor::TawcState;
 use crate::egl_android::AndroidNativeSurface;
@@ -612,6 +615,63 @@ pub fn render_frame(
     drop(target);
     egl_surface.swap_buffers(None)?;
     Ok(())
+}
+
+/// Report `wp_presentation` feedback for the frame that just went to the
+/// screen.
+///
+/// Clients ask for this per surface (`wp_presentation.feedback`) to learn
+/// *when* a frame was shown and how fast the display runs. Firefox's Wayland
+/// vsync source is the one that hurts without it: it cannot measure the
+/// panel and falls back to a fixed 60 Hz timer, which `about:support` shows
+/// as `Target Frame Rate: 60` on a 120 Hz panel even though it reads
+/// `Display0 …@120Hz` from `wl_output.mode`.
+///
+/// The timestamp is taken right after the host's `eglSwapBuffers`, i.e. it
+/// approximates the present rather than the (unknowable, from here) vsync
+/// edge. Clients derive intervals from consecutive timestamps, so the jitter
+/// of that approximation is what matters, not the offset.
+pub fn report_presentation_feedback(state: &TawcState, seq: u64) {
+    let Some(visible_space) = state.desktop.visible_space(&state.hosts) else {
+        return;
+    };
+    let refresh = Refresh::fixed(crate::compositor::frame_period(state.output_refresh_mhz));
+    let time = monotonic_now();
+
+    let surfaces: Vec<WlSurface> = visible_space
+        .elements()
+        .filter_map(|window| window.toplevel().map(|t| t.wl_surface().clone()))
+        .collect();
+
+    for surface in surfaces {
+        let feedbacks = with_states(&surface, |states| {
+            std::mem::take(
+                &mut states
+                    .cached_state
+                    .get::<PresentationFeedbackCachedState>()
+                    .current()
+                    .callbacks,
+            )
+        });
+        for feedback in feedbacks {
+            feedback.presented(
+                &state.output,
+                time,
+                refresh,
+                seq,
+                wp_presentation_feedback::Kind::Vsync,
+            );
+        }
+    }
+}
+
+/// `CLOCK_MONOTONIC` as a [`Duration`] — the clock `wp_presentation` was
+/// created with, so client-side `clock_gettime` comparisons line up.
+fn monotonic_now() -> Duration {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: clock_gettime only writes into the timespec we pass.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 
 // ---------------------------------------------------------------------------

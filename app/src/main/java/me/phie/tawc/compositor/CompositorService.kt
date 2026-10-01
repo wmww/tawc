@@ -97,6 +97,17 @@ class CompositorService : Service() {
         // process restart with no extra control flow.
         NativeBridge.nativeSetTintBuffersByType(me.phie.tawc.Settings.tintBuffersByType)
         NativeBridge.nativeSetOutputScale(me.phie.tawc.Settings.outputScale)
+        // Not resolved here — since Android 12 a non-visual Context cannot
+        // read the panel's modes (`DisplayManager.getDisplay()` returns
+        // null), so this service can never compute a rate. It pushes the
+        // last one an Activity did resolve, which is what makes the
+        // compositor's *first* advertised mode correct: clients that sample
+        // the output once at startup (Firefox's refresh-driver target) would
+        // otherwise latch the 60 Hz default and keep pacing at 60. Zero
+        // means "no Activity has run yet" — leave the default alone.
+        me.phie.tawc.Settings.outputRefreshMhz
+            .takeIf { it > 0 }
+            ?.let { NativeBridge.nativeSetOutputRefreshRate(it) }
         NativeBridge.nativeSetXwaylandEnabled(me.phie.tawc.Settings.xwayland)
         NativeBridge.nativeSetGtk3BrokenMenusWorkaround(me.phie.tawc.Settings.gtk3BrokenMenusWorkaround)
         // A fresh watcher re-seeds mouse presence; a surviving one would

@@ -23,6 +23,8 @@ object Settings {
     private const val KEY_GRAPHICS_BACKEND = "graphics_backend"
     private const val KEY_TINT_BUFFERS_BY_TYPE = "tint_buffers_by_type"
     private const val KEY_OUTPUT_SCALE = "output_scale"
+    private const val KEY_REFRESH_RATE_CAP_MHZ = "refresh_rate_cap_mhz"
+    private const val KEY_OUTPUT_REFRESH_MHZ = "output_refresh_mhz"
     private const val KEY_TERMINAL_SCALE = "terminal_scale"
     private const val KEY_XWAYLAND = "xwayland"
     private const val KEY_GTK3_BROKEN_MENUS_WORKAROUND = "gtk3_broken_menus_workaround"
@@ -40,6 +42,24 @@ object Settings {
     const val MAX_OUTPUT_SCALE = 4.0f
     const val OUTPUT_SCALE_STEP = 0.25f
     const val DEFAULT_OUTPUT_SCALE = 2.0f
+
+    /**
+     * Refresh-rate cap in mHz; [RefreshRate.MAX_MHZ] (0) follows the panel.
+     * Stored in mHz so the value can be handed to the compositor and
+     * written into `wl_output.mode` without a units conversion in between.
+     */
+    const val DEFAULT_REFRESH_RATE_CAP_MHZ = RefreshRate.MAX_MHZ
+
+    /**
+     * Last rate that was actually resolved from the panel, in mHz; 0 means
+     * "not resolved yet". Persisted because the compositor needs a correct
+     * rate *before* any client connects, and only an Activity can read the
+     * display (see [RefreshRate]). Without it the first `wl_output.mode` a
+     * client sees is the 60 Hz default, and a client that samples once at
+     * startup — Firefox sets its refresh-driver target that way — keeps
+     * pacing at 60 even after the mode is corrected.
+     */
+    const val DEFAULT_OUTPUT_REFRESH_MHZ = 0
     const val MIN_TERMINAL_SCALE = 0.5f
     const val MAX_TERMINAL_SCALE = 2.0f
     const val TERMINAL_SCALE_STEP = 0.1f
@@ -56,6 +76,8 @@ object Settings {
         var graphicsBackend: GraphicsBackend
         var tintBuffersByType: Boolean
         var outputScale: Float
+        var refreshRateCapMhz: Int
+        var outputRefreshMhz: Int
         var terminalScale: Float
         var xwayland: Boolean
         var gtk3BrokenMenusWorkaround: Boolean
@@ -85,6 +107,18 @@ object Settings {
             set(value) {
                 prefs.edit { putBoolean(KEY_TINT_BUFFERS_BY_TYPE, value) }
             }
+
+        override var refreshRateCapMhz: Int
+            get() = RefreshRate.sanitizeCapMhz(
+                prefs.getInt(KEY_REFRESH_RATE_CAP_MHZ, DEFAULT_REFRESH_RATE_CAP_MHZ)
+            )
+            set(value) {
+                prefs.edit { putInt(KEY_REFRESH_RATE_CAP_MHZ, RefreshRate.sanitizeCapMhz(value)) }
+            }
+
+        override var outputRefreshMhz: Int
+            get() = prefs.getInt(KEY_OUTPUT_REFRESH_MHZ, DEFAULT_OUTPUT_REFRESH_MHZ)
+            set(value) { prefs.edit { putInt(KEY_OUTPUT_REFRESH_MHZ, value) } }
 
         override var outputScale: Float
             get() = snapOutputScale(prefs.getFloat(KEY_OUTPUT_SCALE, DEFAULT_OUTPUT_SCALE))
@@ -169,6 +203,9 @@ object Settings {
         @Volatile override var tintBuffersByType: Boolean = DEFAULT_TINT_BUFFERS_BY_TYPE
         @Volatile override var outputScale: Float = DEFAULT_OUTPUT_SCALE
             set(value) { field = snapOutputScale(value) }
+        @Volatile override var refreshRateCapMhz: Int = DEFAULT_REFRESH_RATE_CAP_MHZ
+        @Volatile override var outputRefreshMhz: Int = DEFAULT_OUTPUT_REFRESH_MHZ
+            set(value) { field = RefreshRate.sanitizeCapMhz(value) }
         @Volatile override var terminalScale: Float = DEFAULT_TERMINAL_SCALE
             set(value) { field = snapTerminalScale(value) }
         @Volatile override var xwayland: Boolean = true
@@ -230,6 +267,14 @@ object Settings {
     var outputScale: Float
         get() = requireStore().outputScale
         set(value) { requireStore().outputScale = snapOutputScale(value) }
+
+    var refreshRateCapMhz: Int
+        get() = requireStore().refreshRateCapMhz
+        set(value) { requireStore().refreshRateCapMhz = RefreshRate.sanitizeCapMhz(value) }
+
+    var outputRefreshMhz: Int
+        get() = requireStore().outputRefreshMhz
+        set(value) { requireStore().outputRefreshMhz = value }
 
     /** Multiplier on the terminal's sp text size (so it also follows system font size). */
     var terminalScale: Float

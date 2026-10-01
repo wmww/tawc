@@ -178,6 +178,11 @@ pub enum SurfaceEvent {
     FocusChanged { activity_id: ActivityId, has_focus: bool },
     /// Runtime output scale change from Settings / test broker.
     OutputScaleChanged { scale: f64 },
+    /// Runtime output refresh-rate change (mHz) from Settings. Only the
+    /// advertised `wl_output.mode` and the client-side pacing follow it;
+    /// the actual present rate is Android's ([`Surface::setFrameRate`] on
+    /// the Activity side), and the two are kept in step by the caller.
+    OutputRefreshChanged { mhz: u32 },
     /// Runtime toggle for the compositor-owned Xwayland process.
     XwaylandChanged { enabled: bool },
     /// Runtime toggle for the contained GTK3 broken menubar workaround.
