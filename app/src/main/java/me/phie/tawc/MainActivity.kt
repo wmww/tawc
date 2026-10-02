@@ -41,6 +41,7 @@ import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.TawcrootMethod
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.install.showRunCommandDialog
+import me.phie.tawc.home.DashboardColumn
 import me.phie.tawc.launcher.AppsPane
 import me.phie.tawc.remote.RemoteAccessActivity
 import me.phie.tawc.session.SessionWake
@@ -80,6 +81,10 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var screen: DrawerScreen
     private lateinit var fab: FloatingActionButton
+
+    /** Wide-screen status + quick-launch column beside the pane; unused
+     *  (and never attached) on a narrow screen. */
+    private lateinit var dashboard: DashboardColumn
 
     /** Open distro as last rendered; menu/FAB actions read it. */
     private var open: Installation? = null
@@ -171,6 +176,15 @@ class MainActivity : AppCompatActivity() {
         fab = tawcFab(R.drawable.ic_terminal, getString(R.string.action_terminal)) { onFabClicked() }
         screen.body.addView(fab, fabLp())
 
+        dashboard = DashboardColumn(this, object : DashboardColumn.Host {
+            override fun openApps() = choosePane(HomePane.APPS)
+
+            override fun openDistroInfo(installId: String) = startActivity(
+                Intent(this@MainActivity, DistroInfoActivity::class.java)
+                    .putExtra(DistroInfoActivity.EXTRA_ID, installId),
+            )
+        })
+
         screen.nav.addHeaderView(buildDrawerHeader())
         screen.nav.setNavigationItemSelectedListener { item ->
             val id = drawerIds[item.itemId]
@@ -227,6 +241,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (::dashboard.isInitialized) dashboard.destroy()
         // Recreation reattaches the pending shell; any other destroy
         // kills it. In-use shells outlive the activity: only a recents
         // swipe (SessionService.onTaskRemoved) or the notification's
@@ -281,7 +296,7 @@ class MainActivity : AppCompatActivity() {
             tearDown(keepPending = false)
             val next = buildPane(kind, inst, command?.second)
             pane = next
-            screen.body.addView(next.view, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            screen.body.addView(dashboardHost(next.view, inst), 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             if (keyboardOnShow && next is Pane.Terminal) {
                 next.terminal.showSoftKeyboard()
             } else {
@@ -291,6 +306,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         keyboardOnShow = false
+        // The column only appears where it has something true to say: a
+        // ready distro on a screen wide enough for two of them.
+        if (showsDashboard(inst)) dashboard.bind(inst!!)
         styleForPane()
         updateFab()
         rebuildDrawerMenu(installations, inst)
@@ -301,6 +319,22 @@ class MainActivity : AppCompatActivity() {
         is Pane.Info -> Kind.INFO
         is Pane.Terminal -> Kind.TERMINAL
         is Pane.Apps -> Kind.APPS
+    }
+
+    /** Two columns need room: below this the dashboard stays unbuilt. */
+    private fun showsDashboard(inst: Installation?): Boolean =
+        inst != null && inst.state == Installation.State.READY &&
+            resources.configuration.screenWidthDp >= DASHBOARD_MIN_WIDTH_DP
+
+    /** [paneView] alone, or beside the dashboard column on a wide screen. */
+    private fun dashboardHost(paneView: View, inst: Installation?): View {
+        if (!showsDashboard(inst)) return paneView
+        val columnWidth = (DASHBOARD_WIDTH_DP * resources.displayMetrics.density).toInt()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(paneView, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
+            addView(dashboard.view, LinearLayout.LayoutParams(columnWidth, MATCH_PARENT))
+        }
     }
 
     private fun buildPane(kind: Kind, inst: Installation?, command: TerminalPane.CommandTab?): Pane =
@@ -674,6 +708,13 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_LABEL = "label"
 
         private const val REQUEST_NOTIFICATIONS = 1
+
+        /** Width a screen needs before the home screen splits in two;
+         *  Material's "expanded" breakpoint. */
+        private const val DASHBOARD_MIN_WIDTH_DP = 840
+
+        /** Fixed width of the dashboard column beside the pane. */
+        private const val DASHBOARD_WIDTH_DP = 340
 
         // ⋮ order: pane items, Settings, Run…, Task manager, Distro info.
         private const val ORDER_PANE = 0

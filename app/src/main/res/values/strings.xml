@@ -42,6 +42,12 @@
     <string name="home_intro_blurb">Run desktop Linux programs on Android. Install a distro to get started.</string>
     <string name="home_menu_description">More options</string>
     <string name="home_state_view_log">%1$s (view log)</string>
+    <string name="home_dashboard_active_distro">Active distro</string>
+    <string name="home_dashboard_memory">Memory</string>
+    <string name="home_dashboard_uptime">Uptime</string>
+    <string name="home_dashboard_quick_launch">Quick launch</string>
+    <string name="home_dashboard_view_all">View all</string>
+    <string name="home_dashboard_no_apps">No launchable apps yet</string>
     <string name="install_state_installing">installing&#8230;</string>
     <string name="install_state_uninstalling">uninstalling&#8230;</string>
     <string name="install_state_ready">ready</string>
