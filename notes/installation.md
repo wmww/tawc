@@ -1256,14 +1256,73 @@ transaction (e.g. `bubblewrap-0.11.2-1-aarch64.pkg.tar.xz`). With one
 Server line pacman has no fallback and the whole transaction aborts;
 with several explicit mirrors it skips past the stale one to the next.
 
-The list lives in `ArchLinuxArm.MIRROR_LIST` and is now HTTPS-first:
-`fl.us.` and `ca.us.` (the two ALARM mirrors with valid certs covering
-their own hostnames) come first, then the geo-redirector and a few
-regional HTTP mirrors as fallback. Pacman package signatures are
-verified against the populated keyring (no more `SigLevel = Never`),
+The list lives in `ArchLinuxArm.DEFAULT_MIRROR_BASES` and is now
+HTTPS-first: `fl.us.` and `ca.us.` (the two ALARM mirrors with valid
+certs covering their own hostnames) come first, then the geo-redirector
+and a few regional HTTP mirrors as fallback. Pacman package signatures
+are verified against the populated keyring (no more `SigLevel = Never`),
 so HTTP for the fallback mirrors is defense-in-depth missing rather
 than a hole. See *Bootstrap integrity* for the load-bearing rules.
 
+### User-selectable mirror region
+
+Settings → distro card → *Package mirror* lets the user replace that
+default list with a built-in regional preset (`MirrorRegions`), for
+networks where the geo-redirector's choice is slow or blocked. Presets
+are data only: id + label + ordered mirror bases, and the distro owns
+the repository path suffix (`$arch/$repo` for ALARM, `$repo/os/$arch`
+for Arch x86_64) so both flavours share `ArchPacmanCommon.serverLines`.
+
+- The choice is per-install (`Installation.mirrorRegion`); `null` means
+  the default list, so an install that never opens the setting writes
+  the exact same mirrorlist as before.
+- `Distro.configure` always writes the built-in default: it runs on a
+  rootfs that does not exist yet, and every family writes its own config
+  format. A region therefore goes through `Distro.configureMirrors`,
+  which rewrites `<rootfs>/etc/pacman.d/mirrorlist` (apt: the deb822
+  source file, xbps: the repository conf) through a temp file + rename
+  via `runOutside` (app-uid shell for tawcroot/proot, `su` for chroot).
+  `Installer` makes that call right after `configure` when the install
+  carried a region, and the settings row makes the same call on a live
+  rootfs and only then persists the choice — one write path, so an
+  installed rootfs and a fresh one cannot drift apart.
+- Every shipped distro declares presets, in its own config format:
+  pacman families (`ArchLinuxArm`, `ArchLinuxX86_64`, `ManjaroArm`)
+  render `Server = <base><suffix>` lines, Debian renders the archive root
+  into the deb822 `URIs:` field (one URI per region — apt has no
+  mirror-fallback list), and Void renders one `repository=` line per
+  mirror, which xbps does walk in order.
+- Manjaro ARM's `arm-testing/` channel is part of each mirror *base*, not
+  of the suffix, so picking a region can never move a user off the
+  channel that carries a new enough glibc (see `ManjaroArm`).
+- Adding a preset is a data change in `MirrorRegions`, but the entry must
+  be verified to serve the matching tree first (`core.db`,
+  `core/os/x86_64/core.db`, `aarch64-repodata`, `binary-arm64/Release`);
+  a dead first entry costs every user a round trip per transaction.
+- `MirrorRegions.ubuntu` is the one table with no consumer: every entry
+  is arm64 (`.../ubuntu-ports`), while amd64 archives live on
+  `archive.ubuntu.com/ubuntu`. Wiring the picker up needs an amd64 table
+  as well, so the table ships unused.
+- The bootstrap tarball is **not** affected: it always comes from the
+  fixed host in the distro's `TarballBootstrap` (ALARM's `.sig` lives
+  next to it, and only `fl.us`/`ca.us` carry a valid cert). A region pick
+  speeds up package installs, not the initial download.
+
+- The row is a **dropdown** (`Spinner`), not a tappable label: it shows
+  the selected preset inline next to "Package mirror", which is the only
+  affordance that says the value can be changed at all. Picking rewrites
+  and persists exactly as above; on failure the dropdown snaps back to
+  what the rootfs really has, because a setting that claims a region the
+  mirrorlist does not contain is the misleading state.
+- Picking the **China** preset (`CHINA_MIRROR_REGION_ID`) also raises a
+  one-shot reminder that the rootfs still has no CJK font: the mirror
+  only changes where packages come from, so Chinese text renders as boxes
+  until one is installed. The dialog carries the distro's own command
+  (`cjkFontCommand`: `pacman -S noto-fonts-cjk`, `apt-get install -y
+  fonts-noto-cjk`, `xbps-install -S noto-fonts-cjk`) with a
+  copy-to-clipboard action; families we do not know get the generic hint
+  instead of a guess. `CjkFontTest` pins the mapping and checks that a
+  preset labelled China really uses the id the reminder tests for.
 ## Android 14 FGS rules and the broker action path
 
 `startForegroundService()` from a background broadcast receiver is

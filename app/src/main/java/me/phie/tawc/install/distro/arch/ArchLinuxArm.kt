@@ -6,6 +6,8 @@ import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
 import me.phie.tawc.install.distro.Distro
+import me.phie.tawc.install.distro.MirrorRegion
+import me.phie.tawc.install.distro.MirrorRegions
 import me.phie.tawc.install.distro.TarballBootstrap
 
 /**
@@ -58,6 +60,9 @@ internal object ArchLinuxArm : Distro {
     override val basePackages: List<String> = ArchPacmanCommon.DEFAULT_BASE_PACKAGES
 
     /**
+     * Default mirror bases in priority order — what a user who never
+     * picks a region in settings gets.
+     *
      * ALARM ships a single-Server mirrorlist
      * (`http://mirror.archlinuxarm.org/$arch/$repo`, the geo-IP
      * redirector). With `ParallelDownloads` enabled it's possible (and
@@ -68,23 +73,27 @@ internal object ArchLinuxArm : Distro {
      * redirector) lets pacman skip past a stale mirror to the next on
      * 404. The redirector goes first so the common case still uses
      * the closest mirror.
+     *
+     * HTTPS-first: fl.us and ca.us are the two ALARM mirrors with
+     * certs covering their own hostnames (the geo-redirector
+     * mirror.archlinuxarm.org and most regional ones only have a
+     * cert for archlinuxarm.org and fail TLS hostname validation).
+     * Pacman package signatures are verified anyway via
+     * archlinuxarm-keyring (SigLevel=Required-DatabaseOptional),
+     * so the HTTP fallbacks are belt-and-braces, not a security
+     * hole — but TLS first reduces the attack surface.
      */
-    private val MIRROR_LIST: String = listOf(
-        // HTTPS-first: fl.us and ca.us are the two ALARM mirrors with
-        // certs covering their own hostnames (the geo-redirector
-        // mirror.archlinuxarm.org and most regional ones only have a
-        // cert for archlinuxarm.org and fail TLS hostname validation).
-        // Pacman package signatures are verified anyway via
-        // archlinuxarm-keyring (SigLevel=Required-DatabaseOptional),
-        // so the HTTP fallbacks are belt-and-braces, not a security
-        // hole — but TLS first reduces the attack surface.
-        "Server = https://fl.us.mirror.archlinuxarm.org/\$arch/\$repo",
-        "Server = https://ca.us.mirror.archlinuxarm.org/\$arch/\$repo",
-        "Server = http://mirror.archlinuxarm.org/\$arch/\$repo",
-        "Server = http://nj.us.mirror.archlinuxarm.org/\$arch/\$repo",
-        "Server = http://de.mirror.archlinuxarm.org/\$arch/\$repo",
-        "Server = http://fr.mirror.archlinuxarm.org/\$arch/\$repo",
-    ).joinToString("\n")
+    private val DEFAULT_MIRROR_BASES: List<String> = listOf(
+        "https://fl.us.mirror.archlinuxarm.org",
+        "https://ca.us.mirror.archlinuxarm.org",
+        "http://mirror.archlinuxarm.org",
+        "http://nj.us.mirror.archlinuxarm.org",
+        "http://de.mirror.archlinuxarm.org",
+        "http://fr.mirror.archlinuxarm.org",
+    )
+
+    /** ALARM's repo path after a mirror base. */
+    private const val MIRROR_SUFFIX = "/\$arch/\$repo"
 
     /**
      * ALARM kernel package is `linux-aarch64`; firmware split as on
@@ -101,12 +110,30 @@ internal object ArchLinuxArm : Distro {
     /** See `ArchPacmanCommon.initPackageManager` — kernel package name. */
     private val ARCH_SPECIFIC_CRUFT = listOf("linux-aarch64")
 
+    override val mirrorRegions: List<MirrorRegion> = MirrorRegions.archLinuxArm
+
+    /** pacman mirrorlist contents for [region]; `null` = the default list. */
+    internal fun mirrorConfig(region: MirrorRegion?): String =
+        ArchPacmanCommon.serverLines(region?.servers ?: DEFAULT_MIRROR_BASES, MIRROR_SUFFIX)
+
     override fun configure(
         method: InstallationMethod,
         rootfs: String,
         mirrorProxy: MirrorProxy?,
         log: (String) -> Unit,
-    ) = ArchPacmanCommon.configure(method, rootfs, MIRROR_LIST, IGNORED_PACKAGES, mirrorProxy, log)
+    ) = ArchPacmanCommon.configure(method, rootfs, mirrorConfig(null), IGNORED_PACKAGES, mirrorProxy, log)
+
+    override fun configureMirrors(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorRegion: String?,
+        log: (String) -> Unit,
+    ) = ArchPacmanCommon.configureMirrors(
+        method,
+        rootfs,
+        mirrorConfig(resolveMirrorRegion(mirrorRegion)),
+        log,
+    )
 
     override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
         ArchPacmanCommon.initPackageManager(

@@ -128,11 +128,47 @@ internal object VoidCommon {
     // tarball mirror lives separately at `live/current/` (see
     // VoidSha256Resolver). The aarch64 binpkg tree is namespaced under
     // `current/aarch64/`; x86_64 sits at `current/` directly.
-    private const val MIRROR_BASE = "https://repo-fastly.voidlinux.org/current"
+    const val DEFAULT_MIRROR_BASE = "https://repo-fastly.voidlinux.org"
 
-    private fun mirrorFor(linuxArch: String): String = when (linuxArch) {
-        "x86_64" -> MIRROR_BASE
-        else -> "$MIRROR_BASE/$linuxArch"
+    /**
+     * xbps repository URL for [mirrorBase] (a mirror root, no `/current`)
+     * on [linuxArch]. x86_64 lives at the release root; ports carry an
+     * architecture subdirectory.
+     */
+    fun repositoryUrl(mirrorBase: String, linuxArch: String): String = when (linuxArch) {
+        "x86_64" -> "$mirrorBase/current"
+        else -> "$mirrorBase/current/$linuxArch"
+    }
+
+    /** xbps repository conf body: one `repository=` line per mirror. */
+    fun repositoryConf(mirrorUrls: List<String>): String =
+        mirrorUrls.joinToString("\n") { "repository=$it" }
+
+    /**
+     * Rewrite just `<rootfs>/etc/xbps.d/00-repository-main.conf` in an
+     * installed rootfs — the settings-driven counterpart to [configure].
+     * Temp file + rename, like the pacman mirrorlist.
+     */
+    fun configureMirrors(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorUrls: List<String>,
+        log: (String) -> Unit,
+    ) {
+        val script = buildString {
+            appendLine("set -eu")
+            appendLine("ROOTFS='$rootfs'")
+            appendLine("TMP=\"\$ROOTFS/etc/xbps.d/00-repository-main.conf.tawc-new\"")
+            appendLine("cat > \"\$TMP\" <<'REPO_EOF'")
+            appendLine(repositoryConf(mirrorUrls))
+            appendLine("REPO_EOF")
+            appendLine("chmod 644 \"\$TMP\"")
+            appendLine("mv -f \"\$TMP\" \"\$ROOTFS/etc/xbps.d/00-repository-main.conf\"")
+        }
+        val result = method.runOutside(script, log)
+        if (!result.ok) {
+            throw IOException("xbps repository write failed (exit ${result.exitCode})")
+        }
     }
 
     /**
@@ -152,8 +188,9 @@ internal object VoidCommon {
         linuxArch: String,
         mirrorProxy: MirrorProxy?,
         log: (String) -> Unit,
+        mirrorBase: String = DEFAULT_MIRROR_BASE,
     ) {
-        val mirror = mirrorFor(linuxArch).let { mirrorProxy?.wrap(it) ?: it }
+        val mirror = repositoryUrl(mirrorBase, linuxArch).let { mirrorProxy?.wrap(it) ?: it }
         // Heredoc terminators MUST be at column 0 (per shell `<<EOF`
         // semantics); we build the script line-by-line rather than
         // using `"""...""".trimIndent()`, because the interpolated

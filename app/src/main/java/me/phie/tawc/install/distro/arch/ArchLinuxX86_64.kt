@@ -6,6 +6,8 @@ import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
 import me.phie.tawc.install.distro.Distro
+import me.phie.tawc.install.distro.MirrorRegion
+import me.phie.tawc.install.distro.MirrorRegions
 import me.phie.tawc.install.distro.TarballBootstrap
 
 /**
@@ -47,8 +49,16 @@ internal object ArchLinuxX86_64 : Distro {
 
     override val basePackages: List<String> = ArchPacmanCommon.DEFAULT_BASE_PACKAGES
 
-    private const val MIRROR_LIST =
-        "Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch"
+    /**
+     * Default mirror base: Arch's geo-IP redirector. A user who picks a
+     * region in settings gets that region's hosts instead.
+     */
+    private val DEFAULT_MIRROR_BASES: List<String> = listOf(
+        "https://geo.mirror.pkgbuild.com",
+    )
+
+    /** Arch x86_64's repo path after a mirror base. */
+    private const val MIRROR_SUFFIX = "/\$repo/os/\$arch"
 
     /**
      * x86_64 Arch's stock kernel package is `linux`; firmware is in
@@ -66,12 +76,30 @@ internal object ArchLinuxX86_64 : Distro {
     /** See `ArchPacmanCommon.initPackageManager` — kernel package name. */
     private val ARCH_SPECIFIC_CRUFT = listOf("linux")
 
+    override val mirrorRegions: List<MirrorRegion> = MirrorRegions.archLinux
+
+    /** pacman mirrorlist contents for [region]; `null` = the default list. */
+    internal fun mirrorConfig(region: MirrorRegion?): String =
+        ArchPacmanCommon.serverLines(region?.servers ?: DEFAULT_MIRROR_BASES, MIRROR_SUFFIX)
+
     override fun configure(
         method: InstallationMethod,
         rootfs: String,
         mirrorProxy: MirrorProxy?,
         log: (String) -> Unit,
-    ) = ArchPacmanCommon.configure(method, rootfs, MIRROR_LIST, IGNORED_PACKAGES, mirrorProxy, log)
+    ) = ArchPacmanCommon.configure(method, rootfs, mirrorConfig(null), IGNORED_PACKAGES, mirrorProxy, log)
+
+    override fun configureMirrors(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorRegion: String?,
+        log: (String) -> Unit,
+    ) = ArchPacmanCommon.configureMirrors(
+        method,
+        rootfs,
+        mirrorConfig(resolveMirrorRegion(mirrorRegion)),
+        log,
+    )
 
     override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
         ArchPacmanCommon.initPackageManager(

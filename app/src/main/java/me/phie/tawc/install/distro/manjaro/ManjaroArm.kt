@@ -7,6 +7,8 @@ import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.MirrorProxy
 import me.phie.tawc.install.distro.BootstrapFlavor
 import me.phie.tawc.install.distro.Distro
+import me.phie.tawc.install.distro.MirrorRegion
+import me.phie.tawc.install.distro.MirrorRegions
 import me.phie.tawc.install.distro.DistroBootstrap
 import me.phie.tawc.install.distro.TarballBootstrap
 import me.phie.tawc.install.distro.arch.ArchPacmanCommon
@@ -96,13 +98,16 @@ internal object ManjaroArm : Distro {
      * tolerable. The first `pacman -Syyu` after install bumps glibc
      * (and many transitive packages) to current versions.
      */
-    private val MIRROR_LIST: String = listOf(
-        "Server = https://mirror.alwyzon.net/manjaro/arm-testing/\$repo/\$arch",
-        "Server = https://manjaro.repo.cure.edu.uy/arm-testing/\$repo/\$arch",
-        "Server = https://mirror.futureweb.be/manjaro/arm-testing/\$repo/\$arch",
-        "Server = https://ftp.linux.org.tr/manjaro/arm-testing/\$repo/\$arch",
-        "Server = https://mirrors.dotsrc.org/manjaro/arm-testing/\$repo/\$arch",
-    ).joinToString("\n")
+    private val DEFAULT_MIRROR_BASES: List<String> = listOf(
+        "https://mirror.alwyzon.net/manjaro/arm-testing",
+        "https://manjaro.repo.cure.edu.uy/arm-testing",
+        "https://mirror.futureweb.be/manjaro/arm-testing",
+        "https://ftp.linux.org.tr/manjaro/arm-testing",
+        "https://mirrors.dotsrc.org/manjaro/arm-testing",
+    )
+
+    /** Manjaro ARM's repo path after a mirror base. */
+    private const val MIRROR_SUFFIX = "/\$repo/\$arch"
 
     /**
      * Defence-in-depth `IgnorePkg` — Manjaro ARM's bootstrap doesn't
@@ -123,12 +128,30 @@ internal object ManjaroArm : Distro {
      */
     private val ARCH_SPECIFIC_CRUFT: List<String> = emptyList()
 
+    override val mirrorRegions: List<MirrorRegion> = MirrorRegions.manjaroArm
+
+    /** pacman mirrorlist contents for [region]; `null` = the default list. */
+    internal fun mirrorConfig(region: MirrorRegion?): String =
+        ArchPacmanCommon.serverLines(region?.servers ?: DEFAULT_MIRROR_BASES, MIRROR_SUFFIX)
+
     override fun configure(
         method: InstallationMethod,
         rootfs: String,
         mirrorProxy: MirrorProxy?,
         log: (String) -> Unit,
-    ) = ArchPacmanCommon.configure(method, rootfs, MIRROR_LIST, IGNORED_PACKAGES, mirrorProxy, log)
+    ) = ArchPacmanCommon.configure(method, rootfs, mirrorConfig(null), IGNORED_PACKAGES, mirrorProxy, log)
+
+    override fun configureMirrors(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorRegion: String?,
+        log: (String) -> Unit,
+    ) = ArchPacmanCommon.configureMirrors(
+        method,
+        rootfs,
+        mirrorConfig(resolveMirrorRegion(mirrorRegion)),
+        log,
+    )
 
     override fun initPackageManager(method: InstallationMethod, rootfs: String, log: (String) -> Unit) =
         // Three keyrings: archlinuxarm (upstream sync), manjaro

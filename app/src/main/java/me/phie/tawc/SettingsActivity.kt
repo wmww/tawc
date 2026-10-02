@@ -22,6 +22,7 @@ import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.ManageBindsActivity
 import me.phie.tawc.install.TawcrootMethod
 import me.phie.tawc.install.buildAndoCommitRow
+import me.phie.tawc.install.buildMirrorRegionRow
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.licenses.LicensesActivity
 import me.phie.tawc.ui.buildChildScreen
@@ -146,6 +147,13 @@ class SettingsActivity : AppCompatActivity() {
                 buildAndoCommitRow(this, store, inst, andoCommitExecutor),
                 LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = pad / 2 },
             )
+            // Distro declares no mirror presets -> nothing to choose.
+            if (DistroRegistry.forInstallation(inst)?.mirrorRegions?.isNotEmpty() == true) {
+                body.addView(
+                    buildMirrorRegionRow(this, store, inst, andoCommitExecutor),
+                    LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = pad / 2 },
+                )
+            }
             if (inst.method == TawcrootMethod.KEY && AllFilesAccess.declared(this)) {
                 body.addView(
                     tonalButton(getString(R.string.distro_info_manage_binds)) {

@@ -59,6 +59,18 @@
     <string name="settings_about">About</string>
     <string name="settings_about_detail">%1$s v%2$s</string>
     <string name="settings_about_licenses">Licenses</string>
+    <string name="settings_mirror_region_label">Package mirror</string>
+    <string name="settings_mirror_region_title">Package mirror source</string>
+    <string name="settings_mirror_region_default">Default</string>
+    <string name="settings_mirror_region_detail">Used by package installs inside this distro. The distro image itself always downloads from the built-in mirror.</string>
+    <string name="settings_mirror_region_failed">Could not change the package mirror: %1$s</string>
+    <string name="settings_mirror_region_no_method">the %1$s install method is not available in this build</string>
+    <string name="settings_mirror_region_stale">the distro changed state while the mirror was being written</string>
+    <string name="settings_mirror_region_cjk_title">Install a CJK font?</string>
+    <string name="settings_mirror_region_cjk_message">The %1$s mirror only changes where packages are downloaded from. Chinese text needs a CJK font, which this distro does not ship: install one with</string>
+    <string name="settings_mirror_region_cjk_copy">Copy command</string>
+    <string name="settings_mirror_region_cjk_copied">Command copied</string>
+    <string name="settings_mirror_region_cjk_unknown">a Noto CJK font package (pacman/xbps: noto-fonts-cjk, apt: fonts-noto-cjk).</string>
 
     <string name="install_help_methods">What\'s the difference?</string>
     <string name="install_distro_label">Distro</string>

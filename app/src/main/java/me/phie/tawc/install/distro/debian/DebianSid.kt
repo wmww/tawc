@@ -8,6 +8,8 @@ import me.phie.tawc.install.MirrorProxy
 import me.phie.tawc.install.distro.BootstrapFlavor
 import me.phie.tawc.install.distro.Distro
 import me.phie.tawc.install.distro.DistroBootstrap
+import me.phie.tawc.install.distro.MirrorRegion
+import me.phie.tawc.install.distro.MirrorRegions
 import me.phie.tawc.install.distro.PackageBootstrap
 import me.phie.tawc.install.distro.TarballBootstrap
 import me.phie.tawc.install.distro.apt.AptCommon
@@ -87,6 +89,26 @@ internal sealed class DebianSid(
         repoUrl = REPO_URL,
         signedBy = DEBIAN_ARCHIVE_KEYRING,
         mirrorProxy = mirrorProxy,
+        log = log,
+    )
+
+    override val mirrorRegions: List<MirrorRegion> = MirrorRegions.debian
+
+    /** Archive root for [region]; `null` = the geo-routed CDN. */
+    internal fun mirrorConfig(region: MirrorRegion?): String =
+        region?.servers?.first() ?: REPO_URL
+
+    final override fun configureMirrors(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorRegion: String?,
+        log: (String) -> Unit,
+    ) = AptCommon.configureMirrors(
+        method = method,
+        rootfs = rootfs,
+        suite = SUITE,
+        repoUrl = mirrorConfig(resolveMirrorRegion(mirrorRegion)),
+        signedBy = DEBIAN_ARCHIVE_KEYRING,
         log = log,
     )
 

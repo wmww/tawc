@@ -177,6 +177,45 @@ interface Distro {
     )
 
     /**
+     * Package-mirror locations the settings screen offers for this
+     * distro, in display order. Empty means the distro has no
+     * user-selectable mirror set (no regional repos, or its paths carry
+     * release-policy a hostname swap would break); the settings row is
+     * then hidden.
+     */
+    val mirrorRegions: List<MirrorRegion> get() = emptyList()
+
+    /**
+     * Resolve a persisted [Installation.mirrorRegion] id. `null` (the
+     * user never picked) and ids this build doesn't know both mean "the
+     * distro's built-in default", so metadata written by a newer build
+     * can't break an older one.
+     */
+    fun resolveMirrorRegion(id: String?): MirrorRegion? =
+        id?.let { wanted -> mirrorRegions.firstOrNull { it.id == wanted } }
+
+    /**
+     * Rewrite the package-mirror config of [rootfs] for [mirrorRegion]
+     * (`null` = the built-in default). [configure] always writes the
+     * built-in default — it runs on a rootfs that does not exist yet and
+     * every distro's config format differs — so this is how a region
+     * takes effect: once during the install, right after [configure],
+     * and again whenever the settings screen changes it (`configure`
+     * never runs again for an existing rootfs; notes/installation.md
+     * "Upgrade policy").
+     *
+     * Distros without selectable mirrors do nothing. Throws on failure
+     * so the caller can report it.
+     */
+    fun configureMirrors(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorRegion: String?,
+        log: (String) -> Unit,
+    ) {
+    }
+
+    /**
      * Bootstrap the package manager inside the chroot at [rootfs]
      * (e.g. `pacman-key --init && pacman-key --populate <keyring> &&
      * pacman -Syu`). Runs via [method].runInside.

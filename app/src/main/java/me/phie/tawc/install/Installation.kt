@@ -90,6 +90,17 @@ data class Installation(
      * leaning on the default forever.
      */
     val bootstrapFlavor: String = FLAVOR_TARBALL,
+    /**
+     * User-selected package-mirror region for this distro — an id from
+     * its `mirrorRegions`. `null` (the default, and what legacy records
+     * parse as) means the distro's built-in mirror list, so an install
+     * that never touched the setting behaves exactly as before.
+     *
+     * Resolved through `Distro.resolveMirrorRegion`, which maps unknown
+     * ids back to the default: metadata written by a newer build must
+     * not break an older one.
+     */
+    val mirrorRegion: String? = null,
 ) {
     fun rootfsDir(store: InstallationStore): File = store.rootfsDir(id)
     fun metadataFile(store: InstallationStore): File = store.metadataFile(id)
@@ -120,6 +131,7 @@ data class Installation(
             put("hiddenDesktopIds", JSONArray(hiddenDesktopIds))
         }
         if (andoEnabled) put("andoEnabled", true)
+        if (mirrorRegion != null) put("mirrorRegion", mirrorRegion)
     }.toString(2)
 
     /**
@@ -280,6 +292,8 @@ data class Installation(
                 else emptyList(),
                 andoEnabled = obj.optBoolean("andoEnabled", false),
                 bootstrapFlavor = obj.optString("bootstrapFlavor", FLAVOR_TARBALL),
+                mirrorRegion = if (obj.has("mirrorRegion") && !obj.isNull("mirrorRegion"))
+                    obj.getString("mirrorRegion") else null,
             )
         }
 

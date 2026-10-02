@@ -96,6 +96,14 @@ class Installer(
      * uninstall path never reads this.
      */
     private val bootstrapFlavor: BootstrapFlavor? = null,
+    /**
+     * Package-mirror region id to configure the rootfs with
+     * (`Distro.mirrorRegions`); `null` = the distro's built-in default.
+     * Persisted into the initial metadata so the settings screen shows
+     * what this install actually used. Only the bootstrap tarball is
+     * mirror-independent (see notes/installation.md).
+     */
+    private val mirrorRegion: String? = null,
 ) {
     /** Throws on failure. Reports progress + log lines via the callbacks. */
     fun install(
@@ -166,6 +174,7 @@ class Installer(
                 externalBinds = externalBinds,
                 andoEnabled = andoEnabled,
                 bootstrapFlavor = flavor.id,
+                mirrorRegion = mirrorRegion,
             )
         )
         // Bring the ando broker listener up (or down) to match the
@@ -193,6 +202,12 @@ class Installer(
         // there's nothing to materialise on disk between calls.
         progress(InstallProgress(InstallStage.CONFIGURING, context.getString(R.string.install_progress_configuring_chroot)))
         distro.configure(method, rootfsPath, mirrorProxy, log)
+        // A picked region replaces the mirror config configure just
+        // wrote — same call the settings row makes on a live rootfs, so
+        // both paths cannot drift apart.
+        if (mirrorRegion != null) {
+            distro.configureMirrors(method, rootfsPath, mirrorRegion, log)
+        }
         // Lay down everything the app ships per-rootfs (libhybris into
         // /usr/lib/hybris, the glvnd vendor JSON, …) as real files via
         // [TawcInstaller]. Must follow distro.configure (which may

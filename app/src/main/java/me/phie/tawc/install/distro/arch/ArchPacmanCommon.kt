@@ -24,6 +24,48 @@ import java.io.IOException
 internal object ArchPacmanCommon {
 
     /**
+     * `Server = <base><suffix>` mirrorlist lines for [bases], in order.
+     * The Arch flavours share this shape and differ only in the
+     * repository path after the base: ALARM serves `$arch/$repo`, Arch
+     * x86_64 `$repo/os/$arch`, Manjaro ARM `arm-testing/$repo/$arch`.
+     */
+    fun serverLines(bases: List<String>, suffix: String): String =
+        bases.joinToString("\n") { "Server = $it$suffix" }
+
+    /**
+     * Rewrite just `<rootfs>/etc/pacman.d/mirrorlist` in an installed
+     * rootfs for [mirrorListBody] — the settings-driven counterpart to
+     * [configure], which only ever runs during an install.
+     *
+     * Written to a sibling temp file and renamed: a failed write leaves
+     * the previous list in place, and no deletion is involved (the
+     * rootfs-cleaner tripwire forbids delete patterns in shipped code).
+     *
+     * @throws IOException when the write fails, so the settings row can
+     *   report it instead of silently keeping the old list.
+     */
+    fun configureMirrors(
+        method: InstallationMethod,
+        rootfs: String,
+        mirrorListBody: String,
+        log: (String) -> Unit,
+    ) {
+        val script = buildString {
+            appendLine("set -eu")
+            appendLine("ROOTFS='$rootfs'")
+            appendLine("TMP=\"\$ROOTFS/etc/pacman.d/mirrorlist.tawc-new\"")
+            appendLine("cat > \"\$TMP\" <<'MIRROR_EOF'")
+            appendLine(mirrorListBody)
+            appendLine("MIRROR_EOF")
+            appendLine("mv -f \"\$TMP\" \"\$ROOTFS/etc/pacman.d/mirrorlist\"")
+        }
+        val result = method.runOutside(script, log)
+        if (!result.ok) {
+            throw IOException("mirrorlist write failed (exit ${result.exitCode})")
+        }
+    }
+
+    /**
      * Pacman `Server = <url>` mirrorlist line. Whitespace tolerated
      * around `=`. URL captures everything after the equals up to
      * end-of-line (no comment-stripping — pacman doesn't accept inline
