@@ -163,7 +163,7 @@ fn test_wipe_removes_ando_broker_dir() {
 #[test]
 #[cfg_attr(
     tawc_skip_root_on_target,
-    ignore = "needs Magisk-style su on target"
+    ignore = "needs Magisk su on target, granted to the app too"
 )]
 fn test_wipe_gate_and_su_retry() {
     require_root();

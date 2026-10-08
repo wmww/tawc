@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use tawc_integration::debug_app::DebugApp;
 use tawc_integration::helpers::{
-    assert_broker_ok, assert_compositor_clean, has_shm_surface, TIMEOUT,
+    app_fd_targets, assert_broker_ok, assert_compositor_clean, fd_growth, has_shm_surface,
+    TIMEOUT,
 };
 use tawc_integration::rootfs_process::RootfsProcess;
 use tawc_integration::{adb, compositor, rootfs, GraphicsBackend};
@@ -862,10 +863,6 @@ fn test_xwayland_cycles_do_not_leak() {
     assert_broker_ok(adb::set_xwayland(true).expect("enable xwayland"), "set-xwayland");
     wait_for_x11_socket(true, XWAYLAND_LAUNCH_TIMEOUT);
 
-    let app_fds = || {
-        let out = adb::host_sh("ls /proc/$PPID/fd | wc -l").expect("host-sh fd count");
-        String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().expect("fd count")
-    };
     let cycle = || {
         let mut app = RootfsProcess::spawn_with(SHM_BACKEND, "DISPLAY=:0 xclock -update 1")
             .expect("spawn xclock");
@@ -877,10 +874,16 @@ fn test_xwayland_cycles_do_not_leak() {
     };
     // Warm-up: one-time lazy initialisation is not a leak.
     cycle();
-    let before = app_fds();
+    let before = app_fd_targets();
     for _ in 0..4 {
         cycle();
     }
-    let after = app_fds();
-    assert!(after <= before + 2, "fds grew over 4 Xwayland cycles: {before} -> {after}");
+    let after = app_fd_targets();
+    assert!(
+        after.len() <= before.len() + 2,
+        "fds grew over 4 Xwayland cycles: {} -> {} ({})",
+        before.len(),
+        after.len(),
+        fd_growth(&before, &after)
+    );
 }

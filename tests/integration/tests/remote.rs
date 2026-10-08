@@ -48,13 +48,19 @@ fn test_remote_local_mode() {
     tawc_integration::helpers::test_init();
     adb::remote_stop().expect("remote-stop");
     const PORT: u16 = 42222;
-    let fwd = format!("tcp:{PORT}");
-    let out = Command::new("adb").args(["forward", &fwd, &fwd]).output().expect("adb forward");
+    // adb picks the host port so parallel runs against other devices
+    // don't collide on it.
+    let out = Command::new("adb")
+        .args(["forward", "tcp:0", &format!("tcp:{PORT}")])
+        .output()
+        .expect("adb forward");
     assert!(out.status.success(), "adb forward: {}", String::from_utf8_lossy(&out.stderr));
+    let host_port: u16 = String::from_utf8_lossy(&out.stdout).trim().parse().expect("adb forward port");
+    let fwd = format!("tcp:{host_port}");
     let dir = scratch("local");
     let ssh = |user: &str, key: Option<&std::path::Path>, cmd: &str| {
         let mut c = Command::new("ssh");
-        c.args(["-F", "/dev/null", "-p", &PORT.to_string()])
+        c.args(["-F", "/dev/null", "-p", &host_port.to_string()])
             .args(["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"])
             .args(["-o", "BatchMode=yes", "-o", "LogLevel=ERROR", "-o", "IdentitiesOnly=yes"]);
         match key {

@@ -8,7 +8,8 @@
 use std::time::{Duration, Instant};
 
 use tawc_integration::helpers::{
-    close_home_terminal, ensure_wayland_debug_app, has_shm_surface, show_home_apps,
+    app_fd_targets, close_home_terminal, ensure_wayland_debug_app, fd_growth, has_shm_surface,
+    show_home_apps,
     show_home_terminal, terminal_run, wait_for_rootfs_file, TIMEOUT,
 };
 use tawc_integration::rootfs_process::RootfsProcess;
@@ -56,15 +57,10 @@ fn wait_for_clients(min: u32, timeout: Duration) {
 }
 
 /// `(fds, threads)` of the app process, read by a child of it.
-fn app_fds_and_threads() -> (u32, u32) {
-    let out = adb::host_sh("ls /proc/$PPID/fd | wc -l; ls /proc/$PPID/task | wc -l")
-        .expect("host-sh fd/thread count");
-    let nums: Vec<u32> = String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .filter_map(|n| n.parse().ok())
-        .collect();
-    assert_eq!(nums.len(), 2, "unexpected fd/thread count output: {out:?}");
-    (nums[0], nums[1])
+fn app_fds_and_threads() -> (Vec<String>, u32) {
+    let out = adb::host_sh("ls /proc/$PPID/task | wc -l").expect("host-sh thread count");
+    let threads = String::from_utf8_lossy(&out.stdout).trim().parse().expect("thread count");
+    (app_fd_targets(), threads)
 }
 
 /// A terminal-style spawn — nothing warms the compositor up — of a
@@ -163,8 +159,11 @@ fn test_compositor_cycles_do_not_leak() {
     }
     let (fds_after, threads_after) = app_fds_and_threads();
     assert!(
-        fds_after <= fds_before + 2,
-        "fds grew over 8 compositor cycles: {fds_before} -> {fds_after}"
+        fds_after.len() <= fds_before.len() + 2,
+        "fds grew over 8 compositor cycles: {} -> {} ({})",
+        fds_before.len(),
+        fds_after.len(),
+        fd_growth(&fds_before, &fds_after)
     );
     assert!(
         threads_after <= threads_before + 2,
@@ -392,6 +391,6 @@ fn test_session_wake_follows_toggle_and_exit() {
 
     // A new service lifetime starts released.
     let out = adb::rootfs_run_with(BACKEND, "true").expect("run true");
-    assert!(out.status.success(), "`true` failed");
+    assert!(out.status.success(), "`true` failed: {out:?}");
     assert!(!wake_lock_held(), "lock carried over into a new service");
 }

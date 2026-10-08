@@ -406,6 +406,15 @@ esac
 if [ "$(adb shell "su -c 'id -u'" 2>/dev/null | tr -d '\r\n')" != "0" ]; then
     echo "=== Marking root-requiring tests ignored (no Magisk-style su on target) ==="
     EXTRA_RUSTFLAGS+=(--cfg tawc_skip_root_on_target)
+else
+    # The wipe's su retry runs as the app, so Magisk must also allow
+    # the app uid (policy 2). Unknown if the policy table can't be read.
+    APP_UID="$(adb shell pm list packages -U "$PKG" | tr -d '\r' | sed -n "s/^package:$PKG uid:\([0-9]*\).*/\1/p")"
+    if POLICIES="$(adb shell "su -c 'magisk --sqlite \"SELECT uid,policy FROM policies\"'" 2>/dev/null | tr -d '\r')" \
+        && [ -n "$APP_UID" ] && ! grep -qx "uid=$APP_UID|policy=2" <<<"$POLICIES"; then
+        echo "=== Marking root-requiring tests ignored (Magisk doesn't allow $PKG; grant it root to run them) ==="
+        EXTRA_RUSTFLAGS+=(--cfg tawc_skip_root_on_target)
+    fi
 fi
 # The live remote-access test needs network on both the target and this
 # host (it goes through sshyeet.com); opt in with TAWC_LIVE_RELAY=1.

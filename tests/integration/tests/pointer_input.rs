@@ -428,9 +428,9 @@ fn test_full_emulation_long_press_right_clicks() {
             .expect("right click while held");
         adb::inject_touch("release").expect("inject-touch release");
         // The lift must not click: give a stray press time to land.
+        let motion = baseline(app).motion;
         adb::inject_pointer_move().expect("inject-pointer move");
-        app.wait_for_more("POINTER_MOTION", baseline(app).motion)
-            .expect("motion after release");
+        app.wait_for_more("POINTER_MOTION", motion).expect("motion after release");
         let clicks = buttons(app).split_off(before.button);
         assert_eq!(clicks.iter().map(|b| (b.button, b.state)).collect::<Vec<_>>(), [
             (BTN_RIGHT, PRESSED),

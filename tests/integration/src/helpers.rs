@@ -732,3 +732,38 @@ pub fn wait_for_rootfs_file(backend: GraphicsBackend, path: &str, timeout: Durat
         thread::sleep(Duration::from_millis(200));
     }
 }
+
+/// The app process's open fds as `readlink` targets with numbers
+/// blanked (`socket:[N]`, `anon_inode:malitl_N_N`), so leak checks can
+/// name what grew. In-flight fence fds (`sync_file`) swing by a dozen
+/// with frame timing, so they are left out.
+pub fn app_fd_targets() -> Vec<String> {
+    let out = adb::host_sh(
+        "for f in /proc/$PPID/fd/*; do readlink $f; done | sed -E 's/(0x)?[0-9a-f]*[0-9][0-9a-f]*/N/g'",
+    )
+    .expect("host-sh fd list");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|t| *t != "anon_inode:sync_file")
+        .map(str::to_string)
+        .collect()
+}
+
+/// `target: before -> after` for each fd target whose count grew.
+pub fn fd_growth(before: &[String], after: &[String]) -> String {
+    let count = |v: &[String]| {
+        let mut m = std::collections::BTreeMap::<String, i32>::new();
+        for t in v {
+            *m.entry(t.clone()).or_default() += 1;
+        }
+        m
+    };
+    let (b, a) = (count(before), count(after));
+    a.iter()
+        .filter_map(|(t, &n)| {
+            let was = b.get(t).copied().unwrap_or(0);
+            (n > was).then(|| format!("{t}: {was} -> {n}"))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}

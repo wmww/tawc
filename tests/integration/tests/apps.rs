@@ -31,12 +31,11 @@ const LXTERMINAL_LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 const LXTERMINAL_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 const GTK_WIDGET_FACTORY_LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 
-// Wayland logical coordinates inside a GtkEntry on gtk4-widget-factory's first page.
-// The stock app opens on page 1, whose first column contains editable entries
-// near the upper left. Tapping this point focuses one of those GtkEntry widgets
-// and makes GTK enable text-input-v3.
-const GTK_WIDGET_FACTORY_ENTRY_X: f32 = 85.0;
-const GTK_WIDGET_FACTORY_ENTRY_Y: f32 = 110.0;
+// A point inside the first plain GtkEntry on gtk4-widget-factory's page 1,
+// in the window's own coordinates. Tapping it focuses the entry and makes
+// GTK enable text-input-v3. The window is wider than a phone, so the
+// compositor scales it to fit; the tap goes through its placement.
+const GTK_WIDGET_FACTORY_ENTRY: (f64, f64) = (200.0, 161.0);
 
 fn ctrl_key(keycode: u32) {
     assert_broker_ok(
@@ -197,9 +196,11 @@ fn test_gtk4_widget_factory_copy_paste_and_text_input() {
         GTK_WIDGET_FACTORY_LAUNCH_TIMEOUT,
     );
 
+    let state = compositor::query_state(TIMEOUT).expect("query compositor state");
+    let window = state.window_with_role("toplevel").expect("one gtk4-widget-factory toplevel");
+    let (x, y) = window.to_screen(GTK_WIDGET_FACTORY_ENTRY.0, GTK_WIDGET_FACTORY_ENTRY.1);
     assert_broker_ok(
-        adb::inject_touch_logical(GTK_WIDGET_FACTORY_ENTRY_X, GTK_WIDGET_FACTORY_ENTRY_Y)
-            .expect("tap gtk4-widget-factory entry"),
+        adb::inject_touch_logical(x as f32, y as f32).expect("tap gtk4-widget-factory entry"),
         "tap gtk4-widget-factory entry",
     );
     wait_for_keyboard_shown(TIMEOUT);
