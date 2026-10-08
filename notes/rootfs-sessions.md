@@ -25,8 +25,14 @@ There is exactly one place that knows how to enter a rootfs:
 | Host scripts (`rootfs-run.sh`, `run-integration-tests.sh`) | broker `RUNINSIDE` request → `UserRootfsSession.startInside` → `method.startInside` |
 | Integration tests (`rootfs_run`, `rootfs_spawn`) | same broker path |
 
-`startInside` upholds the session invariant — `setsid` is built into
-the spawn for tawcroot/proot; chroot's `su` provides one implicitly.
+`startInside` upholds the session invariant — tawcroot's `-s` calls
+`setsid()` itself; proot's spawn uses `/system/bin/setsid`; chroot's
+`su` provides one implicitly. Not toybox `setsid` for tawcroot: 0.8.3–
+0.8.5 (Android 11/12) `setpgid(0,0)`s first, so `setsid()` always
+fails, it forks, and the parent exits 0 at once — the caller sees an
+instant success and the orphaned guest is lost. `-w` would wait, but
+Android 10's toybox 0.8.0 rejects it. proot (debug-only) still has
+this on Android 11/12.
 There is no other path that enters a rootfs.
 
 There is no on-disk `enter.sh` for any method. All bind-table /

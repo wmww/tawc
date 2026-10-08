@@ -44,6 +44,9 @@ static inline long tawc_getpid(void)
 static inline long tawc_getppid(void)
 { return TAWC_RAW(TAWC_SYS_getppid, 0, 0, 0, 0, 0, 0); }
 
+static inline long tawc_setsid(void)
+{ return TAWC_RAW(TAWC_SYS_setsid, 0, 0, 0, 0, 0, 0); }
+
 static inline long tawc_getuid(void)
 { return TAWC_RAW(TAWC_SYS_getuid, 0, 0, 0, 0, 0, 0); }
 

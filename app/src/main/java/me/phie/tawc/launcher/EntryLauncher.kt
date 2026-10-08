@@ -144,8 +144,8 @@ object EntryLauncher {
                 }
                 return@launch
             }
-            // startInside wraps the launch in setsid, which execs (the JVM
-            // child is no group leader), so the session id is the pid.
+            // startInside's spawn calls setsid() itself (tawcroot -s), so
+            // the session id is the pid.
             val sid = MethodRunHelper.pidOf(proc)
             if (token != null && sid > 0) NativeBridge.nativeUpdateLaunch(launch.id, sid, false)
             val code = runCatching {

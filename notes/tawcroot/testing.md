@@ -12,7 +12,7 @@ argv branches — no smoke driver, no `--run-test` hook, no loader
 diagnostics on the production CLI. The production argv surface is
 exactly two entries:
 
-- `tawcroot -r ROOTFS [-b SRC:DST]... -- CMD [ARGS...]` — the
+- `tawcroot [-s] -r ROOTFS [-b SRC:DST]... -- CMD [ARGS...]` — the
   rootfs-mode launch path.
 - `tawcroot --exec-child <fd>` — re-entry from the SIGSYS execve
   handler dance (`exec_handler.c` writes exec_state into a memfd

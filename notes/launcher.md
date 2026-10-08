@@ -107,9 +107,8 @@ backgrounds the program) keeps Waiting: `LaunchRegistry.sessionAlive`
 scans `/proc` for the sid. Timers live in the registry, so a
 configuration change doesn't reset them.
 
-**Session id.** `startInside` wraps every launch in `/system/bin/setsid`.
-The JVM's child is no process-group leader, so toybox `setsid` calls
-`setsid()` and execs: the session id is the spawned pid
+**Session id.** `startInside` runs tawcroot with `-s`, so it calls
+`setsid()` before loading the guest: the session id is the spawned pid
 (`MethodRunHelper.pidOf`, reflection). Verified on the emulator under
 tawcroot: every guest process of a launch shares it.
 

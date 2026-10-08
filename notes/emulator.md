@@ -367,11 +367,10 @@ A third, **optional** AVD exists for one specific job:
   --init/--populate`, `pacman -Sy <pkg>` with signature checking, and
   the whole `tawcroot_prodenv::` suite except the two *dynamic*
   (bionic-linked) fixtures, which SIGSEGV because the NDK builds them
-  against a newer bionic than API 30 ships. Known broken there:
-  `scripts/rootfs-run.sh` / `tawc-exec --in-rootfs` run the guest but
-  relay no stdio and exit 0 — see
-  issues/rootfs-session-no-stdio-on-api-30.md. Work around it by
-  invoking `libtawcroot.so` directly through the broker's ARGV form.
+  against a newer bionic than API 30 ships. It also caught toybox
+  `setsid` forking and exiting 0 at once on Android 11/12, which
+  silently dropped every tawcroot session (install steps included) —
+  see notes/rootfs-sessions.md.
 
   What it bought us: it is where wmww/tawc#14 reproduced. Android's
   policy below API 34 RET_TRAPs `close_range` (NR 436), and a handler

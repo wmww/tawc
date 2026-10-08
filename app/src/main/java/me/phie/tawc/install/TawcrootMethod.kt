@@ -79,7 +79,7 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      * Start a tawcroot subprocess running [command] inside [rootfs].
      * Argv shape:
      *
-     *   /system/bin/setsid <tawcroot> -r <rootfs> \
+     *   <tawcroot> -s -r <rootfs> \
      *       -b /dev:/dev -b /proc:/proc -b /sys:/sys \
      *       -b /apex:/apex:ro [-b /vendor:/vendor:ro ...] \
      *       [-b <filesDir>/libhybris:/usr/lib/hybris:ro ...] \
@@ -93,9 +93,11 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      * ([assetBinds]). Libhybris bind dirs are filtered to existing
      * host paths at class-load.
      *
-     * `setsid` upholds the rootfs-session invariant
-     * (notes/rootfs-sessions.md): every chroot invocation runs in
-     * its own session. The visible symptoms are gpg-agent's main
+     * `-s` (tawcroot calls setsid()) upholds the rootfs-session
+     * invariant (notes/rootfs-sessions.md): every chroot invocation
+     * runs in its own session. Not `/system/bin/setsid`: toybox
+     * 0.8.3-0.8.5 (Android 11/12) always forks and exits 0 at once,
+     * and `-w` doesn't exist in Android 10's toybox. The visible symptoms are gpg-agent's main
      * loop spinning at 100% CPU under pacman-key (inherited pgrp +
      * signal mask) and the integration test framework's PGID-based
      * cleanup; the underlying contract is general.
@@ -113,10 +115,9 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         val andoHostDir = store.andoHostDir(rootfs)
         val tmpdir = prepareSpawn(rootfs, assetBinds, externalBinds)
         val argv = buildList {
-            add("/system/bin/setsid")
             addAll(rootfsArgv(
                 rootfs, graphics, assetBinds, externalBinds, andoHostDir,
-                RootShell.resolve(File(rootfs)),
+                RootShell.resolve(File(rootfs)), newSession = true,
             ))
             add(RootShell.command(File(rootfs)))
             if (command != null) {
@@ -146,10 +147,9 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         val assetBinds = assetBinds()
         val tmpdir = prepareSpawn(rootfs, assetBinds, emptyList())
         val argv = buildList {
-            add("/system/bin/setsid")
             addAll(rootfsArgv(
                 rootfs, null, assetBinds, emptyList(), null,
-                RootShell.resolve(File(rootfs)),
+                RootShell.resolve(File(rootfs)), newSession = true,
             ))
             add("/bin/true")
         }
@@ -168,8 +168,8 @@ class TawcrootMethod(context: Context) : InstallationMethod {
      * caller-owned pty — the in-app terminal
      * ([me.phie.tawc.terminal.TerminalPane]), whose termux
      * terminal-emulator JNI forks the pty pair and execs [argv]
-     * directly. Same envelope as [startInside] minus the `setsid`
-     * prefix: the pty spawn setsid()s the child itself, which both
+     * directly. Same envelope as [startInside] minus `-s`
+     * (setsid): the pty spawn setsid()s the child itself, which both
      * upholds the rootfs-session invariant (notes/rootfs-sessions.md)
      * and makes the shell the session leader of the new pty so job
      * control works. TERM/COLORTERM ride after [RootfsEnv]'s map
@@ -327,8 +327,10 @@ class TawcrootMethod(context: Context) : InstallationMethod {
         externalBinds: List<ExternalBind>,
         andoHostDir: String?,
         shell: String,
+        newSession: Boolean = false,
     ): List<String> = buildList {
         add(tawcrootBin)
+        if (newSession) add("-s")
         addAll(listOf("-r", rootfs))
         for (spec in bindSpecs(assetBinds, externalBinds, andoHostDir)) {
             addAll(listOf("-b", spec.arg()))

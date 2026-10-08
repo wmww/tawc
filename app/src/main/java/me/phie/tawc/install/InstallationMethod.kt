@@ -108,7 +108,8 @@ interface InstallationMethod {
      *     in-rootfs bash doesn't see the caller's stdin. The other
      *     methods don't have this limitation.
      *   - [TawcrootMethod] / [ProotMethod] run as the app uid via
-     *     `ProcessBuilder.start()` with `setsid` prepended.
+     *     `ProcessBuilder.start()` in a new session (tawcroot `-s`,
+     *     proot `setsid`).
      *
      * Pre-setup (mkdirs for bind targets) happens in Kotlin here.
      * The in-rootfs bash starts under `/usr/bin/env -i KEY=VAL …` so

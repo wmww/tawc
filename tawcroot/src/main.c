@@ -5,10 +5,11 @@
  *
  * Production CLI (must stay tight — anything reachable here is a
  * supported surface):
- *   tawcroot -r ROOTFS [-b SRC:DST[:ro]]... -- CMD [ARGS...]
+ *   tawcroot [-s] -r ROOTFS [-b SRC:DST[:ro]]... -- CMD [ARGS...]
  *     The "real" production mode (phase 2d). Opens the rootfs, builds
  *     the bind table, installs handler+filter, and manual-loads CMD
- *     from inside the rootfs view (path translation in effect).
+ *     from inside the rootfs view (path translation in effect). `-s`
+ *     starts a new session first (see prod_main).
  *   tawcroot --exec-child <fd>
  *     Re-entry from the SIGSYS execve handler dance. Reads exec_state
  *     from the inherited memfd and resumes through the loader. Not
@@ -212,7 +213,7 @@ static __attribute__((noreturn)) void usage(int code)
 	            "  tawcroot-testhost -r ROOTFS [-b SRC:DST[:ro]]...\n");
 #else
 	tawc_io_str("tawcroot: usage:\n"
-	            "  tawcroot -r ROOTFS [-b SRC:DST[:ro]]... -- CMD [ARGS...]\n"
+	            "  tawcroot [-s] -r ROOTFS [-b SRC:DST[:ro]]... -- CMD [ARGS...]\n"
 	            "  tawcroot --exec-child <fd>\n");
 #endif
 	tawc_exit_group(code);
@@ -449,11 +450,15 @@ __attribute__((noreturn)) static void prod_main(int argc, char **argv)
 	const char *bind_specs[TAWCROOT_MAX_BINDS];
 	size_t      n_binds   = 0;
 	int         cmd_start = -1;
+	int         new_session = 0;
 
 	int i = 1;
 	while (i < argc) {
 		if (tawc_streq(argv[i], "--")) { cmd_start = i + 1; break; }
-		if (tawc_streq(argv[i], "-r")) {
+		if (tawc_streq(argv[i], "-s")) {
+			new_session = 1;
+			i++;
+		} else if (tawc_streq(argv[i], "-r")) {
 			if (i + 1 >= argc) usage(2);
 			rootfs = argv[++i];
 			i++;
@@ -473,6 +478,12 @@ __attribute__((noreturn)) static void prod_main(int argc, char **argv)
 		}
 	}
 	if (!rootfs || cmd_start < 0 || cmd_start >= argc) usage(2);
+
+	/* `-s` replaces a `/system/bin/setsid` prefix: toybox 0.8.3-0.8.5
+	 * (Android 11/12) always forks there and the parent exits 0, so the
+	 * launcher loses the guest (and bind_top_level_to_parent then sees
+	 * us orphaned). EPERM (already a session leader) is fine. */
+	if (new_session) (void)tawc_setsid();
 
 	prod_rootfs_init(rootfs, bind_specs, n_binds);
 
