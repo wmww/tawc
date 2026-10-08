@@ -24,8 +24,8 @@ const GTK3_MENU_OBSERVE_TIMEOUT: Duration = Duration::from_secs(5);
 // Wayland logical coordinates for the second menubar item in gtk3-demo-application.
 // Keep
 // both GTK3 menu tests on this exact tap: if GTK3 fixes the cold-state bug,
-// the "verify broken" test should fail instead of drifting to a different
-// click target.
+// the "verify broken" (pointer emulation `none`) test should fail instead of
+// drifting to a different click target.
 const GTK3_DEMO_APPLICATION_MENU_X: f32 = 170.0;
 const GTK3_DEMO_APPLICATION_MENU_Y: f32 = 20.0;
 
@@ -221,12 +221,12 @@ fn launch_gtk3_demo_application_with_wayland_debug() -> (RootfsProcess, mpsc::Re
     (app, rx)
 }
 
-fn observe_gtk3_demo_application_menu_tap(workaround_enabled: bool) -> Gtk3MenuObservation {
+fn observe_gtk3_demo_application_menu_tap(pointer_emulation: &str) -> Gtk3MenuObservation {
     assert_broker_ok(adb::set_output_scale(2.0).expect("set output scale"), "set-output-scale");
     assert_broker_ok(
-        adb::set_gtk3_broken_menus_workaround(workaround_enabled)
-            .unwrap_or_else(|e| panic!("set gtk3 broken menus workaround: {e}")),
-        "set-gtk3-broken-menus-workaround",
+        adb::set_pointer_emulation(pointer_emulation)
+            .unwrap_or_else(|e| panic!("set pointer emulation: {e}")),
+        "set-pointer-emulation",
     );
     let (mut app, rx) = launch_gtk3_demo_application_with_wayland_debug();
     assert_broker_ok(
@@ -288,11 +288,8 @@ fn observe_gtk3_demo_application_menu_tap(workaround_enabled: bool) -> Gtk3MenuO
     }
 }
 
-fn assert_gtk3_demo_application_menu_tap(
-    workaround_enabled: bool,
-    expected_final_menu: Gtk3Menu,
-) {
-    let observation = observe_gtk3_demo_application_menu_tap(workaround_enabled);
+fn assert_gtk3_demo_application_menu_tap(pointer_emulation: &str, expected_final_menu: Gtk3Menu) {
+    let observation = observe_gtk3_demo_application_menu_tap(pointer_emulation);
     let final_anchor = *observation
         .anchors_after_touch
         .last()
@@ -317,17 +314,13 @@ fn test_test_init_resets_settings_and_closes_existing_clients() {
 
     assert_broker_ok(adb::set_output_scale(3.25).expect("set output scale"), "set-output-scale");
     assert_broker_ok(
-        adb::set_gtk3_broken_menus_workaround(false)
-            .expect("set gtk3 broken menus workaround"),
-        "set-gtk3-broken-menus-workaround",
+        adb::set_pointer_emulation("full").expect("set pointer emulation"),
+        "set-pointer-emulation",
     );
     assert_broker_ok(adb::set_xwayland(false).expect("set xwayland"), "set-xwayland");
     assert_eq!(adb::get_output_scale().expect("get output scale"), 3.25);
     assert!(!adb::get_xwayland().expect("get xwayland"));
-    assert!(
-        !adb::get_gtk3_broken_menus_workaround()
-            .expect("get gtk3 broken menus workaround")
-    );
+    assert_eq!(adb::get_pointer_emulation().expect("get pointer emulation"), "full");
 
     let leaked = start_wayland_debug_scale(BACKEND, "");
     tawc_integration::helpers::test_init();
@@ -335,10 +328,7 @@ fn test_test_init_resets_settings_and_closes_existing_clients() {
 
     assert_eq!(adb::get_output_scale().expect("get reset output scale"), 2.0);
     assert!(adb::get_xwayland().expect("get reset xwayland"));
-    assert!(
-        adb::get_gtk3_broken_menus_workaround()
-            .expect("get reset gtk3 broken menus workaround")
-    );
+    assert_eq!(adb::get_pointer_emulation().expect("get reset pointer emulation"), "hover");
 
     let mut app = start_wayland_debug_scale(BACKEND, "");
     app.wait_for_tag_value("SCALE_CHANGED", "2.00", TIMEOUT)
@@ -490,13 +480,13 @@ fn test_xdg_configure_state_maximized_vs_fullscreen() {
 }
 
 #[test]
-fn test_gtk3_demo_application_menu_opens_leftmost_without_workaround() {
+fn test_gtk3_demo_application_menu_opens_leftmost_without_pointer_emulation() {
     tawc_integration::helpers::test_init();
-    assert_gtk3_demo_application_menu_tap(false, Gtk3Menu::Leftmost);
+    assert_gtk3_demo_application_menu_tap("none", Gtk3Menu::Leftmost);
 }
 
 #[test]
-fn test_gtk3_demo_application_menu_opens_tapped_menu_with_workaround() {
+fn test_gtk3_demo_application_menu_opens_tapped_menu_with_hover_emulation() {
     tawc_integration::helpers::test_init();
-    assert_gtk3_demo_application_menu_tap(true, Gtk3Menu::Tapped);
+    assert_gtk3_demo_application_menu_tap("hover", Gtk3Menu::Tapped);
 }

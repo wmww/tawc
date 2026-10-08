@@ -228,8 +228,8 @@ the empty-list message appends a "(N hidden)" hint.
 Debug broker actions (notes/exec-broker.md): `launcher-list` returns
 the post-filter list as JSON (optionally including hidden entries with
 `showHidden=true`), including the resolved `iconPath` so icon tests can
-see what the scanner picked, plus `shadows` and the `graphics`
-override; `set-entry-hidden` and `set-entry-graphics` perform the same
+see what the scanner picked, plus `shadows` and the `graphics`/`pointer`
+overrides; `set-entry-hidden`, `set-entry-graphics` and `set-entry-pointer` perform the same
 metadata writes as the UI. Integration coverage: `launcher::` tests in
 `tests/integration/tests/launcher.rs`.
 
@@ -280,10 +280,10 @@ flatpak files are never modified.
   personal entry; not managed = packaged. An override whose package is
   removed loses `shadows` and becomes a personal entry.
 - **Toolbar action.** Personal: trash, Delete. Override, or a packaged
-  entry with only a graphics override: `ic_reset`, Reset ("…to
+  entry with only a graphics or pointer override: `ic_reset`, Reset ("…to
   default?"), which deletes the managed copy. Both also clear the id's
-  graphics override, so a future entry reusing the slug doesn't inherit
-  it. Packaged with nothing overridden: none.
+  graphics and pointer overrides, so a future entry reusing the slug
+  doesn't inherit them. Packaged with nothing overridden: none.
 - **Patch, don't rewrite.** Existing files go through
   `DesktopEntryFile.patch`: inside `[Desktop Entry]`, only changed keys
   among Name/Exec/Icon/Terminal/Comment are replaced in place or
@@ -312,7 +312,7 @@ flatpak files are never modified.
 - Form: Exec (required) + Name (blank = Exec, shown as the hint),
   Environment variables, Icon (see "Icon field" below), Terminal
   checkbox (checked by default for new entries — hand-made entries are
-  usually CLI scripts), Override graphics.
+  usually CLI scripts), Override graphics, Override pointer emulation.
 - **Environment variables** live in the file, the XDG way:
   `Exec=env K=V … command` (`DesktopEntryFile.splitExec`/`joinExec`),
   so they travel with the entry and other desktops see them too. Rows
@@ -354,6 +354,17 @@ fresh `Installation`, so they follow it too. Only TAWC launches honour
 it: running the same program from a terminal uses the global backend.
 Verified on the emulator 2026-10-07 (Firefox with a CPU override spawns
 with `LIBGL_ALWAYS_SOFTWARE=1` while the global pick is gfxstream).
+
+### Pointer emulation override
+
+Same shape below it: "Override pointer emulation" reveals
+`ui/PointerEmulationGroup` (shared with Settings), stored in
+`Installation.entryPointerEmulation` (id → `PointerEmulation.key`, via
+`withEntryPointerEmulation`), resolved by `EntryLauncher.pointerEmulationFor`.
+The launch hands it to the compositor with `nativeReserveLaunchHost`,
+which applies it to the launched session and launch host — see
+notes/input.md ("Pointer emulation"). GUI launches with a splash only;
+terminal entries and launches without a reserved host get the global mode.
 
 ### Icon field
 

@@ -7,9 +7,9 @@
 //! SurfaceView — so `CompositorActivity`'s own decoding (the source split,
 //! the button-mask diff, the hover rules) is part of what is under test.
 //!
-//! Note the GTK3 broken menus workaround is on by default and primes each
-//! new toplevel with a pointer enter/leave pair, so tests count events from
-//! a baseline taken after the window is up rather than from zero.
+//! Also covers pointer emulation (notes/input.md "Pointer emulation"): what
+//! touchscreen input does to `wl_pointer` in each mode. Tests count events
+//! from a baseline taken after the window is up rather than from zero.
 
 use tawc_integration::adb;
 use tawc_integration::debug_app::DebugApp;
@@ -154,8 +154,7 @@ fn buttons(app: &DebugApp) -> Vec<PointerButton> {
         .collect()
 }
 
-/// Counts of every pointer tag a test cares about, taken before injecting so
-/// the GTK3 workaround's startup prime doesn't get counted as a result.
+/// Counts of every pointer tag a test cares about, taken before injecting.
 #[derive(Clone, Copy, Debug)]
 struct Baseline {
     enter: usize,
@@ -306,6 +305,137 @@ fn test_touch_tap_does_not_become_pointer() {
             before.button,
             "touchscreen tap must not produce a pointer button"
         );
+    });
+}
+
+fn set_pointer_emulation(mode: &str) {
+    let output = adb::set_pointer_emulation(mode).expect("set-pointer-emulation");
+    assert!(
+        output.status.success(),
+        "set-pointer-emulation {mode}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Client lines from `TOUCH_DOWN`/`POINTER_*` tags after the first `skip`.
+fn input_lines(app: &DebugApp, skip: usize) -> Vec<String> {
+    app.lines()
+        .into_iter()
+        .filter(|l| l.starts_with("TOUCH_") || l.starts_with("POINTER_"))
+        .skip(skip)
+        .collect()
+}
+
+/// Hover (the default): the pointer follows a touch drag with motion only,
+/// no buttons and no leave. Nemo's rubberband polls the client pointer and
+/// froze without this.
+#[test]
+fn test_hover_emulation_touch_drag_moves_pointer() {
+    tawc_integration::helpers::test_init();
+    with_wayland_touch(|app| {
+        let before = baseline(app);
+        adb::inject_touch("drag").expect("inject-touch drag");
+        app.wait_for_tag_count("TOUCH_UP", 1, TIMEOUT)
+            .expect("touch up");
+        app.wait_for_more("POINTER_MOTION", before.motion)
+            .expect("pointer motion during drag");
+
+        let up = app.payloads_with_tag("TOUCH_UP").remove(0);
+        let mut up = up.split(':').skip(1).map(|v| v.parse::<f64>().expect("touch coord"));
+        let (up_x, up_y) = (up.next().expect("up x"), up.next().expect("up y"));
+        let last = positions(app, "POINTER_MOTION").pop().expect("last motion");
+        assert_eq!(last.target, "toplevel");
+        assert!(
+            (last.x - up_x).abs() < 1.0 && (last.y - up_y).abs() < 1.0,
+            "pointer {:.1},{:.1} should rest at touch up {up_x:.1},{up_y:.1}",
+            last.x,
+            last.y,
+        );
+        let after = baseline(app);
+        assert_eq!(after.button, before.button, "touch must not press a pointer button");
+        assert_eq!(after.leave, before.leave, "touch must not send a pointer leave");
+    });
+}
+
+#[test]
+fn test_no_emulation_touch_leaves_pointer_alone() {
+    tawc_integration::helpers::test_init();
+    set_pointer_emulation("none");
+    with_wayland_touch(|app| {
+        let before = baseline(app);
+        adb::inject_touch("drag").expect("inject-touch drag");
+        app.wait_for_tag_count("TOUCH_UP", 1, TIMEOUT)
+            .expect("touch up");
+        let after = baseline(app);
+        assert_eq!(
+            (after.enter, after.motion, after.button),
+            (before.enter, before.motion, before.button),
+            "pointer emulation none must not touch wl_pointer"
+        );
+    });
+}
+
+#[test]
+fn test_full_emulation_tap_clicks() {
+    tawc_integration::helpers::test_init();
+    set_pointer_emulation("full");
+    with_wayland_touch(|app| {
+        let before = baseline(app);
+        adb::inject_touch("tap").expect("inject-touch tap");
+        app.wait_for_tag_count("POINTER_BUTTON", before.button + 2, TIMEOUT)
+            .expect("click");
+        let clicks = buttons(app).split_off(before.button);
+        let left = |state| PointerButton { target: "toplevel".into(), button: BTN_LEFT, state };
+        assert_eq!(clicks, vec![left(PRESSED), left(RELEASED)]);
+        assert_eq!(baseline(app).touch_down, before.touch_down, "full emulation sends no wl_touch");
+    });
+}
+
+#[test]
+fn test_full_emulation_drag_holds_left_button() {
+    tawc_integration::helpers::test_init();
+    set_pointer_emulation("full");
+    with_wayland_touch(|app| {
+        let skip = input_lines(app, 0).len();
+        let before = baseline(app);
+        adb::inject_touch("drag").expect("inject-touch drag");
+        app.wait_for_tag_count("POINTER_BUTTON", before.button + 2, TIMEOUT)
+            .expect("press and release");
+        let lines = input_lines(app, skip);
+        let press = lines.iter().position(|l| l.starts_with("POINTER_BUTTON:")).expect("press");
+        let release = lines.iter().rposition(|l| l.starts_with("POINTER_BUTTON:")).expect("release");
+        assert!(
+            lines[press + 1..release].iter().any(|l| l.starts_with("POINTER_MOTION:")),
+            "drag must move with the button held: {lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.starts_with("TOUCH_")), "no wl_touch: {lines:?}");
+        let held = buttons(app).split_off(before.button);
+        assert_eq!(held.iter().map(|b| (b.button, b.state)).collect::<Vec<_>>(), [
+            (BTN_LEFT, PRESSED),
+            (BTN_LEFT, RELEASED)
+        ]);
+    });
+}
+
+#[test]
+fn test_full_emulation_long_press_right_clicks() {
+    tawc_integration::helpers::test_init();
+    set_pointer_emulation("full");
+    with_wayland_touch(|app| {
+        let before = baseline(app);
+        adb::inject_touch("press").expect("inject-touch press");
+        app.wait_for_tag_count("POINTER_BUTTON", before.button + 2, TIMEOUT)
+            .expect("right click while held");
+        adb::inject_touch("release").expect("inject-touch release");
+        // The lift must not click: give a stray press time to land.
+        adb::inject_pointer_move().expect("inject-pointer move");
+        app.wait_for_more("POINTER_MOTION", baseline(app).motion)
+            .expect("motion after release");
+        let clicks = buttons(app).split_off(before.button);
+        assert_eq!(clicks.iter().map(|b| (b.button, b.state)).collect::<Vec<_>>(), [
+            (BTN_RIGHT, PRESSED),
+            (BTN_RIGHT, RELEASED)
+        ]);
     });
 }
 
@@ -472,9 +602,8 @@ fn test_wheel_scroll_signs() {
 }
 
 /// Every group of pointer events must be terminated by exactly one
-/// `wl_pointer.frame`. Counted across every group kind the client can see —
-/// crossings included, since the GTK3 workaround's prime can emit an
-/// enter/leave pair at any toplevel commit.
+/// `wl_pointer.frame`. Counted across every group kind the client can see,
+/// crossings included.
 #[test]
 fn test_every_event_group_ends_with_one_frame() {
     tawc_integration::helpers::test_init();

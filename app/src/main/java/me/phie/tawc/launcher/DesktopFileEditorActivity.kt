@@ -36,6 +36,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.phie.tawc.GraphicsBackend
+import me.phie.tawc.PointerEmulation
 import me.phie.tawc.R
 import me.phie.tawc.Settings
 import me.phie.tawc.compositor.NativeBridge
@@ -44,6 +45,7 @@ import me.phie.tawc.install.util.atomicWriteText
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.graphicsBackendGroup
 import me.phie.tawc.ui.plainIconButton
+import me.phie.tawc.ui.pointerEmulationGroup
 import me.phie.tawc.ui.primaryButton
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
@@ -57,13 +59,14 @@ import java.io.IOException
  * file is never touched. Form: Exec (required) + Name (defaults to
  * Exec), Icon (freeform `Icon=` value with a live preview, picked from
  * the distro's icons by [IconPickerActivity] or imported by
- * [IconImport]), Terminal, and a per-entry graphics backend
- * ([Installation.entryGraphics], not part of the file). Existing files
+ * [IconImport]), Terminal, and per-entry graphics backend and pointer
+ * emulation overrides ([Installation.entryGraphics],
+ * [Installation.entryPointerEmulation], not part of the file). Existing files
  * are [DesktopEntryFile.patch]ed, so keys the form doesn't show survive.
  *
  * The toolbar action follows what is being edited: Delete for a
  * personal entry, Reset for an override or a packaged entry with a
- * graphics override, nothing otherwise.
+ * graphics or pointer override, nothing otherwise.
  *
  * Launched by [AppsPane] (via MainActivity) for result (RESULT_OK = the rootfs
  * changed, rescan). Writes are plain app-uid file I/O, so entry points
@@ -120,6 +123,9 @@ class DesktopFileEditorActivity : AppCompatActivity() {
      *  form's pick (null = no override, the global setting). */
     private var storedGraphics: String? = null
     private var graphicsPick: GraphicsBackend? = null
+    /** Same for [Installation.entryPointerEmulation]. */
+    private var storedPointer: String? = null
+    private var pointerPick: PointerEmulation? = null
     private lateinit var managedDir: File
 
     private enum class ToolbarAction { NONE, DELETE, RESET }
@@ -167,6 +173,8 @@ class DesktopFileEditorActivity : AppCompatActivity() {
         }
         storedGraphics = entryId?.let { inst.entryGraphics[it] }
         graphicsPick = GraphicsBackend.fromKeyOrNull(storedGraphics)
+        storedPointer = entryId?.let { inst.entryPointerEmulation[it] }
+        pointerPick = PointerEmulation.fromKeyOrNull(storedPointer)
 
         val title = getString(
             if (source == null) R.string.editor_title_new else R.string.editor_title_edit,
@@ -219,7 +227,27 @@ class DesktopFileEditorActivity : AppCompatActivity() {
             verticalLp(WRAP_CONTENT, WRAP_CONTENT),
         )
         graphicsBlock.addView(graphicsGroup, verticalLp(MATCH_PARENT, WRAP_CONTENT))
-        form.addView(graphicsBlock, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
+        form.addView(graphicsBlock, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
+        // Same shape for pointer emulation.
+        var pointerPicked = pointerPick ?: Settings.pointerEmulation
+        val pointerGroup = pointerEmulationGroup(pointerPicked) { m ->
+            pointerPicked = m; pointerPick = m; revalidate()
+        }.apply { visibility = if (pointerPick != null) View.VISIBLE else View.GONE }
+        val pointerBlock = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        pointerBlock.addView(
+            CheckBox(this).apply {
+                text = getString(R.string.editor_override_pointer_emulation)
+                isChecked = pointerPick != null
+                setOnCheckedChangeListener { _, checked ->
+                    pointerPick = if (checked) pointerPicked else null
+                    revalidate()
+                    pointerGroup.visibility = if (checked) View.VISIBLE else View.GONE
+                }
+            },
+            verticalLp(WRAP_CONTENT, WRAP_CONTENT),
+        )
+        pointerBlock.addView(pointerGroup, verticalLp(MATCH_PARENT, WRAP_CONTENT))
+        form.addView(pointerBlock, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad))
 
         saveButton = primaryButton(getString(R.string.editor_save)) { save() }
         form.addView(saveButton, verticalLp(MATCH_PARENT, WRAP_CONTENT))
@@ -448,9 +476,9 @@ class DesktopFileEditorActivity : AppCompatActivity() {
     )
 
     /** What [save] would persist; compared against [initialState]. */
-    private fun formState() = draft() to graphicsPick
+    private fun formState() = Triple(draft(), graphicsPick, pointerPick)
 
-    private var initialState: Pair<DesktopEntryFile.Draft, GraphicsBackend?>? = null
+    private var initialState: Triple<DesktopEntryFile.Draft, GraphicsBackend?, PointerEmulation?>? = null
 
     private fun isDirty() = initialState.let { it != null && it != formState() }
 
@@ -492,13 +520,14 @@ class DesktopFileEditorActivity : AppCompatActivity() {
 
     /**
      * Delete for a personal entry (managed, shadows nothing); Reset for
-     * an override, or a packaged entry with only a graphics override.
+     * an override, or a packaged entry with only a graphics or pointer
+     * override.
      */
     private fun toolbarAction(): ToolbarAction {
         val src = source ?: return ToolbarAction.NONE
         return when {
             src == target && shadows == null -> ToolbarAction.DELETE
-            src == target || storedGraphics != null -> ToolbarAction.RESET
+            src == target || storedGraphics != null || storedPointer != null -> ToolbarAction.RESET
             else -> ToolbarAction.NONE
         }
     }
@@ -542,13 +571,15 @@ class DesktopFileEditorActivity : AppCompatActivity() {
         }
         val key = graphicsPick?.key
         if (key != storedGraphics) store.update(installId) { it.withEntryGraphics(id, key) }
+        val pointerKey = pointerPick?.key
+        if (pointerKey != storedPointer) store.update(installId) { it.withEntryPointerEmulation(id, pointerKey) }
         setResult(RESULT_OK)
         finish()
     }
 
     /**
      * Delete (personal entry) or Reset (override): remove the managed
-     * file, if [source] is one, and the graphics override, so a later
+     * file, if [source] is one, and the per-entry overrides, so a later
      * entry reusing the slug doesn't inherit it.
      */
     private fun confirmRemove(reset: Boolean) {
@@ -563,6 +594,7 @@ class DesktopFileEditorActivity : AppCompatActivity() {
                     return@setPositiveButton
                 }
                 if (storedGraphics != null) store.update(installId) { it.withEntryGraphics(id, null) }
+                if (storedPointer != null) store.update(installId) { it.withEntryPointerEmulation(id, null) }
                 setResult(RESULT_OK)
                 finish()
             }

@@ -23,6 +23,7 @@ import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.licenses.LicensesActivity
 import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.graphicsBackendGroup
+import me.phie.tawc.ui.pointerEmulationGroup
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
@@ -70,6 +71,16 @@ class SettingsActivity : AppCompatActivity() {
         // debug, off in release).
         column.addView(
             buildSectionCard(getString(R.string.settings_graphics_driver), buildGraphicsSettings()),
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
+        )
+        column.addView(
+            buildSectionCard(
+                getString(R.string.settings_pointer_emulation),
+                pointerEmulationGroup(Settings.pointerEmulation) {
+                    Settings.pointerEmulation = it
+                    NativeBridge.nativeSetPointerEmulation(it.ordinal)
+                },
+            ),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
         column.addView(
@@ -206,7 +217,6 @@ class SettingsActivity : AppCompatActivity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(buildXwaylandCheckbox(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(buildGtk3BrokenMenusWorkaroundCheckbox(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
     }
 
@@ -226,31 +236,6 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
         column.addView(checkbox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        return column
-    }
-
-    private fun buildGtk3BrokenMenusWorkaroundCheckbox(): android.view.View {
-        val cardPad = (12 * resources.displayMetrics.density).toInt()
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        val checkbox = CheckBox(this).apply {
-            text = getString(R.string.settings_gtk3_broken_menus_workaround)
-            textSize = 15f
-            isChecked = Settings.gtk3BrokenMenusWorkaround
-            setPadding(0, cardPad / 2, 0, cardPad / 4)
-            setOnCheckedChangeListener { _, checked ->
-                Settings.gtk3BrokenMenusWorkaround = checked
-                NativeBridge.nativeSetGtk3BrokenMenusWorkaround(checked)
-            }
-        }
-        val detail = TextView(this).apply {
-            text = getString(R.string.settings_gtk3_broken_menus_workaround_detail)
-            textSize = 13f
-            setPadding(cardPad / 2, 0, 0, cardPad / 2)
-        }
-        column.addView(checkbox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        column.addView(detail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         return column
     }
 

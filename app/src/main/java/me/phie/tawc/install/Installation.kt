@@ -80,6 +80,13 @@ data class Installation(
      */
     val entryGraphics: Map<String, String> = emptyMap(),
     /**
+     * Per-entry pointer emulation override: desktop id →
+     * [me.phie.tawc.PointerEmulation.key], set in the `.desktop` editor.
+     * Like [entryGraphics]: launches from TAWC only, absent = the global
+     * setting, stale ids harmless.
+     */
+    val entryPointerEmulation: Map<String, String> = emptyMap(),
+    /**
      * Whether this install may use ando (notes/ando.md) — run Android
      * commands outside the Linux environment. Default `false`: opt-in,
      * fail-closed. Absent in legacy metadata parses as `false`, so
@@ -140,6 +147,9 @@ data class Installation(
         if (entryGraphics.isNotEmpty()) {
             put("entryGraphics", JSONObject(entryGraphics.toSortedMap()))
         }
+        if (entryPointerEmulation.isNotEmpty()) {
+            put("entryPointerEmulation", JSONObject(entryPointerEmulation.toSortedMap()))
+        }
         if (andoEnabled) put("andoEnabled", true)
         if (importedAtMillis != null) put("importedAtMillis", importedAtMillis)
         if (importedFromPackage != null) put("importedFromPackage", importedFromPackage)
@@ -171,6 +181,12 @@ data class Installation(
     fun withEntryGraphics(entryId: String, backendKey: String?): Installation = copy(
         entryGraphics = if (backendKey == null) entryGraphics - entryId
         else entryGraphics + (entryId to backendKey)
+    )
+
+    /** [withEntryGraphics] for [entryPointerEmulation]. */
+    fun withEntryPointerEmulation(entryId: String, modeKey: String?): Installation = copy(
+        entryPointerEmulation = if (modeKey == null) entryPointerEmulation - entryId
+        else entryPointerEmulation + (entryId to modeKey)
     )
 
     /**
@@ -321,6 +337,9 @@ data class Installation(
                     }
                 else emptyList(),
                 entryGraphics = obj.optJSONObject("entryGraphics")?.let { o ->
+                    buildMap { for (k in o.keys()) put(k, o.getString(k)) }
+                } ?: emptyMap(),
+                entryPointerEmulation = obj.optJSONObject("entryPointerEmulation")?.let { o ->
                     buildMap { for (k in o.keys()) put(k, o.getString(k)) }
                 } ?: emptyMap(),
                 andoEnabled = obj.optBoolean("andoEnabled", false),

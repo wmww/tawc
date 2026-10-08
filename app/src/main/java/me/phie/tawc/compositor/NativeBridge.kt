@@ -138,7 +138,8 @@ object NativeBridge {
         displayWidthPx: Int,
         displayHeightPx: Int,
         xwayland: Boolean,
-        gtk3BrokenMenusWorkaround: Boolean,
+        /** [me.phie.tawc.PointerEmulation.ordinal]. */
+        pointerEmulation: Int,
     ): Boolean
 
     /** Stop the Rust compositor thread and wait until it is gone. The
@@ -169,7 +170,13 @@ object NativeBridge {
     /** Reserve the splash Activity [launchId] as the host for the launch's
      *  first window. Returns the activation token to hand the program, or
      *  null if no compositor answered. Blocks until the event loop has it. */
-    external fun nativeReserveLaunchHost(launchId: String, desktopId: String): String?
+    external fun nativeReserveLaunchHost(
+        launchId: String,
+        desktopId: String,
+        /** The entry's [me.phie.tawc.PointerEmulation.ordinal] override,
+         *  or -1 for the global setting. */
+        pointerEmulation: Int,
+    ): String?
 
     /** The launched program's session id (0: unknown), or that it exited. */
     external fun nativeUpdateLaunch(launchId: String, sid: Int, exited: Boolean)
@@ -314,8 +321,8 @@ object NativeBridge {
     /** Start/stop the compositor-owned Xwayland server live. */
     external fun nativeSetXwaylandEnabled(enabled: Boolean)
 
-    /** Toggle the contained GTK3 broken menubar workaround. */
-    external fun nativeSetGtk3BrokenMenusWorkaround(enabled: Boolean)
+    /** Global pointer emulation: [me.phie.tawc.PointerEmulation.ordinal]. */
+    external fun nativeSetPointerEmulation(mode: Int)
 
     /** Test hook: ask every attached Wayland/XWayland client window to close. */
     external fun nativeCloseAllClientsForTest(): Int

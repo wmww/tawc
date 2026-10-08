@@ -71,6 +71,7 @@ impl Drop for Fixture {
         }
         let _ = adb::cleanup_rootfs();
         for id in &self.ids {
+            let _ = adb::set_entry_pointer(id, "");
             let rm = format!("rm -f '{}/{APPS_DIR}/{id}.desktop'", rootfs());
             let _ = adb::rootfs_host_exec(&["/system/bin/sh", "-c", &rm]);
         }
@@ -167,6 +168,46 @@ fn test_x11_window_maps_into_splash_task() {
     let launch = fx.launch("tawc-splash-x11", None);
     wait_launch_state(&launch, "shown", SHOWN_TIMEOUT);
     assert_window_on_launch_host(&launch);
+}
+
+/// Tap the launched window and return the pointer emulation mode the
+/// touch resolved to.
+fn touch_emulation_on(launch: &str) -> String {
+    wait_launch_state(launch, "shown", SHOWN_TIMEOUT);
+    assert_window_on_launch_host(launch);
+    let before = compositor::query_state(Duration::from_secs(2)).expect("query-state").touch_downs;
+    assert_broker_ok(adb::inject_touch("tap").expect("inject-touch"), "inject-touch");
+    wait_compositor("touch resolved", |s| s.touch_downs > before).last_touch_emulation
+}
+
+/// The editor's per-entry override reaches the launched window (session
+/// match); entries without one follow the global setting.
+#[test]
+fn test_entry_pointer_emulation_override() {
+    let mut fx = Fixture::new();
+    fx.plant("tawc-splash-ptr", &format!("exec {WAYLAND_APP} render-pattern"));
+    assert_broker_ok(adb::set_entry_pointer("tawc-splash-ptr", "full").expect("set-entry-pointer"), "set-entry-pointer");
+    let launch = fx.launch("tawc-splash-ptr", None);
+    assert_eq!(touch_emulation_on(&launch), "full");
+}
+
+#[test]
+fn test_entry_without_pointer_override_uses_global() {
+    let mut fx = Fixture::new();
+    fx.plant("tawc-splash-noptr", &format!("exec {WAYLAND_APP} render-pattern"));
+    let launch = fx.launch("tawc-splash-noptr", None);
+    assert_eq!(touch_emulation_on(&launch), "hover");
+}
+
+/// X11 windows all belong to Xwayland's client, so the override follows
+/// the matched launch host.
+#[test]
+fn test_x11_entry_pointer_emulation_override() {
+    let mut fx = Fixture::new();
+    fx.plant("tawc-splash-x11ptr", &format!("DISPLAY=:0 exec {X11_APP} window"));
+    assert_broker_ok(adb::set_entry_pointer("tawc-splash-x11ptr", "none").expect("set-entry-pointer"), "set-entry-pointer");
+    let launch = fx.launch("tawc-splash-x11ptr", None);
+    assert_eq!(touch_emulation_on(&launch), "none");
 }
 
 #[test]

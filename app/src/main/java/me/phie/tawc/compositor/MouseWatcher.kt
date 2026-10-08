@@ -11,7 +11,7 @@ import android.view.InputDevice
  * pushes the aggregate into the compositor.
  *
  * That boolean is one of the two reasons the Wayland seat advertises
- * `wl_pointer` (the other is the GTK3 broken menus workaround); the
+ * `wl_pointer` (the other is pointer emulation); the
  * compositor owns the capability itself. See notes/input.md.
  *
  * Touchpads that drive a cursor report `SOURCE_MOUSE` as well, which is what

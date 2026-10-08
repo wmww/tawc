@@ -20,8 +20,9 @@ use crate::host::ActivityId;
 /// foreground toplevel of THAT host instead of the global first toplevel.
 pub enum TouchEvent {
     Down { id: i32, x: f32, y: f32, time: u32, activity_id: ActivityId },
-    Motion { id: i32, x: f32, y: f32, time: u32, activity_id: ActivityId },
-    Up { id: i32, time: u32, activity_id: ActivityId },
+    /// Slots keep the host and window they went down on.
+    Motion { id: i32, x: f32, y: f32, time: u32 },
+    Up { id: i32, time: u32 },
 }
 
 /// Global sender. Replaced each time the compositor restarts.

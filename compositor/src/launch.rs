@@ -16,6 +16,7 @@ use smithay::wayland::xdg_activation::XdgActivationToken;
 use crate::compositor::TawcState;
 use crate::host::ActivityId;
 use crate::launch_match::{self, Candidate, Fact};
+use crate::pointer_emulation::Mode;
 
 pub struct PendingLaunch {
     /// The splash Activity's id, which is also the launch id.
@@ -24,6 +25,8 @@ pub struct PendingLaunch {
     pub token: XdgActivationToken,
     pub sid: Option<i32>,
     pub exited: bool,
+    /// The entry's pointer emulation override; `None` = global setting.
+    pub pointer_emulation: Option<Mode>,
 }
 
 /// Session id (`/proc/<pid>/stat` field 6) of a process.
@@ -36,21 +39,38 @@ pub fn session_of(pid: i32) -> Option<i32> {
 
 impl TawcState {
     /// Reserve `host` for a launch and return its activation token.
-    pub fn reserve_launch(&mut self, host: ActivityId, desktop_id: String) -> String {
+    pub fn reserve_launch(
+        &mut self,
+        host: ActivityId,
+        desktop_id: String,
+        pointer_emulation: Option<Mode>,
+    ) -> String {
         self.release_launch(&host);
         let token = self.xdg_activation_state.create_external_token(None).0.clone();
         let token_str = token.as_str().to_string();
         info!("launch {} reserved for {:?}", host, desktop_id);
-        self.pending_launches.push(PendingLaunch { host, desktop_id, token, sid: None, exited: false });
+        self.pending_launches.push(PendingLaunch {
+            host,
+            desktop_id,
+            token,
+            sid: None,
+            exited: false,
+            pointer_emulation,
+        });
         token_str
     }
 
     pub fn update_launch(&mut self, host: &ActivityId, sid: Option<i32>, exited: bool) {
-        if let Some(launch) = self.pending_launches.iter_mut().find(|l| &l.host == host) {
-            if sid.is_some() {
-                launch.sid = sid;
-            }
-            launch.exited |= exited;
+        let Some(launch) = self.pending_launches.iter_mut().find(|l| &l.host == host) else {
+            return;
+        };
+        if sid.is_some() {
+            launch.sid = sid;
+        }
+        launch.exited |= exited;
+        if let Some(sid) = sid {
+            let mode = launch.pointer_emulation;
+            self.set_session_pointer_emulation(sid, mode);
         }
     }
 
@@ -116,6 +136,7 @@ impl TawcState {
         let launch = self.pending_launches.remove(i);
         self.xdg_activation_state.remove_token(&launch.token);
         self.launch_first_frame.insert(launch.host.clone());
+        self.set_host_pointer_emulation(&launch.host, launch.pointer_emulation);
         info!("launch {} matched", launch.host);
         crate::launch_matched_from_native(&launch.host);
         launch.host

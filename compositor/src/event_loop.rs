@@ -41,6 +41,7 @@ use crate::vsync::VsyncEvent;
 use crate::clipboard::ClipboardEvent;
 
 use crate::compositor::{ClientState, TawcState};
+use crate::pointer_emulation::{FullGesture, Gesture, Mode as Emulation};
 use crate::render;
 
 enum KeyboardFocusAction {
@@ -187,6 +188,314 @@ fn clear_pointer_focus(data: &mut TawcState) {
         },
     );
     pointer.frame(data);
+}
+
+/// Real-mouse (and `Full` emulation) motion to `screen` on `activity_id`.
+fn pointer_motion_to(
+    data: &mut TawcState,
+    activity_id: &ActivityId,
+    screen: Point<f64, Logical>,
+    time: u32,
+) {
+    let Some(pointer) = data.seat.get_pointer() else {
+        return;
+    };
+    // Hover is not activation: motion never moves keyboard focus.
+    let hit = surface_at(data, activity_id, screen);
+    // A grab (held button, popup) keeps delivering in the frame it started
+    // in; a hit on another window is outside it.
+    if !pointer.is_grabbed() {
+        data.pointer_frame = hit.as_ref().map(|hit| hit.window.clone());
+    }
+    let location = to_window_frame(data, data.pointer_frame.as_ref(), screen);
+    let focus = hit
+        .filter(|hit| data.pointer_frame.as_ref() == Some(&hit.window))
+        .map(|hit| hit.focus());
+    data.pointer_screen_location = screen;
+    data.pointer_location = location;
+    data.pointer_focus = focus.clone();
+    let serial = SERIAL_COUNTER.next_serial();
+    pointer.motion(data, focus, &PointerMotionEvent { location, serial, time });
+    pointer.frame(data);
+}
+
+/// Real-mouse (and `Full` emulation) button at the pointer's position.
+fn pointer_button(data: &mut TawcState, activity_id: &ActivityId, code: u32, pressed: bool, time: u32) {
+    let Some(pointer) = data.seat.get_pointer() else {
+        return;
+    };
+    let serial = SERIAL_COUNTER.next_serial();
+    if pressed {
+        // A press takes the touch-down path: click outside a menu dismisses
+        // it, click in a toplevel moves keyboard and text-input focus.
+        // Smithay's default grab keeps pointer focus while the button is
+        // held.
+        let screen = data.pointer_screen_location;
+        let resolution = resolve_touch_down(data, activity_id, screen);
+        dismiss_host_popups_if_touch_is_outside_popup(
+            data,
+            activity_id,
+            resolution.hit.as_ref().map(|hit| &hit.surface),
+            serial,
+            time,
+        );
+        apply_keyboard_focus_action(data, resolution.keyboard_focus);
+    }
+    let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+    pointer.button(data, &ButtonEvent { serial, time, button: code, state });
+    pointer.frame(data);
+}
+
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+/// `Full` emulation: movement (logical px) that turns a press into a drag.
+const FULL_TOUCH_SLOP: f64 = 8.0;
+/// `Full` emulation: hold this long without moving to right-click.
+const FULL_LONG_PRESS: Duration = Duration::from_millis(500);
+
+fn touch_down(
+    data: &mut TawcState,
+    activity_id: &ActivityId,
+    id: i32,
+    screen: Point<f64, Logical>,
+    time: u32,
+) {
+    let resolution = resolve_touch_down(data, activity_id, screen);
+    let mode = resolution.hit.as_ref().map_or(Emulation::None, |hit| {
+        data.pointer_emulation_for(&hit.surface, activity_id)
+    });
+    if resolution.hit.is_some() {
+        data.pointer_emulation.last_touch = Some(mode);
+        data.pointer_emulation.touch_downs += 1;
+    }
+    let pointer = data.seat.get_pointer().is_some();
+
+    if mode == Emulation::Full && pointer {
+        let gesture = if data.pointer_emulation.full.is_some() {
+            Gesture::Ignored
+        } else {
+            full_down(data, activity_id, id, screen, time);
+            Gesture::Full
+        };
+        data.pointer_emulation.gestures.insert(id, gesture);
+        return;
+    }
+
+    let Some(touch) = data.seat.get_touch() else {
+        return;
+    };
+    let serial = SERIAL_COUNTER.next_serial();
+    dismiss_host_popups_if_touch_is_outside_popup(
+        data,
+        activity_id,
+        resolution.hit.as_ref().map(|hit| &hit.surface),
+        serial,
+        time,
+    );
+    // Touch chooses the input target, but keyboard/text-input focus follows
+    // Wayland role policy. In particular, wl_subsurface targets focus their
+    // main surface, and non-grabbed xdg_popup touches leave keyboard focus
+    // alone. Do not speculatively commit preedit here: a touch may scroll,
+    // hit a button, or be ignored. If the client really moves the cursor,
+    // its following set_surrounding_text(cause=other) drives preedit
+    // cleanup.
+    apply_keyboard_focus_action(data, resolution.keyboard_focus);
+    // The slot's motion stays in the touched window's frame even after the
+    // finger leaves it.
+    let hit = resolution.hit;
+    let location = hit.as_ref().map_or(screen, |hit| hit.local);
+    match &hit {
+        Some(hit) => data.touch_frames.insert(id, hit.window.clone()),
+        None => data.touch_frames.remove(&id),
+    };
+    let hover = mode == Emulation::Hover
+        && pointer
+        && data.pointer_emulation.full.is_none()
+        && data.pointer_emulation.hover_slot().is_none_or(|slot| slot == id);
+    data.pointer_emulation.gestures.insert(id, Gesture::Touch { hover });
+    if let (true, Some(hit)) = (hover, &hit) {
+        // Before the touch, so the pointer is in place when GTK starts
+        // acting on the emulated press.
+        hover_down(data, hit, screen, time);
+    }
+    touch.down(
+        data,
+        hit.as_ref().map(Hit::focus),
+        &DownEvent {
+            slot: TouchSlot::from(Some(id as u32)),
+            location,
+            serial,
+            time,
+        },
+    );
+    touch.frame(data);
+}
+
+fn touch_motion(data: &mut TawcState, id: i32, screen: Point<f64, Logical>, time: u32) {
+    match data.pointer_emulation.gestures.get(&id).copied() {
+        Some(Gesture::Full) => return full_motion(data, screen, time),
+        Some(Gesture::Ignored) => return,
+        Some(Gesture::Touch { hover: true }) => hover_motion(data, screen, time),
+        Some(Gesture::Touch { hover: false }) | None => {}
+    }
+    let Some(touch) = data.seat.get_touch() else {
+        return;
+    };
+    let location = to_window_frame(data, data.touch_frames.get(&id), screen);
+    // Smithay keeps the focus from down; this argument is unused.
+    touch.motion(
+        data,
+        None,
+        &MotionEvent {
+            slot: TouchSlot::from(Some(id as u32)),
+            location,
+            time,
+        },
+    );
+    touch.frame(data);
+}
+
+fn touch_up(data: &mut TawcState, id: i32, time: u32) {
+    match data.pointer_emulation.gestures.remove(&id) {
+        Some(Gesture::Full) => return full_up(data, time),
+        Some(Gesture::Ignored) => return,
+        Some(Gesture::Touch { .. }) | None => {}
+    }
+    data.touch_frames.remove(&id);
+    let Some(touch) = data.seat.get_touch() else {
+        return;
+    };
+    touch.up(
+        data,
+        &UpEvent {
+            slot: TouchSlot::from(Some(id as u32)),
+            serial: SERIAL_COUNTER.next_serial(),
+            time,
+        },
+    );
+    touch.frame(data);
+}
+
+/// `Hover` emulation: put the pointer (no buttons) on the touched surface.
+/// It stays pinned to that surface for the gesture, like a mouse implicit
+/// grab, and rests there after the lift — no leave, since crossing pairs
+/// close GTK menus.
+fn hover_down(data: &mut TawcState, hit: &Hit, screen: Point<f64, Logical>, time: u32) {
+    let Some(pointer) = data.seat.get_pointer() else {
+        return;
+    };
+    data.pointer_frame = Some(hit.window.clone());
+    data.pointer_screen_location = screen;
+    data.pointer_location = hit.local;
+    data.pointer_focus = Some(hit.focus());
+    let serial = SERIAL_COUNTER.next_serial();
+    pointer.motion(
+        data,
+        Some(hit.focus()),
+        &PointerMotionEvent { location: hit.local, serial, time },
+    );
+    pointer.frame(data);
+}
+
+fn hover_motion(data: &mut TawcState, screen: Point<f64, Logical>, time: u32) {
+    let Some(pointer) = data.seat.get_pointer() else {
+        return;
+    };
+    let location = to_window_frame(data, data.pointer_frame.as_ref(), screen);
+    data.pointer_screen_location = screen;
+    data.pointer_location = location;
+    let focus = data.pointer_focus.clone();
+    let serial = SERIAL_COUNTER.next_serial();
+    pointer.motion(data, focus, &PointerMotionEvent { location, serial, time });
+    pointer.frame(data);
+}
+
+/// `Full` emulation: move the pointer there and wait to see whether this is
+/// a tap, a drag or a long press.
+fn full_down(
+    data: &mut TawcState,
+    activity_id: &ActivityId,
+    id: i32,
+    screen: Point<f64, Logical>,
+    time: u32,
+) {
+    pointer_motion_to(data, activity_id, screen, time);
+    let timer = data
+        .loop_handle()
+        .insert_source(Timer::from_duration(FULL_LONG_PRESS), move |_, _, data| {
+            full_long_press(data, id);
+            TimeoutAction::Drop
+        })
+        .ok();
+    data.pointer_emulation.full = Some(FullGesture {
+        slot: id,
+        host: activity_id.clone(),
+        down: screen,
+        pressed: false,
+        long_pressed: false,
+        timer,
+    });
+}
+
+fn full_motion(data: &mut TawcState, screen: Point<f64, Logical>, time: u32) {
+    let Some(gesture) = data.pointer_emulation.full.as_ref() else {
+        return;
+    };
+    let host = gesture.host.clone();
+    let delta = screen - gesture.down;
+    let start_drag = !gesture.pressed
+        && !gesture.long_pressed
+        && delta.x.hypot(delta.y) > FULL_TOUCH_SLOP;
+    if !gesture.pressed && !gesture.long_pressed && !start_drag {
+        return;
+    }
+    if start_drag {
+        // Press where the finger went down, then follow it.
+        full_cancel_timer(data);
+        pointer_button(data, &host, BTN_LEFT, true, time);
+        if let Some(gesture) = data.pointer_emulation.full.as_mut() {
+            gesture.pressed = true;
+        }
+    }
+    pointer_motion_to(data, &host, screen, time);
+}
+
+fn full_up(data: &mut TawcState, time: u32) {
+    full_cancel_timer(data);
+    let Some(gesture) = data.pointer_emulation.full.take() else {
+        return;
+    };
+    if gesture.long_pressed {
+        return;
+    }
+    if !gesture.pressed {
+        pointer_button(data, &gesture.host, BTN_LEFT, true, time);
+    }
+    pointer_button(data, &gesture.host, BTN_LEFT, false, time);
+}
+
+fn full_long_press(data: &mut TawcState, id: i32) {
+    let Some(gesture) = data.pointer_emulation.full.as_mut() else {
+        return;
+    };
+    if gesture.slot != id || gesture.pressed || gesture.long_pressed {
+        return;
+    }
+    gesture.timer = None;
+    gesture.long_pressed = true;
+    let host = gesture.host.clone();
+    let time = data.start_time.elapsed().as_millis() as u32;
+    pointer_button(data, &host, BTN_RIGHT, true, time);
+    pointer_button(data, &host, BTN_RIGHT, false, time);
+    if let Err(e) = data.display_handle.flush_clients() {
+        error!("flush_clients error after long press: {}", e);
+    }
+}
+
+fn full_cancel_timer(data: &mut TawcState) {
+    if let Some(token) = data.pointer_emulation.full.as_mut().and_then(|g| g.timer.take()) {
+        data.loop_handle().remove(token);
+    }
 }
 
 /// [`clear_pointer_focus`], but only when the pointer is currently inside a
@@ -445,93 +754,16 @@ pub fn run(
             ChannelEvent::Msg(e) => e,
             ChannelEvent::Closed => return,
         };
-
-        let touch = match data.seat.get_touch() {
-            Some(t) => t,
-            None => return,
+        let scale = data.output_scale;
+        let to_screen = |x: f32, y: f32| -> Point<f64, Logical> {
+            (scale.logical_coord(x as f64), scale.logical_coord(y as f64)).into()
         };
-
-        // Identify the touch's host and the surface under the event. Smithay
-        // gets coordinates in the touched window's frame and subtracts the
-        // surface origin to make them surface-local.
-        let activity_id = match &evt {
-            TouchEvent::Down { activity_id, .. }
-            | TouchEvent::Motion { activity_id, .. }
-            | TouchEvent::Up { activity_id, .. } => activity_id.clone(),
-        };
-
-        let touch_scale = data.output_scale;
-        let serial = SERIAL_COUNTER.next_serial();
-
         match evt {
-            TouchEvent::Down { id, x, y, time, .. } => {
-                let screen: Point<f64, smithay::utils::Logical> =
-                    (touch_scale.logical_coord(x as f64), touch_scale.logical_coord(y as f64)).into();
-                let touch_resolution = resolve_touch_down(data, &activity_id, screen);
-                dismiss_host_popups_if_touch_is_outside_popup(
-                    data,
-                    &activity_id,
-                    touch_resolution.hit.as_ref().map(|hit| &hit.surface),
-                    serial,
-                    time,
-                );
-                // Touch chooses the input target, but keyboard/text-input
-                // focus follows Wayland role policy. In particular,
-                // wl_subsurface targets focus their main surface, and
-                // non-grabbed xdg_popup touches leave keyboard focus alone.
-                // Do not speculatively commit preedit here: a touch may
-                // scroll, hit a button, or be ignored. If the client really
-                // moves the cursor, its following
-                // set_surrounding_text(cause=other) drives preedit cleanup.
-                apply_keyboard_focus_action(data, touch_resolution.keyboard_focus);
-                // The slot's motion stays in the touched window's frame
-                // even after the finger leaves it.
-                let hit = touch_resolution.hit;
-                let location = hit.as_ref().map_or(screen, |hit| hit.local);
-                match &hit {
-                    Some(hit) => data.touch_frames.insert(id, hit.window.clone()),
-                    None => data.touch_frames.remove(&id),
-                };
-                touch.down(
-                    data,
-                    hit.as_ref().map(Hit::focus),
-                    &DownEvent {
-                        slot: TouchSlot::from(Some(id as u32)),
-                        location,
-                        serial,
-                        time,
-                    },
-                );
-                touch.frame(data);
+            TouchEvent::Down { id, x, y, time, activity_id } => {
+                touch_down(data, &activity_id, id, to_screen(x, y), time)
             }
-            TouchEvent::Motion { id, x, y, time, .. } => {
-                let screen: Point<f64, smithay::utils::Logical> =
-                    (touch_scale.logical_coord(x as f64), touch_scale.logical_coord(y as f64)).into();
-                let location = to_window_frame(data, data.touch_frames.get(&id), screen);
-                // Smithay keeps the focus from down; this argument is unused.
-                touch.motion(
-                    data,
-                    None,
-                    &MotionEvent {
-                        slot: TouchSlot::from(Some(id as u32)),
-                        location,
-                        time,
-                    },
-                );
-                touch.frame(data);
-            }
-            TouchEvent::Up { id, time, .. } => {
-                data.touch_frames.remove(&id);
-                touch.up(
-                    data,
-                    &UpEvent {
-                        slot: TouchSlot::from(Some(id as u32)),
-                        serial,
-                        time,
-                    },
-                );
-                touch.frame(data);
-            }
+            TouchEvent::Motion { id, x, y, time, .. } => touch_motion(data, id, to_screen(x, y), time),
+            TouchEvent::Up { id, time, .. } => touch_up(data, id, time),
         }
 
         // Flush immediately so clients see events without waiting for a frame
@@ -551,8 +783,9 @@ pub fn run(
             ChannelEvent::Closed => return,
         };
 
-        // No pointer capability means no mouse and no GTK3 workaround; the
-        // events are stale Android input for a seat that can't carry them.
+        // No pointer capability means no mouse and no pointer emulation;
+        // the events are stale Android input for a seat that can't carry
+        // them.
         let pointer = match data.seat.get_pointer() {
             Some(p) => p,
             None => return,
@@ -569,64 +802,15 @@ pub fn run(
         }
 
         let scale = data.output_scale;
-        let serial = SERIAL_COUNTER.next_serial();
 
         match evt {
             PointerEvent::Motion { x, y, time, .. } => {
                 let screen: Point<f64, Logical> =
                     (scale.logical_coord(x as f64), scale.logical_coord(y as f64)).into();
-                // Hover is not activation: motion never moves keyboard focus.
-                let hit = surface_at(data, &activity_id, screen);
-                // A grab (held button, popup) keeps delivering in the frame
-                // it started in; a hit on another window is outside it.
-                if !pointer.is_grabbed() {
-                    data.pointer_frame = hit.as_ref().map(|hit| hit.window.clone());
-                }
-                let location = to_window_frame(data, data.pointer_frame.as_ref(), screen);
-                let focus = hit
-                    .filter(|hit| data.pointer_frame.as_ref() == Some(&hit.window))
-                    .map(|hit| hit.focus());
-                data.pointer_screen_location = screen;
-                data.pointer_location = location;
-                data.pointer_focus = focus.clone();
-                pointer.motion(
-                    data,
-                    focus,
-                    &PointerMotionEvent { location, serial, time },
-                );
-                pointer.frame(data);
+                pointer_motion_to(data, &activity_id, screen, time);
             }
             PointerEvent::Button { code, pressed, time, .. } => {
-                if pressed {
-                    // A press takes the touch-down path: click outside a menu
-                    // dismisses it, click in a toplevel moves keyboard and
-                    // text-input focus. Smithay's default grab keeps pointer
-                    // focus while the button is held.
-                    let screen = data.pointer_screen_location;
-                    let resolution = resolve_touch_down(data, &activity_id, screen);
-                    dismiss_host_popups_if_touch_is_outside_popup(
-                        data,
-                        &activity_id,
-                        resolution.hit.as_ref().map(|hit| &hit.surface),
-                        serial,
-                        time,
-                    );
-                    apply_keyboard_focus_action(data, resolution.keyboard_focus);
-                }
-                pointer.button(
-                    data,
-                    &ButtonEvent {
-                        serial,
-                        time,
-                        button: code,
-                        state: if pressed {
-                            ButtonState::Pressed
-                        } else {
-                            ButtonState::Released
-                        },
-                    },
-                );
-                pointer.frame(data);
+                pointer_button(data, &activity_id, code, pressed, time);
             }
             PointerEvent::Axis { dx, dy, v120_x, v120_y, source, stop, time, .. } => {
                 let mut frame = AxisFrame::new(time).source(match source {
@@ -823,7 +1007,7 @@ pub fn run(
             };
             let (windows, scrim) = visible_layout_debug(data);
             let payload = format!(
-                "clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={} hosts={} bound_hosts={} xwayland_running={} xwayland_pids={} x11_surfaces={} x11_surfaces_with_host={} wlegl_create_buffer_total={} wlegl_import_texture_total={} wlegl_buffer_destroy_total={} last_wlegl_width={} last_wlegl_height={} last_wlegl_format={} output_scale={:.2} output_physical_w={} output_physical_h={} output_logical_w={} output_logical_h={} pointer_present={} pointer_x={:.2} pointer_y={:.2} pointer_focus={} cursor_shape={} vsync_ticks={} last_vsync_ns={} vsync_period_ns={} tick_latency_max_ns={} output_refresh_mhz={} pending_launches={} host_windows={} windows={} scrim={}",
+                "clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={} hosts={} bound_hosts={} xwayland_running={} xwayland_pids={} x11_surfaces={} x11_surfaces_with_host={} wlegl_create_buffer_total={} wlegl_import_texture_total={} wlegl_buffer_destroy_total={} last_wlegl_width={} last_wlegl_height={} last_wlegl_format={} output_scale={:.2} output_physical_w={} output_physical_h={} output_logical_w={} output_logical_h={} pointer_present={} pointer_x={:.2} pointer_y={:.2} pointer_focus={} cursor_shape={} vsync_ticks={} last_vsync_ns={} vsync_period_ns={} tick_latency_max_ns={} output_refresh_mhz={} pending_launches={} host_windows={} windows={} scrim={} pointer_emulation={} last_touch_emulation={} touch_downs={}",
                 clients,
                 toplevel_count(data),
                 surfaces_wlegl,
@@ -865,6 +1049,9 @@ pub fn run(
                 host_windows,
                 windows,
                 scrim,
+                data.pointer_emulation.global.name(),
+                data.pointer_emulation.last_touch.map_or("unset", |m| m.name()),
+                data.pointer_emulation.touch_downs,
             );
             let _ = response.send(payload);
         }
@@ -1313,6 +1500,7 @@ fn handle_surface_event(
             data.host_fullscreen.remove(&activity_id);
             data.window_metadata.remove(&activity_id);
             data.launch_first_frame.remove(&activity_id);
+            data.set_host_pointer_emulation(&activity_id, None);
             data.desktop.clear_foreground_host_if(&activity_id);
             if data.advertised_output_host.as_ref() == Some(&activity_id) {
                 data.advertised_output_host = None;
@@ -1349,8 +1537,8 @@ fn handle_surface_event(
         SurfaceEvent::XwaylandChanged { enabled } => {
             crate::xwayland::set_enabled(loop_handle, data, enabled);
         }
-        SurfaceEvent::Gtk3BrokenMenusWorkaroundChanged { enabled } => {
-            crate::gtk3_menus_workaround::set_enabled(data, enabled);
+        SurfaceEvent::PointerEmulationChanged { mode } => {
+            data.set_pointer_emulation(mode);
         }
         SurfaceEvent::MouseAttachedChanged { attached } => {
             if data.mouse_attached != attached {
@@ -1371,8 +1559,8 @@ fn handle_surface_event(
         SurfaceEvent::HardwareKey { activity_id, evdev_keycode, pressed, repeat_count } => {
             handle_hardware_key(data, &activity_id, evdev_keycode, pressed, repeat_count);
         }
-        SurfaceEvent::ReserveLaunch { launch_id, desktop_id, response } => {
-            let _ = response.send(data.reserve_launch(launch_id, desktop_id));
+        SurfaceEvent::ReserveLaunch { launch_id, desktop_id, pointer_emulation, response } => {
+            let _ = response.send(data.reserve_launch(launch_id, desktop_id, pointer_emulation));
         }
         SurfaceEvent::UpdateLaunch { launch_id, sid, exited } => {
             data.update_launch(&launch_id, sid, exited);

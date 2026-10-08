@@ -79,7 +79,7 @@ import me.phie.tawc.terminal.TerminalTabBar
  * | `ic-finish-hidden-composing` | — | `RecordingImeOutput` stale hidden IC `finishComposingText()` |
  * | `hardware-key` | `keycode`, `action=down|up|press`, `repeat` | focused Activity/view `dispatchKeyEvent(KeyEvent(...))` |
  * | `back` | — | focused Activity back-press path (same entry as the system OnBackInvoked callback) |
- * | `inject-touch` | `kind=tap|tap-logical|tap-outside-popup|drag|drag-logical|multitouch` (`x`/`y`, plus `x2`/`y2` for `drag-logical`) | Dispatch MotionEvents to the focused SurfaceView |
+ * | `inject-touch` | `kind=tap|press|release|tap-logical|tap-outside-popup|drag|drag-logical|multitouch` (`x`/`y`, plus `x2`/`y2` for `drag-logical`) | Dispatch MotionEvents to the focused SurfaceView |
  * | `inject-pointer` | `kind=move|button|scroll|hscroll|hover-exit`, `x`, `y`, `button`, `amount` | Dispatch SOURCE_MOUSE MotionEvents to the focused SurfaceView |
  *
  * Test-mode helpers:
@@ -434,8 +434,8 @@ internal object InputActions {
      */
     private object InjectTouchAction : BrokerAction {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
-            val kind = args["kind"] ?: return ctx.fail("inject-touch: --arg kind=tap|tap-logical|tap-outside-popup|tap-menu-a|tap-menu-b|drag|drag-logical|multitouch required")
-            if (kind !in setOf("tap", "tap-logical", "tap-outside-popup", "tap-menu-a", "tap-menu-b", "drag", "drag-logical", "multitouch")) {
+            val kind = args["kind"] ?: return ctx.fail("inject-touch: --arg kind=tap|press|release|tap-logical|tap-outside-popup|tap-menu-a|tap-menu-b|drag|drag-logical|multitouch required")
+            if (kind !in setOf("tap", "press", "release", "tap-logical", "tap-outside-popup", "tap-menu-a", "tap-menu-b", "drag", "drag-logical", "multitouch")) {
                 return ctx.fail("inject-touch: unknown kind '$kind'")
             }
             val coords = listOf("x", "y", "x2", "y2").map { args[it] to args[it]?.toFloatOrNull() }
@@ -709,7 +709,7 @@ internal object InputActions {
                 NativeBridge.nativeSetTintBuffersByType(Settings.tintBuffersByType)
                 NativeBridge.nativeSetOutputScale(Settings.outputScale)
                 NativeBridge.nativeSetXwaylandEnabled(Settings.xwayland)
-                NativeBridge.nativeSetGtk3BrokenMenusWorkaround(Settings.gtk3BrokenMenusWorkaround)
+                NativeBridge.nativeSetPointerEmulation(Settings.pointerEmulation.ordinal)
                 clearRecordingImeOutput()
                 NativeBridge.activeInputConnection = null
                 NativeBridge.imeOutput = RecordingImeOutput()

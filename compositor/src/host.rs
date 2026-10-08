@@ -182,8 +182,8 @@ pub enum SurfaceEvent {
     OutputRefreshChanged { mhz: u32 },
     /// Runtime toggle for the compositor-owned Xwayland process.
     XwaylandChanged { enabled: bool },
-    /// Runtime toggle for the contained GTK3 broken menubar workaround.
-    Gtk3BrokenMenusWorkaroundChanged { enabled: bool },
+    /// Global pointer emulation setting changed.
+    PointerEmulationChanged { mode: crate::pointer_emulation::Mode },
     /// Android gained or lost every mouse-class `InputDevice`. One of the
     /// two reasons the seat advertises `wl_pointer`; ordered with
     /// `FocusChanged` on purpose, like hardware keys.
@@ -204,6 +204,7 @@ pub enum SurfaceEvent {
     ReserveLaunch {
         launch_id: ActivityId,
         desktop_id: String,
+        pointer_emulation: Option<crate::pointer_emulation::Mode>,
         response: mpsc::Sender<String>,
     },
     /// The launched program's session id is known, or it exited.

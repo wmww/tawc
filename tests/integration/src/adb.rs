@@ -926,30 +926,22 @@ pub fn get_xwayland() -> io::Result<bool> {
     }
 }
 
-/// Dynamically toggle the contained GTK3 broken menus workaround through
-/// the same broker action used by Settings.
-pub fn set_gtk3_broken_menus_workaround(enabled: bool) -> io::Result<Output> {
-    let enabled = if enabled { "true" } else { "false" };
-    broker_action("set-gtk3-broken-menus-workaround", &[("enabled", enabled)])
+/// Set the global pointer emulation (`none`, `hover`, `full`) through the
+/// same broker action used by Settings.
+pub fn set_pointer_emulation(mode: &str) -> io::Result<Output> {
+    broker_action("set-pointer-emulation", &[("value", mode)])
 }
 
-/// Read the current GTK3 broken menus workaround setting.
-pub fn get_gtk3_broken_menus_workaround() -> io::Result<bool> {
-    let output = broker_action("get-gtk3-broken-menus-workaround", &[])?;
+/// Read the global pointer emulation setting.
+pub fn get_pointer_emulation() -> io::Result<String> {
+    let output = broker_action("get-pointer-emulation", &[])?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
-            "get-gtk3-broken-menus-workaround failed: {}",
+            "get-pointer-emulation failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match stdout.trim() {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        other => Err(io::Error::other(format!(
-            "parse gtk3 broken menus workaround: stdout={other:?}"
-        ))),
-    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Set the per-distro ando enable state for the standing install via the
@@ -1017,6 +1009,16 @@ pub fn set_entry_graphics(entry_id: &str, backend: &str) -> io::Result<Output> {
     broker_action(
         "set-entry-graphics",
         &[("installId", &id), ("entryId", entry_id), ("backend", backend)],
+    )
+}
+
+/// Set (or, with an empty `mode`, clear) the per-entry pointer emulation
+/// override via `set-entry-pointer`. Durable; tests must clear it in cleanup.
+pub fn set_entry_pointer(entry_id: &str, mode: &str) -> io::Result<Output> {
+    let id = crate::install_id();
+    broker_action(
+        "set-entry-pointer",
+        &[("installId", &id), ("entryId", entry_id), ("mode", mode)],
     )
 }
 

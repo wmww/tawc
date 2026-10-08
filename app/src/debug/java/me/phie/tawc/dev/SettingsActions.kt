@@ -2,6 +2,7 @@ package me.phie.tawc.dev
 
 import me.phie.tawc.AndoBrokers
 import me.phie.tawc.GraphicsBackend
+import me.phie.tawc.PointerEmulation
 import me.phie.tawc.Settings
 import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.InstallationStore
@@ -23,8 +24,8 @@ import me.phie.tawc.install.InstallationStore
  * | `get-output-scale` | — | prints current output scale |
  * | `set-xwayland` | `enabled` ∈ true|false | save current setting and start/stop Xwayland |
  * | `get-xwayland` | — | prints true/false |
- * | `set-gtk3-broken-menus-workaround` | `enabled` ∈ true|false | save current setting and push live workaround toggle |
- * | `get-gtk3-broken-menus-workaround` | — | prints true/false |
+ * | `set-pointer-emulation` | `value` ∈ none|hover|full | save current setting and push it live |
+ * | `get-pointer-emulation` | — | prints none/hover/full |
  * | `set-ando` | `installId`, `enabled` ∈ true|false | set the test-mode ando override for the install and reconcile the broker |
  * | `get-ando` | `installId` | prints true/false (override or metadata) |
  *
@@ -44,8 +45,8 @@ internal object SettingsActions {
         ActionRegistry.register("get-output-scale", GetOutputScaleAction)
         ActionRegistry.register("set-xwayland", SetXwaylandAction)
         ActionRegistry.register("get-xwayland", GetXwaylandAction)
-        ActionRegistry.register("set-gtk3-broken-menus-workaround", SetGtk3BrokenMenusWorkaroundAction)
-        ActionRegistry.register("get-gtk3-broken-menus-workaround", GetGtk3BrokenMenusWorkaroundAction)
+        ActionRegistry.register("set-pointer-emulation", SetPointerEmulationAction)
+        ActionRegistry.register("get-pointer-emulation", GetPointerEmulationAction)
         ActionRegistry.register("set-ando", SetAndoAction)
         ActionRegistry.register("get-ando", GetAndoAction)
     }
@@ -112,22 +113,22 @@ internal object SettingsActions {
         }
     }
 
-    private object SetGtk3BrokenMenusWorkaroundAction : BrokerAction {
+    private object SetPointerEmulationAction : BrokerAction {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
-            val raw = args["enabled"] ?: args["value"]
-                ?: return ctx.fail("set-gtk3-broken-menus-workaround: --arg enabled=true|false required")
-            val enabled = raw.toBooleanStrictOrNull()
-                ?: return ctx.fail("set-gtk3-broken-menus-workaround: invalid boolean '$raw'")
-            Settings.gtk3BrokenMenusWorkaround = enabled
-            NativeBridge.nativeSetGtk3BrokenMenusWorkaround(enabled)
-            ctx.out(enabled.toString())
+            val raw = args["value"]
+                ?: return ctx.fail("set-pointer-emulation: --arg value=none|hover|full required")
+            val mode = PointerEmulation.fromKeyOrNull(raw)
+                ?: return ctx.fail("set-pointer-emulation: unknown value '$raw'")
+            Settings.pointerEmulation = mode
+            NativeBridge.nativeSetPointerEmulation(mode.ordinal)
+            ctx.out(mode.key)
             return 0
         }
     }
 
-    private object GetGtk3BrokenMenusWorkaroundAction : BrokerAction {
+    private object GetPointerEmulationAction : BrokerAction {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
-            ctx.out(Settings.gtk3BrokenMenusWorkaround.toString())
+            ctx.out(Settings.pointerEmulation.key)
             return 0
         }
     }

@@ -26,7 +26,7 @@ object Settings {
     private const val KEY_OUTPUT_REFRESH_MHZ = "output_refresh_mhz"
     private const val KEY_TERMINAL_SCALE = "terminal_scale"
     private const val KEY_XWAYLAND = "xwayland"
-    private const val KEY_GTK3_BROKEN_MENUS_WORKAROUND = "gtk3_broken_menus_workaround"
+    private const val KEY_POINTER_EMULATION = "pointer_emulation"
     private const val KEY_OPEN_DISTRO = "open_distro"
     private const val KEY_REMOTE_RELAY = "remote_relay"
     private const val KEY_REMOTE_IDLE_CLOSE = "remote_idle_close"
@@ -59,7 +59,7 @@ object Settings {
         var outputRefreshMhz: Int
         var terminalScale: Float
         var xwayland: Boolean
-        var gtk3BrokenMenusWorkaround: Boolean
+        var pointerEmulation: PointerEmulation
         var openDistroId: String?
         var remoteRelay: String
         var remoteIdleClose: Boolean
@@ -108,10 +108,11 @@ object Settings {
                 prefs.edit { putBoolean(KEY_XWAYLAND, value) }
             }
 
-        override var gtk3BrokenMenusWorkaround: Boolean
-            get() = prefs.getBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, true)
+        override var pointerEmulation: PointerEmulation
+            get() = PointerEmulation.fromKeyOrNull(prefs.getString(KEY_POINTER_EMULATION, null))
+                ?: PointerEmulation.DEFAULT
             set(value) {
-                prefs.edit { putBoolean(KEY_GTK3_BROKEN_MENUS_WORKAROUND, value) }
+                prefs.edit { putString(KEY_POINTER_EMULATION, value.key) }
             }
 
         override var openDistroId: String?
@@ -172,7 +173,7 @@ object Settings {
         @Volatile override var terminalScale: Float = DEFAULT_TERMINAL_SCALE
             set(value) { field = snapTerminalScale(value) }
         @Volatile override var xwayland: Boolean = true
-        @Volatile override var gtk3BrokenMenusWorkaround: Boolean = true
+        @Volatile override var pointerEmulation: PointerEmulation = PointerEmulation.DEFAULT
         @Volatile override var openDistroId: String? = null
         @Volatile override var remoteRelay: String = DEFAULT_REMOTE_RELAY
         @Volatile override var remoteIdleClose: Boolean = true
@@ -253,15 +254,10 @@ object Settings {
         get() = requireStore().xwayland
         set(value) { requireStore().xwayland = value }
 
-    /**
-     * Workaround for GTK3 native Wayland menubars on touch-only seats. When
-     * enabled, the compositor exposes a wl_pointer and briefly enters/leaves
-     * each new toplevel at its center so GTK3 initializes its pointer crossing
-     * state before the first touch on a server-side-decorated menubar.
-     */
-    var gtk3BrokenMenusWorkaround: Boolean
-        get() = requireStore().gtk3BrokenMenusWorkaround
-        set(value) { requireStore().gtk3BrokenMenusWorkaround = value }
+    /** What touch does to `wl_pointer` (notes/input.md "Pointer emulation"). */
+    var pointerEmulation: PointerEmulation
+        get() = requireStore().pointerEmulation
+        set(value) { requireStore().pointerEmulation = value }
 
     /**
      * Install id the home screen shows. May be stale (uninstalled);
@@ -340,6 +336,29 @@ object Settings {
  * future bridges, …) can be added without breaking already-saved
  * preferences.
  */
+/**
+ * What touchscreen input does to `wl_pointer`; see notes/input.md
+ * ("Pointer emulation"). [ordinal] is the JNI encoding, matching
+ * `pointer_emulation::Mode::from_index` — keep the order.
+ */
+enum class PointerEmulation(val key: String) {
+    /** `wl_touch` only. */
+    NONE("none"),
+
+    /** `wl_touch`, and the pointer (no buttons) follows the finger. */
+    HOVER("hover"),
+
+    /** No `wl_touch`: taps click, drags hold the left button, a long
+     *  press right-clicks. */
+    FULL("full");
+
+    companion object {
+        val DEFAULT = HOVER
+
+        fun fromKeyOrNull(key: String?): PointerEmulation? = entries.firstOrNull { it.key == key }
+    }
+}
+
 enum class GraphicsBackend(val key: String, val displayName: String) {
     /**
      * Today's default: load the Android vendor GPU blob into the

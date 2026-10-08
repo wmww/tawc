@@ -33,8 +33,9 @@ Touch events flow: Android `onTouchEvent` -> JNI `nativeOnTouchEvent` -> `calloo
 - Multi-touch is supported: each Android pointer ID maps to a Smithay `TouchSlot`.
 - The seat advertises only real input capabilities. Keyboard capability is
   required for Firefox to enable text input (see text-input.md).
-  `wl_pointer` has [its own section](#pointer-input) below. Do not turn touch
-  into pointer events: touchscreen input stays on `wl_touch`.
+  `wl_pointer` has [its own section](#pointer-input) below. What touch does
+  to it is [pointer emulation](#pointer-emulation): by default touch stays on
+  `wl_touch` and only moves the pointer.
 - Touch-down moves both keyboard focus AND text-input-v3 focus to the target's
   keyboard-focusable surface via `TawcState::set_input_focus` — they are
   conceptually one focus and splitting them invites drift. `wl_subsurface`
@@ -46,11 +47,59 @@ Touch events flow: Android `onTouchEvent` -> JNI `nativeOnTouchEvent` -> `calloo
 
 **GTK3 touch handling note:** GTK3 handles `wl_touch` events natively — GtkGestureMultiPress
 processes `GDK_TOUCH_BEGIN` directly, and GDK's Wayland backend sets `emulating_pointer=TRUE`
-on the primary touch which synthesizes crossing events for child widget routing. The GTK3
-menubar workaround primes that cold crossing state with one synthetic pointer
-enter/leave per new toplevel; it does not convert touches into pointer clicks. When debugging
+on the primary touch which synthesizes crossing events for child widget routing. Hover
+pointer emulation primes that crossing state (see below). When debugging
 touch, check coordinates carefully — the GTK widget tree only routes events to children whose
 GdkWindow allocation contains the hit point.
+
+## Pointer Emulation
+
+What touchscreen input does to `wl_pointer`: `compositor/src/pointer_emulation.rs`
+(state, launch overrides) and the `touch_*`/`hover_*`/`full_*` functions in
+`event_loop.rs`. A Settings radio group picks the global mode; the
+`.desktop` editor's "Override pointer emulation" sets one per entry
+(`Installation.entryPointerEmulation`).
+
+| Mode | `wl_touch` | `wl_pointer` |
+|---|---|---|
+| None | yes | untouched |
+| Hover (default) | yes | the first finger moves it, no buttons |
+| Full | no | tap = left click, drag past 8 logical px = left drag, 500 ms still = right click |
+
+**Hover.** The pointer is pinned to the touch-down surface for the gesture,
+like a mouse implicit grab, and rests there after the lift with no leave
+(crossing pairs close GTK menus). It fixes two GTK3 bugs:
+
+- Code that polls the client pointer instead of reading touch events: Nemo's
+  rubberband timer calls `gdk_window_get_device_position`, so a touch drag
+  froze the band and later taps extended it.
+- GTK3's cold menubar path. With forced KDE server-side decorations the
+  menubar sits at window-local (0,0), and the first touch on a non-leftmost
+  item opens the right popup, destroys it, and opens the leftmost one
+  (seen with lxterminal and `gtk3-demo` on GTK 3.24.52; not the
+  already-fixed GTK MR !8240). A pointer crossing away from (0,0) before the
+  first touch avoids it; hover's enter at the tap point is one. A host
+  harness reproduced it only with the KDE protocol answering `SERVER`.
+  `settings::test_gtk3_demo_application_menu_*` pin both sides. This
+  replaced a "GTK3 broken menus workaround" that entered/left each new
+  toplevel's center.
+
+**Full.** Every press goes through the real-mouse `pointer_button` path
+(popup dismissal, keyboard focus). The left press waits until the finger
+leaves the slop or lifts, so a still finger can become a long press instead.
+One `Full` gesture at a time; extra fingers on a `Full` window are dropped.
+
+**Which mode a touch gets** is decided at touch-down from the hit surface:
+the launch override for the client's session id (`/proc/<pid>/stat`, like
+launch matching), else the override of the host the window is on, else the
+global mode. `nativeReserveLaunchHost` carries the entry's override;
+`update_launch` records it by the launched session, `take_launch` by the
+matched launch host. Session ids cover every window of the launched process
+tree; the host covers handoffs to a running instance and X11 (whose client
+is Xwayland). Launches with no reserved host (no splash) get no override.
+Host entries go with `ActivityDestroyed`; session entries are overwritten
+when a new launch reuses the id. `query-state` reports `pointer_emulation`
+(global), `last_touch_emulation` and `touch_downs`.
 
 ## Pointer Input
 
@@ -128,8 +177,8 @@ by the compositor on Activity focus loss, surface destroy, and host switch
 
 **Seat capability.** `wl_pointer` has exactly one owner,
 `TawcState::sync_pointer_capability`, with two independent reasons: attached
-mouse hardware and the [GTK3 broken menus
-workaround](gtk3-broken-menus-workaround.md). Neither may touch the seat
+mouse hardware and pointer emulation other than None somewhere (global or a
+launch override). Neither may touch the seat
 directly — smithay's `Seat::add_pointer` on a seat that already has a pointer
 *replaces* the `PointerHandle`, dropping focus and any live grab. The owner
 acts only on the 0<->1 transition. Mouse presence comes from Android:
@@ -137,8 +186,8 @@ acts only on the 0<->1 transition. Mouse presence comes from Android:
 follows `InputManager.InputDeviceListener`, sending the aggregate over the
 surface-event channel so it is ordered with focus changes like hardware keys.
 
-With the workaround at its default the capability is on regardless, so the
-owner only changes observable behaviour for users who disabled it. Capability
+With emulation at its default the capability is on regardless, so the
+owner only changes observable behaviour with emulation off. Capability
 *removal* on unplug is legal but rare in the wild; if real clients turn out to
 mishandle it, the fallback is to make the capability sticky for the session
 once a mouse has ever been seen.
@@ -169,9 +218,7 @@ The broker `query-state` action reports the live pointer and cursor —
 `cursor_shape` is a shape name, `hidden`, `bitmap`, or `none`.
 
 Note a client's `set_cursor` is only honoured with the serial of a live
-`wl_pointer.enter` (smithay's `allow_setting_cursor`). The GTK3 workaround's
-prime enters and immediately restores, so a shape requested off that prime
-alone is dropped; a real mouse holds the enter and it sticks.
+`wl_pointer.enter` (smithay's `allow_setting_cursor`).
 
 ## Pointer Work Not Done
 

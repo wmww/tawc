@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.MainActivity
+import me.phie.tawc.PointerEmulation
 import me.phie.tawc.R
 import me.phie.tawc.compositor.CompositorActivity
 import me.phie.tawc.compositor.NativeBridge
@@ -97,7 +98,14 @@ object EntryLauncher {
             }
             Log.w(TAG, "terminal entry ${entry.id}: native terminal is tawcroot-only, running headless")
         }
-        launchGui(appContext, method, InstallationStore(appContext).rootfsDir(inst.id).absolutePath, entry, graphics)
+        launchGui(
+            appContext,
+            method,
+            InstallationStore(appContext).rootfsDir(inst.id).absolutePath,
+            entry,
+            graphics,
+            pointerEmulation = pointerEmulationFor(inst, entry.id),
+        )
     }
 
     /** GUI launch behind a splash; returns its [Launch] (for the dev broker). */
@@ -108,9 +116,10 @@ object EntryLauncher {
         entry: LauncherEntry,
         graphics: GraphicsBackend?,
         timeoutMs: Long = LaunchRegistry.DEFAULT_TIMEOUT_MS,
+        pointerEmulation: PointerEmulation? = null,
     ): Launch {
         val name = entry.name.ifEmpty { entry.id }
-        val launch = LaunchRegistry.create(entry.id, name, entry.iconPath, entry.terminal, timeoutMs)
+        val launch = LaunchRegistry.create(entry.id, name, entry.iconPath, entry.terminal, timeoutMs, pointerEmulation)
         val splash = runCatching { appContext.startActivity(CompositorActivity.launchIntent(appContext, launch.id)) }
             .onFailure { Log.w(TAG, "launch ${entry.id}: no splash: $it") }
             .isSuccess
@@ -199,6 +208,11 @@ object EntryLauncher {
      */
     fun graphicsFor(inst: Installation, entryId: String): GraphicsBackend? =
         GraphicsBackend.fromKeyOrNull(inst.entryGraphics[entryId])
+
+    /** [inst]'s pointer emulation override for [entryId]
+     *  ([Installation.entryPointerEmulation]), or null for the global setting. */
+    fun pointerEmulationFor(inst: Installation, entryId: String): PointerEmulation? =
+        PointerEmulation.fromKeyOrNull(inst.entryPointerEmulation[entryId])
 
     /** A terminal built-in: a new tab (a plain shell for TAWC Term). Add
      *  entry is the apps pane's own (it wants the editor's result). */

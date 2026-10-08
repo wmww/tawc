@@ -84,7 +84,7 @@ class CompositorService : Service() {
             displayMetrics.widthPixels,
             displayMetrics.heightPixels,
             me.phie.tawc.Settings.xwayland,
-            me.phie.tawc.Settings.gtk3BrokenMenusWorkaround,
+            me.phie.tawc.Settings.pointerEmulation.ordinal,
         )
         if (!started) return
         // Everything below is per compositor run.
@@ -103,7 +103,7 @@ class CompositorService : Service() {
             .takeIf { it > 0 }
             ?.let { NativeBridge.nativeSetOutputRefreshRate(it) }
         NativeBridge.nativeSetXwaylandEnabled(me.phie.tawc.Settings.xwayland)
-        NativeBridge.nativeSetGtk3BrokenMenusWorkaround(me.phie.tawc.Settings.gtk3BrokenMenusWorkaround)
+        NativeBridge.nativeSetPointerEmulation(me.phie.tawc.Settings.pointerEmulation.ordinal)
         // A fresh watcher re-seeds mouse presence; a surviving one would
         // drop it as an unchanged value.
         mouseWatcher?.stop()

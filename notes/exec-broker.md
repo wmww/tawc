@@ -384,8 +384,8 @@ at its definition.
 | `get-graphics-backend` | SettingsActions | Print the current backend key on stdout. |
 | `set-output-scale` (`value`) | SettingsActions | Snap to the 0.25x grid, save `Settings.outputScale`, and push the live compositor output scale. In test mode this only mutates the in-memory store. |
 | `get-output-scale` | SettingsActions | Print the current output scale. |
-| `set-gtk3-broken-menus-workaround` (`enabled`) | SettingsActions | Save and push the live GTK3 broken menus workaround toggle. In test mode this only mutates the in-memory store. |
-| `get-gtk3-broken-menus-workaround` | SettingsActions | Print the current GTK3 broken menus workaround setting. |
+| `set-pointer-emulation` (`value` = none/hover/full) | SettingsActions | Save and push the global pointer emulation. In test mode this only mutates the in-memory store. |
+| `get-pointer-emulation` | SettingsActions | Print the global pointer emulation. |
 | `set-ando` (`installId`, `enabled`) | SettingsActions | Set the per-distro ando (notes/ando.md) test override for `installId` and reconcile the broker (`AndoBrokers.refresh`): enable brings the listener up; disable tears it down and SIGKILLs in-flight ando children. In-memory only (never a metadata write); discarded on process death and cleared by `test-init`. Prints `true`/`false`. |
 | `get-ando` (`installId`) | SettingsActions | Print the effective ando state for `installId` (override if set, else metadata). |
 | `launcher-list` (`installId`, optional `showHidden`) | LauncherActions | Print the launcher entry list, built-ins included, as a JSON array (`{id, name, exec, terminal, iconPath, path, shadows, graphics, hidden, builtin}` per element; `iconPath` is the resolved on-device PNG, empty when nothing resolved; `shadows` the packaged file an override hides; `graphics` the entry's stored override key). Mirrors what the home apps tab (`AppsPane`) renders: hidden entries are filtered out unless `showHidden=true` (notes/launcher.md). |
@@ -395,6 +395,7 @@ at its definition.
 | `launch-state` (`launchId`) | LauncherActions | Print `{state, code, message, taskId, log}` for a launch: `state` is the lowercased `LaunchState` (`waiting`, `timedout`, `exited`, `shown`, …) or `released` once its splash closed; `taskId` is the splash's Android task. |
 | `set-entry-hidden` (`installId`, `entryId`, `hidden`) | LauncherActions | Persist launcher hide/unhide for a desktop-entry id through the same locked `Installation.hiddenDesktopIds` metadata write the launcher UI uses. Durable — tests must unhide in cleanup. Prints the resulting hidden-id list. |
 | `set-entry-graphics` (`installId`, `entryId`, `backend`) | LauncherActions | Set the editor's per-entry graphics override (`Installation.entryGraphics`) to a `GraphicsBackend.key` this build ships, or clear it with an empty `backend`. Durable — tests must clear it in cleanup. Prints the resulting `id=key` list. |
+| `set-entry-pointer` (`installId`, `entryId`, `mode`) | LauncherActions | Same for the per-entry pointer emulation override (`Installation.entryPointerEmulation`, `none`/`hover`/`full`, empty clears). |
 
 **Rule for input actions: every driver goes through `TawcInputConnection`.**
 There is intentionally no broker action that calls `NativeBridge.native*`

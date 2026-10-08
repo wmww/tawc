@@ -819,6 +819,9 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
                 send(MotionEvent.ACTION_DOWN, 0, intArrayOf(0), arrayOf(p))
                 send(MotionEvent.ACTION_UP, 0, intArrayOf(0), arrayOf(p))
             }
+            // A tap split in two, so a test can hold in between (long press).
+            "press" -> send(MotionEvent.ACTION_DOWN, 0, intArrayOf(0), arrayOf(point(0.30f, 0.35f)))
+            "release" -> send(MotionEvent.ACTION_UP, 0, intArrayOf(0), arrayOf(point(0.30f, 0.35f)))
             "tap-logical" -> {
                 if (logicalX == null || logicalY == null) {
                     return "tap-logical requires x and y"

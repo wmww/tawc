@@ -51,8 +51,13 @@
     <string name="settings_compatibility">Compatibility</string>
     <string name="settings_tint_buffers_by_type">Tint buffers based on type</string>
     <string name="settings_xwayland">Xwayland</string>
-    <string name="settings_gtk3_broken_menus_workaround">GTK3 broken menus workaround</string>
-    <string name="settings_gtk3_broken_menus_workaround_detail">Spoof a pointer briefly entering each window, allows GTK3 menus to work correctly</string>
+    <string name="settings_pointer_emulation">Pointer emulation</string>
+    <string name="pointer_emulation_none">None</string>
+    <string name="pointer_emulation_none_detail">Touch only. Some GTK3 menus and selections misbehave</string>
+    <string name="pointer_emulation_hover">Hover</string>
+    <string name="pointer_emulation_hover_detail">Touch, and the pointer follows your finger</string>
+    <string name="pointer_emulation_full">Full</string>
+    <string name="pointer_emulation_full_detail">Act as a mouse: tap to click, drag to drag, long-press to right-click</string>
     <string name="settings_terminal_scale">Terminal scale: %1$s</string>
     <string name="settings_gui_scale">GUI scale: %1$s</string>
     <string name="settings_about">About</string>
@@ -177,6 +182,7 @@
     <string name="editor_reset_confirm">Reset \'%1$s\' to default? Your edits are discarded.</string>
     <string name="editor_not_utf8">Can\'t edit: the file isn\'t UTF-8.</string>
     <string name="editor_override_graphics">Override graphics</string>
+    <string name="editor_override_pointer_emulation">Override pointer emulation</string>
     <string name="editor_field_env">Environment variables</string>
     <string name="editor_env_add">Add</string>
     <string name="editor_env_remove">Remove variable</string>

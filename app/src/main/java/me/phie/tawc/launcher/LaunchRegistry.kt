@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import me.phie.tawc.PointerEmulation
 import me.phie.tawc.compositor.CompositorService
 import me.phie.tawc.compositor.NativeBridge
 import java.io.File
@@ -92,6 +93,8 @@ class Launch internal constructor(
     val iconPath: String,
     val terminal: Boolean,
     internal val timeoutMs: Long,
+    /** The entry's override, handed to the compositor at [LaunchRegistry.reserve]. */
+    val pointerEmulation: PointerEmulation? = null,
 ) {
     private val _state = MutableStateFlow<LaunchState>(LaunchState.Waiting)
     val state: StateFlow<LaunchState> = _state
@@ -169,9 +172,10 @@ object LaunchRegistry {
         iconPath: String,
         terminal: Boolean,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        pointerEmulation: PointerEmulation? = null,
     ): Launch {
         val id = "launch-%016x".format(Random.nextLong())
-        val launch = Launch(id, desktopId, name, iconPath, terminal, timeoutMs)
+        val launch = Launch(id, desktopId, name, iconPath, terminal, timeoutMs, pointerEmulation)
         launches[id] = launch
         scope.launch { schedule(launch, LaunchState.Waiting) }
         return launch
@@ -218,7 +222,11 @@ object LaunchRegistry {
             while (!NativeBridge.nativeIsCompositorRunning() && SystemClock.uptimeMillis() < deadline) {
                 Thread.sleep(20)
             }
-            val token = NativeBridge.nativeReserveLaunchHost(launch.id, launch.desktopId)
+            val token = NativeBridge.nativeReserveLaunchHost(
+                launch.id,
+                launch.desktopId,
+                launch.pointerEmulation?.ordinal ?: -1,
+            )
             if (token != null) {
                 val releasedMeanwhile = synchronized(launch) {
                     launch.reserved = true

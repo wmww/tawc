@@ -167,8 +167,7 @@ pub struct TawcState {
 
     /// Last real pointer position and the focus it resolved to (surface +
     /// surface origin), both in `pointer_frame`'s window frame — i.e. what
-    /// was last handed to `PointerHandle::motion`, so the GTK3 prime can
-    /// restore it instead of leaving to `None`. Not authoritative while a
+    /// was last handed to `PointerHandle::motion`. Not authoritative while a
     /// grab is active: smithay's own `current_focus` is, and the state
     /// query reads that.
     pub pointer_location: Point<f64, Logical>,
@@ -186,14 +185,9 @@ pub struct TawcState {
     /// tracks what was last pushed to the Activity's `PointerIcon`.
     pub cursor: crate::cursor::State,
 
-    /// GTK3 broken menus workaround.
-    ///
-    /// This deliberately contained compatibility path asks for a wl_pointer
-    /// (through [`TawcState::sync_pointer_capability`], which owns the
-    /// capability) and briefly enters/leaves each new toplevel so GTK3
-    /// initializes its cold pointer-crossing state before touchscreen
-    /// menubar taps. See notes/gtk3-broken-menus-workaround.md.
-    pub gtk3_broken_menus_workaround: crate::gtk3_menus_workaround::State,
+    /// What touch does to `wl_pointer`: global mode, launch overrides and
+    /// live gestures. See `pointer_emulation.rs`.
+    pub pointer_emulation: crate::pointer_emulation::State,
 
     /// Output scale factor (physical pixels per logical pixel). Canonical source
     /// of truth — lib.rs sets this at startup and render.rs reads it back.
@@ -340,7 +334,7 @@ impl TawcState {
         output_scale: OutputScale,
         output_physical_size: (i32, i32),
         xwayland_enabled: bool,
-        gtk3_broken_menus_workaround_enabled: bool,
+        pointer_emulation: crate::pointer_emulation::Mode,
         render: crate::render::LazyRenderState,
         output: smithay::output::Output,
     ) -> Self {
@@ -447,9 +441,7 @@ impl TawcState {
             pointer_screen_location: Point::from((0.0, 0.0)),
             pointer_frame: None,
             touch_frames: HashMap::new(),
-            gtk3_broken_menus_workaround: crate::gtk3_menus_workaround::State::new(
-                gtk3_broken_menus_workaround_enabled,
-            ),
+            pointer_emulation: crate::pointer_emulation::State::new(pointer_emulation),
             output_scale,
             output_logical_size: (0, 0),
             output_physical_size: (0, 0),
@@ -498,7 +490,7 @@ impl TawcState {
         };
 
         // The pointer capability has exactly one owner; at construction the
-        // only reason that can be set is the GTK3 workaround.
+        // only reason that can be set is pointer emulation.
         state.sync_pointer_capability();
 
         // The output global lives for the whole life of the compositor. A
@@ -518,13 +510,13 @@ impl TawcState {
     /// Sole owner of the seat's `wl_pointer` capability.
     ///
     /// Two independent reasons want a pointer: attached mouse hardware
-    /// ([`TawcState::mouse_attached`]) and the GTK3 broken menubar
-    /// workaround. Neither may touch the seat directly: smithay's
+    /// ([`TawcState::mouse_attached`]) and pointer emulation that isn't
+    /// `None` somewhere (global or a launch override). Neither may touch the seat directly: smithay's
     /// `Seat::add_pointer` on a seat that already has a pointer *replaces*
     /// the `PointerHandle`, dropping focus and any live grab. Call this
     /// after changing either reason; it acts only on the 0↔1 transition.
     pub fn sync_pointer_capability(&mut self) {
-        let wanted = self.mouse_attached || self.gtk3_broken_menus_workaround.enabled;
+        let wanted = self.mouse_attached || self.pointer_emulation.wants_pointer();
         let present = self.seat.get_pointer().is_some();
         if wanted == present {
             return;
@@ -1130,7 +1122,6 @@ impl CompositorHandler for TawcState {
         self.frame_callbacks_pending = true;
 
         crate::cursor::after_commit(self, surface);
-        crate::gtk3_menus_workaround::after_commit(self, surface);
     }
 }
 
@@ -1331,7 +1322,6 @@ impl XdgShellHandler for TawcState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        crate::gtk3_menus_workaround::toplevel_destroyed(self, surface.wl_surface());
         let host = self.desktop.remove_wayland_toplevel(surface.wl_surface());
         self.sync_desktop_hosts();
         self.toplevels_changed = true;

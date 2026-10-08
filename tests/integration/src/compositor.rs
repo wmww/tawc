@@ -51,6 +51,13 @@ pub struct CompositorState {
     pub windows: Vec<WindowPlacement>,
     /// Whether a dialog scrim is drawn on the visible host.
     pub scrim: bool,
+    /// Global pointer emulation (`none`/`hover`/`full`).
+    pub pointer_emulation: String,
+    /// Mode the last touch-down resolved to (launch overrides applied);
+    /// `unset` before any touch on a window.
+    pub last_touch_emulation: String,
+    /// Touch-downs that landed on a window.
+    pub touch_downs: u64,
 }
 
 /// Where the compositor draws one window: `screen = offset + window_pt * scale`,
@@ -225,6 +232,9 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
     let mut host_windows = None;
     let mut windows = Vec::new();
     let mut scrim = false;
+    let mut pointer_emulation = String::new();
+    let mut last_touch_emulation = String::new();
+    let mut touch_downs = 0;
     for part in payload.split_whitespace() {
         if let Some((key, val)) = part.split_once('=') {
             match key {
@@ -269,6 +279,9 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
                         .collect::<Option<Vec<_>>>()?
                 }
                 "scrim" => scrim = val == "yes",
+                "pointer_emulation" => pointer_emulation = val.to_string(),
+                "last_touch_emulation" => last_touch_emulation = val.to_string(),
+                "touch_downs" => touch_downs = val.parse().ok()?,
                 _ => {}
             }
         }
@@ -303,6 +316,9 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
         host_windows: host_windows.unwrap_or_default(),
         windows,
         scrim,
+        pointer_emulation,
+        last_touch_emulation,
+        touch_downs,
     })
 }
 

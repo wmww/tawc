@@ -1,6 +1,7 @@
 package me.phie.tawc.launcher
 
 import me.phie.tawc.GraphicsBackend
+import me.phie.tawc.PointerEmulation
 import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.dev.ActionContext
 import me.phie.tawc.dev.ActionRegistry
@@ -22,6 +23,7 @@ import org.json.JSONObject
  * | `launcher-list` | `installId`, optional `showHidden` ∈ true|false | print the launcher entry list as a JSON array on stdout |
  * | `set-entry-hidden` | `installId`, `entryId`, `hidden` ∈ true|false | persist hide/unhide through the same metadata write the UI uses |
  * | `set-entry-graphics` | `installId`, `entryId`, `backend` (a `GraphicsBackend.key`, or empty to clear) | persist the editor's per-entry graphics override |
+ * | `set-entry-pointer` | `installId`, `entryId`, `mode` (none/hover/full, or empty to clear) | persist the editor's per-entry pointer emulation override |
  * | `launcher-icons` | `installId` | print the icon picker's name list (`[{name, user}]`) |
  * | `launcher-resolve-icon` | `installId`, `value` | print the PNG path an `Icon=` value resolves to (empty line if none) |
  * | `launcher-launch` | `installId`, `entryId`, optional `timeoutMs` | launch a GUI entry like a tap (splash + reserved host); print the launch id |
@@ -30,8 +32,8 @@ import org.json.JSONObject
  * `launcher-list` mirrors what [me.phie.tawc.launcher.AppsPane] renders: hidden
  * entries are filtered out unless `showHidden=true` (the UI's
  * "Show hidden" toggle), and includes the built-ins. Each element is
- * `{id, name, exec, terminal, iconPath, path, shadows, graphics, hidden, builtin}`
- * (`graphics`: the entry's stored override key, empty when none) — `iconPath` is
+ * `{id, name, exec, terminal, iconPath, path, shadows, graphics, pointer, hidden, builtin}`
+ * (`graphics`/`pointer`: the entry's stored override keys, empty when none) — `iconPath` is
  * the resolved on-device PNG (empty when nothing resolved), which is
  * how icon-resolution tests see what `launcher.rs` picked.
  */
@@ -41,6 +43,7 @@ internal object LauncherActions {
         ActionRegistry.register("launcher-list", LauncherListAction)
         ActionRegistry.register("set-entry-hidden", SetEntryHiddenAction)
         ActionRegistry.register("set-entry-graphics", SetEntryGraphicsAction)
+        ActionRegistry.register("set-entry-pointer", SetEntryPointerAction)
         ActionRegistry.register("launcher-icons", ListIconsAction)
         ActionRegistry.register("launcher-resolve-icon", ResolveIconAction)
         ActionRegistry.register("launcher-launch", LaunchAction)
@@ -64,7 +67,15 @@ internal object LauncherActions {
                 ?: return ctx.fail("launcher-launch: no entry '$entryId'")
             if (entry.terminal) return ctx.fail("launcher-launch: '$entryId' is a terminal entry")
             val graphics = EntryLauncher.graphicsFor(inst, entry.id)
-            val launch = EntryLauncher.launchGui(ctx.appContext, method, rootfs, entry, graphics, timeoutMs)
+            val launch = EntryLauncher.launchGui(
+                ctx.appContext,
+                method,
+                rootfs,
+                entry,
+                graphics,
+                timeoutMs,
+                EntryLauncher.pointerEmulationFor(inst, entry.id),
+            )
             ctx.out(launch.id)
             return 0
         }
@@ -146,6 +157,7 @@ internal object LauncherActions {
                     put("path", e.path)
                     put("shadows", e.shadows)
                     put("graphics", inst.entryGraphics[e.id] ?: "")
+                    put("pointer", inst.entryPointerEmulation[e.id] ?: "")
                     put("hidden", isHidden)
                     put("builtin", e.builtin != null)
                 })
@@ -189,6 +201,26 @@ internal object LauncherActions {
                 .update(id) { it.withEntryGraphics(entryId, key) }
                 ?: return ctx.fail("set-entry-graphics: no installation '$id'")
             ctx.out(updated.entryGraphics.entries.joinToString(",") { "${it.key}=${it.value}" })
+            return 0
+        }
+    }
+
+    private object SetEntryPointerAction : BrokerAction {
+        override fun run(args: Map<String, String>, ctx: ActionContext): Int {
+            val id = args["installId"]
+                ?: return ctx.fail("set-entry-pointer: --arg installId=<id> required")
+            val entryId = args["entryId"]
+                ?: return ctx.fail("set-entry-pointer: --arg entryId=<id> required")
+            val raw = args["mode"]
+                ?: return ctx.fail("set-entry-pointer: --arg mode=none|hover|full|'' required")
+            val key = raw.ifEmpty { null }
+            if (key != null && PointerEmulation.fromKeyOrNull(key) == null) {
+                return ctx.fail("set-entry-pointer: unknown mode '$key'")
+            }
+            val updated: Installation = InstallationStore(ctx.appContext)
+                .update(id) { it.withEntryPointerEmulation(entryId, key) }
+                ?: return ctx.fail("set-entry-pointer: no installation '$id'")
+            ctx.out(updated.entryPointerEmulation.entries.joinToString(",") { "${it.key}=${it.value}" })
             return 0
         }
     }

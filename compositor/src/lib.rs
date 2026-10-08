@@ -22,9 +22,9 @@ mod bridge;
 mod egl_android;
 #[cfg(feature = "gfxstream")]
 mod gfxstream_present;
-mod gtk3_menus_workaround;
 mod gl_import;
 mod host;
+mod pointer_emulation;
 mod protocol;
 mod remote_jni;
 mod wlegl;
@@ -253,7 +253,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
     display_width_px: jint,
     display_height_px: jint,
     xwayland: jboolean,
-    gtk3_broken_menus_workaround: jboolean,
+    pointer_emulation: jint,
 ) -> jboolean {
     init_native_logging();
     cache_jni_globals(&mut env);
@@ -324,7 +324,8 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
     let initial_scale = sanitize_output_scale(output_scale as f64).unwrap_or(DEFAULT_OUTPUT_SCALE);
     let initial_physical_size = (display_width_px, display_height_px);
     let initial_xwayland = xwayland != 0;
-    let initial_gtk3_broken_menus_workaround = gtk3_broken_menus_workaround != 0;
+    let initial_pointer_emulation = pointer_emulation::Mode::from_index(pointer_emulation)
+        .unwrap_or(pointer_emulation::Mode::Hover);
     std::thread::spawn(move || {
         if let Err(e) = run_compositor(
             touch_channel,
@@ -336,7 +337,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
             initial_scale,
             initial_physical_size,
             initial_xwayland,
-            initial_gtk3_broken_menus_workaround,
+            initial_pointer_emulation,
         ) {
             log::error!("Compositor failed: {}", e);
         }
@@ -542,11 +543,19 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeReserveLa
     _class: JClass,
     launch_id: JString,
     desktop_id: JString,
+    pointer_emulation: jint,
 ) -> jobject {
     let launch_id = jstring_to_id(&mut env, launch_id);
     let desktop_id: String = env.get_string(&desktop_id).map(|s| s.into()).unwrap_or_default();
+    // Negative: no override.
+    let pointer_emulation = pointer_emulation::Mode::from_index(pointer_emulation);
     let (tx, rx) = mpsc::channel();
-    if !host::send_surface_event(SurfaceEvent::ReserveLaunch { launch_id, desktop_id, response: tx }) {
+    if !host::send_surface_event(SurfaceEvent::ReserveLaunch {
+        launch_id,
+        desktop_id,
+        pointer_emulation,
+        response: tx,
+    }) {
         return std::ptr::null_mut();
     }
     // The event loop may still be setting up after a cold start.
@@ -610,8 +619,8 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnTouchEv
     let time = event_time as u32;
     let event = match action {
         ACTION_DOWN | ACTION_POINTER_DOWN => input::TouchEvent::Down { id: pointer_id, x, y, time, activity_id },
-        ACTION_MOVE => input::TouchEvent::Motion { id: pointer_id, x, y, time, activity_id },
-        ACTION_UP | ACTION_POINTER_UP => input::TouchEvent::Up { id: pointer_id, time, activity_id },
+        ACTION_MOVE => input::TouchEvent::Motion { id: pointer_id, x, y, time },
+        ACTION_UP | ACTION_POINTER_UP => input::TouchEvent::Up { id: pointer_id, time },
         _ => return,
     };
     input::send_touch_event(event);
@@ -929,14 +938,14 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetXwayla
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetGtk3BrokenMenusWorkaround(
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSetPointerEmulation(
     _env: JNIEnv,
     _class: JClass,
-    enabled: jboolean,
+    mode: jint,
 ) {
-    host::send_surface_event(SurfaceEvent::Gtk3BrokenMenusWorkaroundChanged {
-        enabled: enabled != 0,
-    });
+    if let Some(mode) = pointer_emulation::Mode::from_index(mode) {
+        host::send_surface_event(SurfaceEvent::PointerEmulationChanged { mode });
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1441,7 +1450,7 @@ fn run_compositor(
     initial_scale: f64,
     initial_physical_size: (i32, i32),
     initial_xwayland: bool,
-    initial_gtk3_broken_menus_workaround: bool,
+    initial_pointer_emulation: pointer_emulation::Mode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // GL setup runs beside the Wayland setup below; see `LazyRenderState`.
     let render_state = LazyRenderState::spawn();
@@ -1471,7 +1480,7 @@ fn run_compositor(
         scale,
         initial_physical_size,
         initial_xwayland,
-        initial_gtk3_broken_menus_workaround,
+        initial_pointer_emulation,
         render_state,
         output,
     );
