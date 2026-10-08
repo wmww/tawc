@@ -120,6 +120,21 @@ pub struct RenderState {
     pub egl_display: EGLDisplay,
     pub egl_pixel_format: PixelFormat,
     pub egl_config_id: *const c_void,
+    /// Last so it drops after the renderer is done with the context.
+    _raw_context: RawEglContext,
+}
+
+/// `EGLContext::from_raw` leaves the context externally managed, so
+/// smithay never destroys it; this does.
+struct RawEglContext {
+    display: *const c_void,
+    context: *const c_void,
+}
+
+impl Drop for RawEglContext {
+    fn drop(&mut self) {
+        unsafe { smithay::backend::egl::ffi::egl::DestroyContext(self.display, self.context) };
+    }
 }
 
 impl RenderState {
@@ -129,6 +144,7 @@ impl RenderState {
     fn init() -> Result<Self, String> {
         let (raw_display, raw_config, raw_context) =
             unsafe { crate::egl_android::create_raw_egl_context() }.map_err(|e| e.to_string())?;
+        let raw = RawEglContext { display: raw_display, context: raw_context };
         let egl_context = unsafe { EGLContext::from_raw(raw_display, raw_config, raw_context) }
             .map_err(|e| format!("EGLContext::from_raw: {}", e))?;
 
@@ -158,6 +174,7 @@ impl RenderState {
             egl_display,
             egl_pixel_format,
             egl_config_id,
+            _raw_context: raw,
         })
     }
 
