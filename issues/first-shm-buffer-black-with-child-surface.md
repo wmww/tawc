@@ -32,3 +32,7 @@ Not limited to child surfaces: `gtk4-demo --run=dialog` (one
 non-resizable 401x139 toplevel, emulator CPU/SHM) also shows a black
 interior inside the edge tint, and `render-pattern` (single surface) fails
 its pixel test on the emulator with (1,1,1) on `main` too.
+
+Does not reproduce on the physical phone (OnePlus 9, libhybris): `popup`
+and `dialog` each rendered their first parent buffer correctly in every
+run (popup 3/3, dialog 2/2), so this looks emulator-specific.
