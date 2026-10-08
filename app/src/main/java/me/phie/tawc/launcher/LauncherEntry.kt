@@ -35,6 +35,13 @@ data class LauncherEntry(
      * ones; empty only for malformed scanner output.
      */
     val path: String = "",
+    /**
+     * Path of the lower-priority copy of this id the scan hid (the
+     * packaged file a managed-dir override shadows), or empty. A
+     * managed entry with [shadows] is an override (the editor offers
+     * Reset); without, a personal entry (Delete).
+     */
+    val shadows: String = "",
     val builtin: Builtin? = null,
 ) {
     /**
@@ -165,6 +172,7 @@ data class LauncherEntry(
                                 terminal = o.optBoolean("terminal", false),
                                 iconPath = o.optString("iconPath"),
                                 path = o.optString("path"),
+                                shadows = o.optString("shadows"),
                             )
                         )
                     }

@@ -8,15 +8,12 @@ import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.CheckBox
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.AllFilesAccess
-import me.phie.tawc.install.EnabledGraphicsBackends
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
 import me.phie.tawc.install.ManageBindsActivity
@@ -25,6 +22,7 @@ import me.phie.tawc.install.buildAndoCommitRow
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.licenses.LicensesActivity
 import me.phie.tawc.ui.buildChildScreen
+import me.phie.tawc.ui.graphicsBackendGroup
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
@@ -179,36 +177,13 @@ class SettingsActivity : AppCompatActivity() {
         return card
     }
 
-    private fun buildGraphicsBackendGroup(): RadioGroup {
-        val cardPad = (12 * resources.displayMetrics.density).toInt()
-        val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        val current = Settings.graphicsBackend
-        for (backend in EnabledGraphicsBackends.enabled) {
-            group.addView(
-                RadioButton(this).apply {
-                    // ordinal+1 — RadioGroup uses 0 to mean "nothing checked"
-                    // in onCheckedChange callbacks, and View.NO_ID is -1, so
-                    // any positive int that round-trips back to the enum is fine.
-                    id = backend.ordinal + 1
-                    text = backend.displayName
-                    textSize = 15f
-                    isChecked = backend == current
-                    setPadding(0, cardPad / 2, 0, cardPad / 2)
-                },
-                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
-            )
-        }
-        group.setOnCheckedChangeListener { _, checkedId ->
-            val picked = EnabledGraphicsBackends.enabled.firstOrNull { it.ordinal + 1 == checkedId }
-            if (picked != null) Settings.graphicsBackend = picked
-        }
-        return group
-    }
-
     private fun buildGraphicsSettings(): android.view.View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(buildGraphicsBackendGroup(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(
+                graphicsBackendGroup(Settings.graphicsBackend) { Settings.graphicsBackend = it },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+            )
             addView(buildTintBuffersCheckbox(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
     }

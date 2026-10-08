@@ -608,12 +608,14 @@ class MainActivity : AppCompatActivity() {
         if (intent.component?.className != COMMAND_ALIAS) return false
         val exec = intent.getStringExtra(EXTRA_COMMAND)
         val label = intent.getStringExtra(EXTRA_LABEL)
+        val graphics = GraphicsBackend.fromKeyOrNull(intent.getStringExtra(EXTRA_GRAPHICS))
         intent.removeExtra(EXTRA_COMMAND)
         intent.removeExtra(EXTRA_LABEL)
+        intent.removeExtra(EXTRA_GRAPHICS)
         intent.removeExtra(EXTRA_DISTRO)
         if (!Installation.isValidId(id)) return false
         OpenDistro.set(id)
-        queuedCommand = id to TerminalPane.CommandTab(exec, label)
+        queuedCommand = id to TerminalPane.CommandTab(exec, label, graphics)
         return true
     }
 
@@ -647,11 +649,18 @@ class MainActivity : AppCompatActivity() {
 
         /** Open a new terminal tab for [installId] running [exec] (null:
          *  a plain shell), named [label]. */
-        fun commandIntent(context: Context, installId: String, exec: String?, label: String?): Intent =
+        fun commandIntent(
+            context: Context,
+            installId: String,
+            exec: String?,
+            label: String?,
+            graphics: GraphicsBackend? = null,
+        ): Intent =
             Intent().setClassName(context, COMMAND_ALIAS)
                 .putExtra(EXTRA_DISTRO, installId)
                 .putExtra(EXTRA_COMMAND, exec)
                 .putExtra(EXTRA_LABEL, label)
+                .putExtra(EXTRA_GRAPHICS, graphics?.key)
 
         /** Install id of a terminal launch. */
         const val EXTRA_DISTRO = "distro"
@@ -663,6 +672,10 @@ class MainActivity : AppCompatActivity() {
 
         /** Tab label for an [EXTRA_COMMAND] session (the entry name). */
         const val EXTRA_LABEL = "label"
+
+        /** [GraphicsBackend.key] for an [EXTRA_COMMAND] session (a
+         *  launcher entry's override); absent = the global setting. */
+        const val EXTRA_GRAPHICS = "graphics"
 
         /** [showTabForDev]: open a new terminal tab. */
         internal const val DEV_NEW_TAB = -2

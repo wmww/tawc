@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.MainActivity
 import me.phie.tawc.R
 import me.phie.tawc.install.Installation
@@ -81,10 +82,11 @@ object EntryLauncher {
             launchBuiltin(appContext, inst, entry, builtin, method)
             return
         }
+        val graphics = graphicsFor(inst, entry.id)
         if (entry.terminal) {
             if (method is TawcrootMethod) {
                 appContext.startActivity(
-                    MainActivity.commandIntent(appContext, inst.id, entry.exec, entry.name.ifEmpty { entry.id })
+                    MainActivity.commandIntent(appContext, inst.id, entry.exec, entry.name.ifEmpty { entry.id }, graphics)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
                 return
@@ -94,7 +96,7 @@ object EntryLauncher {
         val rootfs = InstallationStore(appContext).rootfsDir(inst.id).absolutePath
         val cmd = guiCommand(entry.exec)
         LAUNCH_SCOPE.launch {
-            runCatching { UserRootfsSession.runInside(appContext, method, rootfs, cmd) }
+            runCatching { UserRootfsSession.runInside(appContext, method, rootfs, cmd, graphics = graphics) }
                 .onFailure { e ->
                     Log.w(TAG, "launch ${entry.id}: $e")
                     val title = appContext.getString(
@@ -117,7 +119,8 @@ object EntryLauncher {
      */
     internal fun guiCommand(exec: String): String {
         val tail = "</dev/null >/dev/null 2>&1"
-        val argv0 = execArgv0(exec) ?: return "$exec $tail"
+        // Probe the program, not a leading `env K=V` (the editor's variables).
+        val argv0 = execArgv0(DesktopEntryFile.splitExec(exec).command) ?: return "$exec $tail"
         val pak = "chrome_100_percent.pak"
         val probe = "_tawc_ns=; if _p=$(command -v -- ${Sh.quote(argv0)}) && " +
             "_p=$(readlink -f -- \"\$_p\") && " +
@@ -143,6 +146,14 @@ object EntryLauncher {
         }
         return null
     }
+
+    /**
+     * [inst]'s graphics override for [entryId] ([Installation.entryGraphics]),
+     * or null for the global setting — also when the stored backend
+     * isn't in this build.
+     */
+    fun graphicsFor(inst: Installation, entryId: String): GraphicsBackend? =
+        GraphicsBackend.fromKeyOrNull(inst.entryGraphics[entryId])
 
     /** A terminal built-in: a new tab (a plain shell for TAWC Term). Add
      *  entry is the apps pane's own (it wants the editor's result). */

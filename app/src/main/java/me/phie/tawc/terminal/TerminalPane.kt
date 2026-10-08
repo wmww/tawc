@@ -26,6 +26,7 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import me.phie.tawc.R
+import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.Settings
 import me.phie.tawc.compositor.CompositorService
 import me.phie.tawc.install.InstallationStore
@@ -206,6 +207,7 @@ internal class TerminalPane(
         val exec = try {
             method.ptyShellExec(
                 store.rootfsDir(distroId).absolutePath,
+                graphics = command?.graphics,
                 command = command?.exec?.let { "$it$HOLD_OPEN_TRAILER" },
             )
         } catch (e: IOException) {
@@ -408,8 +410,9 @@ internal class TerminalPane(
     }
 
     /** What a new tab runs: [exec] (a launcher entry's Exec line), or
-     *  a plain shell when null; [label] names it. */
-    data class CommandTab(val exec: String?, val label: String?)
+     *  a plain shell when null; [label] names it; [graphics] is the
+     *  entry's override (null = the global setting). */
+    data class CommandTab(val exec: String?, val label: String?, val graphics: GraphicsBackend? = null)
 
     /** [Companion.focusedTty] for this pane. */
     private fun focusedTty(): Int {

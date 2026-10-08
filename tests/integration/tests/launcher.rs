@@ -270,6 +270,79 @@ fn test_scan_dirs_precedence_and_terminal() {
     );
 }
 
+// ---- overrides + per-entry graphics ----------------------------------
+
+const OVERRIDE_ID: &str = "tawc-override-test";
+
+struct OverrideCleanup;
+
+impl Drop for OverrideCleanup {
+    fn drop(&mut self) {
+        let _ = adb::set_entry_graphics(OVERRIDE_ID, "");
+        let r = rootfs();
+        let rm = format!(
+            "rm -f '{r}/root/.local/share/applications/{OVERRIDE_ID}.desktop' \
+                   '{r}/usr/share/applications/{OVERRIDE_ID}.desktop'"
+        );
+        let _ = adb::rootfs_host_exec(&["/system/bin/sh", "-c", &rm]);
+    }
+}
+
+/// A managed-dir copy of a packaged id is one entry whose `shadows`
+/// names the packaged file; removing it (the editor's Reset) brings
+/// back the packaged entry with empty `shadows`. The editor's graphics
+/// override shows up in `launcher-list` (notes/launcher.md "Managed dir
+/// + .desktop editor").
+#[test]
+fn test_override_shadows_and_entry_graphics() {
+    tawc_integration::helpers::test_init();
+    let _cleanup = OverrideCleanup;
+    let managed = format!(
+        "{}/root/.local/share/applications/{OVERRIDE_ID}.desktop",
+        rootfs()
+    );
+
+    plant_desktop("usr/share/applications", OVERRIDE_ID, "TAWC Packaged", "true", false, "");
+    let list = adb::launcher_list(false).expect("launcher-list");
+    let obj = entry_object(&list, OVERRIDE_ID)
+        .unwrap_or_else(|| panic!("packaged entry missing: {list}"));
+    assert_eq!(json_field(obj, "shadows"), "", "packaged entry shadows nothing: {obj}");
+
+    plant_desktop("root/.local/share/applications", OVERRIDE_ID, "TAWC Override", "true", false, "");
+    let list = adb::launcher_list(false).expect("launcher-list");
+    assert_eq!(
+        list.matches(&format!("\"id\":\"{OVERRIDE_ID}\"")).count(),
+        1,
+        "override and packaged entry both listed: {list}"
+    );
+    let obj = entry_object(&list, OVERRIDE_ID).expect("override entry");
+    assert_eq!(json_field(obj, "name"), "TAWC Override", "override doesn't win: {obj}");
+    assert!(
+        json_field(obj, "path").ends_with(&format!("/root/.local/share/applications/{OVERRIDE_ID}.desktop")),
+        "override path not in the managed dir: {obj}"
+    );
+    assert!(
+        json_field(obj, "shadows").ends_with(&format!("/usr/share/applications/{OVERRIDE_ID}.desktop")),
+        "override doesn't report the packaged file: {obj}"
+    );
+
+    host_sh_ok(&format!("rm '{managed}'"), "remove override");
+    let list = adb::launcher_list(false).expect("launcher-list");
+    let obj = entry_object(&list, OVERRIDE_ID).expect("packaged entry after reset");
+    assert_eq!(json_field(obj, "name"), "TAWC Packaged", "packaged entry not back: {obj}");
+    assert_eq!(json_field(obj, "shadows"), "", "stale shadows after reset: {obj}");
+
+    assert_broker_ok(adb::set_entry_graphics(OVERRIDE_ID, "cpu").expect("set-entry-graphics"), "set-entry-graphics");
+    let list = adb::launcher_list(false).expect("launcher-list");
+    let obj = entry_object(&list, OVERRIDE_ID).expect("entry");
+    assert_eq!(json_field(obj, "graphics"), "cpu", "graphics override not listed: {obj}");
+
+    assert_broker_ok(adb::set_entry_graphics(OVERRIDE_ID, "").expect("set-entry-graphics"), "clear graphics");
+    let list = adb::launcher_list(false).expect("launcher-list");
+    let obj = entry_object(&list, OVERRIDE_ID).expect("entry");
+    assert_eq!(json_field(obj, "graphics"), "", "graphics override not cleared: {obj}");
+}
+
 // ---- icon resolution --------------------------------------------------
 
 /// Cache dir `launcher.rs` rasterizes SVG icons into — a sibling of the

@@ -416,6 +416,16 @@ enum class GraphicsBackend(val key: String, val displayName: String) {
                 return me.phie.tawc.install.EnabledGraphicsBackends.enabled.first()
             }
 
+        /**
+         * The enabled backend with [key], or null for no key, an
+         * unknown one, or one this APK doesn't ship. For per-entry
+         * overrides, where null means "use the global setting" —
+         * [fromKeyOrDefault] would turn that into a hard pin.
+         */
+        fun fromKeyOrNull(key: String?): GraphicsBackend? =
+            entries.firstOrNull { it.key == key }
+                ?.takeIf { me.phie.tawc.install.EnabledGraphicsBackends.isEnabled(it) }
+
         fun fromKeyOrDefault(key: String?): GraphicsBackend {
             val match = entries.firstOrNull { it.key == key } ?: return DEFAULT
             // Defensive: an APK that turns off a backend (via -PtawcGraphics

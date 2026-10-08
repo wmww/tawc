@@ -319,10 +319,14 @@ internal class AppsPane(
      */
     private fun canEditEntries(): Boolean = installation.method != Installation.METHOD_CHROOT
 
-    private fun openEditor(entryPath: String?) {
+    /** The editor for [entry], or a new entry when null. */
+    private fun openEditor(entry: LauncherEntry?) {
         val i = Intent(activity, DesktopFileEditorActivity::class.java)
             .putExtra(DesktopFileEditorActivity.EXTRA_ID, installation.id)
-        if (entryPath != null) i.putExtra(DesktopFileEditorActivity.EXTRA_PATH, entryPath)
+        if (entry != null) {
+            i.putExtra(DesktopFileEditorActivity.EXTRA_PATH, entry.path)
+            i.putExtra(DesktopFileEditorActivity.EXTRA_SHADOWS, entry.shadows)
+        }
         host.openEditor(i)
     }
 
@@ -346,13 +350,10 @@ internal class AppsPane(
             },
             EntryAction(activity.getString(R.string.launcher_action_add_home)) { pinEntry(entry) }
                 .takeIf { builtin == null || builtin.opensTerminal },
-            // Only entries in the managed dir are editable — everything
-            // else is package-owned (see DesktopEntryFile) or built in.
-            EntryAction(activity.getString(R.string.launcher_action_edit)) { openEditor(entry.path) }
-                .takeIf {
-                    builtin == null && canEditEntries() &&
-                        DesktopEntryFile.isManaged(entry.path, store.rootfsDir(installation.id))
-                },
+            // Any scanned entry; editing a packaged one saves an
+            // override copy in the managed dir (see DesktopEntryFile).
+            EntryAction(activity.getString(R.string.launcher_action_edit)) { openEditor(entry) }
+                .takeIf { builtin == null && canEditEntries() },
         )
     }
 

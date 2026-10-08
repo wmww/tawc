@@ -73,6 +73,13 @@ data class Installation(
      */
     val hiddenDesktopIds: List<String> = emptyList(),
     /**
+     * Per-entry graphics override: desktop id → [me.phie.tawc.GraphicsBackend.key],
+     * set in the `.desktop` editor. Honoured by launches from TAWC (the
+     * launcher grid and pins) only; absent = the global setting. Like
+     * [hiddenDesktopIds], stale ids are harmless and not pruned.
+     */
+    val entryGraphics: Map<String, String> = emptyMap(),
+    /**
      * Whether this install may use ando (notes/ando.md) — run Android
      * commands outside the Linux environment. Default `false`: opt-in,
      * fail-closed. Absent in legacy metadata parses as `false`, so
@@ -130,6 +137,9 @@ data class Installation(
         if (hiddenDesktopIds.isNotEmpty()) {
             put("hiddenDesktopIds", JSONArray(hiddenDesktopIds))
         }
+        if (entryGraphics.isNotEmpty()) {
+            put("entryGraphics", JSONObject(entryGraphics.toSortedMap()))
+        }
         if (andoEnabled) put("andoEnabled", true)
         if (importedAtMillis != null) put("importedAtMillis", importedAtMillis)
         if (importedFromPackage != null) put("importedFromPackage", importedFromPackage)
@@ -150,6 +160,17 @@ data class Installation(
         } else {
             hiddenDesktopIds - entryId
         }
+    )
+
+    /**
+     * Copy with [entryId]'s [entryGraphics] override set to [backendKey],
+     * or cleared when null. The single mutation shape shared by the
+     * editor and the `set-entry-graphics` broker action (always applied
+     * through [InstallationStore.update]).
+     */
+    fun withEntryGraphics(entryId: String, backendKey: String?): Installation = copy(
+        entryGraphics = if (backendKey == null) entryGraphics - entryId
+        else entryGraphics + (entryId to backendKey)
     )
 
     /**
@@ -299,6 +320,9 @@ data class Installation(
                         }
                     }
                 else emptyList(),
+                entryGraphics = obj.optJSONObject("entryGraphics")?.let { o ->
+                    buildMap { for (k in o.keys()) put(k, o.getString(k)) }
+                } ?: emptyMap(),
                 andoEnabled = obj.optBoolean("andoEnabled", false),
                 bootstrapFlavor = obj.optString("bootstrapFlavor", FLAVOR_TARBALL),
                 importedAtMillis = if (obj.has("importedAtMillis")) obj.getLong("importedAtMillis") else null,

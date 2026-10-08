@@ -30,9 +30,11 @@ screen"), plus pinned shortcuts.
    ("hide the packaged entry behind my edited copy" works). Then
    sorted by localised name.
 4. **LauncherEntry.parseList** turns the JSON into Kotlin records
-   (`id, name, comment, exec, terminal, iconPath, path` — `path` is the
-   absolute host path of the `.desktop` source file, kept so the UI can
-   distinguish user-editable entries from distro-owned ones).
+   (`id, name, comment, exec, terminal, iconPath, path, shadows` —
+   `path` is the absolute host path of the `.desktop` source file,
+   `shadows` the lower-priority copy of the id the de-dup dropped; the
+   editor uses both to tell overrides, personal and packaged entries
+   apart).
 5. **AppsPane** filters hidden entries + the search query, then
    renders rows (icon ImageView + name + comment). `IconLoader`
    async-decodes PNGs with `BitmapFactory.inSampleSize` keeping memory
@@ -75,7 +77,7 @@ Long-press on a row opens an action-list dialog (plain
 `AppsPane.entryActionsFor` — append there to grow the menu.
 Today's items: **Hide** on visible entries, **Unhide** on hidden ones,
 **Add to home screen** (see "Home-screen shortcuts"), **Edit** on
-managed-dir entries (see "Managed dir + .desktop editor").
+every scanned entry (see "Managed dir + .desktop editor").
 
 Hidden state lives in `Installation.hiddenDesktopIds` (ids =
 `LauncherEntry.id`, filename minus `.desktop`), written only through
@@ -117,8 +119,9 @@ the empty-list message appends a "(N hidden)" hint.
 Debug broker actions (notes/exec-broker.md): `launcher-list` returns
 the post-filter list as JSON (optionally including hidden entries with
 `showHidden=true`), including the resolved `iconPath` so icon tests can
-see what the scanner picked; `set-entry-hidden` performs the same
-metadata write as the UI. Integration coverage: `launcher::` tests in
+see what the scanner picked, plus `shadows` and the `graphics`
+override; `set-entry-hidden` and `set-entry-graphics` perform the same
+metadata writes as the UI. Integration coverage: `launcher::` tests in
 `tests/integration/tests/launcher.rs`.
 
 ## Built-in entries
@@ -151,38 +154,97 @@ like any icon-less terminal entry; Add entry is a bare themed
 `/root/.local/share/applications/` is the **managed dir** — the
 package-manager boundary. `DesktopFileEditorActivity` (launched for
 result from the launcher's "Add entry…" overflow item and per-entry
-"Edit" action) creates files only there, and only files there get the
-Edit action; `/usr/local` stays read-only to the app (technically not
-package-managed either, but `make install`-style entries there are
-exactly the complex foreign files the editor shouldn't touch).
+"Edit" action) only ever writes there. Edit is offered on every scanned
+entry (not built-ins, not chroot); `/usr/share`, `/usr/local` and
+flatpak files are never modified.
 
+- **Overrides.** Saving an edit of a packaged entry writes a copy to
+  `<managed>/<id>.desktop`; the scanner's user-first de-dup makes it
+  hide the packaged one, and since it keeps the id it inherits hide
+  state and pins. The id is derived like the scanner's crate does
+  (`DesktopEntryFile.idFor`: path after the last `/applications/`,
+  `/` → `-`), so a nested `applications/kde4/foo.desktop` becomes
+  `kde4-foo.desktop`.
+- **What an entry is**, derived from the scan every time (no marker in
+  the file): the scanner reports `shadows`, the path of the copy the
+  de-dup dropped. Managed + `shadows` = override; managed without =
+  personal entry; not managed = packaged. An override whose package is
+  removed loses `shadows` and becomes a personal entry.
+- **Toolbar action.** Personal: trash, Delete. Override, or a packaged
+  entry with only a graphics override: `ic_reset`, Reset ("…to
+  default?"), which deletes the managed copy. Both also clear the id's
+  graphics override, so a future entry reusing the slug doesn't inherit
+  it. Packaged with nothing overridden: none.
+- **Patch, don't rewrite.** Existing files go through
+  `DesktopEntryFile.patch`: inside `[Desktop Entry]`, only changed keys
+  among Name/Exec/Icon/Terminal/Comment are replaced in place or
+  appended (empty Icon/Comment removes the key; a false Terminal is
+  never added). A changed Name/Comment drops its `Name[xx]=` variants,
+  which would otherwise keep winning. Everything else — locale keys,
+  `MimeType`, `Actions`, other groups, comments — is kept byte for
+  byte. `serialize` is for new entries only. Non-UTF-8 files are
+  refused with a toast rather than patched.
+- **Save rules.** Unchanged text writes nothing (so a graphics-only
+  edit of a packaged entry doesn't fork it); an override patched back to
+  exactly its packaged text is deleted. Writes are atomic
+  (`atomicWriteText`).
+- **Stale overrides** are accepted: a package upgrade doesn't reach an
+  override (standard XDG model); Reset is one tap away.
 - Editable check is Kotlin-side: `DesktopEntryFile.isManaged` prefixes
   `entry.path` against the managed dir. Both sides are canonicalized —
   Kotlin's `context.dataDir` is `/data/user/0/<pkg>` while the Rust
   scanner canonicalizes its walk roots to `/data/data/<pkg>`, so a
-  naive prefix check never matches.
+  naive prefix check never matches. The editor also checks
+  `EXTRA_PATH` is a regular file inside the rootfs.
 - Method gate: writes are plain app-uid file I/O, fine for
   tawcroot/proot but not chroot's root-owned rootfs (see "Access
   model") — chroot installs get no New/Edit entry points, consistent
   with the terminal gating.
-- Editor scope (`DesktopEntryFile`): Exec (required) + Name (blank = Exec, shown as the hint), Icon
-  (see "Icon field" below), Terminal checkbox (checked by default for new entries — hand-made
-  entries are usually CLI scripts). `Comment=` has no form field but is
-  read and written back, so editing preserves an existing description.
-  Saving
-  writes the file wholesale (`Type=Application` + those keys); values
-  lose embedded newlines, nothing else. Explicit non-goals: locale
-  keys, actions, `%f` field codes, multiple groups — personal
-  launchers, not production `.desktop` files.
+- Form: Exec (required) + Name (blank = Exec, shown as the hint),
+  Environment variables, Icon (see "Icon field" below), Terminal
+  checkbox (checked by default for new entries — hand-made entries are
+  usually CLI scripts), Override graphics.
+- **Environment variables** live in the file, the XDG way:
+  `Exec=env K=V … command` (`DesktopEntryFile.splitExec`/`joinExec`),
+  so they travel with the entry and other desktops see them too. Rows
+  are `[NAME] [value] ✕` plus a "+ Add" button; fully blank rows are
+  ignored, and an invalid name flags its field and disables Save.
+  Split accepts `'…'`, `"…"` and `\x` quoting and `%%`; anything it
+  can't represent (`env -i`, no command, unterminated quote) stays in
+  Command untouched. Join double-quotes values that need it and doubles
+  `%` (the scanner strips `%X` field codes). While command and
+  variables are as loaded, Exec is written back verbatim, so an
+  untouched entry still patches to identical text. Note the scanner
+  collapses whitespace runs in Exec, quoted or not.
+  `Comment=` has no field but is carried through.
 - New file: `slugifyLabel`-style slug of Name + `.desktop`, `-2`/`-3`
-  suffix on collision. Editing keeps the filename — it's the entry id,
-  which pins and hidden-state reference. Delete is a toolbar trash
-  action (confirmed), shown only when editing.
-- Foreign files in the managed dir (unknown keys/groups): known keys
-  load, and a notice warns that saving rewrites the file and drops the
-  rest — a warning, not silent data loss.
-- After save/delete the launcher rescans (`RESULT_OK` →
+  suffix on collision. Editing keeps the filename — it's the entry id.
+- Closing: the toolbar shows ✕ rather than ←, since leaving discards
+  the form. With unsaved changes (form fields + graphics vs. as
+  opened), ✕, Back and the back gesture ask "Discard changes?"
+  first; the `OnBackPressedCallback` is enabled only while dirty, so a
+  clean form keeps predictive back.
+- After save/delete/reset the launcher rescans (`RESULT_OK` →
   `loadApps()`).
+
+### Graphics override
+
+An "Override graphics" checkbox under Terminal; checking it reveals a
+radio group of every backend this build ships (`ui/GraphicsBackendGroup`,
+shared with Settings), preselected to the global pick. Unchecked = no
+override. Stored per install, not in the file:
+`Installation.entryGraphics` (id → `GraphicsBackend.key`, additive,
+serialized only when non-empty, written via `withEntryGraphics`), so a
+graphics-only change never forks a packaged entry.
+`EntryLauncher.graphicsFor` resolves it with
+`GraphicsBackend.fromKeyOrNull` (unknown/unshipped key → null = the
+global setting) and passes it to `runInside`, or for `Terminal=true`
+entries through `MainActivity.EXTRA_GRAPHICS` → `CommandTab` →
+`TawcrootMethod.ptyShellExec`. Pins go through `EntryLauncher` with a
+fresh `Installation`, so they follow it too. Only TAWC launches honour
+it: running the same program from a terminal uses the global backend.
+Verified on the emulator 2026-10-07 (Firefox with a CPU override spawns
+with `LIBGL_ALWAYS_SOFTWARE=1` while the global pick is gfxstream).
 
 ### Icon field
 
@@ -217,11 +279,12 @@ exactly the complex foreign files the editor shouldn't touch).
   with the rootfs. Nothing deletes imports. Name logic:
   `IconImportTest`.
 
-Serializer/parse/slug logic is JVM-unit-tested
-(`DesktopEntryFileTest`); scan-dir + precedence + terminal-flag
-behavior is integration-tested through `launcher-list`
-(`tests/integration/tests/launcher.rs`). Editor flows verified
-on-device 2026-07-04.
+Serializer/patch/parse/id/slug logic is JVM-unit-tested
+(`DesktopEntryFileTest`, `InstallationEntryGraphicsTest`); scan-dir,
+precedence, `shadows` and the graphics override are integration-tested
+through `launcher-list` (`tests/integration/tests/launcher.rs`).
+Editor flows (edit packaged → one tile → Reset) verified on the
+emulator 2026-10-07.
 
 ## Home-screen shortcuts (pinned)
 

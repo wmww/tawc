@@ -22,7 +22,7 @@
 //! `scan_entries` keeps the raw `Icon=` value, and only the caller that
 //! needs a path pays for the walk. See `notes/launcher.md`.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 
@@ -125,6 +125,10 @@ pub struct Entry {
     /// decide whether an entry is user-editable (managed dir) without
     /// re-deriving the scan layout.
     pub path: String,
+    /// Path of the lower-priority copy of this id that the de-dup
+    /// dropped (e.g. the packaged file a managed-dir override hides),
+    /// or empty. The editor's Reset-vs-Delete choice keys on it.
+    pub shadows: String,
 }
 
 /// Scan [rootfs] for `.desktop` apps. Returns entries sorted by name
@@ -170,14 +174,30 @@ fn scan_entries(rootfs: &Path, launchable_only: bool) -> Vec<Entry> {
             terminal: de.terminal(),
             icon: de.icon().unwrap_or_default().to_string(),
             path: de.path.to_string_lossy().into_owned(),
+            shadows: String::new(),
         });
     }
 
     // De-dup by id in walk order *before* sorting: Iter walks the dirs
     // in APPS_SUBDIRS order, which is user-first, so the first
-    // occurrence is the highest-priority copy.
-    let mut seen = HashSet::new();
-    entries.retain(|e| seen.insert(e.id.clone()));
+    // occurrence is the highest-priority copy. The winner remembers the
+    // next copy it hid.
+    let mut winners: HashMap<String, usize> = HashMap::new();
+    let mut kept: Vec<Entry> = Vec::with_capacity(entries.len());
+    for e in entries {
+        match winners.get(&e.id) {
+            Some(&i) => {
+                if kept[i].shadows.is_empty() {
+                    kept[i].shadows = e.path;
+                }
+            }
+            None => {
+                winners.insert(e.id.clone(), kept.len());
+                kept.push(e);
+            }
+        }
+    }
+    let mut entries = kept;
     entries.sort_by(|a, b| {
         a.name
             .to_lowercase()
@@ -259,8 +279,9 @@ fn normalize_desktop_id(value: &str) -> String {
 }
 
 /// JSON-encode the scan result for the JNI boundary. Each element is an
-/// object: `{id, name, comment, exec, terminal, iconPath, path}`. Always
-/// returns a valid JSON array (empty `[]` if the rootfs has no apps).
+/// object: `{id, name, comment, exec, terminal, iconPath, path, shadows}`.
+/// Always returns a valid JSON array (empty `[]` if the rootfs has no
+/// apps).
 ///
 /// This is where icons get resolved for the launcher list — Kotlin calls
 /// it on `Dispatchers.IO`, so the per-entry stat walk is off the
@@ -279,6 +300,7 @@ pub fn scan_json(rootfs: &Path) -> String {
                 "terminal": e.terminal,
                 "iconPath": icons.resolve_string(&e.icon),
                 "path": e.path,
+                "shadows": e.shadows,
             })
         })
         .collect();

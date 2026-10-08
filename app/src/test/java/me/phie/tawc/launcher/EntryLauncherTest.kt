@@ -23,18 +23,18 @@ class EntryLauncherTest {
     }
 
     /** Runs [guiCommand] for `app` through bash; returns the args `app` saw. */
-    private fun argsSeen(chromium: Boolean): String {
+    private fun argsSeen(chromium: Boolean, exec: String = "app --x"): String {
         val root = tmp.newFolder()
         val out = File(root, "args")
         val real = File(root, "opt/app/app").apply {
             parentFile!!.mkdirs()
-            writeText("#!/bin/sh\necho \"$*\" > '${out.path}'\n")
+            writeText("#!/bin/sh\necho \"${'$'}{TAWC_T:+${'$'}TAWC_T }$*\" > '${out.path}'\n")
             setExecutable(true)
         }
         if (chromium) File(real.parentFile, "chrome_100_percent.pak").writeText("")
         val bin = File(root, "bin").apply { mkdirs() }
         Files.createSymbolicLink(File(bin, "app").toPath(), real.toPath())
-        val script = "PATH=${bin.path}:/usr/bin:/bin; " + EntryLauncher.guiCommand("app --x")
+        val script = "PATH=${bin.path}:/usr/bin:/bin; " + EntryLauncher.guiCommand(exec)
         val proc = ProcessBuilder("bash", "-c", script).start()
         assertEquals(0, proc.waitFor())
         return out.readText().trim()
@@ -45,4 +45,9 @@ class EntryLauncherTest {
 
     @Test
     fun otherAppsUntouched() = assertEquals("--x", argsSeen(chromium = false))
+
+    /** The probe looks past an `env K=V` prefix (the editor's variables). */
+    @Test
+    fun chromiumBehindEnvGetsNoSandbox() =
+        assertEquals("v --x --no-sandbox", argsSeen(chromium = true, exec = "env TAWC_T=v app --x"))
 }

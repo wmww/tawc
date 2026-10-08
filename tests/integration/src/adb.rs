@@ -988,6 +988,18 @@ pub fn set_entry_hidden(entry_id: &str, hidden: bool) -> io::Result<Output> {
     )
 }
 
+/// Set (or, with an empty `backend`, clear) the per-entry graphics
+/// override for `entry_id` on the standing install via the
+/// `set-entry-graphics` broker action. Durable; tests must clear it in
+/// cleanup.
+pub fn set_entry_graphics(entry_id: &str, backend: &str) -> io::Result<Output> {
+    let id = crate::install_id();
+    broker_action(
+        "set-entry-graphics",
+        &[("installId", &id), ("entryId", entry_id), ("backend", backend)],
+    )
+}
+
 /// Every icon name in the standing install via the debug
 /// `launcher-icons` broker action: the raw `[{name, user}]` JSON.
 pub fn launcher_icons() -> io::Result<String> {

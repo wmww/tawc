@@ -72,6 +72,11 @@ production-ready: Vulkan-native WSI renders through AHB on physical hardware tod
 GL/GLES via Zink and real-world AVD validation remain open. See
 [gfxstream-bridge.md](gfxstream-bridge.md).
 
+The backend is a global setting, but a launcher entry can override it
+for launches from TAWC (notes/launcher.md "Graphics override"). Every
+enabled backend's files are in every rootfs, so the override is just
+the per-spawn env.
+
 ## libhybris
 
 [libhybris/libhybris](https://github.com/libhybris/libhybris) -- compatibility layer
