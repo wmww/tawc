@@ -737,7 +737,7 @@ class CompositorService : Service() {
          *    `nativeLibraryDir/lib{xwayland,xkbcomp}.so`. The exec'ables
          *    live in `apk_data_file` context (where untrusted_app may
          *    exec), unlike anything we'd extract into filesDir.
-         *  - `share/X11`, `share/xkeyboard-config-2` — extracted from
+         *  - `share/X11/xkb`, `share/xkeyboard-config-2` — extracted from
          *    `assets/xwayland/share.tar`. Xwayland reads these via
          *    fopen at the baked-in `-Dxkb_dir` path and the files
          *    cross-reference each other by relative path inside the

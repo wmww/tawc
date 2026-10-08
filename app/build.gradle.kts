@@ -713,6 +713,9 @@ if (anyVariantPacksDebootstrap) {
         workingDir = file(debootstrapDir)
         // Only what the runtime invokes: the entry script, the shared
         // functions library, and the per-suite scripts dir.
+        // Only the xkb symlink from share/X11: libX11's locale data,
+        // XErrorDB and Xcms.txt are looked up at absolute build-host
+        // paths, so copies on device are never read.
         commandLine(listOf("tar") + deterministicTarArgs + listOf(
             "-cf", debootstrapAssetFile.absolutePath,
             "debootstrap", "functions", "scripts"))
@@ -809,6 +812,9 @@ if ("arm64-v8a" in tawcAbis) {
         //  - `pkgconfig/` — `.pc` files, also reference host paths
         //  - `include/`   — C headers, not needed at runtime
         //  - `bin/`       — `getprop`/`setprop` utilities, not used
+        // Only the xkb symlink from share/X11: libX11's locale data,
+        // XErrorDB and Xcms.txt are looked up at absolute build-host
+        // paths, so copies on device are never read.
         commandLine(listOf("tar") + deterministicTarArgs + listOf(
             "--exclude=*.la", "--exclude=pkgconfig",
             "--exclude=include", "--exclude=bin",
@@ -1006,10 +1012,12 @@ if (xwaylandPackaged) {
         dependsOn(xwaylandShareBuildTask)
         doFirst { mkdir(file(xwaylandShareAssetFile).parentFile) }
         workingDir = file(xwaylandShareInstallDir)
+        // Only the xkb symlink from share/X11: libX11's locale data,
+        // XErrorDB and Xcms.txt are looked up at absolute build-host
+        // paths, so copies on device are never read.
         commandLine(listOf("tar") + deterministicTarArgs + listOf(
             "-cf", "${project.projectDir}/$xwaylandShareAssetFile",
-            "share/X11", "share/xkeyboard-config-2"))
-        inputs.dir("$xwaylandShareInstallDir/share/X11")
+            "share/X11/xkb", "share/xkeyboard-config-2"))
         inputs.dir("$xwaylandShareInstallDir/share/xkeyboard-config-2")
         inputs.property("tarArgs", deterministicTarArgs)
         outputs.file(xwaylandShareAssetFile)

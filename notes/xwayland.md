@@ -916,8 +916,10 @@ Gradle splits Xwayland's tree across two output paths:
    get the `apk_data_file` SELinux type that untrusted_app may
    exec — see "SELinux: app exec of bundled binaries" above.
 2. `packXwaylandShare` tars the XKB data tree
-   (`share/X11`, `share/xkeyboard-config-2`) into
-   `app/src/main/assets/xwayland/share.tar`. We can't flatten this
+   (`share/X11/xkb` symlink, `share/xkeyboard-config-2`) into
+   `app/src/main/assets/xwayland/share.tar`. The rest of `share/X11`
+   (libX11 locale data, `XErrorDB`) is left out: libX11 looks those up
+   at absolute build-host paths, so on-device copies are never read. We can't flatten this
    into jniLibs because Xwayland reads it via fopen at the baked-in
    `-Dxkb_dir` path and the files cross-reference each other by
    relative path inside the tree. The baked XKB and socket prefixes are
