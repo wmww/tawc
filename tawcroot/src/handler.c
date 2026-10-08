@@ -33,6 +33,7 @@
 #include "dispatch.h"
 #include "errno_neg.h"
 #include "rescue.h"
+#include "sigalt.h"
 #include "usercopy.h"
 
 /* Match kernel `struct sigaction` layout — bionic's struct is the same
@@ -100,6 +101,12 @@ static void sigsys_handler(int sig, siginfo_t *info, void *ucontext)
 	ucontext_t *uc = (ucontext_t *)ucontext;
 	tawcroot_syscall_args args;
 	tawcroot_arch_read_args(uc, &args);
+
+	/* A thread's first trap gives it a fallback altstack (sigalt.h),
+	 * so from then on no trap's frame depends on the thread's own
+	 * stack — musl unmaps that before the exit(2) trap. Whatever
+	 * syscall the thread happens to trap first; one compare after. */
+	tawc_sigalt_ensure(&uc->uc_stack, tawc_sigalt_apply_kernel);
 
 #ifdef TAWCROOT_TESTHOST
 	/* siginfo_t fields populated by the kernel for SIGSYS:

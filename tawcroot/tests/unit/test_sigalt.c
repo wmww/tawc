@@ -8,6 +8,10 @@
 
 #include "sigalt.h"
 
+#ifndef SS_AUTODISARM
+# define SS_AUTODISARM (1U << 31)
+#endif
+
 static char g_buf[65536];
 static const stack_t DISABLED = { .ss_flags = SS_DISABLE };
 
@@ -38,6 +42,14 @@ static void reset(void)
 }
 
 #define TID 100
+
+/* What handle_exit does: the live slot is freed by zeroing the byte
+ * at the exit instruction. */
+static void thread_exit(const stack_t *cur, int tid)
+{
+	uint8_t *busy = tawc_sigalt_thread_exit(cur, tid);
+	if (busy) *busy = 0;
+}
 
 static void commit_ok_(TestCtx *test_ctx, stack_t *cur, const stack_t *ss,
 		       int tid)
@@ -132,7 +144,7 @@ test(sigalt_disable_and_exit_free_slots)
 	/* Thread 1 exits. Thread 0 moves to a big stack: its slot is
 	 * retired (the handler frame is still on it) until its next
 	 * commit reclaims it. */
-	tawc_sigalt_thread_exit(&cur[1], TID + 1);
+	thread_exit(&cur[1], TID + 1);
 	stack_t big = mk(g_buf, 0, TAWC_SIGALT_MIN);
 	commit_ok(&cur[0], &big, TID);
 	commit_ok(&cur[0], &big, TID);
@@ -169,6 +181,30 @@ test(sigalt_disable_keeps_fallback_slot)
 	test_int_eq(tawc_sigalt_check(&cur, sp, &ss, &old), 0);
 	test_true(old.ss_sp == NULL);
 	test_int_eq(old.ss_size, 0);
+	test_int_eq(old.ss_flags, SS_DISABLE);
+}
+
+/* SS_AUTODISARM survives substitution: the kernel's disarm/re-arm and
+ * the guest's readback are as on the guest's own stack. A later plain
+ * disable drops it, as the kernel would. */
+test(sigalt_autodisarm_kept_on_slot)
+{
+	reset();
+	stack_t cur = DISABLED, old;
+	stack_t ss = mk(g_buf, SS_AUTODISARM, TAWC_SIGALT_KERN_MIN);
+	commit_ok(&cur, &ss, TID);
+	test_true(tawc_sigalt_is_slab(cur.ss_sp));
+	test_int_eq((unsigned)cur.ss_flags, SS_AUTODISARM);
+	test_int_eq(tawc_sigalt_check(&cur, 1, NULL, &old), 0);
+	test_int_eq((unsigned)old.ss_flags, SS_AUTODISARM);
+	/* Running on it: autodisarm means not "on stack". */
+	uintptr_t sp = (uintptr_t)cur.ss_sp + 100;
+	test_int_eq(tawc_sigalt_check(&cur, sp, &ss, NULL), 0);
+
+	ss = mk(NULL, SS_DISABLE, 0);
+	commit_ok(&cur, &ss, TID);
+	test_int_eq(cur.ss_flags, 0);
+	test_int_eq(tawc_sigalt_check(&cur, 1, NULL, &old), 0);
 	test_int_eq(old.ss_flags, SS_DISABLE);
 }
 
@@ -216,6 +252,32 @@ test(sigalt_ensure_gives_fallback_once)
 	tawc_sigalt_ensure(&c2, fake_apply);
 	test_int_eq(c2.ss_flags, SS_DISABLE);
 	test_true(c2.ss_sp == NULL);
+}
+
+test(sigalt_thread_exit_hands_back_live_slot_only)
+{
+	reset();
+	stack_t none = DISABLED;
+	test_true(tawc_sigalt_thread_exit(&none, TID) == NULL);
+	stack_t big = mk(g_buf, 0, TAWC_SIGALT_MIN), cur = DISABLED;
+	commit_ok(&cur, &big, TID);
+	test_true(tawc_sigalt_thread_exit(&cur, TID) == NULL);
+
+	stack_t small = mk(g_buf, 0, TAWC_SIGALT_KERN_MIN);
+	cur = DISABLED;
+	commit_ok(&cur, &small, TID);
+	void *slot = cur.ss_sp;
+	uint8_t *busy = tawc_sigalt_thread_exit(&cur, TID);
+	test_nonnull(busy);
+	/* Not freed until the byte is zeroed... */
+	stack_t other = DISABLED;
+	commit_ok(&other, &small, TID + 1);
+	test_true(other.ss_sp != slot);
+	/* ...then it is. */
+	*busy = 0;
+	stack_t third = DISABLED;
+	commit_ok(&third, &small, TID + 2);
+	test_true(third.ss_sp == slot);
 }
 
 test(sigalt_apply_failure_changes_nothing)

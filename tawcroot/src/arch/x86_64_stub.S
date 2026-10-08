@@ -13,7 +13,8 @@
  *                                (low and high 32 bits separately —
  *                                cBPF is 32-bit, see notes/tawcroot/seccomp-filter.md).
  *   tawcroot_raw_syscall_off_stack — same syscall site with SP moved
- *                                off the current (alt)stack; see
+ *                                off the current (alt)stack, optionally
+ *                                zeroing a byte on the way; see
  *                                raw_sys.h.
  *   _start                    — kernel-direct entry. Sets up argc/argv
  *                                from the initial stack and tail-calls
@@ -54,11 +55,13 @@ tawcroot_raw_syscall_ret:
 	ret
 	.size tawcroot_raw_syscall, .-tawcroot_raw_syscall
 
-	/* tawcroot_raw_syscall_off_stack(nr, a, b) — see raw_sys.h.
-	 * Reuses the stub's syscall instruction, so the filter's single
-	 * IP allowlist entry covers it. RSP points at a .rodata slot
-	 * holding the continuation, which the stub's `ret` pops: the
-	 * kernel sees an SP off any altstack and nothing is written. */
+	/* tawcroot_raw_syscall_off_stack(nr, a, b, release) — see
+	 * raw_sys.h. Reuses the stub's syscall instruction, so the
+	 * filter's single IP allowlist entry covers it. RSP points at a
+	 * .rodata slot holding the continuation, which the stub's `ret`
+	 * pops: the kernel sees an SP off any altstack and nothing is
+	 * written. The `push` is the last stack access, so a `release`
+	 * byte is zeroed after it. */
 	.global tawcroot_raw_syscall_off_stack
 	.hidden tawcroot_raw_syscall_off_stack
 	.type   tawcroot_raw_syscall_off_stack, @function
@@ -68,7 +71,10 @@ tawcroot_raw_syscall_off_stack:
 	mov     %rdi, %rax
 	mov     %rsi, %rdi
 	mov     %rdx, %rsi
-	lea     .Loff_stack_slot(%rip), %rsp
+	test    %rcx, %rcx
+	jz      1f
+	movb    $0, (%rcx)
+1:	lea     .Loff_stack_slot(%rip), %rsp
 	jmp     tawcroot_raw_syscall_insn
 .Loff_stack_back:
 	mov     %rbx, %rsp

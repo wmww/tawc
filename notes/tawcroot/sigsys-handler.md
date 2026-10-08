@@ -474,10 +474,10 @@ Where the handler runs is two-tier, because SIGSYS is registered
   default thread stack is 128 KiB; the supported floor is the 16 KiB
   pinned by the `static_small_stack_open_argv1` fixture (a clone child
   with an explicit 16 KiB stack doing a path-bearing open). This tier
-  is now rare: a thread with no altstack gets a fallback slot (below)
-  at its first trapped `rt_sigprocmask`, which libc issues at thread
-  start and exit. Until then, or with the slab exhausted, the floor and
-  the frame cap below still stand.
+  is only ever a thread's *first* trap: the handler gives a thread with
+  no altstack a fallback slot (below) before dispatching, whatever the
+  syscall. With the slab exhausted the floor and the frame cap below
+  still stand.
 
 Measured cost on the OnePlus 9 (no SVE; poison 1 MiB, clone a child
 mid-region, one syscall, scan for the lowest clobbered word): a trapped
@@ -499,17 +499,28 @@ slot.
 Threads with no guest altstack — never set, or `SS_DISABLE` — keep a
 *fallback* slot (guest size 0, so readback says `SS_DISABLE` and it
 never counts as on-stack): `SS_DISABLE` keeps/claims one instead of
-really disabling, and `rt_sigprocmask` claims one for a thread that
-has none (`tawc_sigalt_ensure`). Reason: musl's detached-thread exit
-(`__unmapself`) munmaps the stack SP is on, then calls `exit(2)` — which
-we trap — and Rust threads disable + unmap their altstack just before.
-With the frame headed for the dead stack the kernel forces SIGSEGV
-(ChatGPT's `codex app-server` died on its first thread exit). Pinned by
-`static_unmapped_stack_exit`. Side effect: a guest `SA_ONSTACK` handler
-on a thread without an altstack runs on the 16 KiB fallback instead of
-the thread stack. Known race, pre-existing for substituted slots:
-`exit(2)` frees the slot it is running on a few instructions before the
-real exit, so another thread could claim it in that window.
+really disabling, and the handler claims one at a thread's first trap
+(`tawc_sigalt_ensure`, called from `sigsys_handler` before dispatch —
+one compare per trap once the thread has a stack). Reason: musl's
+detached-thread exit (`__unmapself`) munmaps the stack SP is on, then
+calls `exit(2)` — which we trap — and Rust threads disable + unmap
+their altstack just before. With the frame headed for the dead stack
+the kernel forces SIGSEGV (ChatGPT's `codex app-server` died on its
+first thread exit). Pinned by `static_unmapped_stack_exit`, whose one
+earlier trap is an `openat` precisely so the hook's placement, not a
+libc's syscall habits, is what the test relies on. Side effect: a guest
+`SA_ONSTACK` handler on a thread without an altstack runs on the 16 KiB
+fallback instead of the thread stack, and a handler needing more than
+that overflows into the neighbouring slot rather than faulting.
+
+`exit(2)` runs on the slot it frees. The release is therefore the last
+store before the exit instruction, issued through
+`tawcroot_raw_syscall_off_stack`'s `release` argument after the
+function's final stack access and with SP already moved off the slot —
+once another thread can claim it, the exiting thread never touches it
+again. `SS_AUTODISARM` is carried onto a substituted slot so the
+kernel's disarm/re-arm and the guest's readback match the guest's own
+stack.
 
 The handler can't forward `sigaltstack` verbatim: it runs on the
 altstack, so the kernel returns `-EPERM`. Leaving the change in

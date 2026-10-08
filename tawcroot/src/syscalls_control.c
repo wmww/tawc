@@ -22,7 +22,8 @@
  *     the kernel never actually blocks SIGSYS, so traps continue
  *     reaching our handler.
  *   - `sigaltstack`: virtualize so undersized guest altstacks never
- *     receive our SA_ONSTACK frame, applying it off-stack (sigalt.h).
+ *     receive our SA_ONSTACK frame, applying it off-stack (sigalt.h;
+ *     the per-trap fallback for threads without one is in handler.c).
  *   - Other signals are unaffected.
  */
 
@@ -283,8 +284,6 @@ static uint64_t *uc_sigmask_word(ucontext_t *uc)
  *
  * Step 5 is conditional and unconditionally last, so there's no
  * shadow-rollback path. */
-static long apply_sigaltstack(const stack_t *ss);
-
 static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 				  ucontext_t *uc)
 {
@@ -294,9 +293,6 @@ static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 	size_t sigsetsize  = (size_t)args->d;
 
 	if (sigsetsize != 8) return TAWC_EINVAL;
-	/* Every thread sets its mask early (libc thread start/exit), so
-	 * this is where a thread without an altstack gets its fallback. */
-	tawc_sigalt_ensure(&uc->uc_stack, apply_sigaltstack);
 	/* No-op call (the kernel returns 0 immediately for this shape).
 	 * Short-circuit before issuing gettid + a shadow table probe. */
 	if (!guest_set && !guest_oldset) return 0;
@@ -359,12 +355,6 @@ static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 	return 0;
 }
 
-static long apply_sigaltstack(const stack_t *ss)
-{
-	return tawcroot_raw_syscall_off_stack(TAWC_SYS_sigaltstack,
-					      (long)ss, 0);
-}
-
 /* sigaltstack(ss, old_ss). Never forwarded verbatim — see sigalt.h.
  * Old is copied out before anything mutates, so EFAULT leaves no
  * trace. */
@@ -386,7 +376,7 @@ static long handle_sigaltstack(const tawcroot_syscall_args *args,
 	if (!guest_ss) return 0;
 	long tid = TAWC_RAW(TAWC_SYS_gettid, 0, 0, 0, 0, 0, 0);
 	return tawc_sigalt_commit(&uc->uc_stack, &ss, (int)tid,
-				  apply_sigaltstack);
+				  tawc_sigalt_apply_kernel);
 }
 
 /* exit(2) — per-thread exit (kills only the calling thread, not the
@@ -395,8 +385,10 @@ static long handle_sigaltstack(const tawcroot_syscall_args *args,
  * otherwise a future thread that reuses this tid would read the previous
  * owner's stale "SIGSYS blocked" bit until its own first rt_sigprocmask.
  * (signal_shadow.c has the full rationale.) Also frees the thread's
- * substitute altstack slot — which, SA_ONSTACK, we are running on, so
- * nothing may be read off the stack after that release.
+ * altstack slot — which, SA_ONSTACK, we are running on, so the
+ * release is the last store before the exit instruction, with SP
+ * already moved off the slot: once another thread can claim it, this
+ * one never touches it again.
  *
  * exit_group is not hooked: it kills every thread and the OS reclaims
  * everything, so per-slot cleanup would be wasted work. Involuntary
@@ -411,8 +403,8 @@ static long handle_exit(const tawcroot_syscall_args *args, ucontext_t *uc)
 	long code = args->a;
 	long tid = TAWC_RAW(TAWC_SYS_gettid, 0, 0, 0, 0, 0, 0);
 	tawc_sigshadow_blocked_clear((int)tid);
-	tawc_sigalt_thread_exit(&uc->uc_stack, (int)tid);
-	TAWC_RAW(TAWC_SYS_exit, code, 0, 0, 0, 0, 0);
+	uint8_t *slot = tawc_sigalt_thread_exit(&uc->uc_stack, (int)tid);
+	tawcroot_raw_syscall_off_stack(TAWC_SYS_exit, code, 0, slot);
 	__builtin_unreachable();
 }
 

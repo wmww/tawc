@@ -69,8 +69,10 @@ long tawcroot_raw_syscall(long nr, long a, long b, long c,
 }
 
 /* No SIGSYS handler (so no altstack to step off) in hosted tests. */
-long tawcroot_raw_syscall_off_stack(long nr, long a, long b)
+long tawcroot_raw_syscall_off_stack(long nr, long a, long b,
+				    uint8_t *release)
 {
+	if (release) __atomic_store_n(release, 0, __ATOMIC_RELEASE);
 	return tawcroot_raw_syscall(nr, a, b, 0, 0, 0, 0);
 }
 

@@ -26,6 +26,7 @@
 #include <stdint.h>
 
 #include "errno_neg.h"
+#include "raw_sys.h"
 #include "sigalt.h"
 
 #ifndef SS_AUTODISARM
@@ -37,10 +38,18 @@ _Static_assert(__atomic_always_lock_free(1, 0),
 
 static unsigned char g_slab[TAWC_SIGALT_SLOTS][TAWC_SIGALT_SLOT]
 	__attribute__((aligned(16)));
+/* SLOT_FREE is 0 so that zeroing the byte frees the slot — the exit
+ * path hands it to tawcroot_raw_syscall_off_stack to do just that. */
 enum { SLOT_FREE, SLOT_LIVE, SLOT_RETIRED };
 static uint8_t g_busy[TAWC_SIGALT_SLOTS];
 static int g_retired_tid[TAWC_SIGALT_SLOTS];
 static struct { void *sp; size_t size; } g_guest[TAWC_SIGALT_SLOTS];
+
+long tawc_sigalt_apply_kernel(const stack_t *ss)
+{
+	return tawcroot_raw_syscall_off_stack(TAWC_SYS_sigaltstack,
+					      (long)ss, 0, NULL);
+}
 
 static int slot_of(const stack_t *ss)
 {
@@ -128,26 +137,29 @@ static void reclaim_retired(int tid)
 			slot_release(k);
 }
 
-long tawc_sigalt_commit(stack_t *cur, const stack_t *new_ss, int tid,
-			tawc_sigalt_apply_fn apply)
+/* Install `new_ss` via `apply` and mirror it into `cur`. A stack under
+ * the floor, or none at all (SS_DISABLE), is backed by a slab slot: the
+ * thread's current one if it has one, else a fresh claim. With the
+ * slab exhausted the guest's request goes in as-is. SS_AUTODISARM is
+ * kept on the slot so the kernel's disarm/re-arm and the guest's
+ * readback stay as they would be on the guest's own stack. */
+static long install(stack_t *cur, const stack_t *new_ss, int tid,
+		    tawc_sigalt_apply_fn apply)
 {
 	int k_old = slot_of(cur);
 	int k_new = -1;
 	unsigned mode = (unsigned)new_ss->ss_flags & ~SS_AUTODISARM;
+	int disable = mode == SS_DISABLE;
 	stack_t next = *new_ss;
 
-	reclaim_retired(tid);
-	if (mode == SS_DISABLE || new_ss->ss_size < TAWC_SIGALT_MIN) {
-		/* Disabling keeps (or gets) a fallback slot: threads often
-		 * disable and unmap their altstack right before exiting on
-		 * a stack they've also unmapped (musl), and the exit(2) trap
-		 * still needs somewhere to put its frame. */
+	if (disable || new_ss->ss_size < TAWC_SIGALT_MIN) {
 		k_new = k_old >= 0 ? k_old : slot_claim();
 		if (k_new >= 0) {
 			next.ss_sp    = g_slab[k_new];
 			next.ss_size  = TAWC_SIGALT_SLOT;
-			next.ss_flags = 0;
-		} else if (mode == SS_DISABLE) {
+			next.ss_flags = (int)
+				((unsigned)new_ss->ss_flags & SS_AUTODISARM);
+		} else if (disable) {
 			next.ss_sp = NULL;
 			next.ss_size = 0;
 		}
@@ -158,8 +170,8 @@ long tawc_sigalt_commit(stack_t *cur, const stack_t *new_ss, int tid,
 		return r;
 	}
 	if (k_new >= 0) {
-		g_guest[k_new].sp   = mode == SS_DISABLE ? NULL : new_ss->ss_sp;
-		g_guest[k_new].size = mode == SS_DISABLE ? 0 : new_ss->ss_size;
+		g_guest[k_new].sp   = disable ? NULL : new_ss->ss_sp;
+		g_guest[k_new].size = disable ? 0 : new_ss->ss_size;
 	}
 	*cur = next;
 	if (k_old >= 0 && k_old != k_new)
@@ -167,28 +179,27 @@ long tawc_sigalt_commit(stack_t *cur, const stack_t *new_ss, int tid,
 	return 0;
 }
 
+long tawc_sigalt_commit(stack_t *cur, const stack_t *new_ss, int tid,
+			tawc_sigalt_apply_fn apply)
+{
+	reclaim_retired(tid);
+	return install(cur, new_ss, tid, apply);
+}
+
 void tawc_sigalt_ensure(stack_t *cur, tawc_sigalt_apply_fn apply)
 {
 	if (cur->ss_size && !((unsigned)cur->ss_flags & SS_DISABLE))
 		return;
-	int k = slot_claim();
-	if (k < 0) return;
-	stack_t next = { .ss_sp = g_slab[k], .ss_flags = 0,
-			 .ss_size = TAWC_SIGALT_SLOT };
-	if (apply(&next) < 0) {
-		slot_release(k);
-		return;
-	}
-	g_guest[k].sp   = NULL;
-	g_guest[k].size = 0;
-	*cur = next;
+	/* No altstack means no slot to retire, so the tid goes unused. */
+	static const stack_t none = { .ss_flags = SS_DISABLE };
+	(void)install(cur, &none, 0, apply);
 }
 
-void tawc_sigalt_thread_exit(const stack_t *cur, int tid)
+uint8_t *tawc_sigalt_thread_exit(const stack_t *cur, int tid)
 {
-	int k = slot_of(cur);
-	if (k >= 0) slot_release(k);
 	reclaim_retired(tid);
+	int k = slot_of(cur);
+	return k >= 0 ? &g_busy[k] : NULL;
 }
 
 void tawc_sigalt_reset(void)

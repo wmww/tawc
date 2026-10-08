@@ -1,10 +1,10 @@
 /* x86_64 static guest fixture: musl's detached-thread exit.
  *
- * Runs on an mmap'd stack with no altstack, makes one trapped
- * rt_sigprocmask (as libc does around thread exit), munmaps that stack
- * and calls exit(42) with SP pointing at unmapped memory — musl's
- * __unmapself. exit(2) is trapped, so its SIGSYS frame needs a stack
- * that isn't the guest's: SIGSEGV death = no fallback altstack.
+ * Runs on an mmap'd stack with no altstack, makes one trapped syscall
+ * (an openat; which one must not matter), munmaps that stack and calls
+ * exit(42) with SP pointing at unmapped memory — musl's __unmapself.
+ * exit(2) is trapped, so its SIGSYS frame needs a stack that isn't the
+ * guest's: SIGSEGV death = no fallback altstack.
  */
 
 	.text
@@ -22,11 +22,10 @@ _start:
 	mov     %rax, %rbx
 	lea     65536(%rax), %rsp
 
-	mov     $14, %eax          /* rt_sigprocmask(SIG_BLOCK, NULL, NULL, 8) */
-	xor     %edi, %edi
-	xor     %esi, %esi
+	mov     $257, %eax         /* openat(AT_FDCWD, "/", O_RDONLY) */
+	mov     $-100, %edi
+	lea     root(%rip), %rsi
 	xor     %edx, %edx
-	mov     $8, %r10d
 	syscall
 
 	mov     $11, %eax          /* munmap(stack, 65536) */
@@ -39,5 +38,8 @@ _start:
 	syscall
 	ud2
 	.size _start, .-_start
+
+	.section .rodata
+root:	.asciz "/"
 
 	.section .note.GNU-stack,"",@progbits

@@ -385,6 +385,15 @@ covered by unit/hosted/smoke tests.)
   thread's first `rt_sigprocmask`. Bounded to a single wrong
   shadow-mask read; fixing it means resetting the table on the
   fork/clone return path for a race nobody has observed.
+- **`SIGSYS` in a temporary wait mask is not stripped.** `rt_sigaction`
+  and `rt_sigprocmask` keep `SIGSYS` out of every installed mask, but
+  `rt_sigsuspend`, `ppoll`, `pselect6`, `epoll_pwait{,2}` and
+  `io_pgetevents` take a mask the kernel applies for the wait. A guest
+  handler that interrupts such a wait made with `SIGSYS` in that mask
+  runs with our trap blocked, and its first trapped syscall kills the
+  process. Not trapped on purpose: the poll family is hot, and nothing
+  observed puts `SIGSYS` in a wait mask (full-mask handlers were the
+  real case; `sigfillset` into `ppoll` is the one plausible shape).
 - **Undersized `sigaltstack`s are substituted.** A guest altstack
   below `TAWC_SIGALT_MIN` is replaced by a tawcroot-owned 16 KiB slot
   (sigsys-handler.md "Handler stack budget"), so the guest's *own*

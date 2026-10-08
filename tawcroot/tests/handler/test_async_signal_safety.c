@@ -209,6 +209,12 @@ test(handler_c_pinned_import_list)
 		/* Sigreturn trampoline (asm). ASS — it just loads ucontext and
 		 * returns to the kernel via rt_sigreturn. */
 		"tawcroot_sigreturn_trampoline",
+		/* Per-trap fallback altstack (sigalt.c). ASS — one compare on
+		 * uc_stack once the thread has one; the once-per-thread claim
+		 * is a lock-free CAS on a static slab plus the raw sigaltstack
+		 * syscall issued off-stack through the stub. */
+		"tawc_sigalt_ensure",
+		"tawc_sigalt_apply_kernel",
 		/* Fatal-path diagnostics for non-seccomp SIGSYS (io.c). ASS —
 		 * stack buffers + the raw write syscall, no state. Only runs
 		 * on the way to exit_group. */

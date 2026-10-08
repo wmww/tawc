@@ -37,9 +37,11 @@ tawcroot_raw_syscall_ret:
 	ret
 	.size tawcroot_raw_syscall, .-tawcroot_raw_syscall
 
-	/* tawcroot_raw_syscall_off_stack(nr, a, b) — see raw_sys.h and
-	 * the x86_64 twin. The stub's `ret` goes through x30, so SP just
-	 * has to point somewhere off the altstack; nothing reads it. */
+	/* tawcroot_raw_syscall_off_stack(nr, a, b, release) — see
+	 * raw_sys.h and the x86_64 twin. The stub's `ret` goes through
+	 * x30, so SP just has to point somewhere off the altstack; this
+	 * function never touches the stack at all, so the `release` byte
+	 * can be zeroed anywhere before the syscall. */
 	.global tawcroot_raw_syscall_off_stack
 	.hidden tawcroot_raw_syscall_off_stack
 	.type   tawcroot_raw_syscall_off_stack, %function
@@ -49,12 +51,14 @@ tawcroot_raw_syscall_off_stack:
 	mov     x8, x0
 	mov     x0, x1
 	mov     x1, x2
-	adrp    x11, .Loff_stack_sp
+	cbz     x3, 1f
+	stlrb   wzr, [x3]
+1:	adrp    x11, .Loff_stack_sp
 	add     x11, x11, :lo12:.Loff_stack_sp
 	mov     sp, x11
-	adr     x30, 1f
+	adr     x30, 2f
 	b       tawcroot_raw_syscall_insn
-1:	mov     sp, x9
+2:	mov     sp, x9
 	ret     x10
 	.size tawcroot_raw_syscall_off_stack, .-tawcroot_raw_syscall_off_stack
 

@@ -5,9 +5,9 @@
  * the thread makes. A guest stack smaller than TAWC_SIGALT_MIN is
  * swapped for a tawcroot-owned TAWC_SIGALT_SLOT-byte slot from a fixed
  * BSS slab; the guest still reads back its own ss_sp/ss_size. A thread
- * with no guest altstack gets a "fallback" slot too (guest reads
- * SS_DISABLE), so our frame never lands on a guest stack that may
- * already be unmapped (musl's detached-thread exit).
+ * with no guest altstack gets a "fallback" slot at its first trap
+ * (guest reads SS_DISABLE), so our frame never lands on a guest stack
+ * that may already be unmapped (musl's detached-thread exit).
  *
  * sigaltstack can't be forwarded as-is from the handler: the kernel
  * EPERMs while we run on the altstack. Nor can we leave the change in
@@ -47,29 +47,34 @@
 long tawc_sigalt_check(const stack_t *cur, uintptr_t guest_sp,
 		       const stack_t *new_ss, stack_t *old);
 
-/* Installs `ss` as the kernel's altstack for the calling thread. */
+/* Installs `ss` as the kernel's altstack for the calling thread. The
+ * production one is tawc_sigalt_apply_kernel; tests substitute. */
 typedef long (*tawc_sigalt_apply_fn)(const stack_t *ss);
+long tawc_sigalt_apply_kernel(const stack_t *ss);
 
 /* Apply an already-checked `new_ss` via `apply` and mirror it into
- * `cur`, substituting a slab slot for an undersized stack. If the slab
- * is exhausted the guest's stack is installed as-is (no worse than
- * having no floor). A slot given up here is still under the handler's
- * frame, so it is retired under `tid` rather than freed; the thread's
- * next commit or exit frees it. Returns 0 or apply's -errno, in which
- * case nothing changed. */
+ * `cur`, substituting a slab slot for an undersized stack and keeping
+ * (or claiming) a fallback slot on SS_DISABLE. If the slab is exhausted
+ * the guest's stack is installed as-is (no worse than having no floor).
+ * A slot given up here is still under the handler's frame, so it is
+ * retired under `tid` rather than freed; the thread's next commit or
+ * exit frees it. Returns 0 or apply's -errno, in which case nothing
+ * changed. */
 long tawc_sigalt_commit(stack_t *cur, const stack_t *new_ss, int tid,
 			tawc_sigalt_apply_fn apply);
 
 /* Give a thread with no altstack a fallback slot (guest still reads
- * SS_DISABLE). Called from a trap every thread makes early (signal
- * mask setup), so the exit(2) trap can always deliver even after musl
- * unmaps the thread's own stack. Best effort: no-op if the slab is
- * exhausted or apply fails. */
+ * SS_DISABLE). Called on every trap: a compare once the thread has
+ * one, so the exit(2) trap can always deliver even after musl unmaps
+ * the thread's own stack. Best effort: no-op if the slab is exhausted
+ * or apply fails. */
 void tawc_sigalt_ensure(stack_t *cur, tawc_sigalt_apply_fn apply);
 
-/* Thread is exiting: free its slot, if it holds one, and its retired
- * ones. */
-void tawc_sigalt_thread_exit(const stack_t *cur, int tid);
+/* Thread is exiting: frees its retired slots and returns the state
+ * byte of its live slot, or NULL. The handler is running on that slot,
+ * so the caller zeroes the byte as its very last memory access before
+ * the exit syscall (tawcroot_raw_syscall_off_stack's `release`). */
+uint8_t *tawc_sigalt_thread_exit(const stack_t *cur, int tid);
 
 /* For tests; not called from production. */
 int  tawc_sigalt_is_slab(const void *p);
