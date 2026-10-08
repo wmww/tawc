@@ -1324,7 +1324,11 @@ Two consequences worth knowing:
   offline fallback that let a cached-but-unreachable-mirror ALARM
   install proceed on a previously verified digest. Verifying now always
   needs the 566-byte `.sig` fetch, so a fully offline re-install fails
-  at the verify stage. Arch x86_64 has always behaved this way. Stale
+  at the verify stage. Arch x86_64 has always behaved this way. The
+  `.sig` fetch retries a few times, and a final fetch failure throws
+  `SignatureFetchException`, which the installer's evict-and-retry
+  loop deliberately skips: the cached tarball stays, so retrying the
+  install doesn't re-download it. Stale
   sidecars left by older installs are swept by
   `BootstrapCache.sweepStale` (its transient-name regex matches them).
 

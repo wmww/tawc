@@ -303,6 +303,11 @@ class Installer(
             try {
                 SignatureVerifier.verify(context, cf, bootstrap.verification, mirrorProxy)
                 verified = cf
+            } catch (e: SignatureFetchException) {
+                // Already retried inside the verifier, and the tarball
+                // was never checked: keep it cached so a retry of the
+                // install doesn't re-download it.
+                throw e
             } catch (e: IOException) {
                 if (attempt >= 1) {
                     if (mirrorProxy != null) {

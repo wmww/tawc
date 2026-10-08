@@ -133,7 +133,7 @@ object SignatureVerifier {
         mirrorProxy: me.phie.tawc.install.MirrorProxy?,
     ) {
         Log.d(TAG, "Verifying PGP signature for ${tarball.name}")
-        val sigBytes = downloadBytes(mirrorProxy?.wrap(v.signatureUrl) ?: v.signatureUrl)
+        val sigBytes = fetchSignature(mirrorProxy?.wrap(v.signatureUrl) ?: v.signatureUrl)
         val signature = parseDetachedSignature(sigBytes)
         val keys = loadKeyRing(context, v.keyResource)
         val key = resolveSigningKey(keys, signature, v.keyResource)
@@ -159,6 +159,34 @@ object SignatureVerifier {
             "Bootstrap PGP signature verified: ${tarball.name} signed by " +
                 "0x${java.lang.Long.toHexString(signature.keyID).uppercase()}",
         )
+    }
+
+    /**
+     * Fetch a detached `.sig`, retrying transient failures (it is tiny,
+     * and a cold proxy or flaky mobile link can time it out). Throws
+     * [SignatureFetchException] so the caller keeps the tarball cached
+     * rather than re-downloading it for a failure that never touched it.
+     */
+    private fun fetchSignature(url: String): ByteArray {
+        val attempts = 3
+        for (i in 1..attempts) {
+            try {
+                return downloadBytes(url)
+            } catch (e: InterruptedIOException) {
+                throw e
+            } catch (e: IOException) {
+                if (i == attempts) {
+                    throw SignatureFetchException("could not fetch signature $url: ${e.message}", e)
+                }
+                Log.w(TAG, "signature fetch failed (${e.message}); retry $i/${attempts - 1}")
+                try {
+                    Thread.sleep(2_000L * i)
+                } catch (_: InterruptedException) {
+                    throw InterruptedIOException("download cancelled")
+                }
+            }
+        }
+        error("unreachable")
     }
 
     private fun downloadBytes(url: String): ByteArray {
@@ -343,3 +371,9 @@ sealed class BootstrapVerification {
         val expectedHex: String,
     ) : BootstrapVerification()
 }
+
+/**
+ * The signature itself could not be downloaded; the tarball was never
+ * checked, so it is not implicated.
+ */
+class SignatureFetchException(message: String, cause: Throwable) : IOException(message, cause)
