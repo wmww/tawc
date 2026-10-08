@@ -21,7 +21,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 - [exec-broker.md](exec-broker.md) - debug broker protocol, host helper, action model, security.
 - [ando.md](ando.md) - production `ando <cmd>` broker: run Android commands from inside the rootfs.
 - [rendering.md](rendering.md) - window management, coordinates, SHM/AHB rendering behavior.
-- [session-service.md](session-service.md) - the one foreground service: holds, stray tail, notification, Exit.
+- [session-service.md](session-service.md) - the one foreground service: holds, stray tail, notification, Exit; phantom process killer.
 - [rootfs-sessions.md](rootfs-sessions.md) - session invariant for rootfs entry paths.
 - [log-screen.md](log-screen.md) - shared operation/log-screen UI abstraction.
 - [launcher.md](launcher.md) - distro launcher and `.desktop` scanner.

@@ -156,6 +156,37 @@ An FGS is necessary but not always sufficient: a RESTRICTED standby
 bucket, user "restrict battery usage", or an aggressive OEM ROM can still
 cut the uid, and the app is not on the device-idle allowlist
 (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` is the lever). It does nothing
-for the phantom-process killer or CPU sleep — see
-`issues/phantom-process-killer-kills-rootfs-processes.md` and "Keep
-awake" below.
+for the phantom-process killer or CPU sleep — see "Phantom process
+killer" and "Keep awake" below.
+
+## Phantom process killer
+
+Android 12+ trims app-forked processes ("phantom processes") down to
+`max_phantom_processes` — 32 on the OnePlus 9 (Android 14), and the cap
+is **global across all apps**. tawcroot guests are plain children of the
+app process, so every guest counts. No in-app fix exists: the app can't
+raise its cap, and an FGS doesn't exempt it.
+
+Measured 2026-08-11: 45 CPU-active guest children → 55 kills
+(`ActivityManager: Killing PhantomProcessRecord {…}: Trimming phantom
+processes`), whole session wiped. The first victim was the bash of an
+*unrelated* terminal tab, and a `su` of another app (u0a247) also died.
+So a heavy job in one tab can kill another, or another app.
+
+It is intermittent: AMS only finds phantoms when `ProcessCpuTracker`
+samples `/proc`, and only processes with measurable CPU. 60 idle `sleep`s
+were never tracked; in a later run 45 busy children went untracked for
+over a minute (`dumpsys activity processes`: zero `PhantomProcessRecord`).
+`dumpsys cpuinfo` did not force a sweep. Expect "parallel build / package
+upgrade fails *sometimes*".
+
+User workarounds (unverified on the target; which sticks varies by
+Android version, and `device_config` values reset on config sync or
+reboot; Android 14+ also has the first as Developer options → "Disable
+child process restrictions"):
+
+```
+adb shell settings put global settings_enable_monitor_phantom_procs false
+adb shell device_config set_sync_disabled_for_tests persistent
+adb shell device_config put activity_manager max_phantom_processes 2147483647
+```

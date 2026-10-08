@@ -24,6 +24,7 @@ TAWC runs CLI and graphical Linux programs on Android without root. Graphical ap
 - Perf is better than alternatives, but not native
 - Only arm64 official builds for now. Can be built for x86 but our libhybris tricks rely on arm.
 - Requires Android 10+
+- Android 12+ may kill rootfs processes past ~32 (the phantom process killer); heavy parallel jobs can fail. On Android 14+, enable Developer options → "Disable child process restrictions"
 
 See [AGENTS.md](AGENTS.md) for more details.
 

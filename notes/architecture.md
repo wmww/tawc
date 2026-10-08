@@ -259,7 +259,7 @@ xdg toplevel list in `TawcState`.
 | `android_wlegl` is libhybris-specific | Accepted | All chroot apps reach the GPU via libhybris; `wl_shm` is the standard fallback. |
 | SELinux blocks socket without root | Documented | Root: direct connect. No-root: Binder fd passing. |
 | Smithay on Android | ✅ Solved | `default-features = false`, patched EGL loader. Proven in Phase 1. |
-| Phantom Process Killer (Android 12+) | Open | Users need Developer Options toggle for Termux processes. |
+| Phantom Process Killer (Android 12+) | Accepted | Global 32-process cap kills guests; user-side workaround only. See [session-service.md](session-service.md). |
 | Vendor-specific GPU quirks | Open | Architecture is vendor-neutral. Each vendor needs testing. `wl_shm` fallback. |
 | Freeform windowing not universal | Accepted | Phones: fullscreen Activities. Freeform on DeX/ChromeOS/Android 15+. See [multi-activity.md](multi-activity.md). |
 
