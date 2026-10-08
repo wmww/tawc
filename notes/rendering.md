@@ -13,14 +13,12 @@ rendered black while AHB/external surfaces worked, with zero GL errors
 sampling failed). It reproduces in the app process but not in a minimal
 standalone binary using identical GL calls, so probe results can mislead.
 
-This is an emulator driver bug, and TAWC currently ships no workaround
-— SHM surfaces are known-black on the emulator and the affected tests
-fail there. A verified fix (resolving `#if defined(X)` blocks against
-each variant's define list in the smithay fork's `texture_program`
-before the source reaches the driver) is written up in
-[issues/emulator-shm-black-shader-translator.md](../issues/emulator-shm-black-shader-translator.md)
-if it ever needs applying. Until then, avoid dead `samplerExternalOES`
-text in any new shader that must work on the emulator.
+The smithay fork's `texture_program` works around it by resolving
+`#if defined(X)` / `#else` / `#endif` against each variant's define list
+before compiling (`strip_disabled_branches`), so the driver never sees
+disabled branches. This covers smithay's stock shader and TAWC's
+custom shaders. Only that plain `#if defined(X)` form is resolved, so
+new shaders should stick to it for anything sampler-related.
 
 ## Background Color
 

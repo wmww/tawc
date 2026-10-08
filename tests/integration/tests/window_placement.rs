@@ -313,6 +313,17 @@ fn test_dialog_centered_over_scrim() {
         let outside = (w / 2.0, h * 0.2);
         assert!(outside.1 < dialog.offset.1, "sample point must be outside the dialog");
 
+        let (state, dialog, shot) =
+            screenshot(2, "child", |_| (DIALOG_W as i32, DIALOG_H as i32));
+        let c = sample(&shot, &state, dialog.to_screen(DIALOG_W / 2.0, DIALOG_H / 2.0 + 30.0));
+        assert!(c.b > 170 && c.r < 100, "dialog center should be blue: {c:?}");
+        // The parent fills with 90% gray; the scrim halves it.
+        let c = sample(&shot, &state, outside);
+        assert!(
+            (90..140).contains(&c.r) && (90..140).contains(&c.g) && (90..140).contains(&c.b),
+            "parent outside the dialog should be dimmed: {c:?} state={state:?}"
+        );
+
         // A tap on the scrim reaches neither surface; one on the dialog
         // arrives in its frame.
         tap(outside.0, outside.1);
@@ -324,19 +335,6 @@ fn test_dialog_centered_over_scrim() {
         assert_eq!(label, "dialog");
         assert_close(x, DIALOG_W / 2.0, 1.0, "dialog-local x");
         assert_close(y, DIALOG_H / 2.0, 1.0, "dialog-local y");
-
-        // The touch made the client redraw its parent, which works around
-        // issues/first-shm-buffer-black-with-child-surface.md.
-        let (state, dialog, shot) =
-            screenshot(2, "child", |_| (DIALOG_W as i32, DIALOG_H as i32));
-        let c = sample(&shot, &state, dialog.to_screen(DIALOG_W / 2.0, DIALOG_H / 2.0 + 30.0));
-        assert!(c.b > 170 && c.r < 100, "dialog center should be blue: {c:?}");
-        // The parent fills with 90% gray; the scrim halves it.
-        let c = sample(&shot, &state, outside);
-        assert!(
-            (90..140).contains(&c.r) && (90..140).contains(&c.g) && (90..140).contains(&c.b),
-            "parent outside the dialog should be dimmed: {c:?} state={state:?}"
-        );
 
         // A drag that starts on the dialog stays in its frame after leaving it.
         let output = adb::inject_drag_logical((cx as f32, cy as f32), (outside.0 as f32, outside.1 as f32))

@@ -24,8 +24,6 @@ to the display. Likely fix is a real on-screen gate before
 colors stabilize, or wait on the Activity being resumed+focused) instead
 of the sleep.
 
-On the emulator (2026-10-08) it fails every run, on `main` too
-(`top-left block: Rgb { r: 1, g: 1, b: 1 }`, 3/3 each side). See also
-[first-shm-buffer-black-with-child-surface.md](first-shm-buffer-black-with-child-surface.md):
-a first SHM buffer reproducibly rendering black there suggests a
-compositor-side cause rather than screencap timing.
+The emulator failures (all-black blocks) were the emulator shader
+translator bug, now worked around (notes/rendering.md); the test passes
+there. The physical-device flake above is not yet rechecked.
