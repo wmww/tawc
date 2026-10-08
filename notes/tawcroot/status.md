@@ -306,7 +306,7 @@ covered by unit/hosted/smoke tests.)
   When the guest requests `STATX_MNT_ID`/`STATX_MNT_ID_UNIQUE` and
   the kernel returns neither, the handler O_PATH-opens the target and
   parses `mnt_id:` from `/proc/self/fdinfo/<fd>` — the same number
-  statx would return (`tawcroot_statx_fill_mnt_id` in syscalls_fs.c;
+  statx would return (`tawcroot_statx_fill_mnt_id` in syscalls_stat.c;
   AT_FDCWD targets pin the cwd, since fdinfo has no entry for the
   sentinel). systemd ≥260 (kernel baseline 5.10) EUNATCHes without
   the bit and dropped its own fdinfo fallback, which bricked Debian

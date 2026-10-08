@@ -604,7 +604,7 @@ Refactored conventions every fs-handler follows (June 2026 cleanup):
   would re-read and rewrite the whole maps file for an
   `ls -l /proc/self`. **Lockstep rule:** every kind that opens must
   also stat. Handlers reach the classifier through
-  `proc_shadow_classify_at` (syscalls_fs.c), which also retries via
+  `tawcroot_fs_proc_shadow_classify_at` (syscalls_fs.c), which also retries via
   fd-relative composition; `hosted_proc_shadow_open_stat_lockstep`
   fails CI if a new kind lands on only one surface.
 

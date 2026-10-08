@@ -20,7 +20,7 @@ tawcroot_path_intent tawcroot_openat_intent(int flags);
 
 struct statx;
 
-/* STATX_MNT_ID emulation for pre-5.8 kernels (see syscalls_fs.c for
+/* STATX_MNT_ID emulation for pre-5.8 kernels (see syscalls_stat.c for
  * the full story): when `req_mask` asks for a mount id and `sx` lacks
  * one, fill stx_mnt_id from /proc/self/fdinfo of the target at
  * (dirfd, path) — empty/NULL path means dirfd itself. Best-effort;

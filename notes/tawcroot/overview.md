@@ -163,7 +163,9 @@ pure helper (`tawcroot_path_binds_reanchor` in
 The architecture is therefore deliberately structured to make adding
 those things later cheap, not just to ship MVP fast:
 
-- **Per-subsystem handler files** (`src/syscalls_fs.c`,
+- **Per-subsystem handler files** (`src/syscalls_fs.c` plus its
+  `syscalls_stat.c` / `syscalls_link.c` / `syscalls_xattr.c` /
+  `syscalls_fs_legacy.c` siblings sharing `syscalls_fs_internal.h`,
   `syscalls_fd.c`, `syscalls_exec.c`, `syscalls_socket.c`,
   `syscalls_control.c`, plus `chroot.c` / `shm.c` / `linkstore.c` for
   the bigger features) so a new feature is "add a `.c` and a dispatch

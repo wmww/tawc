@@ -83,7 +83,7 @@ long tawcroot_shm_unlink(const char *name);
 
 /* Synthesize a stat for /dev/shm itself or for /dev/shm/<name>.
  * struct stat layout follows the kernel `newfstatat` output, same
- * as `decorate_stat` callers in syscalls_fs.c. */
+ * as `decorate_stat` callers in syscalls_stat.c. */
 struct stat;
 struct statx;
 void tawcroot_shm_stat_dir(struct stat *out);

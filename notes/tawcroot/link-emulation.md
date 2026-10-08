@@ -8,8 +8,9 @@ NOFOLLOW/readlink semantics. This note records the shipped design,
 format, and behavior (distilled from the completed — and since
 deleted — plans/tawcroot-full-link-emulation.md).
 Code: `src/linkstore.c`, `include/linkstore.h`,
-handler integration in `src/syscalls_fs.c` (linkat/unlinkat/renameat2/
-stats/openat/readlinkat/symlinkat/utimensat/fchownat) and
+handler integration in `src/syscalls_link.c` (linkat/renameat2),
+`src/syscalls_stat.c` (stats), `src/syscalls_fs.c` (unlinkat/openat/
+readlinkat/symlinkat/utimensat/fchownat) and
 `src/syscalls_fd.c` (getdents64 d_type rewrite).
 
 ## On-disk format (store version 1)

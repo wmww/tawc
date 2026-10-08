@@ -1643,7 +1643,7 @@ which 5.4-kernel phones can't provide, and the pre-260
 
 tawcroot now synthesizes `STATX_MNT_ID` from `/proc/self/fdinfo`
 when the guest asks and the kernel can't deliver
-(`syscalls_fs.c::tawcroot_statx_fill_mnt_id`), so sid's v261 systemd
+(`syscalls_stat.c::tawcroot_statx_fill_mnt_id`), so sid's v261 systemd
 tooling
 (`systemd-sysusers`, `systemd-tmpfiles`, anything `chase()`-based —
 these run from arbitrary package postinsts) works on old kernels.
@@ -1681,7 +1681,7 @@ doing. Don't re-file these as issues.
   reason (ENOSYS instead of a clean chroot detection), but the
   outcome is identical: systemd isn't PID 1 here, so the hook would
   no-op anyway. Root cause never pinned down. What's been ruled out:
-  tawcroot *does* handle `statx` (`tawcroot/src/syscalls_fs.c`
+  tawcroot *does* handle `statx` (`tawcroot/src/syscalls_stat.c`
   `handle_statx`, registered in the dispatch table), and the
   `/proc/1/sched` read plus `stat` compare in systemd's
   `running_in_chroot_or_offline()` go through handled paths that

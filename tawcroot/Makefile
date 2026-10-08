@@ -150,6 +150,10 @@ PROD_C := \
     $(SRC_T)/src/proc_shadow.c \
     $(SRC_T)/src/identity.c \
     $(SRC_T)/src/syscalls_fs.c \
+    $(SRC_T)/src/syscalls_fs_legacy.c \
+    $(SRC_T)/src/syscalls_link.c \
+    $(SRC_T)/src/syscalls_stat.c \
+    $(SRC_T)/src/syscalls_xattr.c \
     $(SRC_T)/src/syscalls_fd.c \
     $(SRC_T)/src/linkstore.c \
     $(SRC_T)/src/dirent_filter.c \

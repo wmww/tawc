@@ -119,8 +119,8 @@ env vars (`HOME`, `USER`, `TMPDIR`, `PATH`) before exec.
 ## Module layout
 
 Actual layout (flat — the `syscalls/` subdir was planned but the file
-count never justified it; kept as one `syscalls_fs.c` until execve
-adds an `exec.c`).
+count never justified it; fs handlers are split across `syscalls_fs.c`
+and its `syscalls_{stat,link,xattr,fs_legacy}.c` siblings).
 
 ```
 tawcroot/                            # everything tawcroot-specific lives here
@@ -164,6 +164,7 @@ tawcroot/                            # everything tawcroot-specific lives here
 │   ├── sigalt.h        # guest sigaltstack floor (SA_ONSTACK handler)
 │   ├── supervisor.h    # shared per-process bootstrap (prod + --exec-child)
 │   ├── syscalls_{control,exec,fs,socket}.h # handler registration entries
+│   ├── syscalls_fs_internal.h # fs_path + translate helpers shared by fs handler files
 │   ├── sysnr.h         # per-arch syscall numbers
 │   ├── tawc_string.h   # memcpy/memset/... freestanding-vs-hosted switch
 │   ├── tawc_uapi.h     # kernel ABI constants (O_*, AT_*, struct stat, ...)
@@ -201,6 +202,8 @@ tawcroot/                            # everything tawcroot-specific lives here
 │   ├── loader_exec.c   # --exec-child main: load guest + jump, shebang chain
 │   ├── loader_io_prod.c # production loader I/O vtable (raw syscalls)
 │   ├── syscalls_{fs,fd,control,exec,socket}.c # per-syscall handlers
+│   ├── syscalls_{stat,link,xattr,fs_legacy}.c # fs handler splits (stat family,
+│   │                   #   linkat/rename, xattr, x86_64 non-*at aliases)
 │   ├── usercopy.c      # process_vm_readv probe + guarded guest copies
 │   └── arch/{aarch64,x86_64}_{stub,loader_jump}.S  # _start, raw syscall stub,
 │                                                   # sigreturn trampoline, loader jump
