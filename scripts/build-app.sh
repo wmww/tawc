@@ -83,3 +83,4 @@ fi
 
 echo "=== Building APK ($TAWC_PACKAGE, $TAWC_ABIS, xwayland=$XWAYLAND, graphics=${GRAPHICS:-default}) ==="
 ( cd "$ROOT_DIR" && ./gradlew "${GRADLE_ARGS[@]}" )
+"$SCRIPT_DIR/check-elf-alignment.sh" "$ROOT_DIR/app/build/outputs/apk/debug/app-debug.apk"

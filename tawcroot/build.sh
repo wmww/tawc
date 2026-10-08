@@ -255,6 +255,7 @@ COMMON_LDFLAGS=(
     -Wl,--build-id=none
     -Wl,-z,noexecstack
     -Wl,-z,relro
+    -Wl,-z,max-page-size=16384  # 16 KB-page devices
 )
 
 # Build one binary (production or testhost) for one ABI.

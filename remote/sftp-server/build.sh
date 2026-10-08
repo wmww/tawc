@@ -60,7 +60,7 @@ build_abi() {
     (cd "$work" && ./configure --host="$abi-linux-android" \
         CC="$cc" AR="$NDK_BIN/llvm-ar" RANLIB="$NDK_BIN/llvm-ranlib" \
         CFLAGS="-O2 -D__sentinel__=__sentinel__ -include $HERE/android-compat.h" \
-        LDFLAGS="-static -Wl,--trace-symbol=getpwuid,--trace-symbol=getpwnam,--trace-symbol=getgrgid,--trace-symbol=getgrnam,--trace-symbol=initgroups" \
+        LDFLAGS="-static -Wl,-z,max-page-size=16384 -Wl,--trace-symbol=getpwuid,--trace-symbol=getpwnam,--trace-symbol=getgrgid,--trace-symbol=getgrnam,--trace-symbol=initgroups" \
         ac_cv_func_recallocarray=no \
         --without-openssl --without-zlib --without-pam --without-selinux \
         --without-security-key-builtin --disable-lastlog --disable-utmp \

@@ -622,6 +622,26 @@ for distribution channels that can't carry it; the app hides the
 external-binds UI when the permission is absent. See
 [external-binds.md](external-binds.md).
 
+#### 16 KB page alignment
+
+Every jniLib must have ELF LOAD segments aligned to ≥16 KB, or it
+won't load on 16 KB-page devices (Pixel dev option, newer hardware),
+and Android 15+ shows an "App Compatibility" dialog on first launch.
+NDK r27 still links at 4 KB by default (r28+ defaults to 16 KB), so
+every NDK link passes `-Wl,-z,max-page-size=16384`: the Xwayland
+meson/autotools flags, the gfxstream backend cross file, proot
+(`LDFLAGS` + `LOADER_LDFLAGS`), tawcroot, ando, sftp-server, and
+termux's `libtermux.so` (`APP_SUPPORT_FLEXIBLE_PAGE_SIZES` set from the
+root `build.gradle.kts`). cargo-ndk output and `libc++_shared.so` are
+already 16 KB. Guest-side assets (libhybris, Mesa) use GNU ld's 64 KB
+aarch64 default.
+
+`scripts/build-app.sh` ends with `scripts/check-elf-alignment.sh`,
+which fails on any under-aligned lib in the APK. Incremental builds
+can keep stale 4 KB libs; `--clean` the offending build script.
+Libs are stored compressed and extracted (`useLegacyPackaging`), so
+zip-level 16 KB alignment doesn't matter.
+
 ### F-Droid buildserver rig (release builds + recipe testing)
 
 ```bash

@@ -120,6 +120,10 @@ system = 'android'
 cpu_family = '$cpu_family'
 cpu = '$cpu_family'
 endian = 'little'
+
+[built-in options]
+c_link_args = ['-Wl,-z,max-page-size=16384']
+cpp_link_args = ['-Wl,-z,max-page-size=16384']
 EOF
 
     # ── Configure + build ──

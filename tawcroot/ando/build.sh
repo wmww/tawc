@@ -55,7 +55,7 @@ build_abi() {
     local out="$out_dir/libando.so"
 
     echo "==> compiling ando ($abi)"
-    "$cc" -O2 -Wall -Wextra -Werror -static \
+    "$cc" -O2 -Wall -Wextra -Werror -static -Wl,-z,max-page-size=16384 \
         "$ANDO_DIR/src/ando.c" -o "$out"
     "$NDK_BIN/llvm-strip" "$out"
 

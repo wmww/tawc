@@ -136,7 +136,8 @@ export ACLOCAL_PATH="$PREFIX/share/aclocal:${ACLOCAL_PATH:-}"
 
 # Universal flags for every cross-compile.
 CFLAGS_CROSS="-fPIC -O2 -DANDROID -D_GNU_SOURCE -I$PREFIX/include"
-LDFLAGS_CROSS="-L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib"
+# 16 KB ELF alignment: required on 16 KB-page devices.
+LDFLAGS_CROSS="-L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib -Wl,-z,max-page-size=16384"
 
 # ── Helpers ──
 
@@ -168,8 +169,8 @@ pkg-config = 'pkg-config'
 [built-in options]
 c_args = ['-fPIC', '-O2', '-DANDROID', '-D_GNU_SOURCE', '-I$PREFIX/include']
 cpp_args = ['-fPIC', '-O2', '-DANDROID', '-D_GNU_SOURCE', '-I$PREFIX/include']
-c_link_args = ['-L$PREFIX/lib', '-Wl,-rpath-link,$PREFIX/lib']
-cpp_link_args = ['-L$PREFIX/lib', '-Wl,-rpath-link,$PREFIX/lib']
+c_link_args = ['-L$PREFIX/lib', '-Wl,-rpath-link,$PREFIX/lib', '-Wl,-z,max-page-size=16384']
+cpp_link_args = ['-L$PREFIX/lib', '-Wl,-rpath-link,$PREFIX/lib', '-Wl,-z,max-page-size=16384']
 
 [host_machine]
 system = 'android'

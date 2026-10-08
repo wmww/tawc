@@ -21,3 +21,15 @@ subprojects {
         dependsOn(verifyDepsTask)
     }
 }
+
+// termux's terminal-emulator (vendored, not ours to edit) builds
+// libtermux.so with ndk-build; NDK r27 still defaults to 4 KB ELF
+// alignment, which fails to load on 16 KB-page devices.
+project(":terminal-emulator") {
+    pluginManager.withPlugin("com.android.library") {
+        extensions.configure<com.android.build.api.dsl.LibraryExtension> {
+            defaultConfig.externalNativeBuild.ndkBuild.arguments +=
+                "APP_SUPPORT_FLEXIBLE_PAGE_SIZES=true"
+        }
+    }
+}

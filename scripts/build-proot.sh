@@ -371,7 +371,9 @@ EOF
         # is non-fatal and we don't gain anything from breaking the build
         # over a future-removed API call.
         export CFLAGS="-I$TALLOC_DIR -I$talloc_build -fPIC -O2 -Wno-unused-parameter -Wno-strict-aliasing -Wno-unknown-warning-option -Wno-deprecated-declarations"
-        export LDFLAGS="-L$talloc_build -ltalloc"
+        # max-page-size: 16 KB ELF alignment for 16 KB-page devices.
+        export LDFLAGS="-L$talloc_build -ltalloc -Wl,-z,max-page-size=16384"
+        export LOADER_LDFLAGS="-Wl,-z,max-page-size=16384"
         make \
             CC="$NDK_BIN/$triple-clang" \
             LD="$NDK_BIN/$triple-clang" \
