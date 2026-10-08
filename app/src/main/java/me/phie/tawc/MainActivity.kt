@@ -14,7 +14,6 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Bundle
-import android.util.TypedValue
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.KeyEvent
@@ -346,9 +345,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * The home's dark tab bar continues into the status band; the nav
-     * band is black under a terminal, else the window's own. Light bar
-     * icons on dark.
+     * The home's tab bar continues into the status band; the nav band
+     * is black under a terminal, else the window's own. Light bar icons
+     * on whichever is dark.
      */
     private fun styleBars() {
         val home = (pane as? Pane.Home)?.home
@@ -356,18 +355,12 @@ class MainActivity : AppCompatActivity() {
             Configuration.UI_MODE_NIGHT_YES
         val terminal = home != null && home.selectedIndex != TerminalTabBar.APPS
         screen.root.background = home?.let {
-            SystemBands(screen.root, TerminalTabBar.BAR_BG, if (terminal) Color.BLACK else windowBackground())
+            SystemBands(screen.root, it.barColor, if (terminal) Color.BLACK else getColor(R.color.tawc_window_bg))
         }
         WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = home == null && defaultLightBars && !night
+            isAppearanceLightStatusBars = home?.barIsDark != true && defaultLightBars && !night
             isAppearanceLightNavigationBars = !terminal && defaultLightBars && !night
         }
-    }
-
-    private fun windowBackground(): Int {
-        val value = TypedValue()
-        theme.resolveAttribute(android.R.attr.colorBackground, value, true)
-        return value.data
     }
 
     // ---- FAB -----------------------------------------------------------------

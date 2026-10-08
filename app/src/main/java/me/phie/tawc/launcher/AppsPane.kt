@@ -35,7 +35,6 @@ import kotlinx.coroutines.withContext
 import me.phie.tawc.R
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationStore
-import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.ui.plainIconButton
 import me.phie.tawc.ui.searchPill
 import me.phie.tawc.ui.verticalLp
@@ -136,7 +135,7 @@ internal class AppsPane(
             clearSearch()
         }.apply { visibility = View.INVISIBLE }
         searchField = EditText(activity).apply {
-            hint = activity.getString(R.string.hint_search_distro, DistroRegistry.displayLabel(installation))
+            hint = activity.getString(R.string.hint_search)
             textSize = 16f
             isSingleLine = true
             background = null

@@ -34,7 +34,7 @@
     <string name="action_collapse">Collapse</string>
     <string name="action_expand">Expand</string>
 
-    <string name="hint_search_distro">Search %1$s</string>
+    <string name="hint_search">Search</string>
     <string name="hint_run_command">e.g. firefox</string>
 
     <string name="home_drawer_item_state">%1$s · %2$s</string>

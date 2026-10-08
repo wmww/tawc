@@ -219,10 +219,10 @@ home, i.e. every fresh tab) is shown as `Term <n>` by tab position —
 app-side, since the number must follow the index as tabs close.
 Duplicate labels are fine (desktop terminals behave the same).
 Verified on-device 2026-06-10. The `TerminalTabBar`
-(`[≡][⊞][tabs…][+][⋮]`, fixed dark palette against the always-black
-terminal surface) is the home's top row; ⊞ is the apps tab (icon, no
-×, same selection styling) and `+` shows only while a terminal tab
-exists. The selected tab has a faint fill and a 2 dp accent
+(`[≡][⊞][tabs…][+][⋮]`) is the home's top row; ⊞ is the apps tab (icon,
+no ×, same selection styling). With no terminal tabs it is just
+`[≡] <distro> [⋮]` on the window background; with tabs it is a fixed
+dark palette (whichever tab is selected) matching the black terminal. The selected tab has a faint fill and a 2 dp accent
 strip along its top. Title changes are applied after 150 ms of quiet:
 Arch's `PROMPT_COMMAND` title (`root@localhost:~`) and ShellDefaults'
 `~` can arrive in separate output chunks, and relabelling on each

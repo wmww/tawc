@@ -8,6 +8,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
 import com.termux.terminal.TerminalSession
+import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.TawcrootMethod
 import me.phie.tawc.launcher.AppsPane
@@ -19,7 +20,7 @@ import me.phie.tawc.ui.paneTopRowHeightPx
 /**
  * A READY distro's home: the [TerminalTabBar] over either the apps tab
  * ([AppsPane]) or the terminal ([TerminalPane], tawcroot only — other
- * methods get just ⊞). Owns which tab is selected (in memory only; the
+ * methods get just the title). Owns which tab is selected (in memory only; the
  * activity carries it across recreation) and the terminal tab policy
  * (notes/terminal.md "Lifecycle"):
  *
@@ -52,7 +53,7 @@ internal class DistroHome(
 
     val installId = inst.id
 
-    private val bar = TerminalTabBar(activity)
+    private val bar = TerminalTabBar(activity, DistroRegistry.displayLabel(inst))
     val apps: AppsPane
     private val terminal: TerminalPane?
 
@@ -64,6 +65,12 @@ internal class DistroHome(
         get() = selected?.let { s -> sessions().indexOfFirst { it === s } } ?: TerminalTabBar.APPS
 
     val canOpenTerminal: Boolean get() = terminal != null
+
+    /** The tab bar's current fill, for the status band above it. */
+    val barColor: Int get() = bar.barColor
+
+    /** The bar is in its dark palette (terminal tabs exist). */
+    val barIsDark: Boolean get() = bar.hasTabs
 
     val view: LinearLayout
 
@@ -182,8 +189,10 @@ internal class DistroHome(
         bar.removeTab(index)
         onTitlesChanged()
         if (session !== selected) {
-            // Indices shifted under the unchanged selection; restyle.
+            // Indices shifted under the unchanged selection; restyle
+            // (the last tab going drops the bar's dark palette).
             bar.setSelected(selectedIndex)
+            host.onSelectionChanged()
             return
         }
         selected = null

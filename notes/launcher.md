@@ -97,7 +97,7 @@ in `launcher.rs::scan_entries`:
   icons/titles — a hidden app that is *running* must still resolve.
 
 The pane is an Android-launcher-style grid under the home tab bar: an
-always-visible search pill ("Search <distro>"), then icons in name
+always-visible search pill ("Search"; the distro name is in the bar), then icons in name
 order with one-line, end-ellipsized names; descriptions are not shown.
 Columns = width / 88dp (min 3). Bottom padding lets the last row scroll
 clear of the FAB, which also hides while scrolling down. The search

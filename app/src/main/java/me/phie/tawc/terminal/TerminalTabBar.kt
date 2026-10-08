@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.LayerDrawable
 import android.text.TextUtils
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -20,8 +21,9 @@ import me.phie.tawc.R
 
 /**
  * Top row of the home screen's [DistroHome]:
- * `[≡][⊞][ tabs… ][+] …… [⋮]`. ⊞ is the apps tab: always first, an
- * icon instead of a label, no `×`. The terminal tab strip scrolls
+ * `[≡][⊞][ tabs… ][+] …… [⋮]`, or `[≡] Title …… [⋮]` while there are
+ * no terminal tabs. ⊞ is the apps tab: first, an icon instead of a
+ * label, no `×`, shown only alongside terminal tabs. The terminal tab strip scrolls
  * horizontally; `+` sits outside it, right after the last tab, shows
  * only while there are terminal tabs, and stays in place once the tabs
  * overflow. `≡` and `⋮` are pinned at the edges. Each terminal tab is
@@ -33,11 +35,12 @@ import me.phie.tawc.R
  * callbacks. Click handlers resolve the index at click time
  * (`indexOfChild`) so removals don't stale captured positions.
  *
- * Fixed dark palette regardless of day/night theme: the bar sits
- * against the always-black terminal/extra-keys surface, so
- * theme-following tonal colors would clash in light mode.
+ * Two palettes: with no terminal tabs the bar (just the title) blends
+ * into the window background (theme-following); with tabs it is fixed
+ * dark regardless of day/night or the selected tab, matching the
+ * always-black terminal surface.
  */
-internal class TerminalTabBar(context: Context) : LinearLayout(context) {
+internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLayout(context) {
 
     var onAppsSelected: () -> Unit = {}
     var onTabSelected: (Int) -> Unit = {}
@@ -49,20 +52,44 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
     private val scroller: HorizontalScrollView
     private val strip: LinearLayout
     private val appsTab: ImageButton
+    private val titleView: TextView
     private val newTab: View
+    private val tabsRow: LinearLayout
+    private val buttons = mutableListOf<ImageButton>()
+
+    private val appsPalette = Palette(
+        bg = context.getColor(R.color.tawc_window_bg),
+        tabSelected = context.getColor(R.color.tawc_nav_selected),
+        fgSelected = themeColor(com.google.android.material.R.attr.colorOnSurface),
+        fgUnselected = themeColor(com.google.android.material.R.attr.colorOnSurfaceVariant),
+    )
+    private var palette = appsPalette
+    private var selectedIndex = APPS
+
+    /** Current fill; MainActivity continues it into the status band. */
+    val barColor: Int get() = palette.bg
 
     init {
         orientation = HORIZONTAL
-        setBackgroundColor(BAR_BG)
 
         addView(
             barButton(R.drawable.ic_menu, R.string.action_open_drawer) { onDrawerClicked() },
             LayoutParams(dp(NEW_TAB_WIDTH_DP), MATCH_PARENT),
         )
+        titleView = TextView(context).apply {
+            text = title
+            setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_TitleLarge)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(TITLE_PAD_DP), 0, 0, 0)
+        }
+        addView(titleView, LayoutParams(0, MATCH_PARENT, 1f))
         appsTab = barButton(R.drawable.ic_apps, R.string.action_apps) { onAppsSelected() }.apply {
             // Same glyph size as the other bar buttons in a wider cell.
             val h = dp(APPS_TAB_WIDTH_DP - NEW_TAB_WIDTH_DP) / 2 + dp(ICON_PAD_DP)
             setPadding(h, dp(ICON_PAD_DP) + dp(2), h, dp(ICON_PAD_DP) + dp(2))
+            visibility = GONE
         }
         addView(appsTab, LayoutParams(dp(APPS_TAB_WIDTH_DP), MATCH_PARENT))
 
@@ -76,7 +103,7 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
         }
         newTab = barButton(R.drawable.ic_add, R.string.terminal_new_tab) { onNewTabClicked() }
             .apply { visibility = GONE }
-        val tabsRow = object : LinearLayout(context) {
+        tabsRow = object : LinearLayout(context) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 // Measure contents as wrap-content so `+` hugs the tabs; the
                 // weighted scroller gives back any overflow. Still claim the
@@ -90,55 +117,81 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
             addView(scroller, LayoutParams(WRAP_CONTENT, MATCH_PARENT, 1f))
             addView(newTab, LayoutParams(dp(NEW_TAB_WIDTH_DP), MATCH_PARENT))
         }
+        tabsRow.visibility = GONE
         addView(tabsRow, LayoutParams(0, MATCH_PARENT, 1f))
 
         lateinit var menu: View
         menu = barButton(R.drawable.ic_more_vert, R.string.home_menu_description) { onMenuClicked(menu) }
         addView(menu, LayoutParams(dp(NEW_TAB_WIDTH_DP), MATCH_PARENT))
+        setSelected(APPS)
+    }
+
+    private fun themeColor(attr: Int): Int {
+        val value = TypedValue()
+        context.theme.resolveAttribute(attr, value, true)
+        return value.data
     }
 
     private fun barButton(icon: Int, description: Int, onClick: () -> Unit): ImageButton =
         ImageButton(context).apply {
             setImageResource(icon)
-            imageTintList = ColorStateList.valueOf(FG_UNSELECTED)
             setBackgroundColor(Color.TRANSPARENT)
             // ImageView's FIT_CENTER upscales the icon to the button
             // bounds; pad it back down to a small glyph.
             setPadding(dp(ICON_PAD_DP), dp(ICON_PAD_DP), dp(ICON_PAD_DP), dp(ICON_PAD_DP))
             contentDescription = context.getString(description)
             setOnClickListener { onClick() }
+            buttons += this
         }
 
     /** Append a terminal tab and scroll it into view. */
     fun addTab(label: CharSequence) {
         val tab = buildTab(label)
         strip.addView(tab, LayoutParams(WRAP_CONTENT, MATCH_PARENT))
-        newTab.visibility = VISIBLE
+        updateTabsShown()
         scrollIntoView(tab)
     }
 
     fun removeTab(index: Int) {
         strip.removeViewAt(index)
-        if (tabCount() == 0) newTab.visibility = GONE
+        updateTabsShown()
+    }
+
+    /** Title alone with no terminal tabs; ⊞, tabs and `+` otherwise. */
+    private fun updateTabsShown() {
+        val tabs = tabCount() > 0
+        titleView.visibility = if (tabs) GONE else VISIBLE
+        appsTab.visibility = if (tabs) VISIBLE else GONE
+        tabsRow.visibility = if (tabs) VISIBLE else GONE
+        newTab.visibility = if (tabs) VISIBLE else GONE
     }
 
     private fun tabCount(): Int = strip.childCount
 
+    /** Any terminal tabs; the bar is dark exactly then. */
+    val hasTabs: Boolean get() = tabCount() > 0
+
     /** Highlight terminal tab [index], or the apps tab for [APPS]. */
     fun setSelected(index: Int) {
+        selectedIndex = index
         val apps = index == APPS
+        palette = if (hasTabs) TERMINAL_PALETTE else appsPalette
+        setBackgroundColor(palette.bg)
+        titleView.setTextColor(palette.fgSelected)
+        for (b in buttons) b.imageTintList = ColorStateList.valueOf(palette.fgUnselected)
         appsTab.background = if (apps) selectedBackground() else null
-        appsTab.imageTintList = ColorStateList.valueOf(if (apps) FG_SELECTED else FG_UNSELECTED)
-        for (i in 0 until tabCount()) {
-            val tab = strip.getChildAt(i) as LinearLayout
-            val selected = i == index
-            tab.background = if (selected) selectedBackground() else null
-            (tab.getChildAt(0) as TextView)
-                .setTextColor(if (selected) FG_SELECTED else FG_UNSELECTED)
-            (tab.getChildAt(1) as ImageView)
-                .imageTintList = ColorStateList.valueOf(if (selected) FG_SELECTED else FG_UNSELECTED)
-        }
+        appsTab.imageTintList = ColorStateList.valueOf(if (apps) palette.fgSelected else palette.fgUnselected)
+        for (i in 0 until tabCount()) styleTab(i)
         if (index in 0 until tabCount()) scrollIntoView(strip.getChildAt(index))
+    }
+
+    private fun styleTab(i: Int) {
+        val tab = strip.getChildAt(i) as LinearLayout
+        val selected = i == selectedIndex
+        val fg = if (selected) palette.fgSelected else palette.fgUnselected
+        tab.background = if (selected) selectedBackground() else null
+        (tab.getChildAt(0) as TextView).setTextColor(fg)
+        (tab.getChildAt(1) as ImageView).imageTintList = ColorStateList.valueOf(fg)
     }
 
     fun setLabel(index: Int, label: CharSequence) {
@@ -149,7 +202,7 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
 
     /** Faint fill with an accent strip along the top. */
     private fun selectedBackground(): LayerDrawable =
-        LayerDrawable(arrayOf(ColorDrawable(TAB_BG_SELECTED), ColorDrawable(context.getColor(R.color.tawc_accent))))
+        LayerDrawable(arrayOf(ColorDrawable(palette.tabSelected), ColorDrawable(context.getColor(R.color.tawc_accent))))
             .apply {
                 setLayerGravity(1, Gravity.TOP)
                 setLayerHeight(1, dp(SELECTED_BORDER_DP))
@@ -167,12 +220,12 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
             ellipsize = TextUtils.TruncateAt.END
             maxWidth = dp(TAB_MAX_LABEL_DP)
             textSize = TAB_TEXT_SP
-            setTextColor(FG_UNSELECTED)
+            setTextColor(palette.fgUnselected)
         }
         tab.addView(text, LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
         val close = ImageButton(context).apply {
             setImageResource(R.drawable.ic_close)
-            imageTintList = ColorStateList.valueOf(FG_UNSELECTED)
+            imageTintList = ColorStateList.valueOf(palette.fgUnselected)
             setBackgroundColor(Color.TRANSPARENT)
             setPadding(dp(ICON_PAD_DP), dp(ICON_PAD_DP), dp(ICON_PAD_DP), dp(ICON_PAD_DP))
             contentDescription = context.getString(R.string.terminal_close_tab)
@@ -197,11 +250,13 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
         /** [setSelected] index of the apps tab. */
         const val APPS = -1
 
-        /** Bar fill; also MainActivity's status band above it. */
-        val BAR_BG = Color.parseColor("#1A1A1A")
-        private val TAB_BG_SELECTED = Color.parseColor("#2C2C2C")
-        private val FG_SELECTED = Color.parseColor("#FFFFFF")
-        private val FG_UNSELECTED = Color.parseColor("#9E9E9E")
+        private val TERMINAL_PALETTE = Palette(
+            bg = Color.parseColor("#1A1A1A"),
+            tabSelected = Color.parseColor("#2C2C2C"),
+            fgSelected = Color.parseColor("#FFFFFF"),
+            fgUnselected = Color.parseColor("#9E9E9E"),
+        )
+        private const val TITLE_PAD_DP = 8
         private const val TAB_TEXT_SP = 13f
         private const val SELECTED_BORDER_DP = 2
         private const val TAB_MAX_LABEL_DP = 180
@@ -214,3 +269,5 @@ internal class TerminalTabBar(context: Context) : LinearLayout(context) {
         private const val FADE_DP = 16
     }
 }
+
+private class Palette(val bg: Int, val tabSelected: Int, val fgSelected: Int, val fgUnselected: Int)

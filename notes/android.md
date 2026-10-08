@@ -133,17 +133,17 @@ view controllers, no Fragments; each supplies its own 48dp top row
 |---|---|---|
 | Intro | no installs | `[≡] TAWC [⋮]`, logo, blurb, accent Install |
 | Info (`DistroInfoView`) | open distro not READY | `[≡] <label> [⋮]`; state row links to the live op log |
-| Home (`DistroHome`) | READY | `[≡][⊞][tabs…][+][⋮]` (dark `TerminalTabBar`) over the apps tab (`launcher/AppsPane`) or a terminal (`terminal/TerminalPane`) |
+| Home (`DistroHome`) | READY | `[≡] <label> [⋮]`, or `[≡][⊞][tabs…][+][⋮]` with terminals (`TerminalTabBar`) over the apps tab (`launcher/AppsPane`) or a terminal (`terminal/TerminalPane`) |
 
 - **Open distro:** `Settings.openDistroId` (pref `open_distro`; the test
   store starts null). Always read through `OpenDistro.resolve` (stored
   id → first READY → first install → null, written back). Written by
   the drawer, `InstallActivity` on Install (a fresh install opens on its
   own progress), and command launches.
-- **Tabs:** ⊞ (apps) is always first; terminal tabs follow, with `+`
-  while at least one exists. Selection is in-memory activity state
+- **Tabs:** while terminal tabs exist, ⊞ (apps) is first, then the
+  terminal tabs and `+`; otherwise the bar shows the distro label. Selection is in-memory activity state
   (kept across recreation, apps on a cold start, a distro switch or a
-  finished install). Non-tawcroot installs show only ⊞. Tab lifecycle
+  finished install). Non-tawcroot installs show only the label. Tab lifecycle
   and keyboard rules: [terminal.md](terminal.md).
 - **FAB:** apps tab of a tawcroot install only; always opens a new
   terminal tab (switching is the bar's job). Hides while the grid
