@@ -633,7 +633,8 @@ meson/autotools flags, the gfxstream backend cross file, proot
 (`LDFLAGS` + `LOADER_LDFLAGS`), tawcroot, ando, sftp-server, and
 termux's `libtermux.so` (`APP_SUPPORT_FLEXIBLE_PAGE_SIZES` set from the
 root `build.gradle.kts`). cargo-ndk output and `libc++_shared.so` are
-already 16 KB. Guest-side assets (libhybris, Mesa) use GNU ld's 64 KB
+already 16 KB, as is zstd-jni from 1.5.7-4 (1.5.7-13+ needs compileSdk
+37, so it sits at 1.5.7-12). Guest-side assets (libhybris, Mesa) use GNU ld's 64 KB
 aarch64 default.
 
 `scripts/build-app.sh` ends with `scripts/check-elf-alignment.sh`,

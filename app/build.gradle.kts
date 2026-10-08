@@ -304,7 +304,7 @@ dependencies {
     // zstd-jni decodes zstd; xz-java decodes xz/LZMA. Together this keeps
     // the install path tool-free.
     implementation("org.apache.commons:commons-compress:1.27.1")
-    implementation("com.github.luben:zstd-jni:1.5.6-9@aar")
+    implementation("com.github.luben:zstd-jni:1.5.7-12@aar")
     implementation("org.tukaani:xz:1.10")
 
     // BouncyCastle: detached-PGP-signature verification of the Arch
