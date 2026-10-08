@@ -129,6 +129,9 @@ internal class AppsPane(
             // land in the search field: it takes focus only on a tap or
             // hardware typing ([onUnhandledKey]).
             isFocusableInTouchMode = true
+            // Out of touch mode (key input) the highlight would grey the
+            // whole page.
+            defaultFocusHighlightEnabled = false
         }
 
         clearButton = activity.plainIconButton(R.drawable.ic_close, activity.getString(R.string.action_clear_search)) {

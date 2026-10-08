@@ -98,6 +98,8 @@ internal class TerminalPane(
             // termux sets this in XML (activity_termux.xml); the view
             // itself doesn't.
             isFocusableInTouchMode = true
+            // Out of touch mode the highlight greys the black terminal.
+            defaultFocusHighlightEnabled = false
             // Only applies while the view is visible, i.e. a terminal
             // tab is selected.
             keepScreenOn = true
