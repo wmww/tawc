@@ -33,6 +33,15 @@ the emulator's GPU path is the experimental gfxstream bridge.
   (Zink-on-gfxstream-vk).
 - Architecture is x86_64 (real device is aarch64). Most code doesn't
   care, but anything arch-specific won't transfer.
+- Each compositor start leaks 2 `/dev/goldfish_pipe_dprctd` fds (the
+  emulator GL driver's host pipes), so
+  `lazy_compositor::test_compositor_cycles_do_not_leak` fails here
+  (e.g. 161 -> 175 over 8 cycles). Every other fd type is flat, the
+  phone is flat, and Xwayland cycles are flat. Likely the driver never
+  frees an exited GL thread's host connection (each run has two:
+  `gl-init` and the compositor thread); `eglReleaseThread` before exit
+  doesn't help. Fixes if it matters: drop goldfish fds from the test's
+  count, or keep GL on one process-lifetime thread.
 
 ## libhybris on x86_64
 

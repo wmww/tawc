@@ -853,3 +853,34 @@ fn test_eglx11_triangle_pixels_on_screen() {
     app.stop().expect("eglx11-test crashed or failed to stop cleanly");
     assert_compositor_clean();
 }
+
+/// Xwayland start/idle-stop cycles inside one compositor must not leak
+/// app-process fds.
+#[test]
+fn test_xwayland_cycles_do_not_leak() {
+    tawc_integration::helpers::test_init();
+    assert_broker_ok(adb::set_xwayland(true).expect("enable xwayland"), "set-xwayland");
+    wait_for_x11_socket(true, XWAYLAND_LAUNCH_TIMEOUT);
+
+    let app_fds = || {
+        let out = adb::host_sh("ls /proc/$PPID/fd | wc -l").expect("host-sh fd count");
+        String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().expect("fd count")
+    };
+    let cycle = || {
+        let mut app = RootfsProcess::spawn_with(SHM_BACKEND, "DISPLAY=:0 xclock -update 1")
+            .expect("spawn xclock");
+        wait_for_xwayland_running(true, XWAYLAND_LAUNCH_TIMEOUT);
+        wait_for_first_xclock_render(XWAYLAND_LAUNCH_TIMEOUT);
+        app.stop().expect("xclock failed to stop cleanly");
+        wait_for_xwayland_running(false, XWAYLAND_IDLE_STOP_TIMEOUT);
+        wait_for_x11_socket(true, XWAYLAND_LAUNCH_TIMEOUT);
+    };
+    // Warm-up: one-time lazy initialisation is not a leak.
+    cycle();
+    let before = app_fds();
+    for _ in 0..4 {
+        cycle();
+    }
+    let after = app_fds();
+    assert!(after <= before + 2, "fds grew over 4 Xwayland cycles: {before} -> {after}");
+}
