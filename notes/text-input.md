@@ -348,6 +348,10 @@ Translation lives in `compositor/src/text_input.rs::wayland_content_to_android_i
 
 Hints add flags on TEXT-class fields: `auto_capitalization` → `FLAG_CAP_SENTENCES`, `uppercase` → `FLAG_CAP_CHARACTERS`, `titlecase` → `FLAG_CAP_WORDS`, `spellcheck` → `FLAG_AUTO_CORRECT`, `completion` → `FLAG_AUTO_COMPLETE`, `multiline` → `FLAG_MULTI_LINE`, `hidden_text` (without password purpose) → `FLAG_NO_SUGGESTIONS`. `sensitive_data` adds `IME_FLAG_NO_PERSONALIZED_LEARNING` so the IME doesn't store typed text in its dictionary.
 
+### IME channel fd dups
+
+Every bind (`restartInput`, or a compositor window gaining focus) returns an `InputBindResult` carrying a fresh dup of the process's IME session channel. `InputMethodManager.updateInputChannelLocked` (Android 14 and 15) sees the same token as `mCurChannel` and returns without disposing the dup, so it lives until GC runs `InputChannel`'s cleaner. The app's Java heap is quiet, so a dozen or so can pile up on one `SOCK_SEQPACKET` inode. They are not leaked: forcing a GC (`kill -10 <pid>` as root) drops them back to 1 (checked on OnePlus 9, 2026-10-08). The app can't dispose them without hidden APIs, so they're left alone. Leak checks count each socket once for this reason (`helpers::app_fd_targets`).
+
 ## Open Questions
 
 1. **Batch editing**: Android groups IME operations between `beginBatchEdit()` / `endBatchEdit()`. Currently each operation gets its own `done` event. Batching into a single `done` would be more correct but functionally the current approach works for simple cases.
