@@ -174,7 +174,7 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         launch.taskId = taskId
         applyTaskDescription(launch.name, launch.iconPath)
         if (launch.state.value == LaunchState.Shown) return
-        val splash = LaunchSplash(this, launch) { finishAndRemoveTask() }
+        val splash = LaunchSplash(this, rootView, launch) { finishAndRemoveTask() }
         rootView.addView(splash.view, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT,

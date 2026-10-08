@@ -1,12 +1,14 @@
 package me.phie.tawc.compositor
 
 import android.app.Activity
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.ContextThemeWrapper
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.FrameLayout
@@ -15,6 +17,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.view.WindowCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -30,10 +33,13 @@ import me.phie.tawc.ui.tonalButton
  * The launch splash over a [CompositorActivity]'s SurfaceView: the entry's
  * icon and name while the program starts, its output log with a Close
  * button if it fails, gone once its window renders. A plain Android view,
- * so the compositor never draws it. See notes/launcher.md ("Launch splash").
+ * so the compositor never draws it. White on light mode, black on dark;
+ * [backdrop] (behind the system bars) matches it while the splash is up.
+ * See notes/launcher.md ("Launch splash").
  */
 internal class LaunchSplash(
     private val activity: Activity,
+    private val backdrop: ViewGroup,
     private val launch: Launch,
     private val close: () -> Unit,
 ) {
@@ -49,6 +55,10 @@ internal class LaunchSplash(
     var active = true
         private set
 
+    private val light = (activity.resources.configuration.uiMode and
+        Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_YES
+    private val bgColor = if (light) Color.WHITE else Color.BLACK
+
     init {
         val density = activity.resources.displayMetrics.density
         fun dp(v: Int) = (v * density).toInt()
@@ -58,7 +68,7 @@ internal class LaunchSplash(
         }
         val name = TextView(activity).apply {
             text = launch.name
-            setTextColor(Color.WHITE)
+            setTextColor(if (light) Color.BLACK else Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             gravity = Gravity.CENTER
             setPadding(dp(24), dp(16), dp(24), 0)
@@ -71,13 +81,13 @@ internal class LaunchSplash(
         }
 
         status = TextView(activity).apply {
-            setTextColor(Color.WHITE)
+            setTextColor(if (light) Color.BLACK else Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             setTypeface(typeface, Typeface.BOLD)
             setPadding(0, 0, 0, dp(12))
         }
         logText = TextView(activity).apply {
-            setTextColor(0xFFCCCCCC.toInt())
+            setTextColor(if (light) 0xFF333333.toInt() else 0xFFCCCCCC.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.MONOSPACE
             setTextIsSelectable(true)
@@ -101,11 +111,22 @@ internal class LaunchSplash(
         }
 
         view = FrameLayout(activity).apply {
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(bgColor)
             // Nothing under the splash takes input until the window shows.
             isClickable = true
             addView(splash, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             addView(logPanel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
+        setBars(bgColor, light)
+    }
+
+    private fun setBars(color: Int, lightIcons: Boolean) {
+        backdrop.setBackgroundColor(color)
+        // 3-button nav's scrim stays dark otherwise.
+        activity.window.isNavigationBarContrastEnforced = !lightIcons
+        WindowCompat.getInsetsController(activity.window, activity.window.decorView).apply {
+            isAppearanceLightStatusBars = lightIcons
+            isAppearanceLightNavigationBars = lightIcons
         }
     }
 
@@ -162,6 +183,7 @@ internal class LaunchSplash(
     private fun hide() {
         if (!active) return
         active = false
+        setBars(Color.BLACK, false)
         view.animate().alpha(0f).setDuration(FADE_MS).withEndAction { view.visibility = View.GONE }
     }
 

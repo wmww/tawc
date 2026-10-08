@@ -89,7 +89,8 @@ A GUI tap opens the window's own task at once, the way an Android
 app's splash works: a `CompositorActivity` in launch mode
 (`CompositorActivity.launchIntent`, `tawc://activity/<launchId>` plus a
 `launchId` extra) shows the entry's icon and name (`LaunchSplash`, a
-plain view over the SurfaceView, black like the compositor window) and
+plain view over the SurfaceView; white with dark text in light mode,
+black in dark mode, bar area and icons matching while it is up) and
 sets the recents label/icon up front. The program's first root window
 maps into **this** Activity's host — no second task, no task switch —
 and the splash fades out on that host's first frame with content.
