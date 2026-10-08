@@ -53,7 +53,8 @@ the spawn carries on unprotected (the next acquire retries).
 **Stray tail.** A `nohup`/`setsid` job outlives its tab and holds nothing.
 When the last hold releases, the service runs `ProcessScanner.scan`
 off-thread; if guests remain it stays up as "N background processes" and
-re-scans every 15 s until none do. Only this tail state polls.
+re-scans every 15 s until none do (Exit triggers an immediate re-scan
+once its kill pass is done). Only this tail state polls.
 
 **Notification.** Channel `tawc_session` (the old `tawc_compositor`
 channel is deleted), low importance, ongoing. Title "TAWC running", text
@@ -70,7 +71,10 @@ terminal session (tabs close through the normal
 are not `READY` or have a live `install:`/`uninstall:` operation, whose
 processes belong to the installer. One notification stands for every
 reason, so a partial exit would leave it up. Holds are not force-released;
-each follows its own process down.
+each follows its own process down. The kill pass rescans (8 × 250 ms) for
+processes forked while dying, but stops once anything new acquires a hold
+(`SessionHolds.acquisitions`), so a program started right after Exit
+survives.
 
 ## Keep awake
 

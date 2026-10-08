@@ -46,9 +46,15 @@ object SessionHolds {
 
     val reasons: StateFlow<List<Reason>> = state.asStateFlow()
 
+    /** Bumped by every [acquire]: lets Exit notice something new started. */
+    @Volatile
+    var acquisitions = 0L
+        private set
+
     fun acquire(reason: Reason): Hold {
         val hold = HoldImpl()
         val start = synchronized(lock) {
+            acquisitions++
             holds[hold] = reason
             publish()
             service == null

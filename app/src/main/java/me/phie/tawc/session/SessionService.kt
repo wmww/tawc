@@ -23,9 +23,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import me.phie.tawc.MainActivity
 import me.phie.tawc.R
 import me.phie.tawc.install.InstallationStore
@@ -155,7 +156,7 @@ class SessionService : Service() {
                 }
                 strays = count
                 notifyNow()
-                delay(STRAY_POLL_MS)
+                withTimeoutOrNull(STRAY_POLL_MS) { rescan.receive() }
             }
         }
     }
@@ -315,6 +316,14 @@ class SessionService : Service() {
         private const val STRAY_POLL_MS = 15_000L
 
         private val loggedStartFailure = AtomicBoolean(false)
+
+        private val rescan = Channel<Unit>(Channel.CONFLATED)
+
+        /** Re-scan for strays now instead of at the next poll (after
+         *  Exit has killed them). Any thread. */
+        fun rescanStrays() {
+            rescan.trySend(Unit)
+        }
 
         /**
          * Hook [SessionHolds] up to this service. `Application.onCreate`.

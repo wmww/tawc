@@ -177,6 +177,9 @@ object ProcessScanner {
      * install-cancel sweep pass the install dir, which also catches
      * out-of-rootfs helpers (`tar`, `find`) launched against it from
      * outside.
+     *
+     * [keepGoing] is asked before each rescan's kills; false ends the
+     * sweep (Exit: something new took a session hold).
      */
     fun killAllInRootfs(
         rootfsPath: String,
@@ -185,6 +188,7 @@ object ProcessScanner {
         extraCmdlinePath: String? = null,
         maxSweeps: Int = 8,
         sweepDelayMs: Long = 250,
+        keepGoing: () -> Boolean = { true },
         log: (String) -> Unit,
     ): Int {
         val pair = listOf(canonicalize(rootfsPath) to installId)
@@ -224,6 +228,9 @@ object ProcessScanner {
         var killedAny = false
         for (pass in 1..limit) {
             val procs = sweep()
+            // Checked after the scan: anything it saw that started after
+            // [keepGoing] turned false is spared.
+            if (pass > 1 && !keepGoing()) return killedCount
             if (procs.isEmpty()) {
                 if (!killedAny) log("no guest processes to clean up")
                 return killedCount

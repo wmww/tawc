@@ -31,6 +31,9 @@ internal object SessionExit {
         RemoteSession.stop()
         CompositorService.stop()
         val app = context.applicationContext
+        // Rescans stop once anything new takes a hold: whatever the user
+        // starts right after Exit must not be caught by a later pass.
+        val acquisitions = SessionHolds.acquisitions
         thread(name = "tawc-session-exit", isDaemon = true) {
             val store = InstallationStore(app)
             for (install in store.list()) {
@@ -41,12 +44,14 @@ internal object SessionExit {
                         rootfsPath = store.rootfsDir(install.id).absolutePath,
                         installId = install.id,
                         includeChroot = install.method == ChrootMethod.KEY,
+                        keepGoing = { SessionHolds.acquisitions == acquisitions },
                         log = {},
                     )
                 } catch (t: Throwable) {
                     Log.w(TAG, "exit: kill in ${install.id} failed", t)
                 }
             }
+            SessionService.rescanStrays()
         }
     }
 
