@@ -34,6 +34,8 @@
  *   render-pattern              Fullscreen deterministic SHM color pattern
  *   scale                       Report wp_fractional_scale_v1 changes
  *   initial-configure           Report initial output/configure sequencing
+ *   activation-listener <fifo>  Activate the toplevel with xdg_activation_v1
+ *                               tokens read line by line from <fifo>
  */
 
 #define _GNU_SOURCE
@@ -58,6 +60,7 @@
 #include "text-input-unstable-v3-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
+#include "xdg-activation-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 #ifndef MFD_CLOEXEC
@@ -269,6 +272,7 @@ struct app {
     struct wp_fractional_scale_v1 *fractional_scale;
     struct zxdg_decoration_manager_v1 *decoration_manager;
     struct zxdg_toplevel_decoration_v1 *decoration;
+    struct xdg_activation_v1 *activation;
 
     int running;
     int configured;
@@ -359,6 +363,7 @@ struct wayland_mode {
     int clipboard_paste;
     int scene_kind;
     int scene_child_input_empty;
+    int use_activation;
 };
 
 static struct app *signal_app;
@@ -2502,6 +2507,13 @@ static void registry_global(void *data, struct wl_registry *registry,
             registry, name, &zxdg_decoration_manager_v1_interface, 1);
         require_true(app->decoration_manager != NULL,
                      "bind zxdg_decoration_manager_v1 failed");
+    } else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
+        require_true(app->activation == NULL,
+                     "duplicate xdg_activation_v1 global");
+        app->activation = wl_registry_bind(
+            registry, name, &xdg_activation_v1_interface, 1);
+        require_true(app->activation != NULL,
+                     "bind xdg_activation_v1 failed");
     }
 }
 
@@ -2592,6 +2604,8 @@ static void setup_wayland(struct app *app, const struct wayland_mode *mode)
     if (mode->use_data_device)
         require_true(app->data_device_manager != NULL,
                      "missing wl_data_device_manager");
+    if (mode->use_activation && app->activation == NULL)
+        fatal("missing xdg_activation_v1 global");
 
     app->surface = wl_compositor_create_surface(app->compositor);
     require_true(app->surface != NULL,
@@ -2711,6 +2725,8 @@ static void teardown_wayland(struct app *app)
         wp_fractional_scale_manager_v1_destroy(app->fractional_scale_manager);
     if (app->decoration_manager)
         zxdg_decoration_manager_v1_destroy(app->decoration_manager);
+    if (app->activation)
+        xdg_activation_v1_destroy(app->activation);
     if (app->data_device_manager)
         wl_data_device_manager_destroy(app->data_device_manager);
     if (app->wm_base)
@@ -3149,6 +3165,108 @@ static int cmd_clipboard_paste_retained(int argc, char **argv)
     return 0;
 }
 
+/* Reads newline-terminated xdg_activation_v1 tokens from a FIFO and
+ * activates the toplevel with each one.
+ */
+static void activate_fifo_lines(struct app *app, char *buf, size_t *len)
+{
+    char *start = buf;
+    char *nl;
+
+    while ((nl = memchr(start, '\n', *len - (size_t)(start - buf))) != NULL) {
+        *nl = '\0';
+        if (nl > start && nl[-1] == '\r')
+            nl[-1] = '\0';
+        if (start[0]) {
+            xdg_activation_v1_activate(app->activation, start, app->surface);
+            checked_flush(app->display);
+            debug_emit("ACTIVATED", start);
+        }
+        start = nl + 1;
+    }
+    *len -= (size_t)(start - buf);
+    memmove(buf, start, *len);
+}
+
+static int cmd_activation_listener(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "TAWC wayland activation debug",
+        .app_id = "wayland-debug-app-activation",
+        .use_activation = 1,
+    };
+    struct app app;
+    char buf[4096];
+    size_t len = 0;
+    int fifo_fd;
+    int fifo_keepalive_fd;
+
+    if (argc < 2)
+        fatal("activation-listener requires a fifo path");
+    if (mkfifo(argv[1], 0666) == 0) {
+        /* Undo umask so any rootfs user can write tokens. */
+        if (chmod(argv[1], 0666) < 0)
+            fatal("chmod %s failed: %s", argv[1], strerror(errno));
+    } else if (errno != EEXIST) {
+        fatal("mkfifo %s failed: %s", argv[1], strerror(errno));
+    }
+    fifo_fd = open(argv[1], O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fifo_fd < 0)
+        fatal("open %s failed: %s", argv[1], strerror(errno));
+    /* Keep a writer open so the read end never sees EOF between writers. */
+    fifo_keepalive_fd = open(argv[1], O_WRONLY | O_CLOEXEC);
+    if (fifo_keepalive_fd < 0)
+        fatal("open %s for writing failed: %s", argv[1], strerror(errno));
+
+    memset(&app, 0, sizeof(app));
+    signal_app = &app;
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+    signal(SIGPIPE, SIG_IGN);
+
+    setup_wayland(&app, &mode);
+
+    while (app.running) {
+        struct pollfd pfds[2] = {
+            { .events = POLLIN },
+            { .fd = fifo_fd, .events = POLLIN },
+        };
+        int pr;
+
+        while (wl_display_prepare_read(app.display) != 0)
+            wl_display_dispatch_pending(app.display);
+        wl_display_flush(app.display);
+        pfds[0].fd = wl_display_get_fd(app.display);
+        pr = poll(pfds, 2, -1);
+        if (pr > 0 && (pfds[0].revents & POLLIN))
+            wl_display_read_events(app.display);
+        else
+            wl_display_cancel_read(app.display);
+        if (pr < 0 && errno != EINTR)
+            fatal("poll failed: %s", strerror(errno));
+        if (wl_display_dispatch_pending(app.display) < 0)
+            fatal("wl_display_dispatch_pending failed: %s", strerror(errno));
+        if (pr > 0 && (pfds[1].revents & POLLIN)) {
+            ssize_t n;
+
+            if (len == sizeof(buf))
+                fatal("activation token line too long");
+            n = read(fifo_fd, buf + len, sizeof(buf) - len);
+            if (n < 0 && errno != EAGAIN && errno != EINTR)
+                fatal("read %s failed: %s", argv[1], strerror(errno));
+            if (n > 0)
+                len += (size_t)n;
+        }
+        if (app.configured && len > 0)
+            activate_fifo_lines(&app, buf, &len);
+    }
+
+    teardown_wayland(&app);
+    close(fifo_keepalive_fd);
+    close(fifo_fd);
+    return 0;
+}
+
 static int cmd_subsurface(int argc, char **argv)
 {
     static const struct wayland_mode mode = {
@@ -3257,6 +3375,9 @@ static const struct command commands[] = {
     { "scale", "Report fractional scale changes", cmd_scale },
     { "initial-configure", "Report initial output/configure sequencing",
       cmd_initial_configure },
+    { "activation-listener",
+      "Activate the toplevel with xdg_activation_v1 tokens from a FIFO",
+      cmd_activation_listener },
     { "subsurface", "Fullscreen toplevel with a touchable subsurface",
       cmd_subsurface },
     { "subsurface-input-empty",

@@ -68,6 +68,9 @@ use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
 use smithay::wayland::xwayland_shell::XWaylandShellState;
 use smithay::xwayland::{X11Surface, X11Wm, XWaylandActivation, XWaylandClientData};
 
@@ -222,6 +225,14 @@ pub struct TawcState {
     /// Rootfs desktop-entry lookup cache. Includes misses so repeated
     /// title updates for unmatched app ids never rescan the filesystem.
     pub app_metadata_cache: HashMap<String, Option<launcher::DesktopAppMetadata>>,
+
+    /// Hosts reserved by launcher taps, waiting for their window
+    /// (launch.rs). Oldest first.
+    pub pending_launches: Vec<crate::launch::PendingLaunch>,
+    /// Matched launch hosts whose splash hides on their first frame with
+    /// content.
+    pub launch_first_frame: HashSet<ActivityId>,
+    pub xdg_activation_state: XdgActivationState,
 
     /// Text input protocol state.
     pub text_input_state: TextInputState,
@@ -394,6 +405,7 @@ impl TawcState {
         dh.create_global::<Self, TawcGfxstream, ()>(1, ());
 
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
 
         let mut state = Self {
             display_handle: dh,
@@ -438,6 +450,9 @@ impl TawcState {
             host_fullscreen: HashMap::new(),
             window_metadata: HashMap::new(),
             app_metadata_cache: HashMap::new(),
+            pending_launches: Vec::new(),
+            launch_first_frame: HashSet::new(),
+            xdg_activation_state,
             // Phase 5: default to multi-window. Each non-child toplevel
             // gets its own Android task / recents card.
             single_activity_mode: false,
@@ -1038,9 +1053,23 @@ impl XdgShellHandler for TawcState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Run the desktop registry's assignment policy.
-        // The result tells us whether to spawn a new Activity (phase 5+).
-        let assignment = self.assign_toplevel_to_host(&surface);
+        // A root window from a launched program's session lands in that
+        // launch's splash host. Otherwise run the desktop registry's
+        // assignment policy, which may spawn a new Activity.
+        let launch_host = match surface.parent() {
+            None => surface
+                .wl_surface()
+                .client()
+                .and_then(|client| self.claim_launch_for_client(&client)),
+            Some(_) => None,
+        };
+        let assignment = match launch_host {
+            Some(host) => {
+                self.desktop.assign_surface_to_host(surface.wl_surface().clone(), host.clone());
+                crate::desktop::HostAssignment { host, spawn_activity: false }
+            }
+            None => self.assign_toplevel_to_host(&surface),
+        };
 
         surface.with_pending_state(|state| {
             state.states.set(
@@ -1174,6 +1203,13 @@ impl XdgShellHandler for TawcState {
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        // Fallback match for launches whose session is unknown or gone.
+        if surface.parent().is_none() && !self.pending_launches.is_empty() {
+            let (_, app_id) = xdg_toplevel_metadata(&surface);
+            if let Some(host) = self.claim_launch_for_app_id(&app_id) {
+                self.adopt_into_launch_host(surface.wl_surface(), &host);
+            }
+        }
         self.update_wayland_window_metadata(&surface);
     }
 
@@ -1193,6 +1229,62 @@ impl XdgShellHandler for TawcState {
 }
 
 impl OutputHandler for TawcState {}
+
+/// Client-made tokens nobody used are dropped after this long.
+const ACTIVATION_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl XdgActivationHandler for TawcState {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    fn token_created(&mut self, _token: XdgActivationToken, _data: XdgActivationTokenData) -> bool {
+        let launch_tokens: Vec<XdgActivationToken> =
+            self.pending_launches.iter().map(|l| l.token.clone()).collect();
+        self.xdg_activation_state.retain_tokens(|token, data| {
+            launch_tokens.contains(token) || data.timestamp.elapsed() < ACTIVATION_TOKEN_TTL
+        });
+        true
+    }
+
+    fn request_activation(
+        &mut self,
+        token: XdgActivationToken,
+        token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        let root_toplevel = self
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .any(|t| t.wl_surface() == &surface && t.parent().is_none());
+        // A launch token handed to another process (an app's running
+        // instance) pulls that window into the launch's splash task.
+        if self.is_launch_token(&token) {
+            if root_toplevel {
+                if let Some(host) = self.claim_launch_for_token(&token) {
+                    self.adopt_into_launch_host(&surface, &host);
+                }
+            }
+            return;
+        }
+        self.xdg_activation_state.remove_token(&token);
+        // Otherwise the usual meaning: bring the window to the front, but
+        // only on behalf of a client the user is looking at.
+        let foreground = self.desktop.foreground_host().cloned();
+        let requester_focused = token_data
+            .surface
+            .as_ref()
+            .and_then(|s| self.desktop.host_for_surface(s))
+            .is_some_and(|host| Some(&host) == foreground.as_ref());
+        let Some(host) = self.desktop.host_for_surface(&surface) else {
+            return;
+        };
+        if requester_focused && Some(&host) != foreground.as_ref() && self.hosts.contains_key(&host) {
+            crate::activate_activity_from_native(&host);
+        }
+    }
+}
 
 impl FractionalScaleHandler for TawcState {
     fn new_fractional_scale(&mut self, surface: WlSurface) {

@@ -46,6 +46,16 @@ class EntryLauncherTest {
     @Test
     fun otherAppsUntouched() = assertEquals("--x", argsSeen(chromium = false))
 
+    @Test
+    fun activationTokenExported() {
+        val root = tmp.newFolder()
+        val out = File(root, "env")
+        val exec = "sh -c 'echo \"${'$'}XDG_ACTIVATION_TOKEN ${'$'}DESKTOP_STARTUP_ID\" > ${out.path}'"
+        val proc = ProcessBuilder("bash", "-c", EntryLauncher.guiCommand(exec, "tok'1")).start()
+        assertEquals(0, proc.waitFor())
+        assertEquals("tok'1 tok'1", out.readText().trim())
+    }
+
     /** The probe looks past an `env K=V` prefix (the editor's variables). */
     @Test
     fun chromiumBehindEnvGetsNoSandbox() =

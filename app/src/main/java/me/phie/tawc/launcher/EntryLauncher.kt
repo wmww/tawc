@@ -10,9 +10,12 @@ import kotlinx.coroutines.launch
 import me.phie.tawc.GraphicsBackend
 import me.phie.tawc.MainActivity
 import me.phie.tawc.R
+import me.phie.tawc.compositor.CompositorActivity
+import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.install.MethodRunHelper
 import me.phie.tawc.install.Sh
 import me.phie.tawc.install.TawcrootMethod
 import me.phie.tawc.install.UserRootfsSession
@@ -31,8 +34,12 @@ import me.phie.tawc.install.distro.DistroRegistry
  * methods are debug-only. The terminal built-ins (TAWC Term, Update
  * packages) open a tab the same way.
  *
- * For GUI entries, stdio is redirected to /dev/null so a chatty program
- * can't fill the pipe back to the JVM (which we never read).
+ * GUI entries open their window's task at once: a [CompositorActivity]
+ * splash whose host is reserved for the program's first window
+ * ([LaunchRegistry], notes/launcher.md "Launch splash"). The program's
+ * stdout/stderr feed the splash's log view until a window matches, and
+ * are drained for the program's whole lifetime after that — a full pipe
+ * would block it.
  *
  * No `setsid -f` detach: under proot's `--kill-on-exit` the detached
  * child gets SIGKILLed when the launcher bash exits, so the app dies
@@ -41,12 +48,9 @@ import me.phie.tawc.install.distro.DistroRegistry
  * program needs the JVM alive for the compositor's Wayland socket, so
  * there's nothing to gain from detaching.
  *
- * Spawn failures (compositor start, Wayland socket wait, the
- * fail-closed bind IOException from startInside) surface via
- * [LaunchErrorActivity] started from the application context — the
- * launching Activity is typically finished by the time they arrive. A
- * nonzero exit of the program itself returns normally and is
- * intentionally not surfaced.
+ * Spawn failures (the fail-closed bind IOException from startInside)
+ * go to the splash's log view, or, with no splash up, to
+ * [LaunchErrorActivity] started from the application context.
  */
 object EntryLauncher {
 
@@ -93,19 +97,56 @@ object EntryLauncher {
             }
             Log.w(TAG, "terminal entry ${entry.id}: native terminal is tawcroot-only, running headless")
         }
-        val rootfs = InstallationStore(appContext).rootfsDir(inst.id).absolutePath
-        val cmd = guiCommand(entry.exec)
+        launchGui(appContext, method, InstallationStore(appContext).rootfsDir(inst.id).absolutePath, entry, graphics)
+    }
+
+    /** GUI launch behind a splash; returns its [Launch] (for the dev broker). */
+    internal fun launchGui(
+        appContext: Context,
+        method: InstallationMethod,
+        rootfs: String,
+        entry: LauncherEntry,
+        graphics: GraphicsBackend?,
+        timeoutMs: Long = LaunchRegistry.DEFAULT_TIMEOUT_MS,
+    ): Launch {
+        val name = entry.name.ifEmpty { entry.id }
+        val launch = LaunchRegistry.create(entry.id, name, entry.iconPath, entry.terminal, timeoutMs)
+        val splash = runCatching { appContext.startActivity(CompositorActivity.launchIntent(appContext, launch.id)) }
+            .onFailure { Log.w(TAG, "launch ${entry.id}: no splash: $it") }
+            .isSuccess
+        if (!splash) LaunchRegistry.release(launch.id)
         LAUNCH_SCOPE.launch {
-            runCatching { UserRootfsSession.runInside(appContext, method, rootfs, cmd, graphics = graphics) }
-                .onFailure { e ->
-                    Log.w(TAG, "launch ${entry.id}: $e")
-                    val title = appContext.getString(
-                        R.string.launcher_launch_failed_title,
-                        entry.name.ifEmpty { entry.id },
+            val token = if (splash) LaunchRegistry.reserve(appContext, launch) else null
+            if (token == null) LaunchRegistry.dispatch(launch.id, LaunchEvent.Detached)
+            val proc = try {
+                UserRootfsSession.startInside(appContext, method, rootfs, guiCommand(entry.exec, token), graphics)
+            } catch (e: Exception) {
+                Log.w(TAG, "launch ${entry.id}: $e")
+                val message = e.message ?: e.javaClass.simpleName
+                if (token != null && launch.attached) {
+                    LaunchRegistry.dispatch(launch.id, LaunchEvent.Failed(message))
+                } else {
+                    LaunchRegistry.dispatch(launch.id, LaunchEvent.Detached)
+                    LaunchErrorActivity.start(
+                        appContext,
+                        appContext.getString(R.string.launcher_launch_failed_title, name),
+                        message,
                     )
-                    LaunchErrorActivity.start(appContext, title, e.message ?: e.javaClass.simpleName)
                 }
+                return@launch
+            }
+            // startInside wraps the launch in setsid, which execs (the JVM
+            // child is no group leader), so the session id is the pid.
+            val sid = MethodRunHelper.pidOf(proc)
+            if (token != null && sid > 0) NativeBridge.nativeUpdateLaunch(launch.id, sid, false)
+            val code = runCatching {
+                MethodRunHelper.collectProcess(proc, launch::appendLog, keepOutput = false).exitCode
+            }.getOrElse { -1 }
+            if (token != null) NativeBridge.nativeUpdateLaunch(launch.id, sid, true)
+            val alive = sid > 0 && LaunchRegistry.sessionAlive(sid)
+            LaunchRegistry.dispatch(launch.id, LaunchEvent.Exited(code, alive))
         }
+        return launch
     }
 
     /**
@@ -117,16 +158,20 @@ object EntryLauncher {
      * `chrome_100_percent.pak`, or `/usr/lib/<name>/` holds one (distro
      * chromium wrappers).
      */
-    internal fun guiCommand(exec: String): String {
-        val tail = "</dev/null >/dev/null 2>&1"
+    internal fun guiCommand(exec: String, activationToken: String? = null): String {
+        val tail = "</dev/null 2>&1"
+        val env = activationToken?.let {
+            val t = Sh.quote(it)
+            "export XDG_ACTIVATION_TOKEN=$t DESKTOP_STARTUP_ID=$t; "
+        } ?: ""
         // Probe the program, not a leading `env K=V` (the editor's variables).
-        val argv0 = execArgv0(DesktopEntryFile.splitExec(exec).command) ?: return "$exec $tail"
+        val argv0 = execArgv0(DesktopEntryFile.splitExec(exec).command) ?: return "$env$exec $tail"
         val pak = "chrome_100_percent.pak"
         val probe = "_tawc_ns=; if _p=$(command -v -- ${Sh.quote(argv0)}) && " +
             "_p=$(readlink -f -- \"\$_p\") && " +
             "{ [ -e \"\${_p%/*}/$pak\" ] || [ -e \"/usr/lib/\${_p##*/}/$pak\" ]; }; " +
             "then _tawc_ns=--no-sandbox; fi; "
-        return "$probe$exec \$_tawc_ns $tail"
+        return "$env$probe$exec \$_tawc_ns $tail"
     }
 
     /** First word of a desktop-entry Exec line (spec quoting), or null. */

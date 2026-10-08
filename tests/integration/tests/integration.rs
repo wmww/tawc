@@ -5,6 +5,7 @@ mod cpu_graphics;
 mod distro_export;
 mod gfxstream;
 mod home_terminal;
+mod launch_splash;
 mod launcher;
 mod lazy_compositor;
 mod libhybris;

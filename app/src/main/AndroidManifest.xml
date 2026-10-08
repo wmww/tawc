@@ -79,10 +79,11 @@
              documentLaunchMode="intoExisting", taskAffinity="" and a
              unique tawc://activity/<id> URI per launch makes Android
              treat each activityId as its own "document," giving each
-             window a separate card in recents. The only launch path is
-             the reverse-JNI spawnActivity callback in NativeBridge.kt,
-             which uses an explicit Intent(ctx, CompositorActivity)
-             with the URI as data — no intent-filter or exported needed.
+             window a separate card in recents. Launch paths are the
+             reverse-JNI spawnActivity callback in NativeBridge.kt and a
+             launcher tap's splash (CompositorActivity.launchIntent), both
+             explicit Intents with the URI as data — no intent-filter or
+             exported needed.
              See notes/multi-activity.md. -->
         <activity
             android:name=".compositor.CompositorActivity"

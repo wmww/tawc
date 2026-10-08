@@ -1,5 +1,6 @@
 package me.phie.tawc.compositor
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -10,6 +11,8 @@ import android.view.PointerIcon
 import android.view.Surface
 import android.view.inputmethod.EditorInfo
 import androidx.core.net.toUri
+import me.phie.tawc.launcher.LaunchEvent
+import me.phie.tawc.launcher.LaunchRegistry
 import me.phie.tawc.terminal.TerminalPane
 import java.lang.ref.WeakReference
 
@@ -160,6 +163,19 @@ object NativeBridge {
      *  [me.phie.tawc.AndoBrokers.refresh] at startup and on every ando
      *  install/uninstall/toggle. Idempotent. */
     external fun nativeSyncAndoBrokers(ids: Array<String>, paths: Array<String>)
+
+    // --- Launch splash (me.phie.tawc.launcher.LaunchRegistry) ---
+
+    /** Reserve the splash Activity [launchId] as the host for the launch's
+     *  first window. Returns the activation token to hand the program, or
+     *  null if no compositor answered. Blocks until the event loop has it. */
+    external fun nativeReserveLaunchHost(launchId: String, desktopId: String): String?
+
+    /** The launched program's session id (0: unknown), or that it exited. */
+    external fun nativeUpdateLaunch(launchId: String, sid: Int, exited: Boolean)
+
+    /** Drop the reservation: the splash is gone. */
+    external fun nativeReleaseLaunchHost(launchId: String)
 
     // --- Per-Activity surface lifecycle: called from CompositorActivity ---
 
@@ -398,6 +414,31 @@ object NativeBridge {
                         Intent.FLAG_ACTIVITY_MULTIPLE_TASK
             }
             ctx.startActivity(intent)
+        }
+    }
+
+    /** Called from native: a window was assigned to the launch's splash host. */
+    @JvmStatic
+    fun onLaunchMatched(launchId: String) {
+        LaunchRegistry.dispatch(launchId, LaunchEvent.Matched)
+    }
+
+    /** Called from native: the launch's window rendered; the splash can go. */
+    @JvmStatic
+    fun onLaunchShown(launchId: String) {
+        LaunchRegistry.dispatch(launchId, LaunchEvent.Shown)
+    }
+
+    /** Called from native (xdg-activation): bring an existing window's task
+     *  to the front. */
+    @JvmStatic
+    fun activateActivity(activityId: String) {
+        mainHandler.post {
+            val ctx = appContext ?: return@post
+            val uri = "tawc://activity/$activityId".toUri()
+            ctx.getSystemService(ActivityManager::class.java)?.appTasks
+                ?.firstOrNull { runCatching { it.taskInfo.baseIntent.data == uri }.getOrDefault(false) }
+                ?.moveToFront()
         }
     }
 

@@ -43,6 +43,19 @@ pub struct CompositorState {
     /// `CLOCK_MONOTONIC` ns of the last vsync tick.
     pub last_vsync_ns: i64,
     pub output_refresh_mhz: u32,
+    /// Hosts reserved by launcher taps and not yet matched.
+    pub pending_launches: u32,
+    /// `<host>:<windows>` per registered host, comma-separated; `-` for none.
+    pub host_windows: String,
+}
+
+impl CompositorState {
+    /// Windows assigned to registered host `id`, or None if no such host.
+    pub fn host_windows(&self, id: &str) -> Option<u32> {
+        self.host_windows
+            .split(',')
+            .find_map(|entry| entry.strip_prefix(id)?.strip_prefix(':')?.parse().ok())
+    }
 }
 
 /// Query the compositor's current state via the in-app broker.
@@ -155,6 +168,8 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
     let mut vsync_ticks = None;
     let mut last_vsync_ns = None;
     let mut output_refresh_mhz = None;
+    let mut pending_launches = None;
+    let mut host_windows = None;
     for part in payload.split_whitespace() {
         if let Some((key, val)) = part.split_once('=') {
             match key {
@@ -190,6 +205,8 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
                 "vsync_ticks" => vsync_ticks = Some(val.parse().ok()?),
                 "last_vsync_ns" => last_vsync_ns = Some(val.parse().ok()?),
                 "output_refresh_mhz" => output_refresh_mhz = Some(val.parse().ok()?),
+                "pending_launches" => pending_launches = Some(val.parse().ok()?),
+                "host_windows" => host_windows = Some(val.to_string()),
                 _ => {}
             }
         }
@@ -220,6 +237,8 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
         vsync_ticks: vsync_ticks.unwrap_or_default(),
         last_vsync_ns: last_vsync_ns.unwrap_or_default(),
         output_refresh_mhz: output_refresh_mhz.unwrap_or_default(),
+        pending_launches: pending_launches.unwrap_or_default(),
+        host_windows: host_windows.unwrap_or_default(),
     })
 }
 

@@ -133,6 +133,9 @@ texture imports.
 
 ### Rust: the policy lives in `XdgShellHandler::new_toplevel`
 
+(As built, a reserved launch host is checked before this; see "Reserved
+launch hosts" below.)
+
 ```text
 on new_toplevel(t):
     if t has parent p and desktop.assigned_host(p) is alive:
@@ -663,6 +666,20 @@ it walks the unique host IDs and, for any host with no remaining
 assigned toplevels, calls `finish_activity_from_native(host_id)`.
 Every `CompositorActivity` exists for exactly one Wayland window — when
 the window goes away the recents card disappears with it.
+
+### Reserved launch hosts (launch splash)
+
+A launcher tap starts its `CompositorActivity` before any window
+exists, under a `launch-<random>` id the compositor reserves
+(`TawcState.pending_launches`, `launch.rs`). The policy checks it
+first: a new root toplevel (or mapping X11 root window) whose process
+is in the launch's session is assigned to that host with
+`spawn_activity: false`; an xdg-activation `activate` with the launch's
+token, or a late app_id match, moves an already-hosted window there and
+finishes its old Activity. Reserved hosts pin the compositor against
+idle stop and are never finished for having no toplevels; the splash
+Activity releases them on destroy. Details: [launcher.md](launcher.md)
+"Launch splash".
 
 ### Test action focused-activity gate
 

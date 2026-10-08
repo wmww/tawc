@@ -5,6 +5,7 @@
  *   paste         Read CLIPBOARD as UTF8_STRING and print TAWC_DEBUG
  *   paste-loop    Re-read CLIPBOARD every 250ms, reporting each attempt
  *   copy <text>   Own CLIPBOARD and serve text until killed
+ *   window        Keep the window up until killed
  */
 
 #include <X11/Xatom.h>
@@ -232,6 +233,9 @@ static void create_window(struct x11_app *app)
         .height = WIN_H,
     };
     XSetWMNormalHints(dpy, win, &hints);
+    long pid = (long)getpid();
+    XChangeProperty(dpy, win, atom(dpy, "_NET_WM_PID"), XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char *)&pid, 1);
     XResizeWindow(dpy, win, WIN_W, WIN_H);
     XSelectInput(dpy, win, StructureNotifyMask | PropertyChangeMask |
                            ExposureMask);
@@ -429,6 +433,17 @@ static int cmd_copy(struct x11_app *app, int argc, char **argv)
     return 0;
 }
 
+static int cmd_window(struct x11_app *app, int argc, char **argv)
+{
+    (void)argv;
+    if (argc != 0)
+        fatal("window takes no arguments");
+
+    while (running)
+        pump_x_events(app, 250);
+    return 0;
+}
+
 static char *join_args(int argc, char **argv)
 {
     size_t len = 0;
@@ -449,7 +464,7 @@ static char *join_args(int argc, char **argv)
 int main(int argc, char **argv)
 {
     if (argc < 2)
-        fatal("usage: %s paste|paste-loop|copy <text>", argv[0]);
+        fatal("usage: %s paste|paste-loop|copy <text>|window", argv[0]);
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -458,6 +473,7 @@ int main(int argc, char **argv)
         { "paste", "paste", cmd_paste },
         { "paste-loop", "paste-loop", cmd_paste_loop },
         { "copy", "copy <text>", cmd_copy },
+        { "window", "window", cmd_window },
     };
     const struct command *cmd = NULL;
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {

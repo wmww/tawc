@@ -11,3 +11,7 @@ MainActivity restart ("debug app never rendered").
 Real case: a `nohup`'d job that outlives a swipe and later opens a
 window. Likely needs a notification-driven launch (full-screen intent
 or a "tap to show" action) or a BAL-exempt path.
+
+Launcher taps are not affected: their window maps into the launch's
+splash task, which is already in front, with no `spawnActivity`
+(notes/launcher.md "Launch splash").

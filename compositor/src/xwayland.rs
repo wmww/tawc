@@ -580,9 +580,13 @@ impl XwmHandler for TawcState {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        // Translate X11 parent/transient state into the shared desktop
-        // host-placement policy.
-        let assignment = assign_host_for_x11(self, &window);
+        // A root window of a launched program lands in its splash host;
+        // otherwise translate X11 parent/transient state into the shared
+        // desktop host-placement policy.
+        let assignment = match claim_launch_for_x11(self, &window) {
+            Some(host) => crate::desktop::HostAssignment { host, spawn_activity: false },
+            None => assign_host_for_x11(self, &window),
+        };
         if let Err(e) = window.set_mapped(true) {
             warn!("xwayland: set_mapped(true) failed: {}", e);
             return;
@@ -827,6 +831,19 @@ impl XwmHandler for TawcState {
 /// commit hook moves the host id from this user_data slot into
 /// `state.desktop`.
 pub struct PendingHost(pub std::cell::RefCell<Option<ActivityId>>);
+
+/// Match a mapping X11 root window to a reserved launch: by the session of
+/// its `_NET_WM_PID` (the Wayland client is Xwayland, so credentials don't
+/// help), else by WM_CLASS.
+fn claim_launch_for_x11(state: &mut TawcState, surface: &X11Surface) -> Option<ActivityId> {
+    if state.pending_launches.is_empty() || surface.is_transient_for().is_some() {
+        return None;
+    }
+    if let Some(host) = surface.pid().and_then(|pid| state.claim_launch_for_pid(pid as i32)) {
+        return Some(host);
+    }
+    state.claim_launch_for_app_id(&surface.class())
+}
 
 /// Pick a host for a freshly-mapped X11 surface using the same
 /// parent/single-activity/new-activity policy as xdg toplevels.

@@ -47,27 +47,135 @@ screen"), plus pinned shortcuts.
    entries on tawcroot installs open a new home terminal tab running
    the command instead (see notes/terminal.md "Command sessions"); proot/chroot
    terminal entries fall through to the headless path with a logcat
-   warn. Everything else runs
-   `UserRootfsSession.runInside(rootfs, "<exec> </dev/null >/dev/null
-   2>&1")` on its process-wide `LAUNCH_SCOPE` (Dispatchers.IO).
+   warn. Everything else is a GUI launch behind a splash (see "Launch
+   splash"): `EntryLauncher.launchGui` opens the splash task, then on
+   its process-wide `LAUNCH_SCOPE` (Dispatchers.IO) reserves the host
+   and starts `"export XDG_ACTIVATION_TOKEN=<t>
+   DESKTOP_STARTUP_ID=<t>; <exec> </dev/null 2>&1"` via
+   `UserRootfsSession.startInside`, reading the merged output through
+   `MethodRunHelper.collectProcess` for the program's whole lifetime (a
+   full pipe would block it).
    `EntryLauncher.guiCommand` prefixes a guest-side probe: if argv0
    resolves (`command -v` + `readlink -f`) next to
    `chrome_100_percent.pak`, or `/usr/lib/<name>/` has one, it appends
    `--no-sandbox` — Chromium-family apps (Chromium, ChatGPT) refuse to
    run as root without it and ignore `ELECTRON_DISABLE_SANDBOX`.
-   `UserRootfsSession` holds a session reason while the process lives;
-   the program's first Wayland/X11 connection starts the compositor. The pane
-   clears the query and drops the IME (a 500 ms debounce stops a
-   hardware Enter's key event + editor action double-launching); the
-   coroutine keeps blocking in
-   `runInside` for the program's lifetime, which pins one IO thread
-   per running app. We can't `setsid -f` detach: proot's
-   `--kill-on-exit` (kept on for pacman cleanup) SIGKILLs any
+   `UserRootfsSession` holds a session reason while the process lives.
+   The pane clears the query and drops the IME (a 500 ms debounce stops
+   a hardware Enter's key event + editor action double-launching); the
+   coroutine keeps blocking on the process for its lifetime, which
+   pins one IO thread per running app. We can't `setsid -f` detach:
+   proot's `--kill-on-exit` (kept on for pacman cleanup) SIGKILLs any
    backgrounded child when the launcher bash exits, so the app would
    die before it ever opened a Wayland window. Blocking for the
    program's lifetime is correct anyway — the program needs the JVM
-   alive for the compositor's Wayland socket. Spawn failures surface
-   via `LaunchErrorActivity` from the application context.
+   alive for the compositor's Wayland socket. Spawn failures go to the
+   splash's log view, or with no splash up to `LaunchErrorActivity`
+   from the application context.
+
+## Launch splash
+
+A GUI tap opens the window's own task at once, the way an Android
+app's splash works: a `CompositorActivity` in launch mode
+(`CompositorActivity.launchIntent`, `tawc://activity/<launchId>` plus a
+`launchId` extra) shows the entry's icon and name (`LaunchSplash`, a
+plain view over the SurfaceView, black like the compositor window) and
+sets the recents label/icon up front. The program's first root window
+maps into **this** Activity's host — no second task, no task switch —
+and the splash fades out on that host's first frame with content.
+Terminal entries and built-ins are unchanged (terminal tabs).
+
+**Record** (`LaunchRegistry`, Kotlin, process-wide): `launchId`
+(`launch-<random>`, also the host's `ActivityId`), desktop id, name,
+icon path, terminal flag, and a capped output ring (1000 lines /
+128 KiB) for the log view. Output is dropped once a window matches;
+the pipe keeps draining. States (`reduce`, pure, `LaunchStateTest`):
+
+| State | Means | Splash shows |
+|---|---|---|
+| Waiting | no window yet | icon + name |
+| Handoff | exited 0, nothing left in its session: maybe handed to a running instance; 5 s grace | icon + name |
+| TimedOut | 20 s and no window, still running | log, live; a late window still lands here |
+| Exited(code) | exited without a window (non-zero, or after the timeout) | log, "exited with code N" |
+| Failed(msg) | spawn threw (e.g. the fail-closed bind check) | log + message |
+| Quit | Handoff grace ran out | closes with a toast |
+| Detached | no host could be reserved | closes; the window opens as without a splash |
+| Matched → Shown | window assigned → first frame rendered | fades out |
+
+Exit 0 with processes left in the session (a launcher script that
+backgrounds the program) keeps Waiting: `LaunchRegistry.sessionAlive`
+scans `/proc` for the sid. Timers live in the registry, so a
+configuration change doesn't reset them.
+
+**Session id.** `startInside` wraps every launch in `/system/bin/setsid`.
+The JVM's child is no process-group leader, so toybox `setsid` calls
+`setsid()` and execs: the session id is the spawned pid
+(`MethodRunHelper.pidOf`, reflection). Verified on the emulator under
+tawcroot: every guest process of a launch shares it.
+
+**Reserved hosts** (Rust, `launch.rs`; JNI
+`nativeReserveLaunchHost`/`nativeUpdateLaunch`/`nativeReleaseLaunchHost`
+over the surface-event channel). Reserving needs a running compositor,
+because the activation token comes from Smithay's `XdgActivationState`,
+so `LaunchRegistry.reserve` starts it and waits (≤5 s, 3 tries) before
+the spawn. `TawcState.pending_launches` holds `{host, desktop_id,
+token, sid, exited}`; while any exists, `check_idle` never stops the
+compositor. The splash's `onDestroy` (Back, swipe, Close — not a
+configuration change) releases the reservation only; the program keeps
+running and a later window gets a normal Activity. The host itself
+enters `hosts` when the splash registers its surface, like any host;
+it has no toplevels, so nothing finishes it for being empty.
+
+**Matching** a root window to a launch, strongest first (pure policy in
+`launch_match.rs`, host-testable with `rustc --edition 2021 --test
+compositor/src/launch_match.rs`):
+
+1. Session id at `new_toplevel`: the client's pid from
+   `get_credentials`, field 6 of `/proc/<pid>/stat`. Synchronous, so
+   the window never gets a throwaway Activity; covers wrapper scripts
+   and forking launchers. Misses apps that `setsid` themselves.
+2. X11 at `map_window_request`: the session of `_NET_WM_PID` (the
+   Wayland client is Xwayland, so credentials don't help).
+3. xdg-activation token (`xdg_activation_v1`, advertised for this):
+   the launch's token, exported as `XDG_ACTIVATION_TOKEN` and
+   `DESKTOP_STARTUP_ID`, on `activate` from a root toplevel matches
+   across processes — the handoff to an already-running instance. That
+   window already has an Activity, so it and everything on its host
+   move to the launch host (`adopt_into_launch_host`) and the old
+   Activity is finished; the brief flicker is accepted. Other tokens
+   keep their usual meaning: bring the window's task to the front
+   (`activateActivity` → `AppTask.moveToFront`), only for tokens
+   requested from the foreground host. Unused client tokens expire
+   after 60 s.
+4. app_id / WM_CLASS vs. the desktop id (the icon-lookup comparison),
+   only for launches whose session is unknown (proot/chroot) or gone,
+   so a second window of a running app doesn't steal a fresh launch.
+   Wayland checks on `set_app_id` and adopts like 3; X11 at map time.
+
+A match removes the launch, calls `onLaunchMatched`, and arms a
+one-shot first-frame check: after a render of that host with a
+committed buffer on a root window, `onLaunchShown` hides the splash.
+The reserved host usually has a size before the client connects, so a
+matched toplevel is configured at once instead of waiting for an
+Activity to spawn. Single-activity mode never claims a launch.
+
+A splash task restored after process death (or reopened once closed)
+has no record and finishes itself. Matched windows never need
+`spawnActivity`, so the background-launch block
+(issues/windows-cannot-open-with-no-tawc-activity-visible.md) doesn't
+apply to them.
+
+Debug broker: `launcher-launch` (the tap path, with a settable
+`timeoutMs`) and `launch-state`; `query-state` reports
+`pending_launches` and `host_windows` (`<host>:<windows>` per host).
+Coverage: `tests/integration/tests/launch_splash.rs` (Wayland, wrapper,
+backgrounding launcher, X11, failure log, timeout then late window,
+token handoff via `wayland-debug-app activation-listener`, swipe
+releases the reservation). Verified on the emulator 2026-10-08:
+lxterminal (GTK3), xclock (X11) and Firefox each map into their splash
+task with one host. No Qt app was checked: the emulator rootfs has no
+Qt libraries (qv4l2 landed in the log view with the loader error). Not
+done: a "Stop app" button on the timeout screen (killing the session).
 
 ## Hide / unhide + per-entry menu
 

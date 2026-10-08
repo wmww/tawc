@@ -259,7 +259,7 @@ fn installed_rootfs_dirs() -> Vec<PathBuf> {
     out
 }
 
-fn desktop_id_matches_app_id(desktop_id: &str, app_id: &str) -> bool {
+pub(crate) fn desktop_id_matches_app_id(desktop_id: &str, app_id: &str) -> bool {
     let id = normalize_desktop_id(desktop_id);
     let app = normalize_desktop_id(app_id);
     if id == app {

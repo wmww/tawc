@@ -37,6 +37,8 @@ mod scale;
 mod event_loop;
 mod input;
 mod keymap;
+mod launch;
+mod launch_match;
 mod icon_cache;
 mod launcher;
 mod text_input;
@@ -524,6 +526,61 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeOnActivit
     let activity_id = jstring_to_id(&mut env, activity_id);
     info!("nativeOnActivityDestroyed({})", activity_id);
     host::send_surface_event(SurfaceEvent::ActivityDestroyed { activity_id });
+}
+
+// ---------------------------------------------------------------------------
+// JNI: launch splash (launch.rs)
+// ---------------------------------------------------------------------------
+
+/// Reserve the splash Activity `launch_id` as the host for a launch's
+/// first window. Returns the activation token to hand the program, or
+/// null if no compositor answered. Blocks until the event loop has it.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeReserveLaunchHost(
+    mut env: JNIEnv,
+    _class: JClass,
+    launch_id: JString,
+    desktop_id: JString,
+) -> jobject {
+    let launch_id = jstring_to_id(&mut env, launch_id);
+    let desktop_id: String = env.get_string(&desktop_id).map(|s| s.into()).unwrap_or_default();
+    let (tx, rx) = mpsc::channel();
+    if !host::send_surface_event(SurfaceEvent::ReserveLaunch { launch_id, desktop_id, response: tx }) {
+        return std::ptr::null_mut();
+    }
+    // The event loop may still be setting up after a cold start.
+    let Ok(token) = rx.recv_timeout(Duration::from_secs(5)) else {
+        return std::ptr::null_mut();
+    };
+    match env.new_string(token) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// The launched program's session id (`sid` <= 0: unknown), or that it
+/// exited.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeUpdateLaunch(
+    mut env: JNIEnv,
+    _class: JClass,
+    launch_id: JString,
+    sid: jint,
+    exited: jboolean,
+) {
+    let launch_id = jstring_to_id(&mut env, launch_id);
+    let sid = (sid > 0).then_some(sid);
+    host::send_surface_event(SurfaceEvent::UpdateLaunch { launch_id, sid, exited: exited != 0 });
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeReleaseLaunchHost(
+    mut env: JNIEnv,
+    _class: JClass,
+    launch_id: JString,
+) {
+    let launch_id = jstring_to_id(&mut env, launch_id);
+    host::send_surface_event(SurfaceEvent::ReleaseLaunch { launch_id });
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,6 +1258,32 @@ pub fn spawn_activity_from_native(activity_id: &str) {
             "(Ljava/lang/String;)V",
             &[(&id_jstr).into()],
         )?;
+        Ok(())
+    });
+}
+
+/// Reverse-JNI: a root window was assigned to the reserved launch host.
+pub fn launch_matched_from_native(launch_id: &str) {
+    call_native_bridge_string("onLaunchMatched", launch_id);
+}
+
+/// Reverse-JNI: the matched launch host rendered its window; the splash
+/// can go.
+pub fn launch_shown_from_native(launch_id: &str) {
+    call_native_bridge_string("onLaunchShown", launch_id);
+}
+
+/// Reverse-JNI: bring an existing window's task to the front
+/// (xdg-activation).
+pub fn activate_activity_from_native(activity_id: &str) {
+    call_native_bridge_string("activateActivity", activity_id);
+}
+
+/// Call a static `(String)V` method on NativeBridge.
+fn call_native_bridge_string(method: &str, arg: &str) {
+    with_native_bridge(method, |env, class| {
+        let jstr = env.new_string(arg)?;
+        env.call_static_method(class, method, "(Ljava/lang/String;)V", &[(&jstr).into()])?;
         Ok(())
     });
 }

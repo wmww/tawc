@@ -30,16 +30,19 @@ internal object MethodRunHelper {
         return collectProcess(proc, onLine)
     }
 
+    /** [keepOutput] false: only [onLine] sees the output, for long-lived
+     *  programs whose output nobody reads back. */
     fun collectProcess(
         proc: Process,
         onLine: ((String) -> Unit)?,
+        keepOutput: Boolean = true,
     ): MethodResult {
         // We don't redirectErrorStream up at startInside (the broker
         // path needs them split into separate frames), so collect both
         // here and merge into one ordered-by-arrival line stream.
         val sb = StringBuilder()
         val collect: (String) -> Unit = { line ->
-            synchronized(sb) {
+            if (keepOutput) synchronized(sb) {
                 if (sb.length < OUTPUT_CAP_BYTES) {
                     if (sb.isNotEmpty()) sb.append('\n')
                     sb.append(line)
@@ -71,5 +74,18 @@ internal object MethodRunHelper {
         }
         outT.join(2000); errT.join(2000)
         return MethodResult(proc.exitValue(), sb.toString())
+    }
+
+    /**
+     * Kernel pid of [proc], or -1. `Process.pid()` isn't in the Android
+     * API surface (compileSdk 36 / minSdk 29), but the `ProcessImpl` /
+     * `UNIXProcess` behind it carries a `pid` field.
+     */
+    fun pidOf(proc: Process): Int = try {
+        val f = proc.javaClass.getDeclaredField("pid")
+        f.isAccessible = true
+        f.getInt(proc)
+    } catch (_: Throwable) {
+        -1
     }
 }

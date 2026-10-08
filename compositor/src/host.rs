@@ -200,6 +200,16 @@ pub enum SurfaceEvent {
         pressed: bool,
         repeat_count: u32,
     },
+    /// Reserve a host for a launcher tap; answers the activation token.
+    ReserveLaunch {
+        launch_id: ActivityId,
+        desktop_id: String,
+        response: mpsc::Sender<String>,
+    },
+    /// The launched program's session id is known, or it exited.
+    UpdateLaunch { launch_id: ActivityId, sid: Option<i32>, exited: bool },
+    /// The launch's splash Activity is gone.
+    ReleaseLaunch { launch_id: ActivityId },
     /// Test hook: ask every attached client window to close.
     CloseAllClientsForTest { response: mpsc::Sender<usize> },
 }

@@ -121,6 +121,23 @@ impl DesktopRegistry {
         self.map_window_to_host(&window, &host_id);
     }
 
+    /// Move every window assigned to `from` onto `to`.
+    pub fn reassign_host(&mut self, from: &ActivityId, to: &ActivityId) {
+        let surfaces: Vec<WlSurface> = self
+            .surface_to_host
+            .iter()
+            .filter(|(_, host)| *host == from)
+            .map(|(surface, _)| surface.clone())
+            .collect();
+        for surface in surfaces {
+            self.assign_surface_to_host(surface, to.clone());
+        }
+    }
+
+    pub fn window_count_for_host(&self, host_id: &ActivityId) -> usize {
+        self.surface_to_host.values().filter(|h| *h == host_id).count()
+    }
+
     pub fn remove_wayland_toplevel(&mut self, surface: &WlSurface) -> Option<ActivityId> {
         self.remove_surface(surface)
     }

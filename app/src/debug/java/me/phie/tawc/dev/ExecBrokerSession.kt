@@ -6,6 +6,7 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import me.phie.tawc.GraphicsBackend
+import me.phie.tawc.install.MethodRunHelper
 import me.phie.tawc.install.UserRootfsSession
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -566,23 +567,7 @@ internal class ExecBrokerSession(private val socket: LocalSocket) {
         return Request.Exec(argv, env, cwd, opTitle)
     }
 
-    /**
-     * Extract the kernel pid of [proc]. `Process.pid()` is the public
-     * Java 9+ API but it isn't exposed at the Android API surface we
-     * compile against (verified: `proc.pid()` doesn't resolve on
-     * compileSdk=36 / minSdk=29). The underlying `ProcessImpl` /
-     * `UNIXProcess` carries a `pid` int field we can pluck off via
-     * reflection. Returns -1 on any failure.
-     */
-    private fun pidOf(proc: Process): Int {
-        return try {
-            val f = proc.javaClass.getDeclaredField("pid")
-            f.isAccessible = true
-            f.getInt(proc)
-        } catch (_: Throwable) {
-            -1
-        }
-    }
+    private fun pidOf(proc: Process): Int = MethodRunHelper.pidOf(proc)
 
     /**
      * Collect pids of every descendant of [rootPid] by scanning each

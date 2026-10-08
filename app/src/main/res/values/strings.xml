@@ -198,6 +198,12 @@
     <string name="icon_picker_loading">Loading icons&#8230;</string>
     <string name="icon_picker_none">No icons found.</string>
     <string name="launcher_launch_failed_title">Launching %1$s failed</string>
+    <string name="launch_splash_close">Close</string>
+    <string name="launch_splash_no_window">%1$s hasn\'t opened a window yet</string>
+    <string name="launch_splash_exited">%1$s exited with code %2$d</string>
+    <string name="launch_splash_failed">Couldn\'t start %1$s: %2$s</string>
+    <string name="launch_splash_quit">%1$s exited without opening a window</string>
+    <string name="launch_splash_no_output">(no output)</string>
 
     <string name="operation_not_in_flight">No operation in flight for \'%1$s\'.</string>
     <string name="operation_channel_name">Operations</string>

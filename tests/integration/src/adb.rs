@@ -1022,6 +1022,26 @@ pub fn launcher_resolve_icon(value: &str) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Launch a GUI entry of the standing install like a tap (`launcher-launch`:
+/// splash + reserved host). `timeout_ms` overrides the splash's
+/// no-window timeout. Returns the launch id.
+pub fn launcher_launch(entry_id: &str, timeout_ms: Option<u64>) -> io::Result<String> {
+    let id = crate::install_id();
+    let timeout = timeout_ms.map(|t| t.to_string());
+    let mut args = vec![("installId", id.as_str()), ("entryId", entry_id)];
+    if let Some(t) = timeout.as_deref() {
+        args.push(("timeoutMs", t));
+    }
+    let output = broker_action("launcher-launch", &args)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// `{state, code, message, taskId, log}` JSON for a launch (`launch-state`).
+pub fn launch_state(launch_id: &str) -> io::Result<String> {
+    let output = broker_action("launch-state", &[("launchId", launch_id)])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 // Common Android keycodes (used with [ic_send_key_event]).
 pub const KEYCODE_DEL: u32 = 67; // Backspace
 pub const KEYCODE_FORWARD_DEL: u32 = 112; // Delete (forward delete)

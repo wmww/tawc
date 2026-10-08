@@ -762,8 +762,20 @@ pub fn run(
                 .map(|pid| pid.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
+            // `<host>:<windows>` per registered host, `-` for none.
+            let mut host_windows = data
+                .hosts
+                .keys()
+                .map(|id| format!("{}:{}", id, data.desktop.window_count_for_host(id)))
+                .collect::<Vec<_>>();
+            host_windows.sort();
+            let host_windows = if host_windows.is_empty() {
+                "-".to_string()
+            } else {
+                host_windows.join(",")
+            };
             let payload = format!(
-                "clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={} hosts={} bound_hosts={} xwayland_running={} xwayland_pids={} x11_surfaces={} x11_surfaces_with_host={} wlegl_create_buffer_total={} wlegl_import_texture_total={} wlegl_buffer_destroy_total={} last_wlegl_width={} last_wlegl_height={} last_wlegl_format={} output_scale={:.2} output_physical_w={} output_physical_h={} output_logical_w={} output_logical_h={} pointer_present={} pointer_x={:.2} pointer_y={:.2} pointer_focus={} cursor_shape={} vsync_ticks={} last_vsync_ns={} vsync_period_ns={} tick_latency_max_ns={} output_refresh_mhz={}",
+                "clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={} hosts={} bound_hosts={} xwayland_running={} xwayland_pids={} x11_surfaces={} x11_surfaces_with_host={} wlegl_create_buffer_total={} wlegl_import_texture_total={} wlegl_buffer_destroy_total={} last_wlegl_width={} last_wlegl_height={} last_wlegl_format={} output_scale={:.2} output_physical_w={} output_physical_h={} output_logical_w={} output_logical_h={} pointer_present={} pointer_x={:.2} pointer_y={:.2} pointer_focus={} cursor_shape={} vsync_ticks={} last_vsync_ns={} vsync_period_ns={} tick_latency_max_ns={} output_refresh_mhz={} pending_launches={} host_windows={}",
                 clients,
                 toplevel_count(data),
                 surfaces_wlegl,
@@ -801,6 +813,8 @@ pub fn run(
                 data.frame_clock.measured_period_ns,
                 data.frame_clock.tick_latency_max_ns,
                 data.output_refresh_mhz,
+                data.pending_launches.len(),
+                host_windows,
             );
             let _ = response.send(payload);
         }
@@ -1049,7 +1063,9 @@ fn check_idle(data: &mut TawcState) {
         crate::clipboard::install_android_selection(data);
     }
 
-    if clients > 0 || xwayland_running {
+    // A reserved launch host waits for a client that may not have
+    // connected yet; its splash Activity releases it when closed.
+    if clients > 0 || xwayland_running || !data.pending_launches.is_empty() {
         data.idle_since = None;
         return;
     }
@@ -1085,7 +1101,7 @@ fn render_visible_host(data: &mut TawcState) -> bool {
             false
         }
     };
-    data.hosts.insert(id, host);
+    data.hosts.insert(id.clone(), host);
 
     if rendered {
         data.frame_count += 1;
@@ -1098,6 +1114,10 @@ fn render_visible_host(data: &mut TawcState) -> bool {
             ns => Duration::from_nanos(ns as u64),
         };
         render::report_presentation_feedback(data, time);
+        if data.launch_first_frame.contains(&id) && data.launch_host_has_content(&id) {
+            data.launch_first_frame.remove(&id);
+            crate::launch_shown_from_native(&id);
+        }
     }
     rendered
 }
@@ -1198,6 +1218,7 @@ fn handle_surface_event(
             }
             data.host_fullscreen.remove(&activity_id);
             data.window_metadata.remove(&activity_id);
+            data.launch_first_frame.remove(&activity_id);
             data.desktop.clear_foreground_host_if(&activity_id);
             if data.advertised_output_host.as_ref() == Some(&activity_id) {
                 data.advertised_output_host = None;
@@ -1255,6 +1276,15 @@ fn handle_surface_event(
         }
         SurfaceEvent::HardwareKey { activity_id, evdev_keycode, pressed, repeat_count } => {
             handle_hardware_key(data, &activity_id, evdev_keycode, pressed, repeat_count);
+        }
+        SurfaceEvent::ReserveLaunch { launch_id, desktop_id, response } => {
+            let _ = response.send(data.reserve_launch(launch_id, desktop_id));
+        }
+        SurfaceEvent::UpdateLaunch { launch_id, sid, exited } => {
+            data.update_launch(&launch_id, sid, exited);
+        }
+        SurfaceEvent::ReleaseLaunch { launch_id } => {
+            data.release_launch(&launch_id);
         }
         SurfaceEvent::CloseAllClientsForTest { response } => {
             let closed = data.request_close_all_client_windows_for_test();
@@ -1320,22 +1350,9 @@ fn live_surfaces(state: &TawcState) -> Vec<WlSurface> {
 /// rather than the unconditional `send_configure` and skip the no-op
 /// case where the state already matched.
 fn set_host_foreground(state: &mut TawcState, host_id: &crate::host::ActivityId, foreground: bool) {
-    use wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
-
     let host_ready = state.host_logical_size(host_id).is_some();
     for t in state.wayland_toplevels_for_host(host_id) {
-        t.with_pending_state(|s| {
-            if foreground {
-                s.states.set(XdgState::Activated);
-                s.states.unset(XdgState::Suspended);
-            } else {
-                s.states.unset(XdgState::Activated);
-                // xdg-shell v6 introduced `Suspended`. Smithay only emits
-                // it to clients on protocol version >= 6; for older
-                // clients the unset Activated is the signal.
-                s.states.set(XdgState::Suspended);
-            }
-        });
+        set_toplevel_activated(&t, foreground);
         if host_ready {
             t.send_pending_configure();
         }
@@ -1343,6 +1360,25 @@ fn set_host_foreground(state: &mut TawcState, host_id: &crate::host::ActivityId,
     if let Some(host) = state.hosts.get_mut(host_id) {
         host.foreground = foreground;
     }
+}
+
+/// Pending `Activated`/`Suspended` state for a toplevel on a foreground
+/// or background host.
+pub fn set_toplevel_activated(toplevel: &smithay::wayland::shell::xdg::ToplevelSurface, foreground: bool) {
+    use wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
+
+    toplevel.with_pending_state(|s| {
+        if foreground {
+            s.states.set(XdgState::Activated);
+            s.states.unset(XdgState::Suspended);
+        } else {
+            s.states.unset(XdgState::Activated);
+            // xdg-shell v6 introduced `Suspended`. Smithay only emits
+            // it to clients on protocol version >= 6; for older
+            // clients the unset Activated is the signal.
+            s.states.set(XdgState::Suspended);
+        }
+    });
 }
 
 fn reconfigure_all_toplevels(state: &mut TawcState) {
