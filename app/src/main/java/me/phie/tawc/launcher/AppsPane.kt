@@ -172,7 +172,7 @@ internal class AppsPane(
         view.addView(emptyView, verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad / 2))
 
         gridLayout = GridLayoutManager(activity, MIN_COLUMNS)
-        grid = RecyclerView(activity).apply {
+        grid = EdgeFadeRecyclerView(activity).apply {
             layoutManager = gridLayout
             adapter = this@AppsPane.adapter
             // Room past the last row, so it can scroll clear of the FAB.
@@ -401,6 +401,17 @@ internal class AppsPane(
         store.update(installation.id) { it.withEntryHidden(entry.id, hidden) }
             ?.let { installation = it }
         applyFilter()
+    }
+
+    /**
+     * With clipToPadding off, View still draws fading edges at the
+     * padding lines (mid-row at the bottom); the offsets move them to
+     * the view's real edges.
+     */
+    private class EdgeFadeRecyclerView(context: Context) : RecyclerView(context) {
+        override fun isPaddingOffsetRequired() = !clipToPadding
+        override fun getTopPaddingOffset() = -paddingTop
+        override fun getBottomPaddingOffset() = paddingBottom
     }
 
     private class Cell(val root: LinearLayout, val icon: ImageView, val label: TextView) :
