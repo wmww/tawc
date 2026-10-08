@@ -48,6 +48,11 @@ screen"), plus pinned shortcuts.
    warn. Everything else runs
    `UserRootfsSession.runInside(rootfs, "<exec> </dev/null >/dev/null
    2>&1")` on its process-wide `LAUNCH_SCOPE` (Dispatchers.IO).
+   `EntryLauncher.guiCommand` prefixes a guest-side probe: if argv0
+   resolves (`command -v` + `readlink -f`) next to
+   `chrome_100_percent.pak`, or `/usr/lib/<name>/` has one, it appends
+   `--no-sandbox` — Chromium-family apps (Chromium, ChatGPT) refuse to
+   run as root without it and ignore `ELECTRON_DISABLE_SANDBOX`.
    `UserRootfsSession` holds a session reason while the process lives;
    the program's first Wayland/X11 connection starts the compositor. The pane
    clears the query and drops the IME (a 500 ms debounce stops a

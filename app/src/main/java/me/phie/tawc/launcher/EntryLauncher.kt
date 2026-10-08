@@ -12,6 +12,7 @@ import me.phie.tawc.R
 import me.phie.tawc.install.Installation
 import me.phie.tawc.install.InstallationMethod
 import me.phie.tawc.install.InstallationStore
+import me.phie.tawc.install.Sh
 import me.phie.tawc.install.TawcrootMethod
 import me.phie.tawc.install.UserRootfsSession
 import me.phie.tawc.install.distro.DistroRegistry
@@ -91,7 +92,7 @@ object EntryLauncher {
             Log.w(TAG, "terminal entry ${entry.id}: native terminal is tawcroot-only, running headless")
         }
         val rootfs = InstallationStore(appContext).rootfsDir(inst.id).absolutePath
-        val cmd = "${entry.exec} </dev/null >/dev/null 2>&1"
+        val cmd = guiCommand(entry.exec)
         LAUNCH_SCOPE.launch {
             runCatching { UserRootfsSession.runInside(appContext, method, rootfs, cmd) }
                 .onFailure { e ->
@@ -103,6 +104,44 @@ object EntryLauncher {
                     LaunchErrorActivity.start(appContext, title, e.message ?: e.javaClass.simpleName)
                 }
         }
+    }
+
+    /**
+     * Shell for a headless GUI launch. Chromium-family apps (Chromium,
+     * Chrome, ChatGPT, Electron) refuse to run as root without
+     * `--no-sandbox`, and their sandbox can't come up here anyway; only
+     * Electron reads `ELECTRON_DISABLE_SANDBOX`. So resolve argv0 in the
+     * guest and append the flag when the real binary sits next to
+     * `chrome_100_percent.pak`, or `/usr/lib/<name>/` holds one (distro
+     * chromium wrappers).
+     */
+    internal fun guiCommand(exec: String): String {
+        val tail = "</dev/null >/dev/null 2>&1"
+        val argv0 = execArgv0(exec) ?: return "$exec $tail"
+        val pak = "chrome_100_percent.pak"
+        val probe = "_tawc_ns=; if _p=$(command -v -- ${Sh.quote(argv0)}) && " +
+            "_p=$(readlink -f -- \"\$_p\") && " +
+            "{ [ -e \"\${_p%/*}/$pak\" ] || [ -e \"/usr/lib/\${_p##*/}/$pak\" ]; }; " +
+            "then _tawc_ns=--no-sandbox; fi; "
+        return "$probe$exec \$_tawc_ns $tail"
+    }
+
+    /** First word of a desktop-entry Exec line (spec quoting), or null. */
+    internal fun execArgv0(exec: String): String? {
+        val s = exec.trimStart()
+        if (s.isEmpty()) return null
+        if (s[0] != '"') return s.takeWhile { !it.isWhitespace() }
+        val out = StringBuilder()
+        var i = 1
+        while (i < s.length) {
+            val c = s[i]
+            when {
+                c == '\\' && i + 1 < s.length -> { out.append(s[i + 1]); i += 2 }
+                c == '"' -> return out.toString().ifEmpty { null }
+                else -> { out.append(c); i++ }
+            }
+        }
+        return null
     }
 
     /** A terminal built-in: a new tab (a plain shell for TAWC Term). Add
