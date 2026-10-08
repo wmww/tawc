@@ -120,6 +120,8 @@ internal class DistroHome(
     // ---- selection ---------------------------------------------------------
 
     fun selectApps() {
+        // Coming back from a terminal: packages may have changed.
+        if (selected != null) apps.rescan()
         selected = null
         terminal?.hide()
         bar.setSelected(TerminalTabBar.APPS)
