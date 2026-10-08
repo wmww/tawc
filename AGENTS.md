@@ -17,7 +17,6 @@ Tess's Android Wayland Compositor (TAWC) is an Android app plus rootfs/build scr
 ## Current Project Shape
 - Install methods: `tawcroot` is default and the only release-supported method. `proot` and `chroot` are debug-only dev-loop options.
 - Supported distros are **Arch Linux ARM** and **Debian sid** (Arch x86_64 stands in for ALARM on the emulator). Manjaro ARM and Void still ship in every build but are dev-only, behind the install form's "Other distros" expander — see [notes/distro-options.md](notes/distro-options.md).
-- Graphics backends: `libhybris`, `libhybris-zink`, `gfxstream`, and `cpu` ship by default. `libhybris` works on all tested physical devices and is the production/default path. `gfxstream` is experimental/partial; it is the x86_64 emulator default only because libhybris is unsupported there. See [notes/gpu-strategy.md](notes/gpu-strategy.md), [notes/libhybris-zink.md](notes/libhybris-zink.md), and [notes/gfxstream-bridge.md](notes/gfxstream-bridge.md).
 - The debug exec broker is the normal host-to-app command path. Host helper binary: `tests/integration/src/bin/tawc-exec.rs`; wrapper: `scripts/tawc-exec.sh`; protocol notes: [notes/exec-broker.md](notes/exec-broker.md).
 - SHM buffers are intentionally tinted magenta by default to expose fallback paths. Do not remove this unless explicitly asked.
 
@@ -42,6 +41,10 @@ Tess's Android Wayland Compositor (TAWC) is an Android app plus rootfs/build scr
 - Issues live in `issues/`. Do not solve them unless asked or the fix falls out of current work.
 - Create/update issues for nontrivial problems discovered during other work.
 - Delete confirmed-solved issues; move still-useful context into notes first.
+- Issues in the following categories go in issues/dev/
+  - Issues with tests that do not relate to production-visible problems
+  - Issues with features that are disabled in production builds
+  - Issues with development workflow
 
 ## Plans
 - Future plans live in `plans/`. Do not execute them unless asked.
