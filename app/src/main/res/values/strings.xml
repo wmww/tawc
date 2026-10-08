@@ -48,16 +48,20 @@
     <string name="install_state_corrupt">metadata corrupt</string>
 
     <string name="settings_graphics_driver">Graphics driver</string>
+    <string name="graphics_backend_libhybris_detail">Best performance, some apps may not work</string>
+    <string name="graphics_backend_libhybris_zink_detail">(currently unsupported)</string>
+    <string name="graphics_backend_gfxstream_detail">(currently unsupported)</string>
+    <string name="graphics_backend_cpu_detail">Slower, better compatibility</string>
     <string name="settings_compatibility">Compatibility</string>
     <string name="settings_tint_buffers_by_type">Tint buffers based on type</string>
     <string name="settings_xwayland">Xwayland</string>
     <string name="settings_pointer_emulation">Pointer emulation</string>
     <string name="pointer_emulation_none">None</string>
-    <string name="pointer_emulation_none_detail">Touch only. Some GTK3 menus and selections misbehave</string>
+    <string name="pointer_emulation_none_detail">Apps see touch (makes GTK3 unhappy)</string>
     <string name="pointer_emulation_hover">Hover</string>
-    <string name="pointer_emulation_hover_detail">Touch, and the pointer follows your finger</string>
+    <string name="pointer_emulation_hover_detail">Apps see touch, pointer follows</string>
     <string name="pointer_emulation_full">Full</string>
-    <string name="pointer_emulation_full_detail">Act as a mouse: tap to click, drag to drag, long-press to right-click</string>
+    <string name="pointer_emulation_full_detail">Touch converted to pointer</string>
     <string name="settings_terminal_scale">Terminal scale: %1$s</string>
     <string name="settings_gui_scale">GUI scale: %1$s</string>
     <string name="settings_about">About</string>
