@@ -371,8 +371,13 @@ hardening:
 - `rt_sigaction`: virtualize `SIGSYS`. Guest attempts to read or write
   the `SIGSYS` disposition see a guest-shadow value, while the real
   kernel disposition remains tawcroot's handler. Other signals pass
-  through. If the guest asks for `SIG_DFL`/`SIG_IGN` on `SIGSYS`, store
-  that in the shadow table but do not apply it to the kernel.
+  through with `SIGSYS` cleared from `sa_mask` (a per-signal bitmap ORs
+  it back into `oldact`): a guest handler running with `SIGSYS` really
+  blocked gets force-killed by its first trapped syscall. OpenSSL-style
+  `SIGILL` CPU probes do exactly that — full mask, `siglongjmp` →
+  trapped `rt_sigprocmask` (ChatGPT's bundled `codex`). If the guest
+  asks for `SIG_DFL`/`SIG_IGN` on `SIGSYS`, store that in the shadow
+  table but do not apply it to the kernel.
 - `rt_sigprocmask` / `sigprocmask`: prevent guest code from blocking
   real `SIGSYS`. Maintain a guest-visible shadow mask if needed, but
   clear `SIGSYS` before forwarding the real mask to the kernel.
@@ -468,9 +473,11 @@ Where the handler runs is two-tier, because SIGSYS is registered
   thread's own stack, whatever size the guest's runtime chose. musl's
   default thread stack is 128 KiB; the supported floor is the 16 KiB
   pinned by the `static_small_stack_open_argv1` fixture (a clone child
-  with an explicit 16 KiB stack doing a path-bearing open). We can never
-  *rely* on an altstack — it is per-thread state the guest owns — so
-  this floor and the frame cap below still stand.
+  with an explicit 16 KiB stack doing a path-bearing open). This tier
+  is now rare: a thread with no altstack gets a fallback slot (below)
+  at its first trapped `rt_sigprocmask`, which libc issues at thread
+  start and exit. Until then, or with the slab exhausted, the floor and
+  the frame cap below still stand.
 
 Measured cost on the OnePlus 9 (no SVE; poison 1 MiB, clone a child
 mid-region, one syscall, scan for the lowest clobbered word): a trapped
@@ -484,10 +491,25 @@ Because of that cost, guest altstacks get a floor (`src/sigalt.c`).
 pass untouched) is swapped for a tawcroot-owned 16 KiB slot from a
 256-slot BSS slab; `sigaltstack(NULL, &old)` still reports the guest's
 own `ss_sp`/`ss_size`. On slab exhaustion the guest's stack is installed
-as-is. A slot given up on `SS_DISABLE` or replacement by a big stack
-still holds the handler's own frame, so it is retired under the tid
-and freed at that thread's next `sigaltstack` or `exit(2)`; `exit(2)`
-also frees the live slot.
+as-is. A slot given up on replacement by a big stack still holds the
+handler's own frame, so it is retired under the tid and freed at that
+thread's next `sigaltstack` or `exit(2)`; `exit(2)` also frees the live
+slot.
+
+Threads with no guest altstack — never set, or `SS_DISABLE` — keep a
+*fallback* slot (guest size 0, so readback says `SS_DISABLE` and it
+never counts as on-stack): `SS_DISABLE` keeps/claims one instead of
+really disabling, and `rt_sigprocmask` claims one for a thread that
+has none (`tawc_sigalt_ensure`). Reason: musl's detached-thread exit
+(`__unmapself`) munmaps the stack SP is on, then calls `exit(2)` — which
+we trap — and Rust threads disable + unmap their altstack just before.
+With the frame headed for the dead stack the kernel forces SIGSEGV
+(ChatGPT's `codex app-server` died on its first thread exit). Pinned by
+`static_unmapped_stack_exit`. Side effect: a guest `SA_ONSTACK` handler
+on a thread without an altstack runs on the 16 KiB fallback instead of
+the thread stack. Known race, pre-existing for substituted slots:
+`exit(2)` frees the slot it is running on a few instructions before the
+real exit, so another thread could claim it in that window.
 
 The handler can't forward `sigaltstack` verbatim: it runs on the
 altstack, so the kernel returns `-EPERM`. Leaving the change in

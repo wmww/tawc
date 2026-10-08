@@ -530,6 +530,12 @@ $(OUT)/programs/static_io_uring_deny: $(SRC_TS)/integration/programs/static_io_u
 	@mkdir -p $(dir $@)
 	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
 
+# static_unmapped_stack_exit: musl's __unmapself — munmap the stack
+# SP is on, then exit(2). The exit trap needs a fallback altstack.
+$(OUT)/programs/static_unmapped_stack_exit: $(SRC_TS)/integration/programs/static_unmapped_stack_exit_x86_64.S | $(OUT)
+	@mkdir -p $(dir $@)
+	$(CC) -static -nostdlib -O2 -Wl,--build-id=none $< -o $@
+
 # androidfilter/wrap: host glibc binary that installs a synthesized
 # Android-`untrusted_app`-shape seccomp BPF filter and execs its argv
 # tail. Exists so test_androidfilter.c can run the existing handler

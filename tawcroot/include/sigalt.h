@@ -4,7 +4,10 @@
  * receives our signal frame + handler chain on every trapped syscall
  * the thread makes. A guest stack smaller than TAWC_SIGALT_MIN is
  * swapped for a tawcroot-owned TAWC_SIGALT_SLOT-byte slot from a fixed
- * BSS slab; the guest still reads back its own ss_sp/ss_size.
+ * BSS slab; the guest still reads back its own ss_sp/ss_size. A thread
+ * with no guest altstack gets a "fallback" slot too (guest reads
+ * SS_DISABLE), so our frame never lands on a guest stack that may
+ * already be unmapped (musl's detached-thread exit).
  *
  * sigaltstack can't be forwarded as-is from the handler: the kernel
  * EPERMs while we run on the altstack. Nor can we leave the change in
@@ -56,6 +59,13 @@ typedef long (*tawc_sigalt_apply_fn)(const stack_t *ss);
  * case nothing changed. */
 long tawc_sigalt_commit(stack_t *cur, const stack_t *new_ss, int tid,
 			tawc_sigalt_apply_fn apply);
+
+/* Give a thread with no altstack a fallback slot (guest still reads
+ * SS_DISABLE). Called from a trap every thread makes early (signal
+ * mask setup), so the exit(2) trap can always deliver even after musl
+ * unmaps the thread's own stack. Best effort: no-op if the slab is
+ * exhausted or apply fails. */
+void tawc_sigalt_ensure(stack_t *cur, tawc_sigalt_apply_fn apply);
 
 /* Thread is exiting: free its slot, if it holds one, and its retired
  * ones. */

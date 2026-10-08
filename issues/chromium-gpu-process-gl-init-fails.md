@@ -71,8 +71,10 @@ ChatGPT 26.1002.52244 (arm64 .deb unpacked into ALARM, `--no-sandbox`)
 no longer dies with `GPU process isn't usable` even on libhybris: the
 GPU process fails 3x, then it renders in software and shows its window.
 Same on cpu (clean GPU init). Defaults to X11 (no GLX here);
-`--ozone-platform=wayland` picks Wayland. It then stops at an
-"Organization settings could not be loaded" dialog (not graphics).
+`--ozone-platform=wayland` picks Wayland. Its "Organization settings
+could not be loaded" dialog was its bundled `codex app-server` dying
+under tawcroot (fixed; notes/tawcroot/sigsys-handler.md); it now
+reaches the sign-in screen.
 
 ## ANGLE Vulkan (`--use-angle=vulkan`)
 

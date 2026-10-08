@@ -39,6 +39,7 @@ static_check_ids_exit42
 static_drop_ids_devnull_eperm
 static_link_publish_argv12
 static_mknod_chr_fake
+static_unmapped_stack_exit
 dynamic_exit42
 dynamic_argv_check
 dynamic_big_stack

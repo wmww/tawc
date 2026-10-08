@@ -64,10 +64,18 @@ static int on_stack(const stack_t *cur, uintptr_t sp)
 	return sp > base && sp - base <= cur->ss_size;
 }
 
+/* A slot recorded with guest size 0 is a fallback: the guest has no
+ * altstack, we keep one so our SIGSYS frame never needs its stack. */
+static int is_fallback(int k)
+{
+	return k >= 0 && g_guest[k].size == 0;
+}
+
 long tawc_sigalt_check(const stack_t *cur, uintptr_t guest_sp,
 		       const stack_t *new_ss, stack_t *old)
 {
-	int on = on_stack(cur, guest_sp);
+	int k = slot_of(cur);
+	int on = !is_fallback(k) && on_stack(cur, guest_sp);
 	if (new_ss) {
 		if (on) return TAWC_EPERM;
 		unsigned mode = (unsigned)new_ss->ss_flags & ~SS_AUTODISARM;
@@ -78,11 +86,10 @@ long tawc_sigalt_check(const stack_t *cur, uintptr_t guest_sp,
 			return TAWC_ENOMEM;
 	}
 	if (old) {
-		int k = slot_of(cur);
 		old->ss_sp   = k >= 0 ? g_guest[k].sp   : cur->ss_sp;
 		old->ss_size = k >= 0 ? g_guest[k].size : cur->ss_size;
 		old->ss_flags = (int)
-			((cur->ss_size ? (on ? SS_ONSTACK : 0) : SS_DISABLE) |
+			((old->ss_size ? (on ? SS_ONSTACK : 0) : SS_DISABLE) |
 			 ((unsigned)cur->ss_flags & SS_AUTODISARM));
 	}
 	return 0;
@@ -130,14 +137,19 @@ long tawc_sigalt_commit(stack_t *cur, const stack_t *new_ss, int tid,
 	stack_t next = *new_ss;
 
 	reclaim_retired(tid);
-	if (mode == SS_DISABLE) {
-		next.ss_sp = NULL;
-		next.ss_size = 0;
-	} else if (new_ss->ss_size < TAWC_SIGALT_MIN) {
+	if (mode == SS_DISABLE || new_ss->ss_size < TAWC_SIGALT_MIN) {
+		/* Disabling keeps (or gets) a fallback slot: threads often
+		 * disable and unmap their altstack right before exiting on
+		 * a stack they've also unmapped (musl), and the exit(2) trap
+		 * still needs somewhere to put its frame. */
 		k_new = k_old >= 0 ? k_old : slot_claim();
 		if (k_new >= 0) {
-			next.ss_sp   = g_slab[k_new];
-			next.ss_size = TAWC_SIGALT_SLOT;
+			next.ss_sp    = g_slab[k_new];
+			next.ss_size  = TAWC_SIGALT_SLOT;
+			next.ss_flags = 0;
+		} else if (mode == SS_DISABLE) {
+			next.ss_sp = NULL;
+			next.ss_size = 0;
 		}
 	}
 	long r = apply(&next);
@@ -146,13 +158,30 @@ long tawc_sigalt_commit(stack_t *cur, const stack_t *new_ss, int tid,
 		return r;
 	}
 	if (k_new >= 0) {
-		g_guest[k_new].sp   = new_ss->ss_sp;
-		g_guest[k_new].size = new_ss->ss_size;
+		g_guest[k_new].sp   = mode == SS_DISABLE ? NULL : new_ss->ss_sp;
+		g_guest[k_new].size = mode == SS_DISABLE ? 0 : new_ss->ss_size;
 	}
 	*cur = next;
 	if (k_old >= 0 && k_old != k_new)
 		slot_retire(k_old, tid);
 	return 0;
+}
+
+void tawc_sigalt_ensure(stack_t *cur, tawc_sigalt_apply_fn apply)
+{
+	if (cur->ss_size && !((unsigned)cur->ss_flags & SS_DISABLE))
+		return;
+	int k = slot_claim();
+	if (k < 0) return;
+	stack_t next = { .ss_sp = g_slab[k], .ss_flags = 0,
+			 .ss_size = TAWC_SIGALT_SLOT };
+	if (apply(&next) < 0) {
+		slot_release(k);
+		return;
+	}
+	g_guest[k].sp   = NULL;
+	g_guest[k].size = 0;
+	*cur = next;
 }
 
 void tawc_sigalt_thread_exit(const stack_t *cur, int tid)

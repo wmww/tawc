@@ -13,6 +13,9 @@
  *     disposition lives in a shadow buffer; reads/writes of SIGSYS
  *     hit the shadow and never the kernel. The real kernel disposition
  *     stays our SIGSYS handler.
+ *   - `rt_sigaction(other, ...)`: pass through with SIGSYS stripped
+ *     from sa_mask (shadowed for readback), so guest handlers never
+ *     run with SIGSYS blocked.
  *   - `rt_sigprocmask`: pass through, but transparently strip SIGSYS
  *     from any new mask the guest installs and OR-in the shadow bit
  *     when reporting the previous mask. Guest reads back what it set;
@@ -169,6 +172,59 @@ static long handle_prctl(const tawcroot_syscall_args *args, ucontext_t *uc)
 			args->d, args->e, 0);
 }
 
+/* Bit (sig - 1) set = the guest's current action for sig asked to
+ * block SIGSYS in sa_mask. Process-global, like dispositions. */
+static uint64_t sa_mask_sigsys_shadow;
+
+/* Non-SIGSYS rt_sigaction: forward with SIGSYS cleared from sa_mask.
+ * A handler running with SIGSYS really blocked can't take our trap —
+ * any trapped syscall it makes (siglongjmp's rt_sigprocmask, say) gets
+ * the process force-killed. OpenSSL-style SIGILL CPU probes do exactly
+ * this. Readback ORs the bit back in, as rt_sigprocmask does. */
+static long sigaction_strip_sigsys(int sig, const void *act, void *oldact,
+				   size_t sigsetsize)
+{
+	if (sigsetsize != 8 || sig < 1 || sig > 64)
+		return TAWC_RAW(TAWC_SYS_rt_sigaction, sig, (long)act,
+				(long)oldact, sigsetsize, 0, 0);
+
+	uint64_t sigbit = 1ULL << (sig - 1);
+	unsigned char buf[TAWC_KERN_SIGACTION_SIZE];
+	uint64_t *mask = (uint64_t *)(buf + TAWC_KERN_SIGACTION_SIZE - 8);
+	int had = 0;
+	if (act) {
+		if (tawc_copy_from_guest(buf, sizeof buf, act) < 0)
+			return TAWC_EFAULT;
+		had = (*mask & SIGSYS_BIT) != 0;
+		*mask &= ~SIGSYS_BIT;
+	}
+
+	long r = TAWC_RAW(TAWC_SYS_rt_sigaction, sig,
+			  act ? (long)buf : 0, (long)oldact, 8, 0, 0);
+	if (r < 0) return r;
+
+	uint64_t prev = __atomic_load_n(&sa_mask_sigsys_shadow,
+					__ATOMIC_RELAXED);
+	if (oldact && (prev & sigbit)) {
+		uint64_t old_mask;
+		void *old_mask_p = (unsigned char *)oldact +
+				   TAWC_KERN_SIGACTION_SIZE - 8;
+		if (tawc_copy_from_guest(&old_mask, 8, old_mask_p) == 0) {
+			old_mask |= SIGSYS_BIT;
+			(void)tawc_copy_to_guest(old_mask_p, &old_mask, 8);
+		}
+	}
+	if (act) {
+		if (had)
+			__atomic_fetch_or(&sa_mask_sigsys_shadow, sigbit,
+					  __ATOMIC_RELAXED);
+		else
+			__atomic_fetch_and(&sa_mask_sigsys_shadow, ~sigbit,
+					   __ATOMIC_RELAXED);
+	}
+	return r;
+}
+
 static long handle_rt_sigaction(const tawcroot_syscall_args *args,
 				ucontext_t *uc)
 {
@@ -178,10 +234,8 @@ static long handle_rt_sigaction(const tawcroot_syscall_args *args,
 	void  *oldact      = (void *)(uintptr_t)args->c;
 	size_t sigsetsize  = (size_t)args->d;
 
-	if (sig != SIGSYS) {
-		return TAWC_RAW(TAWC_SYS_rt_sigaction, args->a, args->b,
-				args->c, args->d, 0, 0);
-	}
+	if (sig != SIGSYS)
+		return sigaction_strip_sigsys(sig, act, oldact, sigsetsize);
 
 	if (sigsetsize != 8) return TAWC_EINVAL;
 
@@ -229,6 +283,8 @@ static uint64_t *uc_sigmask_word(ucontext_t *uc)
  *
  * Step 5 is conditional and unconditionally last, so there's no
  * shadow-rollback path. */
+static long apply_sigaltstack(const stack_t *ss);
+
 static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 				  ucontext_t *uc)
 {
@@ -238,6 +294,9 @@ static long handle_rt_sigprocmask(const tawcroot_syscall_args *args,
 	size_t sigsetsize  = (size_t)args->d;
 
 	if (sigsetsize != 8) return TAWC_EINVAL;
+	/* Every thread sets its mask early (libc thread start/exit), so
+	 * this is where a thread without an altstack gets its fallback. */
+	tawc_sigalt_ensure(&uc->uc_stack, apply_sigaltstack);
 	/* No-op call (the kernel returns 0 immediately for this shape).
 	 * Short-circuit before issuing gettid + a shadow table probe. */
 	if (!guest_set && !guest_oldset) return 0;

@@ -153,3 +153,53 @@ test(hosted_seccomp_filter_validation_shapes)
 
 	th_teardown(&v);
 }
+
+/* Kernel struct sigaction at sigsetsize=8 (both arches). */
+typedef struct { uint64_t handler, flags, restorer, mask; } tk_sigaction;
+
+static void tk_noop(int sig) { (void)sig; }
+
+/* A non-SIGSYS action asking for a full sa_mask must not reach the
+ * kernel with SIGSYS in it: the handler would run with our trap
+ * blocked and its first trapped syscall would get the process killed
+ * (ChatGPT's bundled codex: SIGILL probe + siglongjmp). Readback
+ * still shows what the guest set. */
+test(hosted_rt_sigaction_strips_sigsys_from_sa_mask)
+{
+	th_view v;
+	th_setup(&v, "ctl-sigaction-mask");
+
+	const uint64_t sigsys_bit = 1ULL << (SIGSYS - 1);
+	tk_sigaction act = { (uint64_t)(uintptr_t)tk_noop, 0, 0, ~0ULL };
+	tk_sigaction old;
+	test_int_eq(th_sys(TAWC_SYS_rt_sigaction, SIGUSR1, &act, NULL, 8,
+			   0, 0), 0);
+	/* The guest's struct is untouched. */
+	test_int_eq(act.mask == ~0ULL, 1);
+
+	struct sigaction kernel_view;
+	test_int_eq(sigaction(SIGUSR1, NULL, &kernel_view), 0);
+	test_int_eq(sigismember(&kernel_view.sa_mask, SIGSYS), 0);
+	test_int_eq(sigismember(&kernel_view.sa_mask, SIGTERM), 1);
+
+	/* Guest readback ORs SIGSYS back in... */
+	test_int_eq(th_sys(TAWC_SYS_rt_sigaction, SIGUSR1, NULL, &old, 8,
+			   0, 0), 0);
+	test_int_eq((old.mask & sigsys_bit) != 0, 1);
+
+	/* ...until an action without it replaces the old one. */
+	act.mask = 0;
+	test_int_eq(th_sys(TAWC_SYS_rt_sigaction, SIGUSR1, &act, &old, 8,
+			   0, 0), 0);
+	test_int_eq((old.mask & sigsys_bit) != 0, 1);
+	test_int_eq(th_sys(TAWC_SYS_rt_sigaction, SIGUSR1, NULL, &old, 8,
+			   0, 0), 0);
+	test_int_eq(old.mask, 0);
+
+	/* Bad act pointer EFAULTs like the kernel. */
+	test_int_eq(th_sys(TAWC_SYS_rt_sigaction, SIGUSR1, (void *)8, NULL,
+			   8, 0, 0), TAWC_EFAULT);
+
+	signal(SIGUSR1, SIG_DFL);
+	th_teardown(&v);
+}

@@ -124,6 +124,8 @@ static bool build_rootfs(void)
 		  "static_open_creat_argv1" },
 		{ TAWCROOT_STATIC_IO_URING_DENY_BIN,
 		  "static_io_uring_deny" },
+		{ TAWCROOT_STATIC_UNMAPPED_STACK_EXIT_BIN,
+		  "static_unmapped_stack_exit" },
 	};
 	for (size_t i = 0; i < sizeof fixtures / sizeof fixtures[0]; i++) {
 		snprintf(p, sizeof p, "%s/bin/%s",
@@ -459,6 +461,20 @@ test(prod_sigaltstack_replace_and_disable_reach_kernel)
 {
 	test_int_eq(sigaltstack_case("/bin/static_sigaltstack_swap_argv1",
 	                             "/marker-sigaltstack-swap"), 42);
+}
+
+/* musl's detached-thread exit: munmap the stack SP is on, then exit(2).
+ * SIGSEGV death = the exit trap had no fallback altstack (ChatGPT's
+ * bundled codex app-server died this way). */
+test(prod_exit_on_unmapped_stack)
+{
+	rh_rmrf(FAKE_ROOTFS);
+	test_true(build_rootfs());
+	const char *args[] = {
+		"-r", FAKE_ROOTFS, "--", "/bin/static_unmapped_stack_exit", NULL
+	};
+	test_int_eq(run_with(args), 42);
+	rh_rmrf(FAKE_ROOTFS);
 }
 
 test(prod_long_path_over_1024_still_translates)

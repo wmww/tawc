@@ -122,16 +122,19 @@ test(sigalt_disable_and_exit_free_slots)
 	commit_ok(&cur[TAWC_SIGALT_SLOTS], &small, TID + TAWC_SIGALT_SLOTS);
 	test_true(cur[TAWC_SIGALT_SLOTS].ss_sp == (void *)g_buf);
 
+	/* Disabling keeps the slot as a fallback. */
 	stack_t dis = mk(NULL, SS_DISABLE, 0);
 	commit_ok(&cur[0], &dis, TID);
-	test_int_eq(cur[0].ss_size, 0);
-	/* Retired, not free: the handler frame is still on it. */
+	test_true(tawc_sigalt_is_slab(cur[0].ss_sp));
 	stack_t x = DISABLED;
 	commit_ok(&x, &small, TID + 1000);
 	test_true(x.ss_sp == (void *)g_buf);
-	/* Thread 1 exits; thread 0's next commit reclaims its retiree. */
+	/* Thread 1 exits. Thread 0 moves to a big stack: its slot is
+	 * retired (the handler frame is still on it) until its next
+	 * commit reclaims it. */
 	tawc_sigalt_thread_exit(&cur[1], TID + 1);
 	stack_t big = mk(g_buf, 0, TAWC_SIGALT_MIN);
+	commit_ok(&cur[0], &big, TID);
 	commit_ok(&cur[0], &big, TID);
 
 	stack_t a = DISABLED, b = DISABLED, c = DISABLED;
@@ -144,18 +147,75 @@ test(sigalt_disable_and_exit_free_slots)
 	test_true(c.ss_sp == (void *)g_buf);
 }
 
-test(sigalt_disable_is_applied)
+/* A disabled guest altstack becomes a fallback slot (the guest's stack
+ * may be unmapped next, as musl does before a detached thread's
+ * exit(2)); the guest still reads SS_DISABLE. */
+test(sigalt_disable_keeps_fallback_slot)
 {
 	reset();
-	stack_t cur = DISABLED;
+	stack_t cur = DISABLED, old;
 	stack_t ss = mk(g_buf, 0, 32768);
 	commit_ok(&cur, &ss, TID);
 	test_true(g_applied.ss_sp == (void *)g_buf);
 	ss = mk(NULL, SS_DISABLE, 0);
 	commit_ok(&cur, &ss, TID);
-	test_int_eq(g_applied.ss_flags, SS_DISABLE);
-	test_int_eq(g_applied.ss_size, 0);
+	test_true(tawc_sigalt_is_slab(g_applied.ss_sp));
+	test_int_eq(g_applied.ss_size, TAWC_SIGALT_SLOT);
 	test_int_eq(g_apply_calls, 2);
+
+	/* Guest view: disabled, and running on the fallback isn't
+	 * "on stack" (changing it isn't EPERM). */
+	uintptr_t sp = (uintptr_t)cur.ss_sp + 100;
+	test_int_eq(tawc_sigalt_check(&cur, sp, &ss, &old), 0);
+	test_true(old.ss_sp == NULL);
+	test_int_eq(old.ss_size, 0);
+	test_int_eq(old.ss_flags, SS_DISABLE);
+}
+
+test(sigalt_disable_with_slab_exhausted_is_applied)
+{
+	reset();
+	stack_t small = mk(g_buf, 0, TAWC_SIGALT_KERN_MIN);
+	stack_t s[TAWC_SIGALT_SLOTS];
+	for (int i = 0; i < TAWC_SIGALT_SLOTS; i++) {
+		s[i] = DISABLED;
+		commit_ok(&s[i], &small, TID + i);
+	}
+	stack_t cur = mk(g_buf, 0, 32768);
+	stack_t ss = mk(NULL, SS_DISABLE, 0);
+	commit_ok(&cur, &ss, TID + 5000);
+	test_int_eq(g_applied.ss_size, 0);
+}
+
+test(sigalt_ensure_gives_fallback_once)
+{
+	reset();
+	stack_t cur = DISABLED, old;
+	tawc_sigalt_ensure(&cur, fake_apply);
+	test_true(tawc_sigalt_is_slab(cur.ss_sp));
+	test_true(g_applied.ss_sp == cur.ss_sp);
+	test_int_eq(g_applied.ss_size, TAWC_SIGALT_SLOT);
+	test_int_eq(tawc_sigalt_check(&cur, 1, NULL, &old), 0);
+	test_int_eq(old.ss_flags, SS_DISABLE);
+	test_int_eq(old.ss_size, 0);
+
+	/* Already has one (fallback or guest's): no-op. */
+	tawc_sigalt_ensure(&cur, fake_apply);
+	stack_t guest = mk(g_buf, 0, 32768);
+	tawc_sigalt_ensure(&guest, fake_apply);
+	test_int_eq(g_apply_calls, 1);
+
+	/* A guest stack replaces the fallback, which is retired. */
+	stack_t big = mk(g_buf, 0, TAWC_SIGALT_MIN);
+	commit_ok(&cur, &big, TID);
+	test_true(cur.ss_sp == (void *)g_buf);
+
+	/* Apply failure leaves it alone and frees the slot. */
+	stack_t c2 = DISABLED;
+	g_apply_rv = -ENOMEM;
+	tawc_sigalt_ensure(&c2, fake_apply);
+	test_int_eq(c2.ss_flags, SS_DISABLE);
+	test_true(c2.ss_sp == NULL);
 }
 
 test(sigalt_apply_failure_changes_nothing)
