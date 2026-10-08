@@ -1,11 +1,16 @@
 package me.phie.tawc.install
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import android.util.Log
+import android.widget.Toast
+import me.phie.tawc.R
 import me.phie.tawc.compositor.CompositorService
+import me.phie.tawc.install.distro.DistroRegistry
 import java.io.File
 import java.io.IOException
 
@@ -182,8 +187,9 @@ internal object TawcInstaller {
      * upgrade picks up immediately rather than waiting for the user
      * to run something inside each rootfs.
      *
-     * Per-rootfs failures are logged and swallowed — one corrupt slot
-     * shouldn't keep the app from launching the others.
+     * Per-rootfs failures are logged and toasted, not thrown — one
+     * corrupt slot shouldn't keep the app from launching the others.
+     * The stale stamp means the refresh (and toast) retries next start.
      */
     fun installAll(context: Context, store: InstallationStore) {
         for (installation in store.list()) {
@@ -193,6 +199,14 @@ internal object TawcInstaller {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "installAll: ${installation.id} failed: $e", e)
+                val msg = context.getString(
+                    R.string.tawc_refresh_failed,
+                    DistroRegistry.displayLabel(installation),
+                    e.message ?: e.toString(),
+                )
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

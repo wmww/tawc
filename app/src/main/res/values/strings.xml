@@ -144,6 +144,7 @@
     <string name="distro_info_run_command_title">Run command in %1$s</string>
     <string name="action_copy_rootfs_path">Copy rootfs path</string>
     <string name="copied_to_clipboard">Copied to clipboard</string>
+    <string name="tawc_refresh_failed">%1$s: failed to update TAWC files: %2$s</string>
     <string name="distro_info_row_imported">Imported:</string>
     <string name="distro_info_delete_title">Delete %1$s?</string>
     <string name="distro_info_delete_message">This permanently deletes the rootfs at\n%1$s,\nincluding all files in your Linux home directory.</string>

@@ -73,7 +73,7 @@ class TawcApplication : Application() {
             // install/refresh. No-op on cold app starts that follow a
             // run with the same `versionCode + lastUpdateTime` pair
             // (see CompositorService.currentExtractStamp). Per-rootfs
-            // failures are logged and swallowed inside [installAll].
+            // failures are logged and toasted inside [installAll].
             try {
                 TawcInstaller.installAll(this, InstallationStore(this))
             } catch (t: Throwable) {
