@@ -65,27 +65,15 @@ data class Installation(
      */
     val externalBinds: List<ExternalBind> = emptyList(),
     /**
-     * Desktop-entry ids ([me.phie.tawc.launcher.LauncherEntry.id],
-     * filename minus `.desktop`) the user hid from the launcher list.
-     * Filtering happens Kotlin-side (see notes/launcher.md); the Rust
-     * scanner never sees hide state. Stale ids (app removed from the
-     * distro) are harmless — they never match — so nothing prunes them.
+     * Launcher state older versions kept here: hidden entry ids, and
+     * per-entry graphics / pointer emulation keys by entry id. Read and
+     * cleared only by [me.phie.tawc.launcher.LauncherMigration], which
+     * moves them into the launcher store; until then they must survive
+     * rewrites (an imported format-1 export carries them too).
      */
-    val hiddenDesktopIds: List<String> = emptyList(),
-    /**
-     * Per-entry graphics override: desktop id → [me.phie.tawc.GraphicsBackend.key],
-     * set in the `.desktop` editor. Honoured by launches from TAWC (the
-     * launcher grid and pins) only; absent = the global setting. Like
-     * [hiddenDesktopIds], stale ids are harmless and not pruned.
-     */
-    val entryGraphics: Map<String, String> = emptyMap(),
-    /**
-     * Per-entry pointer emulation override: desktop id →
-     * [me.phie.tawc.PointerEmulation.key], set in the `.desktop` editor.
-     * Like [entryGraphics]: launches from TAWC only, absent = the global
-     * setting, stale ids harmless.
-     */
-    val entryPointerEmulation: Map<String, String> = emptyMap(),
+    val legacyHiddenDesktopIds: List<String> = emptyList(),
+    val legacyEntryGraphics: Map<String, String> = emptyMap(),
+    val legacyEntryPointerEmulation: Map<String, String> = emptyMap(),
     /**
      * Whether this install may use ando (notes/ando.md) — run Android
      * commands outside the Linux environment. Default `false`: opt-in,
@@ -141,14 +129,14 @@ data class Installation(
         if (externalBinds.isNotEmpty()) {
             put("externalBinds", ExternalBind.toJsonArray(externalBinds))
         }
-        if (hiddenDesktopIds.isNotEmpty()) {
-            put("hiddenDesktopIds", JSONArray(hiddenDesktopIds))
+        if (legacyHiddenDesktopIds.isNotEmpty()) {
+            put("hiddenDesktopIds", JSONArray(legacyHiddenDesktopIds))
         }
-        if (entryGraphics.isNotEmpty()) {
-            put("entryGraphics", JSONObject(entryGraphics.toSortedMap()))
+        if (legacyEntryGraphics.isNotEmpty()) {
+            put("entryGraphics", JSONObject(legacyEntryGraphics.toSortedMap()))
         }
-        if (entryPointerEmulation.isNotEmpty()) {
-            put("entryPointerEmulation", JSONObject(entryPointerEmulation.toSortedMap()))
+        if (legacyEntryPointerEmulation.isNotEmpty()) {
+            put("entryPointerEmulation", JSONObject(legacyEntryPointerEmulation.toSortedMap()))
         }
         if (andoEnabled) put("andoEnabled", true)
         if (importedAtMillis != null) put("importedAtMillis", importedAtMillis)
@@ -157,37 +145,6 @@ data class Installation(
         if (osId != null) put("osId", osId)
         if (libc != null) put("libc", libc)
     }.toString(2)
-
-    /**
-     * Copy with [entryId] added to / removed from [hiddenDesktopIds].
-     * Idempotent both ways; the single mutation shape shared by the
-     * launcher UI and the `set-entry-hidden` broker action (always
-     * applied through [InstallationStore.update]).
-     */
-    fun withEntryHidden(entryId: String, hidden: Boolean): Installation = copy(
-        hiddenDesktopIds = if (hidden) {
-            if (entryId in hiddenDesktopIds) hiddenDesktopIds else hiddenDesktopIds + entryId
-        } else {
-            hiddenDesktopIds - entryId
-        }
-    )
-
-    /**
-     * Copy with [entryId]'s [entryGraphics] override set to [backendKey],
-     * or cleared when null. The single mutation shape shared by the
-     * editor and the `set-entry-graphics` broker action (always applied
-     * through [InstallationStore.update]).
-     */
-    fun withEntryGraphics(entryId: String, backendKey: String?): Installation = copy(
-        entryGraphics = if (backendKey == null) entryGraphics - entryId
-        else entryGraphics + (entryId to backendKey)
-    )
-
-    /** [withEntryGraphics] for [entryPointerEmulation]. */
-    fun withEntryPointerEmulation(entryId: String, modeKey: String?): Installation = copy(
-        entryPointerEmulation = if (modeKey == null) entryPointerEmulation - entryId
-        else entryPointerEmulation + (entryId to modeKey)
-    )
 
     /**
      * Lifecycle of one installation slot. See `notes/installation.md`
@@ -329,17 +286,17 @@ data class Installation(
                 externalBinds = if (obj.has("externalBinds"))
                     ExternalBind.fromJsonArray(obj.getJSONArray("externalBinds"))
                 else emptyList(),
-                hiddenDesktopIds = if (obj.has("hiddenDesktopIds"))
+                legacyHiddenDesktopIds = if (obj.has("hiddenDesktopIds"))
                     obj.getJSONArray("hiddenDesktopIds").let { arr ->
                         buildList(arr.length()) {
                             for (i in 0 until arr.length()) add(arr.getString(i))
                         }
                     }
                 else emptyList(),
-                entryGraphics = obj.optJSONObject("entryGraphics")?.let { o ->
+                legacyEntryGraphics = obj.optJSONObject("entryGraphics")?.let { o ->
                     buildMap { for (k in o.keys()) put(k, o.getString(k)) }
                 } ?: emptyMap(),
-                entryPointerEmulation = obj.optJSONObject("entryPointerEmulation")?.let { o ->
+                legacyEntryPointerEmulation = obj.optJSONObject("entryPointerEmulation")?.let { o ->
                     buildMap { for (k in o.keys()) put(k, o.getString(k)) }
                 } ?: emptyMap(),
                 andoEnabled = obj.optBoolean("andoEnabled", false),

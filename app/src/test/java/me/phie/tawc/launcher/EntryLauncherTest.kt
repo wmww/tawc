@@ -56,8 +56,29 @@ class EntryLauncherTest {
         assertEquals("tok'1 tok'1", out.readText().trim())
     }
 
-    /** The probe looks past an `env K=V` prefix (the editor's variables). */
+    /** The probe looks past an `env K=V` prefix in a packaged Exec. */
     @Test
     fun chromiumBehindEnvGetsNoSandbox() =
         assertEquals("v --x --no-sandbox", argsSeen(chromium = true, exec = "env TAWC_T=v app --x"))
+
+    /** Store `env` is exported before Exec, quoted; bad names are skipped. */
+    @Test
+    fun entryEnvExported() {
+        val root = tmp.newFolder()
+        val out = File(root, "env")
+        val exec = "sh -c 'echo \"${'$'}A|${'$'}B\" > ${out.path}'"
+        val vars = mapOf("A" to "x y'z", "B" to "${'$'}HOME", "1BAD" to "q; touch ${root.path}/pwned")
+        val proc = ProcessBuilder("bash", "-c", EntryLauncher.guiCommand(exec, null, vars)).start()
+        assertEquals(0, proc.waitFor())
+        assertEquals("x y'z|${'$'}HOME", out.readText().trim())
+        assertEquals(false, File(root, "pwned").exists())
+    }
+
+    @Test
+    fun graphicsAndPointerComeFromTheEntry() {
+        val e = LauncherEntry("x", "x", "", "x", false, "", graphics = "cpu", pointer = "nonsense")
+        assertEquals("cpu", EntryLauncher.graphicsFor(e)?.key)
+        assertNull(EntryLauncher.pointerEmulationFor(e))
+        assertNull(EntryLauncher.graphicsFor(e.copy(graphics = null)))
+    }
 }

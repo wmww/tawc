@@ -57,8 +57,8 @@ GdkWindow allocation contains the hit point.
 What touchscreen input does to `wl_pointer`: `compositor/src/pointer_emulation.rs`
 (state, launch overrides) and the `touch_*`/`hover_*`/`full_*` functions in
 `event_loop.rs`. A Settings radio group picks the global mode; the
-`.desktop` editor's "Override pointer emulation" sets one per entry
-(`Installation.entryPointerEmulation`).
+launcher entry editor's "Override pointer emulation" sets one per entry
+(the `pointer` field in the launcher store, notes/launcher.md).
 
 | Mode | `wl_touch` | `wl_pointer` |
 |---|---|---|

@@ -201,12 +201,31 @@ fn render_to(src: &Path, dst: &Path, symbolic: bool) -> Option<()> {
         if symbolic {
             render_symbolic(&data)
         } else {
-            rasterize(&data, 1.0)
+            rasterize(&data, RENDER_PX, 1.0)
         }
     })
     .ok()
     .flatten()?;
+    save_atomic(&pixmap, dst)
+}
 
+/// Rasterize the SVG at [src] to a [px]² PNG at [dst], for icons the
+/// app imports into its own store (`launcher/icons/`). Same fences as
+/// the cache: size cap, `catch_unwind`, temp file + rename.
+pub fn rasterize_file(src: &Path, dst: &Path, px: u32) -> bool {
+    let Ok(meta) = std::fs::metadata(src) else { return false };
+    if !meta.is_file() || meta.len() > MAX_SOURCE_BYTES || px == 0 {
+        return false;
+    }
+    let Ok(data) = std::fs::read(src) else { return false };
+    std::panic::catch_unwind(|| rasterize(&data, px, 1.0))
+        .ok()
+        .flatten()
+        .and_then(|p| save_atomic(&p, dst))
+        .is_some()
+}
+
+fn save_atomic(pixmap: &resvg::tiny_skia::Pixmap, dst: &Path) -> Option<()> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dst.with_extension(format!("{}-{seq}.tmp", std::process::id()));
@@ -223,20 +242,20 @@ fn render_to(src: &Path, dst: &Path, symbolic: bool) -> Option<()> {
     }
 }
 
-/// Render [data] centred in a [RENDER_PX]² transparent pixmap, aspect
+/// Render [data] centred in a [px]² transparent pixmap, aspect
 /// preserved, with the longest side at [fill] of the square.
-fn rasterize(data: &[u8], fill: f32) -> Option<resvg::tiny_skia::Pixmap> {
+fn rasterize(data: &[u8], px: u32, fill: f32) -> Option<resvg::tiny_skia::Pixmap> {
     let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
     let size = tree.size();
     let longest = size.width().max(size.height());
     if !(longest.is_finite() && longest > 0.0) {
         return None;
     }
-    let scale = RENDER_PX as f32 * fill / longest;
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(RENDER_PX, RENDER_PX)?;
+    let scale = px as f32 * fill / longest;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(px, px)?;
     let transform = resvg::tiny_skia::Transform::from_translate(
-        (RENDER_PX as f32 - size.width() * scale) / 2.0,
-        (RENDER_PX as f32 - size.height() * scale) / 2.0,
+        (px as f32 - size.width() * scale) / 2.0,
+        (px as f32 - size.height() * scale) / 2.0,
     )
     .pre_scale(scale, scale);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
@@ -251,7 +270,7 @@ fn rasterize(data: &[u8], fill: f32) -> Option<resvg::tiny_skia::Pixmap> {
 /// drew becomes a mask, and the mask is painted in the foreground
 /// colour over the tile.
 fn render_symbolic(data: &[u8]) -> Option<resvg::tiny_skia::Pixmap> {
-    let mut glyph = rasterize(data, SYMBOLIC_GLYPH_SCALE)?;
+    let mut glyph = rasterize(data, RENDER_PX, SYMBOLIC_GLYPH_SCALE)?;
     let [r, g, b] = SYMBOLIC_GLYPH_RGB;
     for px in glyph.pixels_mut() {
         let a = px.alpha();

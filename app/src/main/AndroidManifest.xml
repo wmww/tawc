@@ -199,11 +199,11 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:excludeFromRecents="true" />
 
-        <!-- Personal .desktop editor for the managed dir
-             (root/.local/share/applications). Launched for result by
-             the home screen's apps pane; RESULT_OK triggers a rescan. -->
+        <!-- Launcher entry editor (overrides + shortcuts in the
+             launcher store). Launched for result by the home screen's
+             apps pane; RESULT_OK triggers a rescan. -->
         <activity
-            android:name=".launcher.DesktopFileEditorActivity"
+            android:name=".launcher.EntryEditorActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 

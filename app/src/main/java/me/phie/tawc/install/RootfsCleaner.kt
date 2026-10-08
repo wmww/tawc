@@ -147,7 +147,8 @@ object RootfsCleaner {
 
         // Pass 2: explicit ordering — the tawcroot state dir (hardlink-
         // emulation store, sibling of rootfs, present iff the tawcroot
-        // method ever ran; notes/tawcroot/link-emulation.md), the ando
+        // method ever ran; notes/tawcroot/link-emulation.md), the
+        // launcher store and icon cache (notes/launcher.md), the ando
         // broker dir (socket + dir, present iff ando was ever enabled;
         // notes/ando.md), any half-written `metadata.json.tmp`, then
         // `metadata.json`, then `rmdir`. `find -depth` leaves
@@ -157,14 +158,16 @@ object RootfsCleaner {
         // home screen). Explicit order makes metadata.json the
         // second-to-last visible artefact, with only the empty dir
         // remaining and `rmdir` finishing the job near-atomically.
-        log("rm: container at $installPath (tawcroot, ando, metadata.json, rmdir)")
+        log("rm: container at $installPath (tawcroot, launcher, icon-cache, ando, metadata.json, rmdir)")
         deletePass(
             script = buildString {
                 // Packages-flavor bootstrap workspace (busybox, local
                 // mirror, debootstrap copy) — present iff a packages
                 // install failed before its own cleanup ran.
                 appendLine("[ ! -d ${Sh.quote("$installPath/bootstrap-work")} ] || find ${Sh.quote("$installPath/bootstrap-work")} -xdev -depth -delete >/dev/null")
-                appendLine("[ ! -d ${Sh.quote("$installPath/tawcroot")} ] || find ${Sh.quote("$installPath/tawcroot")} -xdev -depth -delete")
+                for (dir in listOf("tawcroot", "launcher", "icon-cache")) {
+                    appendLine("[ ! -d ${Sh.quote("$installPath/$dir")} ] || find ${Sh.quote("$installPath/$dir")} -xdev -depth -delete")
+                }
                 appendLine("rm -f ${Sh.quote("$installPath/ando/ando.sock")}")
                 appendLine("[ ! -d ${Sh.quote("$installPath/ando")} ] || rmdir ${Sh.quote("$installPath/ando")}")
                 appendLine("rm -f ${Sh.quote("$installPath/metadata.json.tmp")}")

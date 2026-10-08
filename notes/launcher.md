@@ -1,7 +1,7 @@
 # In-app launcher
 
-Per-distro app picker that reads `.desktop` files inside a rootfs and
-lets the user search + launch: the home screen's apps tab
+Per-distro app picker that reads `.desktop` files inside a rootfs,
+merges in TAWC's own entry store, and lets the user search + launch: the home screen's apps tab
 (`launcher/AppsPane`, for the open distro, notes/android.md "Home
 screen"), plus pinned shortcuts.
 
@@ -11,12 +11,13 @@ screen"), plus pinned shortcuts.
    first tab is `AppsPane`.
 2. **AppsPane.rescan()** — on every show, distro switch and resume, so
    packages installed from the terminal appear — →
-   `LauncherEntry.list` (scan + built-ins, below) →
-   `LauncherEntry.scan(rootfs)` on
-   `Dispatchers.IO` — the shared wrapper around
-   `NativeBridge.nativeLauncherScan` + JSON parse that every scan
-   consumer (launcher list, shortcut trampoline, `launcher-list`
-   broker action) goes through. Native failure = empty list.
+   `LauncherEntry.list` (store load + scan + built-ins, below) on
+   `Dispatchers.IO`. `list` and `find` (one id; the shortcut
+   trampoline, editor, `launcher-launch`) load the `LauncherStore`
+   first, which runs the one-time migration, then call
+   `LauncherEntry.scan(rootfs)`, the wrapper around
+   `NativeBridge.nativeLauncherScan` + JSON parse. Native failure =
+   empty list.
 3. **launcher.rs** walks `APPS_SUBDIRS` under the rootfs —
    `root/.local/share/applications` (the guest's XDG per-user dir;
    fake root, so `$HOME` is `/root`), `usr/local/share/applications`,
@@ -28,17 +29,19 @@ screen"), plus pinned shortcuts.
    `.desktop` via the `freedesktop-desktop-entry` crate, filters
    non-Application / NoDisplay / Hidden / Exec-less entries, and (in
    `scan_json`, not the entry walk — see "Icon resolution") resolves
-   `Icon=` to an on-device PNG path. De-dup by id happens in walk
+   `Icon=` to an on-device PNG path. Ids with the reserved `tawc:`
+   prefix are dropped. De-dup by id happens in walk
    order *before* the name sort, and `APPS_SUBDIRS` is ordered
-   user-first, so a user's copy of an id shadows the packaged one
-   ("hide the packaged entry behind my edited copy" works). Then
-   sorted by localised name.
-4. **LauncherEntry.parseList** turns the JSON into Kotlin records
-   (`id, name, comment, exec, terminal, iconPath, path, shadows` —
-   `path` is the absolute host path of the `.desktop` source file,
-   `shadows` the lower-priority copy of the id the de-dup dropped; the
-   editor uses both to tell overrides, personal and packaged entries
-   apart).
+   user-first, so a hand-made copy of an id in the guest's per-user
+   dir shadows the packaged one. Then the store is merged in (see
+   "Entry store") and the list sorted by (possibly overridden)
+   localised name.
+4. **LauncherEntry.parseList** turns the JSON into Kotlin records:
+   `id, name, comment, exec, terminal, icon, iconFile, iconPath, path,
+   shadows, source, overridden, packaged, hidden, env, graphics,
+   pointer` — `path` is the host path of the `.desktop` source (empty
+   for shortcuts), `shadows` the lower-priority copy the de-dup
+   dropped (informational), the rest as in "Entry store".
 5. **AppsPane** filters hidden entries + the search query, then
    renders rows (icon ImageView + name + comment). `IconLoader`
    async-decodes PNGs with `BitmapFactory.inSampleSize` keeping memory
@@ -47,7 +50,10 @@ screen"), plus pinned shortcuts.
    icon replaced in place updates. An entry with
    no resolvable icon gets `ic_terminal_fallback` or `ic_app_fallback`.
 6. Tap or Enter → `EntryLauncher.launch(appContext, inst, entry)`, the
-   shared dispatch point for every launch surface. `Terminal=true`
+   shared dispatch point for every launch surface. The entry's store
+   `env` is exported (`export K='V' …;`) before Exec on both paths; a
+   packaged Exec's own `env` prefix still applies after it.
+   `Terminal=true`
    entries on tawcroot installs open a new home terminal tab running
    the command instead (see notes/terminal.md "Command sessions"); proot/chroot
    terminal entries fall through to the headless path with a logcat
@@ -189,24 +195,19 @@ Long-press on a row opens an action-list dialog (plain
 `AppsPane.entryActionsFor` — append there to grow the menu.
 Today's items: **Hide** on visible entries, **Unhide** on hidden ones,
 **Add to home screen** (see "Home-screen shortcuts"), **Edit** on
-every scanned entry (see "Managed dir + .desktop editor").
+every scanned entry and shortcut (see "Entry editor").
 
-Hidden state lives in `Installation.hiddenDesktopIds` (ids =
-`LauncherEntry.id`, filename minus `.desktop`), written only through
-`InstallationStore.update` via `Installation.withEntryHidden`. The
-field is additive with a safe default — no `schemaVersion` bump — and
-serialized only when non-empty. Uninstall wipes `metadata.json`, so
-hide state resets with the install; stale ids never match and are not
-pruned.
+Hidden state is the store's `hidden` field (an override of a scanned
+entry or built-in, or the shortcut's own field), written through
+`LauncherEntries.withField(id, "hidden", …)`. The scan reports it as
+`hidden`; built-ins get it from the store Kotlin-side. Stale ids never
+match and are kept: a reinstalled package comes back hidden.
 
 Filtering is **Kotlin-side** (`LauncherEntry.filter`, a pure
-unit-tested function driven from `AppsPane.applyFilter`), not
-in `launcher.rs::scan_entries`:
-
-- Hide state is per-install app metadata; the scanner takes only a
-  rootfs path and shouldn't grow a metadata side-channel.
-- `resolve_metadata_for_app_id` shares `scan_entries` for window
-  icons/titles — a hidden app that is *running* must still resolve.
+unit-tested function driven from `AppsPane.applyFilter`), not in
+`launcher.rs`: `resolve_metadata_for_app_id` shares the scan for
+window icons/titles, and a hidden app that is *running* must still
+resolve.
 
 The pane is an Android-launcher-style grid under the home tab bar: an
 always-visible search pill ("Search"; the distro name is in the bar), then icons in name
@@ -219,8 +220,8 @@ nothing focused puts it there. Enter launches the top match; ✕ (shown
 with a query), Back or a launch clears it and drops the IME. The ⋮ is
 the home screen's one menu; on the apps tab it adds a
 checkable **"Show hidden (N)"** item (N counts hidden ids that match
-actual entries; omitted when N is 0) and, on editable methods, **"Add
-entry…"** (the editor). Show-hidden is transient
+actual entries; omitted when N is 0) and **"Add entry…"** (the editor,
+for a new shortcut). Show-hidden is transient
 per-pane state, not persisted.
 With it on, hidden entries render dimmed (alpha 0.5) in their normal
 sort position and launch normally on tap. With it off, a search whose
@@ -230,26 +231,26 @@ the empty-list message appends a "(N hidden)" hint.
 
 Debug broker actions (notes/exec-broker.md): `launcher-list` returns
 the post-filter list as JSON (optionally including hidden entries with
-`showHidden=true`), including the resolved `iconPath` so icon tests can
-see what the scanner picked, plus `shadows` and the `graphics`/`pointer`
-overrides; `set-entry-hidden`, `set-entry-graphics` and `set-entry-pointer` perform the same
-metadata writes as the UI. Integration coverage: `launcher::` tests in
-`tests/integration/tests/launcher.rs`.
+`showHidden=true`) with every merged field, including the resolved
+`iconPath` so icon tests can see what the scanner picked;
+`set-entry-override`, `put-shortcut` and `delete-shortcut` perform
+the same store writes as the UI. Integration coverage: `launcher::`
+tests in `tests/integration/tests/launcher.rs`.
 
 ## Built-in entries
 
 `LauncherEntry.Builtin` entries are synthesized Kotlin-side
 (`builtinsFor` + `withBuiltins`, unit-tested) after the scan, not
 `.desktop` files. Ids carry a reserved `tawc:` prefix (scanned ids with
-it are dropped), so hide state (`hiddenDesktopIds`) and pin ids work
-unchanged and the query matches them like any entry. Edit is never
-offered.
+it are dropped), so hide state (a `hidden` override, the only field a
+built-in takes) and pin ids work unchanged and the query matches them
+like any entry. Edit is never offered.
 
 | Entry | Id | Action | Offered | Pin |
 |---|---|---|---|---|
 | TAWC Term | `tawc:term` | new shell tab | tawcroot | yes |
 | Update packages | `tawc:update` | new command tab running `Distro.upgradeCommand` | tawcroot | yes |
-| Add entry | `tawc:add-entry` | `DesktopFileEditorActivity` (new), for result | not chroot | no |
+| Add entry | `tawc:add-entry` | `EntryEditorActivity` (new shortcut), for result | always | no |
 
 TAWC Term and Update packages sort by name with everything else; Add
 entry sorts last whatever the query (`LauncherEntry.filter`). The
@@ -261,109 +262,160 @@ like any icon-less terminal entry; Add entry is a bare themed
 `launcher-list` includes them with `builtin: true`
 (`launcher::test_builtin_entries_listed_and_hideable`).
 
-## Managed dir + .desktop editor
+## Entry store
 
-`/root/.local/share/applications/` is the **managed dir** — the
-package-manager boundary. `DesktopFileEditorActivity` (launched for
-result from the launcher's "Add entry…" overflow item and per-entry
-"Edit" action) only ever writes there. Edit is offered on every scanned
-entry (not built-ins, not chroot); `/usr/share`, `/usr/local` and
-flatpak files are never modified.
+Everything TAWC records about launcher entries lives in one app-owned
+store beside the rootfs, `<distros>/<id>/launcher/` (`LauncherStore`):
 
-- **Overrides.** Saving an edit of a packaged entry writes a copy to
-  `<managed>/<id>.desktop`; the scanner's user-first de-dup makes it
-  hide the packaged one, and since it keeps the id it inherits hide
-  state and pins. The id is derived like the scanner's crate does
-  (`DesktopEntryFile.idFor`: path after the last `/applications/`,
-  `/` → `-`), so a nested `applications/kde4/foo.desktop` becomes
-  `kde4-foo.desktop`.
-- **What an entry is**, derived from the scan every time (no marker in
-  the file): the scanner reports `shadows`, the path of the copy the
-  de-dup dropped. Managed + `shadows` = override; managed without =
-  personal entry; not managed = packaged. An override whose package is
-  removed loses `shadows` and becomes a personal entry.
-- **Toolbar action.** Personal: trash, Delete. Override, or a packaged
-  entry with only a graphics or pointer override: `ic_reset`, Reset ("…to
-  default?"), which deletes the managed copy. Both also clear the id's
-  graphics and pointer overrides, so a future entry reusing the slug
-  doesn't inherit them. Packaged with nothing overridden: none.
-- **Patch, don't rewrite.** Existing files go through
-  `DesktopEntryFile.patch`: inside `[Desktop Entry]`, only changed keys
-  among Name/Exec/Icon/Terminal/Comment are replaced in place or
-  appended (empty Icon/Comment removes the key; a false Terminal is
-  never added). A changed Name/Comment drops its `Name[xx]=` variants,
-  which would otherwise keep winning. Everything else — locale keys,
-  `MimeType`, `Actions`, other groups, comments — is kept byte for
-  byte. `serialize` is for new entries only. Non-UTF-8 files are
-  refused with a toast rather than patched.
-- **Save rules.** Unchanged text writes nothing (so a graphics-only
-  edit of a packaged entry doesn't fork it); an override patched back to
-  exactly its packaged text is deleted. Writes are atomic
-  (`atomicWriteText`).
-- **Stale overrides** are accepted: a package upgrade doesn't reach an
-  override (standard XDG model); Reset is one tap away.
-- Editable check is Kotlin-side: `DesktopEntryFile.isManaged` prefixes
-  `entry.path` against the managed dir. Both sides are canonicalized —
-  Kotlin's `context.dataDir` is `/data/user/0/<pkg>` while the Rust
-  scanner canonicalizes its walk roots to `/data/data/<pkg>`, so a
-  naive prefix check never matches. The editor also checks
-  `EXTRA_PATH` is a regular file inside the rootfs.
-- Method gate: writes are plain app-uid file I/O, fine for
-  tawcroot/proot but not chroot's root-owned rootfs (see "Access
-  model") — chroot installs get no New/Edit entry points, consistent
-  with the terminal gating.
-- Form: Exec (required) + Name (blank = Exec, shown as the hint),
-  Environment variables, Icon (see "Icon field" below), Terminal
-  checkbox (checked by default for new entries — hand-made entries are
-  usually CLI scripts), Override graphics, Override pointer emulation.
-- **Environment variables** live in the file, the XDG way:
-  `Exec=env K=V … command` (`DesktopEntryFile.splitExec`/`joinExec`),
-  so they travel with the entry and other desktops see them too. Rows
-  are `[NAME] [value] ✕` plus a "+ Add" button; fully blank rows are
-  ignored, and an invalid name flags its field and disables Save.
-  Split accepts `'…'`, `"…"` and `\x` quoting and `%%`; anything it
-  can't represent (`env -i`, no command, unterminated quote) stays in
-  Command untouched. Join double-quotes values that need it and doubles
-  `%` (the scanner strips `%X` field codes). While command and
-  variables are as loaded, Exec is written back verbatim, so an
-  untouched entry still patches to identical text. Note the scanner
-  collapses whitespace runs in Exec, quoted or not.
-  `Comment=` has no field but is carried through.
-- New file: `slugifyLabel`-style slug of Name + `.desktop`, `-2`/`-3`
-  suffix on collision. Editing keeps the filename — it's the entry id.
+```
+launcher/
+  entries.json
+  icons/<name>.png
+```
+
+```json
+{
+  "version": 1,
+  "migrated": 1,
+  "overrides": {
+    "firefox": { "name": "Firefox (CPU)", "graphics": "cpu", "hidden": true,
+                 "env": { "MOZ_ENABLE_WAYLAND": "1" } }
+  },
+  "shortcuts": {
+    "tawc:app:htop": { "name": "htop", "exec": "htop", "terminal": true,
+                       "iconFile": "htop.png" }
+  }
+}
+```
+
+TAWC never writes `.desktop` or icon files into the rootfs. A
+`.desktop` file the user makes by hand in any XDG dir is scanned like
+any other: TAWC can override its fields but never edits it. Store
+contents only affect TAWC (its launcher, pins, launches and window
+metadata); a desktop environment inside the guest doesn't see them.
+The store is app-owned, so it works for every method (chroot too),
+travels with export/import (notes/installation.md "Export / import")
+and goes away on uninstall.
+
+- **Fields** (same for both maps, all optional): `name`, `comment`,
+  `exec`, `terminal`, `icon` (theme name or in-rootfs path),
+  `iconFile` (under `icons/`, wins over `icon`), `env` (exported at
+  launch, not spliced into Exec), `graphics`, `pointer`, `hidden`.
+  Unknown fields and top-level keys are kept on rewrite
+  (`EntryFields.extra`), so an older app doesn't drop a newer one's
+  data; wrongly typed known fields are dropped. A `version` newer than
+  1 is refused: Kotlin won't load or write the store, Rust ignores it.
+- **Overrides** apply field by field over the scanned entry; the rest
+  still comes from the live file, so package upgrades reach it. An
+  override whose entry is gone is kept and does nothing (it comes back
+  with the package, like hide state).
+- **Shortcuts** are entries made in the app, with no file. New ids are
+  `tawc:app:<slug>` (`-2`, `-3` …); scanned `tawc:` ids are dropped, so
+  they can't collide. A shortcut replaces a scanned entry with the same
+  id (migrated v3 entries keep their old slug id). Exec is required;
+  name defaults to Exec.
+- **Built-ins** take `hidden` only (`withField` refuses the rest).
+- **Writes**: `LauncherStore.update(id) { store, iconFile -> … }`, a
+  read-modify-write under a process-global per-install lock, atomic
+  temp-file rename, never creating a slot that has no `metadata.json`.
+  Mutations are `LauncherEntries` helpers (`withField`,
+  `withOverride`, `withoutOverrides`, `withShortcut`, …). An icon
+  passed to `update` is stored first (`<slug>.png`, `-2` …, identical
+  bytes reuse a file); after every write, files in `icons/` no entry
+  references are deleted. Uninstall removes the dir in
+  `RootfsCleaner`'s second pass (with `icon-cache/`).
+- **Merge** (Rust, `launcher.rs::merge_store`, inside `scan_entries`):
+  overrides by id onto the de-duplicated scan, then shortcuts. Each
+  entry reports `source` (`desktop`/`shortcut`), `overridden` (field
+  names applied, `hidden` excluded) and `packaged` (the scanned value
+  of each overridden `name`/`comment`/`exec`/`icon`/`terminal`, for
+  the editor's hints and per-field reset). `iconFile` resolves to
+  `launcher/icons/<f>` only for a plain file name of a regular,
+  non-symlink PNG; otherwise `icon` goes through `IconResolver`.
+  `resolve_metadata_for_app_id` uses the same merge, so recents show
+  overridden names and icons (shortcuts match only through the launch
+  splash: they have no `StartupWMClass`).
+
+Unit tests: `LauncherStoreTest`, `LauncherMigrationTest`. Integration:
+`launcher::test_field_overrides_follow_package_upgrades`,
+`test_shortcuts`, `test_migration_converts_editor_files_only`, and the
+store round trip in `distro_export::test_distro_export_import`.
+
+### Migration
+
+`LauncherMigration`, run by the first `LauncherStore.load` of an
+install (so it also covers a format-1 export imported later), ending
+with `"migrated": 1`; idempotent.
+
+1. `metadata.json`'s `hiddenDesktopIds`, `entryGraphics` and
+   `entryPointerEmulation` (now `Installation.legacy*`, kept across
+   rewrites until then) become fields; built-ins keep `hidden` only.
+   The store is written first, then the fields are cleared from the
+   record.
+2. Files in the old managed dir, `/root/.local/share/applications`,
+   convert only if they parse as UTF-8 and hold a single `[Desktop
+   Entry]` group of the old editor's keys (`Type=Application`,
+   `Version`, `Name`, `Exec`, `Icon`, `Terminal`, `Comment`). With a
+   shadowed packaged file (from the scan's `shadows`): the fields that
+   differ become overrides. Override copies were dev-build only, and
+   most kept the packaged file's extra keys, so they usually stay as
+   hand-made entries. Without: a shortcut under its old id, so
+   existing pins keep working. A leading `env K=V` in Exec becomes
+   `env`; an `Icon=tawc-*` found in the old import dirs
+   (`…/icons/hicolor/{256x256,scalable}/apps/`) is copied into
+   `icons/` (SVG rasterized) and becomes `iconFile` (the rootfs copies
+   stay). A converted file is deleted after the store write. Step 2
+   runs before step 1 so a converted entry's metadata settings land in
+   its shortcut. If the scan comes back empty, step 2 waits and
+   `migrated` stays 0 until a later load.
+
+## Entry editor
+
+`EntryEditorActivity`, launched for result (RESULT_OK → rescan) from
+the per-entry Edit action and from "Add entry…" (a new shortcut). It
+writes only to the store; no method gate.
+
+- **Scanned entry**: each field shows its effective value with the
+  packaged value as hint. A field that differs from the packaged one
+  is saved as an override and gets a ↺ reset beside its label; a
+  blank Name/Command falls back to the packaged value. Toolbar
+  **Reset** ("…to default?") drops every override for the id but
+  hide state.
+- **Shortcut**: the same form; Command required, Name blank = Command.
+  Toolbar **Delete**. New shortcuts default to Terminal checked
+  (hand-made entries are usually CLI programs).
+- Form: Command, Name, Environment variables, Icon (below), Terminal,
+  Override graphics, Override pointer emulation. `comment` has no
+  field; an existing override of it is kept.
+- **Environment variables** edit the store `env` directly. Rows are
+  `[NAME] [value] ✕` plus a "+ Add" button; fully blank rows are
+  ignored, and an invalid name flags its field and disables Save. At
+  launch `EntryLauncher.envPrefix` exports them shell-quoted and skips
+  invalid names.
 - Closing: the toolbar shows ✕ rather than ←, since leaving discards
-  the form. With unsaved changes (form fields + graphics vs. as
-  opened), ✕, Back and the back gesture ask "Discard changes?"
-  first; the `OnBackPressedCallback` is enabled only while dirty, so a
-  clean form keeps predictive back.
-- After save/delete/reset the launcher rescans (`RESULT_OK` →
-  `loadApps()`).
+  the form. With unsaved changes, ✕, Back and the back gesture ask
+  "Discard changes?" first; the `OnBackPressedCallback` is enabled only
+  while dirty, so a clean form keeps predictive back.
 
 ### Graphics override
 
 An "Override graphics" checkbox under Terminal; checking it reveals a
 radio group of every backend this build ships (`ui/GraphicsBackendGroup`,
 shared with Settings), preselected to the global pick. Unchecked = no
-override. Stored per install, not in the file:
-`Installation.entryGraphics` (id → `GraphicsBackend.key`, additive,
-serialized only when non-empty, written via `withEntryGraphics`), so a
-graphics-only change never forks a packaged entry.
-`EntryLauncher.graphicsFor` resolves it with
-`GraphicsBackend.fromKeyOrNull` (unknown/unshipped key → null = the
-global setting) and passes it to `runInside`, or for `Terminal=true`
-entries through `MainActivity.EXTRA_GRAPHICS` → `CommandTab` →
-`TawcrootMethod.ptyShellExec`. Pins go through `EntryLauncher` with a
-fresh `Installation`, so they follow it too. Only TAWC launches honour
-it: running the same program from a terminal uses the global backend.
-Verified on the emulator 2026-10-07 (Firefox with a CPU override spawns
-with `LIBGL_ALWAYS_SOFTWARE=1` while the global pick is gfxstream).
+override. Stored as the entry's `graphics` field
+(`GraphicsBackend.key`). `EntryLauncher.graphicsFor(entry)` resolves it
+with `GraphicsBackend.fromKeyOrNull` (unknown/unshipped key → null =
+the global setting) and passes it to `runInside`, or for
+`Terminal=true` entries through `MainActivity.EXTRA_GRAPHICS` →
+`CommandTab` → `TawcrootMethod.ptyShellExec`. Pins resolve the entry
+fresh, so they follow it too. Only TAWC launches honour it: running
+the same program from a terminal uses the global backend.
 
 ### Pointer emulation override
 
 Same shape below it: "Override pointer emulation" reveals
-`ui/PointerEmulationGroup` (shared with Settings), stored in
-`Installation.entryPointerEmulation` (id → `PointerEmulation.key`, via
-`withEntryPointerEmulation`), resolved by `EntryLauncher.pointerEmulationFor`.
+`ui/PointerEmulationGroup` (shared with Settings), stored as `pointer`
+(`PointerEmulation.key`), resolved by `EntryLauncher.pointerEmulationFor`.
 The launch hands it to the compositor with `nativeReserveLaunchHost`,
 which applies it to the launched session and launch host — see
 notes/input.md ("Pointer emulation"). GUI launches with a splash only;
@@ -372,14 +424,17 @@ terminal entries and launches without a reserved host get the global mode.
 ### Icon field
 
 `[preview] [field ✕] / [Select] [Load]`. The field is a freeform
-`Icon=` value (a name, or an in-rootfs absolute path); ✕ is a box-less
-`TextInputLayout` with `END_ICON_CLEAR_TEXT`.
+`icon` value (a name, or an in-rootfs absolute path); ✕ is a box-less
+`TextInputLayout` with `END_ICON_CLEAR_TEXT`. While an imported image
+is in effect the field is empty with an "Imported image" hint; typing
+a name, or the label's ↺ (scanned) / ✕ (shortcut), drops the image.
 
-- **Preview**: what the grid would draw. `nativeResolveIcon(rootfs,
-  value)` (the scan's resolver and SVG cache, one value) on IO,
-  debounced 250 ms after typing and immediate on a Terminal toggle;
-  empty/unresolved shows the grid's fallback glyph for the current
-  Terminal state.
+- **Preview**: what the grid would draw: the imported image, else
+  `nativeResolveIcon(rootfs, value)` (the scan's resolver and SVG
+  cache, one value; a blank field on a scanned entry previews the
+  packaged value) on IO, debounced 250 ms after typing and immediate
+  on a Terminal toggle; empty/unresolved shows the grid's fallback
+  glyph for the current Terminal state.
 - **Select** → `IconPickerActivity`, a searchable grid (same pill and
   column math as `AppsPane`) of `nativeListIcons(rootfs)`:
   `[{name, user}]`, one entry per name. Cells resolve lazily through
@@ -391,23 +446,18 @@ terminal entries and launches without a reserved host get the global mode.
   visible cells (~8 ms each).
 - **Load** → `OpenDocument(image/*)` → `IconImport`: rasters are
   decoded with `ImageDecoder`, scaled to fit 256² (never up) and
-  re-encoded as PNG into
-  `/root/.local/share/icons/hicolor/256x256/apps/`; SVGs (MIME or
-  `.svg` name, ≤ 1 MiB like the cache's cap) are copied to
-  `…/hicolor/scalable/apps/`. The name is `tawc-<slug of the document
-  name>`, `-2`/`-3` on collision across both extensions, reusing a
-  candidate whose bytes are identical. Written atomically
-  (`atomicWriteBytes`). The field gets the plain name, so guest
-  desktops reading the `.desktop` file find it too, and imports travel
-  with the rootfs. Nothing deletes imports. Name logic:
+  re-encoded as PNG; SVGs (MIME or `.svg` name, ≤ 1 MiB like the
+  cache's cap) are rasterized once at 256² by
+  `NativeBridge.nativeRasterizeIcon` (`icon_cache::rasterize_file`,
+  resvg with the cache's fences). Only PNG is stored, which keeps the
+  "`iconPath` is a decodable PNG" contract with no cache. The PNG is
+  held in memory (a preview copy in `cacheDir/icon-import/`) until
+  Save's `update` stores it in `launcher/icons/` under the document's
+  slug, so a cancelled form leaves nothing in the store. Name logic:
   `IconImportTest`.
 
-Serializer/patch/parse/id/slug logic is JVM-unit-tested
-(`DesktopEntryFileTest`, `InstallationEntryGraphicsTest`); scan-dir,
-precedence, `shadows` and the graphics override are integration-tested
-through `launcher-list` (`tests/integration/tests/launcher.rs`).
-Editor flows (edit packaged → one tile → Reset) verified on the
-emulator 2026-10-07.
+Editor UI flows are checked by hand; the store semantics under them
+are covered by the tests listed under "Entry store".
 
 ## Home-screen shortcuts (pinned)
 
@@ -419,10 +469,11 @@ trampoline).
 
 - **Payload is a reference, not a command**: the shortcut intent
   carries `(installId, desktopId, label)` — never the `Exec` string.
-  The trampoline re-resolves the entry with a fresh
-  `nativeLauncherScan` at tap time (same walk the launcher does on
-  open), so pins stay current across `.desktop` edits and the system's
-  shortcut store never holds an executable command.
+  The trampoline re-resolves the entry with `LauncherEntry.find` at
+  tap time (store + fresh scan, the same merge the launcher shows), so
+  pins stay current across edits and package upgrades, and the
+  system's shortcut store never holds an executable command. Store
+  shortcuts pin like any entry (their store key is the desktop id).
 - Shortcut id is `"<installId>/<desktopId>"`; install ids can't
   contain `/`, so `EntryShortcuts.splitShortcutId` is unambiguous.
   The id format and the `"installId"`/`"desktopId"`/`"label"` extras
@@ -487,7 +538,7 @@ The theme walk is spec-*shaped*, not the full fdo size-matching
 algorithm — we want "largest sensible raster, else scalable":
 
 - **Bases** (`ICON_BASES`): `/root/.local/share/icons` (the spec's
-  `$XDG_DATA_HOME/icons`, where editor imports go), then
+  `$XDG_DATA_HOME/icons`, where old editor imports went), then
   `/usr/local/share/icons`, `/usr/share/icons`, and flatpak's
   `exports/share/icons`. A theme can span bases; its dirs from all
   bases are merged, and the user base wins a tie.

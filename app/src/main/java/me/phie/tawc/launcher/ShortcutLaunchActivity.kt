@@ -50,10 +50,9 @@ class ShortcutLaunchActivity : AppCompatActivity() {
             finish()
             return
         }
-        val rootfs = store.rootfsDir(inst.id).absolutePath
         lifecycleScope.launch {
             val entry = withContext(Dispatchers.IO) {
-                LauncherEntry.scan(rootfs).firstOrNull { it.id == desktopId }
+                LauncherEntry.find(applicationContext, inst, desktopId)
             }
             if (entry == null) {
                 fail(label, getString(R.string.shortcut_entry_gone))

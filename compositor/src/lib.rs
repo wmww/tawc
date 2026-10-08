@@ -1073,6 +1073,29 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeListIcons
     }
 }
 
+/// Rasterize an SVG file to a `px`² PNG (`icon_cache::rasterize_file`),
+/// for icons imported into the launcher store. File I/O and a render;
+/// call off the UI thread.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeRasterizeIcon(
+    mut env: JNIEnv,
+    _class: JClass,
+    src: JString,
+    dst: JString,
+    px: jint,
+) -> jboolean {
+    let (src, dst): (String, String) = match (env.get_string(&src), env.get_string(&dst)) {
+        (Ok(s), Ok(d)) => (s.into(), d.into()),
+        _ => {
+            log::error!("nativeRasterizeIcon: bad string argument");
+            return 0;
+        }
+    };
+    let ok = px > 0
+        && icon_cache::rasterize_file(std::path::Path::new(&src), std::path::Path::new(&dst), px as u32);
+    jboolean::from(ok)
+}
+
 // ---------------------------------------------------------------------------
 // Reverse JNI: Compositor → Android
 // ---------------------------------------------------------------------------

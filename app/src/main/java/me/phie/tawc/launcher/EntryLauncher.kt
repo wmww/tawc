@@ -87,11 +87,12 @@ object EntryLauncher {
             launchBuiltin(appContext, inst, entry, builtin, method)
             return
         }
-        val graphics = graphicsFor(inst, entry.id)
+        val graphics = graphicsFor(entry)
         if (entry.terminal) {
             if (method is TawcrootMethod) {
+                val command = envPrefix(entry.env) + entry.exec
                 appContext.startActivity(
-                    MainActivity.commandIntent(appContext, inst.id, entry.exec, entry.name.ifEmpty { entry.id }, graphics)
+                    MainActivity.commandIntent(appContext, inst.id, command, entry.name.ifEmpty { entry.id }, graphics)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
                 return
@@ -104,7 +105,7 @@ object EntryLauncher {
             InstallationStore(appContext).rootfsDir(inst.id).absolutePath,
             entry,
             graphics,
-            pointerEmulation = pointerEmulationFor(inst, entry.id),
+            pointerEmulation = pointerEmulationFor(entry),
         )
     }
 
@@ -128,7 +129,9 @@ object EntryLauncher {
             val token = if (splash) LaunchRegistry.reserve(appContext, launch) else null
             if (token == null) LaunchRegistry.dispatch(launch.id, LaunchEvent.Detached)
             val proc = try {
-                UserRootfsSession.startInside(appContext, method, rootfs, guiCommand(entry.exec, token), graphics)
+                UserRootfsSession.startInside(
+                    appContext, method, rootfs, guiCommand(entry.exec, token, entry.env), graphics,
+                )
             } catch (e: Exception) {
                 Log.w(TAG, "launch ${entry.id}: $e")
                 val message = e.message ?: e.javaClass.simpleName
@@ -165,15 +168,19 @@ object EntryLauncher {
      * Electron reads `ELECTRON_DISABLE_SANDBOX`. So resolve argv0 in the
      * guest and append the flag when the real binary sits next to
      * `chrome_100_percent.pak`, or `/usr/lib/<name>/` holds one (distro
-     * chromium wrappers).
+     * chromium wrappers). The entry's [vars] are exported first.
      */
-    internal fun guiCommand(exec: String, activationToken: String? = null): String {
+    internal fun guiCommand(
+        exec: String,
+        activationToken: String? = null,
+        vars: Map<String, String> = emptyMap(),
+    ): String {
         val tail = "</dev/null 2>&1"
-        val env = activationToken?.let {
+        val env = envPrefix(vars) + (activationToken?.let {
             val t = Sh.quote(it)
             "export XDG_ACTIVATION_TOKEN=$t DESKTOP_STARTUP_ID=$t; "
-        } ?: ""
-        // Probe the program, not a leading `env K=V` (the editor's variables).
+        } ?: "")
+        // Probe the program, not a leading `env K=V` in a packaged Exec.
         val argv0 = execArgv0(DesktopEntryFile.splitExec(exec).command) ?: return "$env$exec $tail"
         val pak = "chrome_100_percent.pak"
         val probe = "_tawc_ns=; if _p=$(command -v -- ${Sh.quote(argv0)}) && " +
@@ -201,18 +208,25 @@ object EntryLauncher {
         return null
     }
 
-    /**
-     * [inst]'s graphics override for [entryId] ([Installation.entryGraphics]),
-     * or null for the global setting — also when the stored backend
-     * isn't in this build.
-     */
-    fun graphicsFor(inst: Installation, entryId: String): GraphicsBackend? =
-        GraphicsBackend.fromKeyOrNull(inst.entryGraphics[entryId])
+    /** `export K='V' …; ` for [vars], or empty. Names that aren't
+     *  valid shell names are skipped. Applied before Exec, so a packaged
+     *  Exec's own `env` prefix still has the last word. */
+    internal fun envPrefix(vars: Map<String, String>): String {
+        val ok = vars.filterKeys(DesktopEntryFile::isValidEnvName)
+        if (ok.isEmpty()) return ""
+        return "export " + ok.entries.joinToString(" ") { (k, v) -> "$k=${Sh.quote(v)}" } + "; "
+    }
 
-    /** [inst]'s pointer emulation override for [entryId]
-     *  ([Installation.entryPointerEmulation]), or null for the global setting. */
-    fun pointerEmulationFor(inst: Installation, entryId: String): PointerEmulation? =
-        PointerEmulation.fromKeyOrNull(inst.entryPointerEmulation[entryId])
+    /**
+     * [entry]'s graphics override ([LauncherEntry.graphics]), or null
+     * for the global setting — also when the stored backend isn't in
+     * this build.
+     */
+    fun graphicsFor(entry: LauncherEntry): GraphicsBackend? = GraphicsBackend.fromKeyOrNull(entry.graphics)
+
+    /** [entry]'s pointer emulation override, or null for the global setting. */
+    fun pointerEmulationFor(entry: LauncherEntry): PointerEmulation? =
+        PointerEmulation.fromKeyOrNull(entry.pointer)
 
     /** A terminal built-in: a new tab (a plain shell for TAWC Term). Add
      *  entry is the apps pane's own (it wants the editor's result). */

@@ -338,9 +338,11 @@ object NativeBridge {
     external fun nativeClipboardDebugState(): String?
 
     /**
-     * Scan a rootfs for installed `.desktop` apps. Returns a JSON array
-     * string: `[{id, name, comment, exec, terminal}, …]` (sorted by name,
-     * de-duplicated by id, NoDisplay/Hidden filtered out). Empty `[]` if
+     * Scan a rootfs for installed `.desktop` apps, merged with the
+     * install's `launcher/entries.json` (overrides + shortcuts). Returns
+     * a JSON array string ([me.phie.tawc.launcher.LauncherEntry.parseList]
+     * has the shape; sorted by name, de-duplicated by id,
+     * NoDisplay/Hidden filtered out). Empty `[]` if
      * the rootfs has no apps or doesn't exist. The work is pure file I/O
      * with no compositor-state interaction, so this is safe to call from
      * any thread (AppsPane dispatches it on Dispatchers.IO).
@@ -356,6 +358,11 @@ object NativeBridge {
      *  `{name, user}` sorted by name; `user` = has a copy under
      *  `/root/.local/share/icons`. Call on Dispatchers.IO. */
     external fun nativeListIcons(rootfs: String): String
+
+    /** Rasterize the SVG at [src] to a [px]² PNG at [dst] (resvg, the
+     *  icon cache's renderer). False on any failure. Call on
+     *  Dispatchers.IO. */
+    external fun nativeRasterizeIcon(src: String, dst: String, px: Int): Boolean
 
     // --- Remote access (me.phie.tawc.remote.RemoteSession; notes/remote-access.md) ---
 

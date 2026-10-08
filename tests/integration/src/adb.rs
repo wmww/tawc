@@ -987,39 +987,52 @@ pub fn launcher_list(show_hidden: bool) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Persist launcher hide/unhide for `entry_id` on the standing install
-/// via the `set-entry-hidden` broker action — the same locked metadata
-/// write the launcher UI performs. Durable across app restarts, so
-/// tests must unhide in cleanup.
+/// Set (`Some`) or clear (`None`) one launcher store field of
+/// `entry_id` on the standing install via `set-entry-override` — the
+/// write path the UI uses (a shortcut's own field when `entry_id` is
+/// one). `terminal`/`hidden` take `true`/`false`, `env` a JSON object.
+/// Durable; tests must clear what they set.
+pub fn set_entry_override(entry_id: &str, field: &str, value: Option<&str>) -> io::Result<Output> {
+    let id = crate::install_id();
+    let mut args = vec![("installId", id.as_str()), ("entryId", entry_id), ("field", field)];
+    if let Some(v) = value {
+        args.push(("value", v));
+    }
+    broker_action("set-entry-override", &args)
+}
+
+/// Hide or unhide `entry_id` (a store `hidden` override).
 pub fn set_entry_hidden(entry_id: &str, hidden: bool) -> io::Result<Output> {
-    let id = crate::install_id();
-    let hidden = if hidden { "true" } else { "false" };
-    broker_action(
-        "set-entry-hidden",
-        &[("installId", &id), ("entryId", entry_id), ("hidden", hidden)],
-    )
+    set_entry_override(entry_id, "hidden", hidden.then_some("true"))
 }
 
-/// Set (or, with an empty `backend`, clear) the per-entry graphics
-/// override for `entry_id` on the standing install via the
-/// `set-entry-graphics` broker action. Durable; tests must clear it in
-/// cleanup.
+/// Set (or, with an empty `backend`, clear) the graphics override.
 pub fn set_entry_graphics(entry_id: &str, backend: &str) -> io::Result<Output> {
-    let id = crate::install_id();
-    broker_action(
-        "set-entry-graphics",
-        &[("installId", &id), ("entryId", entry_id), ("backend", backend)],
-    )
+    set_entry_override(entry_id, "graphics", (!backend.is_empty()).then_some(backend))
 }
 
-/// Set (or, with an empty `mode`, clear) the per-entry pointer emulation
-/// override via `set-entry-pointer`. Durable; tests must clear it in cleanup.
+/// Set (or, with an empty `mode`, clear) the pointer emulation override.
 pub fn set_entry_pointer(entry_id: &str, mode: &str) -> io::Result<Output> {
+    set_entry_override(entry_id, "pointer", (!mode.is_empty()).then_some(mode))
+}
+
+/// Write a launcher shortcut (`fields`: a JSON object of store fields)
+/// via `put-shortcut`, under `entry_id` or a new `tawc:app:` id.
+/// Returns the id. Durable; delete it in cleanup.
+pub fn put_shortcut(entry_id: Option<&str>, fields: &str) -> io::Result<String> {
     let id = crate::install_id();
-    broker_action(
-        "set-entry-pointer",
-        &[("installId", &id), ("entryId", entry_id), ("mode", mode)],
-    )
+    let mut args = vec![("installId", id.as_str()), ("fields", fields)];
+    if let Some(e) = entry_id {
+        args.push(("entryId", e));
+    }
+    let output = broker_action("put-shortcut", &args)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Remove a launcher shortcut (`delete-shortcut`).
+pub fn delete_shortcut(entry_id: &str) -> io::Result<Output> {
+    let id = crate::install_id();
+    broker_action("delete-shortcut", &[("installId", &id), ("entryId", entry_id)])
 }
 
 /// Every icon name in the standing install via the debug

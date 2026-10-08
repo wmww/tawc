@@ -21,14 +21,19 @@
 //! cache first (see [crate::icon_cache]). Resolution is lazy:
 //! `scan_entries` keeps the raw `Icon=` value, and only the caller that
 //! needs a path pays for the walk. See `notes/launcher.md`.
+//!
+//! TAWC's own per-entry state (field overrides, shortcuts, hide state)
+//! lives in `<distros>/<id>/launcher/entries.json` beside the rootfs,
+//! written only by the app's `LauncherStore`. The scan reads it and
+//! merges it in ([merge_store]), so every consumer sees merged entries.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 
 use freedesktop_desktop_entry::DesktopEntry;
 use log::warn;
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::icon_cache::IconCache;
 
@@ -103,6 +108,26 @@ const KNOWN_ICON_EXTS: &[&str] = &["png", "svg", "xpm", "jpg", "jpeg"];
 /// entries still use it.
 const ICON_FILE_EXTS: &[&str] = &["png", "svg", "svgz"];
 
+/// Newest `entries.json` `version` this build reads. A newer store is
+/// ignored rather than misread (the app refuses to write it, too).
+const STORE_VERSION: u64 = 1;
+
+/// Id prefix reserved for TAWC's own entries (built-ins, shortcuts).
+/// Scanned `.desktop` ids with it are dropped.
+const TAWC_ID_PREFIX: &str = "tawc:";
+
+/// Text fields an override replaces, in `entries.json` spelling.
+const TEXT_FIELDS: &[&str] = &["name", "comment", "exec", "icon"];
+
+/// Where an [Entry] came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EntrySource {
+    /// A scanned `.desktop` file, maybe with field overrides.
+    Desktop,
+    /// A TAWC shortcut from `entries.json`; no file.
+    Shortcut,
+}
+
 /// One launchable application, ready to ship to Kotlin.
 pub struct Entry {
     /// Filename minus `.desktop` — the stable id Kotlin hide-state and
@@ -127,8 +152,169 @@ pub struct Entry {
     pub path: String,
     /// Path of the lower-priority copy of this id that the de-dup
     /// dropped (e.g. the packaged file a managed-dir override hides),
-    /// or empty. The editor's Reset-vs-Delete choice keys on it.
+    /// or empty. Informational.
     pub shadows: String,
+    /// `iconFile` from the store: a file name under `launcher/icons/`,
+    /// unresolved. Wins over [Entry::icon] when it resolves.
+    pub icon_file: String,
+    pub source: EntrySource,
+    /// Store fields applied over the scanned file, in `entries.json`
+    /// spelling (`hidden` is not listed).
+    pub overridden: Vec<String>,
+    /// The scanned value of each overridden text/terminal field, for the
+    /// editor's hints and per-field reset.
+    pub packaged: Map<String, Value>,
+    pub hidden: bool,
+    /// Variables exported before `exec` at launch.
+    pub env: BTreeMap<String, String>,
+    /// Graphics backend / pointer emulation key, or empty for the global
+    /// setting.
+    pub graphics: String,
+    pub pointer: String,
+}
+
+impl Entry {
+    fn shortcut(id: &str, f: &Map<String, Value>) -> Option<Entry> {
+        let exec = str_field(f, "exec").filter(|e| !e.trim().is_empty())?;
+        let mut e = Entry {
+            id: id.to_string(),
+            name: String::new(),
+            comment: String::new(),
+            exec: exec.to_string(),
+            terminal: false,
+            icon: String::new(),
+            path: String::new(),
+            shadows: String::new(),
+            icon_file: String::new(),
+            source: EntrySource::Shortcut,
+            overridden: Vec::new(),
+            packaged: Map::new(),
+            hidden: false,
+            env: BTreeMap::new(),
+            graphics: String::new(),
+            pointer: String::new(),
+        };
+        e.apply(f, false);
+        if e.name.trim().is_empty() {
+            e.name = e.exec.clone();
+        }
+        Some(e)
+    }
+
+    /// Apply store [fields]; with [record], note each overridden field
+    /// and its scanned value. Wrongly typed values are ignored.
+    fn apply(&mut self, fields: &Map<String, Value>, record: bool) {
+        for key in TEXT_FIELDS {
+            let Some(v) = str_field(fields, key) else { continue };
+            let slot = match *key {
+                "name" => &mut self.name,
+                "comment" => &mut self.comment,
+                "exec" => &mut self.exec,
+                _ => &mut self.icon,
+            };
+            if record {
+                self.packaged.insert(key.to_string(), Value::String(slot.clone()));
+                self.overridden.push(key.to_string());
+            }
+            *slot = v.to_string();
+        }
+        if let Some(Value::Bool(t)) = fields.get("terminal") {
+            if record {
+                self.packaged.insert("terminal".into(), Value::Bool(self.terminal));
+                self.overridden.push("terminal".into());
+            }
+            self.terminal = *t;
+        }
+        if let Some(f) = str_field(fields, "iconFile") {
+            if record {
+                self.packaged.entry("icon").or_insert_with(|| Value::String(self.icon.clone()));
+                self.overridden.push("iconFile".into());
+            }
+            self.icon_file = f.to_string();
+        }
+        if let Some(Value::Object(env)) = fields.get("env") {
+            self.env = env
+                .iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect();
+            if record {
+                self.overridden.push("env".into());
+            }
+        }
+        for key in ["graphics", "pointer"] {
+            let Some(v) = str_field(fields, key) else { continue };
+            if key == "graphics" {
+                self.graphics = v.to_string();
+            } else {
+                self.pointer = v.to_string();
+            }
+            if record {
+                self.overridden.push(key.into());
+            }
+        }
+        if let Some(Value::Bool(h)) = fields.get("hidden") {
+            self.hidden = *h;
+        }
+    }
+}
+
+fn str_field<'a>(fields: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    fields.get(key)?.as_str()
+}
+
+/// The install's `launcher/` dir: a sibling of [rootfs] (canonical).
+fn store_dir(rootfs: &Path) -> Option<PathBuf> {
+    Some(rootfs.parent()?.join("launcher"))
+}
+
+/// `entries.json`'s `overrides` and `shortcuts` maps. Empty when the
+/// file is missing, unparseable or from a newer app.
+#[derive(Default)]
+struct Store {
+    overrides: Map<String, Value>,
+    shortcuts: Map<String, Value>,
+}
+
+impl Store {
+    fn load(rootfs: &Path) -> Store {
+        let Some(dir) = store_dir(rootfs) else { return Store::default() };
+        let Ok(text) = std::fs::read_to_string(dir.join("entries.json")) else {
+            return Store::default();
+        };
+        Self::parse(&text)
+    }
+
+    fn parse(text: &str) -> Store {
+        let Ok(Value::Object(mut root)) = serde_json::from_str::<Value>(text) else {
+            warn!("launcher: unparseable entries.json");
+            return Store::default();
+        };
+        if root.get("version").and_then(Value::as_u64).unwrap_or(1) > STORE_VERSION {
+            warn!("launcher: entries.json is newer than supported");
+            return Store::default();
+        }
+        let mut take = |key: &str| match root.remove(key) {
+            Some(Value::Object(m)) => m,
+            _ => Map::new(),
+        };
+        Store { overrides: take("overrides"), shortcuts: take("shortcuts") }
+    }
+}
+
+/// Step 2 of the merge: field overrides onto scanned entries by id,
+/// then shortcuts, which replace a scanned entry with the same id.
+fn merge_store(entries: &mut Vec<Entry>, store: &Store) {
+    for e in entries.iter_mut() {
+        if let Some(Value::Object(f)) = store.overrides.get(&e.id) {
+            e.apply(f, true);
+        }
+    }
+    for (id, f) in &store.shortcuts {
+        let Value::Object(f) = f else { continue };
+        let Some(s) = Entry::shortcut(id, f) else { continue };
+        entries.retain(|e| e.id != *id);
+        entries.push(s);
+    }
 }
 
 /// Scan [rootfs] for `.desktop` apps. Returns entries sorted by name
@@ -151,7 +337,7 @@ fn scan_entries(rootfs: &Path, launchable_only: bool) -> Vec<Entry> {
             Ok(de) => de,
             Err(_) => continue,
         };
-        if !is_relevant(&de, launchable_only) {
+        if !is_relevant(&de, launchable_only) || de.appid.starts_with(TAWC_ID_PREFIX) {
             continue;
         }
         let exec = match de.exec() {
@@ -175,6 +361,14 @@ fn scan_entries(rootfs: &Path, launchable_only: bool) -> Vec<Entry> {
             icon: de.icon().unwrap_or_default().to_string(),
             path: de.path.to_string_lossy().into_owned(),
             shadows: String::new(),
+            icon_file: String::new(),
+            source: EntrySource::Desktop,
+            overridden: Vec::new(),
+            packaged: Map::new(),
+            hidden: false,
+            env: BTreeMap::new(),
+            graphics: String::new(),
+            pointer: String::new(),
         });
     }
 
@@ -198,6 +392,7 @@ fn scan_entries(rootfs: &Path, launchable_only: bool) -> Vec<Entry> {
         }
     }
     let mut entries = kept;
+    merge_store(&mut entries, &Store::load(&rootfs));
     entries.sort_by(|a, b| {
         a.name
             .to_lowercase()
@@ -231,10 +426,11 @@ pub fn resolve_metadata_for_app_id(app_id: &str) -> Option<DesktopAppMetadata> {
     for rootfs in installed_rootfs_dirs() {
         for entry in scan_entries(&rootfs, false) {
             if desktop_id_matches_app_id(&entry.id, query) {
+                let icon_path = IconResolver::new(&rootfs).entry_icon(&entry);
                 return Some(DesktopAppMetadata {
                     desktop_id: entry.id,
                     name: entry.name,
-                    icon_path: IconResolver::new(&rootfs).resolve_string(&entry.icon),
+                    icon_path,
                 });
             }
         }
@@ -279,9 +475,10 @@ fn normalize_desktop_id(value: &str) -> String {
 }
 
 /// JSON-encode the scan result for the JNI boundary. Each element is an
-/// object: `{id, name, comment, exec, terminal, iconPath, path, shadows}`.
-/// Always returns a valid JSON array (empty `[]` if the rootfs has no
-/// apps).
+/// object: `{id, name, comment, exec, terminal, icon, iconFile, iconPath,
+/// path, shadows, source, overridden, packaged, hidden, env, graphics,
+/// pointer}` (merged; see [merge_store]). Always returns a valid JSON
+/// array (empty `[]` if the rootfs has no apps).
 ///
 /// This is where icons get resolved for the launcher list — Kotlin calls
 /// it on `Dispatchers.IO`, so the per-entry stat walk is off the
@@ -298,9 +495,21 @@ pub fn scan_json(rootfs: &Path) -> String {
                 "comment": e.comment,
                 "exec": e.exec,
                 "terminal": e.terminal,
-                "iconPath": icons.resolve_string(&e.icon),
+                "icon": e.icon,
+                "iconFile": e.icon_file,
+                "iconPath": icons.entry_icon(e),
                 "path": e.path,
                 "shadows": e.shadows,
+                "source": match e.source {
+                    EntrySource::Desktop => "desktop",
+                    EntrySource::Shortcut => "shortcut",
+                },
+                "overridden": e.overridden,
+                "packaged": e.packaged,
+                "hidden": e.hidden,
+                "env": e.env,
+                "graphics": e.graphics,
+                "pointer": e.pointer,
             })
         })
         .collect();
@@ -482,6 +691,31 @@ impl IconResolver {
         self.resolve(icon)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default()
+    }
+
+    /// [Entry]'s icon as a PNG path: its store `iconFile` if that
+    /// resolves, else its `Icon=` value.
+    fn entry_icon(&self, e: &Entry) -> String {
+        if !e.icon_file.is_empty() {
+            if let Some(p) = self.store_icon(&e.icon_file) {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+        self.resolve_string(&e.icon)
+    }
+
+    /// `launcher/icons/<file>`, only if [file] is a plain name (so the
+    /// path stays in that dir) of a regular PNG file, not a symlink.
+    fn store_icon(&self, file: &str) -> Option<PathBuf> {
+        let mut comps = Path::new(file).components();
+        let (Some(Component::Normal(name)), None) = (comps.next(), comps.next()) else {
+            return None;
+        };
+        if !file.to_ascii_lowercase().ends_with(".png") {
+            return None;
+        }
+        let p = store_dir(&self.rootfs)?.join("icons").join(name);
+        std::fs::symlink_metadata(&p).ok()?.is_file().then_some(p)
     }
 
     /// Find an absolute on-device *PNG* path for [icon], or None.

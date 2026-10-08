@@ -1,6 +1,5 @@
 package me.phie.tawc.launcher
 
-import me.phie.tawc.launcher.IconImport.Kind
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -9,8 +8,8 @@ class IconImportTest {
     private val a = byteArrayOf(1, 2, 3)
     private val b = byteArrayOf(4, 5, 6)
 
-    private fun choose(kind: Kind, bytes: ByteArray, files: Map<String, ByteArray>) =
-        IconImport.chooseName("cat", kind, bytes) { name, k -> files["$name.${k.ext}"] }
+    private fun choose(bytes: ByteArray, files: Map<String, ByteArray>) =
+        IconImport.chooseName("cat", bytes) { files[it] }
 
     @Test
     fun slugDropsExtensionAndFallsBack() {
@@ -23,25 +22,19 @@ class IconImportTest {
 
     @Test
     fun freeNameTakesNoSuffix() {
-        assertEquals("tawc-cat", choose(Kind.PNG, a, emptyMap()))
+        assertEquals("cat.png", choose(a, emptyMap()))
     }
 
     @Test
-    fun collisionCountsUpAcrossBothExtensions() {
-        val files = mapOf("tawc-cat.png" to b, "tawc-cat-2.svg" to a)
-        assertEquals("tawc-cat-3", choose(Kind.PNG, a, files))
+    fun collisionCountsUp() {
+        val files = mapOf("cat.png" to b, "cat-2.png" to b)
+        assertEquals("cat-3.png", choose(a, files))
     }
 
     @Test
     fun identicalBytesReuseTheName() {
-        val files = mapOf("tawc-cat.png" to b, "tawc-cat-2.png" to a)
-        assertEquals("tawc-cat-2", choose(Kind.PNG, a, files))
-    }
-
-    @Test
-    fun sameBytesInOtherKindDontCount() {
-        val files = mapOf("tawc-cat.svg" to a)
-        assertEquals("tawc-cat-2", choose(Kind.PNG, a, files))
+        val files = mapOf("cat.png" to b, "cat-2.png" to a)
+        assertEquals("cat-2.png", choose(a, files))
     }
 
     @Test

@@ -30,6 +30,32 @@ class LauncherEntryTest {
     }
 
     @Test
+    fun parsesStoreFields() {
+        val json = """
+            [{
+              "id": "firefox", "name": "Web", "exec": "firefox", "terminal": false,
+              "icon": "firefox", "iconFile": "web.png", "source": "desktop",
+              "overridden": ["name", "iconFile", "graphics"],
+              "packaged": {"name": "Firefox", "terminal": false},
+              "hidden": true, "env": {"A": "1"}, "graphics": "cpu", "pointer": ""
+            }, {"id": "tawc:app:htop", "exec": "htop", "source": "shortcut"}]
+        """.trimIndent()
+        val (e, s) = LauncherEntry.parseList(json)
+        assertEquals(LauncherEntry.Source.DESKTOP, e.source)
+        assertEquals(setOf("name", "iconFile", "graphics"), e.overridden)
+        assertEquals("Firefox", e.packagedValue("name"))
+        assertEquals("false", e.packagedValue("terminal"))
+        assertEquals("firefox", e.packagedValue("exec"))
+        assertEquals("web.png", e.iconFile)
+        assertTrue(e.hidden)
+        assertEquals(mapOf("A" to "1"), e.env)
+        assertEquals("cpu", e.graphics)
+        assertEquals(null, e.pointer)
+        assertEquals(LauncherEntry.Source.SHORTCUT, s.source)
+        assertEquals(false, s.hidden)
+    }
+
+    @Test
     fun missingPathParsesToEmpty() {
         // Pre-path scanner output (or hand-written test JSON) must not fail.
         val entries = LauncherEntry.parseList("""[{"id": "xterm", "exec": "xterm"}]""")
@@ -47,16 +73,19 @@ class LauncherEntryTest {
     private fun entry(id: String, name: String, comment: String = "") =
         LauncherEntry(id, name, comment, exec = id, terminal = false, iconPath = "")
 
+    private fun hide(entries: List<LauncherEntry>, ids: Set<String>) =
+        entries.map { if (it.id in ids) it.copy(hidden = true) else it }
+
     @Test
     fun filterDropsHiddenUnlessShowHidden() {
         val entries = listOf(entry("a", "Alpha"), entry("b", "Beta"))
         assertEquals(
             listOf("b"),
-            LauncherEntry.filter(entries, setOf("a"), showHidden = false, query = "").map { it.id },
+            LauncherEntry.filter(hide(entries, setOf("a")), showHidden = false, query = "").map { it.id },
         )
         assertEquals(
             listOf("a", "b"),
-            LauncherEntry.filter(entries, setOf("a"), showHidden = true, query = "").map { it.id },
+            LauncherEntry.filter(hide(entries, setOf("a")), showHidden = true, query = "").map { it.id },
         )
     }
 
@@ -68,17 +97,17 @@ class LauncherEntryTest {
         val hidden = setOf("firefox")
         assertEquals(
             listOf("fireworks"),
-            LauncherEntry.filter(entries, hidden, showHidden = false, query = "fire").map { it.id },
+            LauncherEntry.filter(hide(entries, hidden), showHidden = false, query = "fire").map { it.id },
         )
         assertEquals(
             listOf("firefox"),
-            LauncherEntry.filter(entries, hidden, showHidden = false, query = "firefox").map { it.id },
+            LauncherEntry.filter(hide(entries, hidden), showHidden = false, query = "firefox").map { it.id },
         )
         // Add entry matching doesn't count as a visible match.
         val adder = LauncherEntry.withBuiltins(listOf(entry("adder", "Adder")), builtins)
         assertEquals(
             listOf("adder", "tawc:add-entry"),
-            LauncherEntry.filter(adder, setOf("adder"), showHidden = false, query = "add").map { it.id },
+            LauncherEntry.filter(hide(adder, setOf("adder")), showHidden = false, query = "add").map { it.id },
         )
     }
 
@@ -89,7 +118,7 @@ class LauncherEntryTest {
         val entries = listOf(entry("wf", "AwesomeFire"), entry("firefox", "Firefox"))
         assertEquals(
             listOf("firefox", "wf"),
-            LauncherEntry.filter(entries, emptySet(), showHidden = false, query = "fire").map { it.id },
+            LauncherEntry.filter(entries, showHidden = false, query = "fire").map { it.id },
         )
     }
 
@@ -102,18 +131,18 @@ class LauncherEntryTest {
         )
         assertEquals(
             listOf("org.gnome.Calculator"),
-            LauncherEntry.filter(entries, emptySet(), showHidden = false, query = "gnome").map { it.id },
+            LauncherEntry.filter(entries, showHidden = false, query = "gnome").map { it.id },
         )
         assertEquals(
             listOf("editor"),
-            LauncherEntry.filter(entries, emptySet(), showHidden = false, query = "everything").map { it.id },
+            LauncherEntry.filter(entries, showHidden = false, query = "everything").map { it.id },
         )
     }
 
     @Test
     fun filterTrimsQueryWhitespace() {
         val entries = listOf(entry("a", "Alpha"))
-        assertEquals(entries, LauncherEntry.filter(entries, emptySet(), showHidden = false, query = "  "))
+        assertEquals(entries, LauncherEntry.filter(entries, showHidden = false, query = "  "))
     }
 
     private fun builtin(kind: LauncherEntry.Builtin, name: String) =
@@ -126,8 +155,8 @@ class LauncherEntryTest {
     )
 
     @Test
-    fun builtinsSortByNameAndDropReservedScannedIds() {
-        val scanned = listOf(entry("firefox", "Firefox"), entry("tawc:term", "Impostor"), entry("xterm", "XTerm"))
+    fun builtinsSortByName() {
+        val scanned = listOf(entry("firefox", "Firefox"), entry("xterm", "XTerm"))
         assertEquals(
             listOf("tawc:add-entry", "firefox", "tawc:term", "tawc:update", "xterm"),
             LauncherEntry.withBuiltins(scanned, builtins).map { it.id },
@@ -139,16 +168,16 @@ class LauncherEntryTest {
         val all = LauncherEntry.withBuiltins(listOf(entry("firefox", "Firefox"), entry("adder", "Adder")), builtins)
         assertEquals(
             listOf("adder", "firefox", "tawc:term", "tawc:update", "tawc:add-entry"),
-            LauncherEntry.filter(all, emptySet(), showHidden = false, query = "").map { it.id },
+            LauncherEntry.filter(all, showHidden = false, query = "").map { it.id },
         )
         // "add" prefixes both Adder and Add entry: Add entry still last.
         assertEquals(
             listOf("adder", "tawc:add-entry"),
-            LauncherEntry.filter(all, emptySet(), showHidden = false, query = "add").map { it.id },
+            LauncherEntry.filter(all, showHidden = false, query = "add").map { it.id },
         )
         assertEquals(
             listOf("tawc:term"),
-            LauncherEntry.filter(all, emptySet(), showHidden = false, query = "tawc t").map { it.id },
+            LauncherEntry.filter(all, showHidden = false, query = "tawc t").map { it.id },
         )
     }
 
@@ -157,7 +186,7 @@ class LauncherEntryTest {
         val all = LauncherEntry.withBuiltins(listOf(entry("firefox", "Firefox")), builtins)
         assertEquals(
             listOf("firefox", "tawc:update", "tawc:add-entry"),
-            LauncherEntry.filter(all, setOf("tawc:term"), showHidden = false, query = "").map { it.id },
+            LauncherEntry.filter(hide(all, setOf("tawc:term")), showHidden = false, query = "").map { it.id },
         )
     }
 

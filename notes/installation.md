@@ -64,6 +64,8 @@ Everything lives under the app's private data dir:
         <id>/
           metadata.json              # JSON: schemaVersion, id, label?, distro, arch, method, installedAtMillis, installedAtAppVersionCode, sourceUrl, state, failure?, tawcStamp?, tawcInstalls?, externalBinds? (notes/external-binds.md), importedAtMillis?/importedFromPackage? (imports)
           rootfs/                    # the chroot itself (what `arch-chroot` would chroot into)
+          launcher/                  # launcher store: entries.json + icons/ (notes/launcher.md "Entry store")
+          icon-cache/                # SVG icon renders (notes/launcher.md "SVG cache")
 
 The on-disk layout, the [Installation] data class, and
 [InstallationStore] already handle multiple installs side-by-side; the
@@ -536,8 +538,17 @@ tawc-export.json        # manifest, always first: format, source app/package,
 metadata.json           # the source Installation record, verbatim
 rootfs/...              # guest tree, uid/gid 0, modes + mtimes
 tawcroot/...            # link store (version, link/<token>, .cnt sidecars)
+launcher/...            # launcher store: entries.json, icons/*.png (format 2)
 tawc-export-end.json    # trailer, always last: { entries, sha256 }
 ```
+
+`format` is 2 since the launcher store moved out of `metadata.json`
+and the rootfs: an older importer would reject `launcher/` partway
+through, so the version check fails it cleanly up front instead.
+Format-1 archives still import; their legacy launcher fields in
+`metadata.json` migrate on the first launcher load. The store holds
+no install-specific paths (`iconFile` is relative, `icon` a guest
+path), so it needs no rewrite on import; keep it that way.
 
 `sha256` is `DistroArchive.EntryDigest` over every entry before the
 trailer: a canonical header line (type, mode, mtime s, size, name,
@@ -547,13 +558,14 @@ import completes only with a matching trailer, so a truncated copy
 ending on a clean zstd frame or tar boundary still fails. `format`
 newer than supported is refused, like `schemaVersion`.
 
-**What travels.** `ExportRule`: `rootfs/` and `tawcroot/`, walked on
+**What travels.** `ExportRule`: `rootfs/`, `tawcroot/` and `launcher/`
+(minus `*.tmp` staging files), walked on
 the host with `lstat`, never following symlinks, so bind sources are
 never included (only their empty guest mountpoints). Dropped:
 `rootfs/tmp/*` (runtime sockets; the dir itself is kept), sockets /
 FIFOs / devices (counted), `tawcroot/lock`, `intent.new`, `tmp/*`,
 `work/*`, and everything else at the top (`ando/`, `bootstrap-work/`,
-`metadata.json.tmp`). Real hardlinks (shouldn't exist under tawcroot)
+`icon-cache/`, `metadata.json.tmp`). Real hardlinks (shouldn't exist under tawcroot)
 become tar hardlinks. `user.*` xattrs on files and dirs (guests can set
 them on app data; browsers tag downloads with `user.xdg.origin.url`)
 travel as PAX `SCHILY.xattr.*` — UTF-8 values only, since
@@ -586,18 +598,20 @@ For a well-framed export `DistroImporter` reads the manifest + metadata
 unknown distro key — a newer app's distro, or `custom` — just logs),
 writes the rewritten record (`rewrite`: new
 id/label, `tawcStamp` null to force a `TawcInstaller` refresh against
-the old `tawcInstalls` dests, binds/ando/hidden entries/
+the old `tawcInstalls` dests, binds/ando/legacy launcher fields/
 `installedAtAppVersionCode` kept, `importedAtMillis` /
 `importedFromPackage` added), then extracts through
 `ProotArchiveExtractor.extractEntries` with the import allowlist
 (`DistroArchive.importRejection`: only canonical `rootfs/…` /
-`tawcroot/…` names, no symlinked store dirs, no `intent`/`work/*`) and
+`tawcroot/…` / `launcher/…` names, no symlinked store dirs, no links
+at all under `launcher/`, no `intent`/`work/*`) and
 `roots` containment (a symlink can't steer a write onto the slot's
 `metadata.json`), restoring modes and mtimes. Then the trailer check,
 `rootfs/tmp` (01777) / `tawcroot/tmp` recreated, `TawcInstaller`
 refresh, READY, `AndoBrokers.refresh`. A newer link-store `version`
-just logs (tawcroot degrades to read-only hardlinks). Pinned launcher
-shortcuts don't travel.
+just logs (tawcroot degrades to read-only hardlinks). Launcher
+overrides, shortcuts and their icons travel; Android home-screen pins
+don't (the system launcher owns them).
 
 ### Custom distros
 
@@ -610,7 +624,7 @@ sorts every archive into one of:
 | kind | detected by | import |
 |---|---|---|
 | export | `tawc-export.json` first and `metadata.json` second, both valid | as above, trailer required |
-| damaged export | TAWC layout (`<base>rootfs/` as the guest root) with framing entries at `<base>` but not the above (re-tarred, bad manifest, …) | amber warning listing the problems; `rootfs/` + `tawcroot/` mapped, settings from `metadata.json` if it parses (as its distro if this build knows it, else custom), no trailer |
+| damaged export | TAWC layout (`<base>rootfs/` as the guest root) with framing entries at `<base>` but not the above (re-tarred, bad manifest, …) | amber warning listing the problems; `rootfs/` + `tawcroot/` + `launcher/` mapped, settings from `metadata.json` if it parses (as its distro if this build knows it, else custom), no trailer |
 | plain rootfs | a guest root found, no framing | custom distro, no trailer |
 | unrecognized | no guest root, or a `docker save`/OCI layout | refused ("export a container instead" for OCI) |
 
@@ -1565,6 +1579,14 @@ migration can fully repair it:
   `"label"` ([EntryShortcuts], [ShortcutLaunchActivity]). Persisted
   by the system launcher, which the app cannot rewrite — a format
   change turns every existing pin into a dead icon.
+- **Launcher store** (`<distros>/<id>/launcher/entries.json`): its
+  top-level keys (`version`, `migrated`, `overrides`, `shortcuts`),
+  field names (`name`, `comment`, `exec`, `terminal`, `icon`,
+  `iconFile`, `env`, `graphics`, `pointer`, `hidden`) and the
+  `tawc:app:` shortcut id prefix. Entry ids double as pin ids, so a
+  shortcut's id never changes, including the old `.desktop` slugs
+  migration keeps for v3 personal entries. Adding a field is additive
+  (unknown ones are kept on rewrite); a newer `version` is refused.
 - **`/usr/lib/tawc/bashrc`**: this absolute path is baked into the
   one-time user-owned `/root/.bashrc` stub at configure time
   ([ShellDefaults]); moving the app-owned file silently unsources

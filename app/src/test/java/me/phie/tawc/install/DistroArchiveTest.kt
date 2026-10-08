@@ -44,7 +44,7 @@ class DistroArchiveTest {
             ExternalBind("/storage/emulated/0", "/home/android"),
             ExternalBind("/", "/android", readOnly = true),
         ),
-        hiddenDesktopIds = listOf("htop"),
+        legacyHiddenDesktopIds = listOf("htop"),
         andoEnabled = true,
     )
 
@@ -178,7 +178,7 @@ class DistroArchiveTest {
 
     @Test
     fun tooNewFormatIsRefused() {
-        val bytes = hostile(manifestJson = manifest().toJson().replace("\"format\": 1", "\"format\": 99"))
+        val bytes = hostile(manifestJson = manifest().toJson().replace("\"format\": ${DistroArchive.FORMAT}", "\"format\": 99"))
         try {
             reader(bytes).readHeader()
             fail()
@@ -216,6 +216,13 @@ class DistroArchiveTest {
             { t -> file(t, "tawcroot/work/1.add", "x") },
             { t -> symlink(t, "rootfs", outside.path) },
             { t -> symlink(t, "tawcroot/link", outside.path) },
+            { t -> symlink(t, "launcher", outside.path) },
+            { t -> dir(t, "launcher/"); dir(t, "launcher/icons/"); symlink(t, "launcher/icons/a.png", "../../rootfs/etc/shadow") },
+            { t ->
+                dir(t, "launcher/")
+                t.putArchiveEntry(TarArchiveEntry("launcher/h", TarConstants.LF_LINK).apply { linkName = "rootfs/x" })
+                t.closeArchiveEntry()
+            },
             // symlink-then-write-through, out of the slot and onto a sibling
             { t -> dir(t, "rootfs/"); symlink(t, "rootfs/evil", outside.path); file(t, "rootfs/evil/x", "x") },
             { t -> dir(t, "rootfs/"); symlink(t, "rootfs/m", "../metadata.json"); file(t, "rootfs/m", "x") },
@@ -250,7 +257,7 @@ class DistroArchiveTest {
         assertNull(r.tawcStamp)
         assertEquals(meta.tawcInstalls, r.tawcInstalls)
         assertEquals(meta.externalBinds, r.externalBinds)
-        assertEquals(meta.hiddenDesktopIds, r.hiddenDesktopIds)
+        assertEquals(meta.legacyHiddenDesktopIds, r.legacyHiddenDesktopIds)
         assertTrue(r.andoEnabled)
         assertEquals(meta.installedAtAppVersionCode, r.installedAtAppVersionCode)
         assertEquals(7L, r.importedAtMillis)
@@ -291,6 +298,10 @@ class DistroArchiveTest {
         assertEquals(DistroArchive.ExportRule.EXCLUDE, DistroArchive.exportRule("bootstrap-work"))
         assertEquals(DistroArchive.ExportRule.EXCLUDE, DistroArchive.exportRule("metadata.json.tmp"))
         assertEquals(DistroArchive.ExportRule.FAIL, DistroArchive.exportRule("tawcroot/intent"))
+        assertEquals(DistroArchive.ExportRule.INCLUDE, DistroArchive.exportRule("launcher/entries.json"))
+        assertEquals(DistroArchive.ExportRule.INCLUDE, DistroArchive.exportRule("launcher/icons/a.png"))
+        assertEquals(DistroArchive.ExportRule.EXCLUDE, DistroArchive.exportRule("launcher/entries.json.tmp"))
+        assertEquals(DistroArchive.ExportRule.EXCLUDE, DistroArchive.exportRule("icon-cache"))
         assertEquals(FsStat.S_IFDIR, FsStat(0x41ED, 0, 0, 1, 0, 0).type)
     }
 

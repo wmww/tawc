@@ -61,10 +61,10 @@ import me.phie.tawc.ui.verticalLp
  * scope outlives the pane. The list is rescanned on every show and
  * resume, so packages installed from the terminal show up.
  *
- * Hidden entries ([Installation.hiddenDesktopIds]) are filtered here in
- * Kotlin, not in the Rust scanner — hide state is per-install app
- * metadata, and the scanner is shared with window icon/title resolution
- * which must keep seeing hidden apps (notes/launcher.md).
+ * Hidden entries ([LauncherEntry.hidden], from the [LauncherStore]) are
+ * filtered here in Kotlin, not in the Rust scanner — the scanner is
+ * shared with window icon/title resolution, which must keep seeing
+ * hidden apps (notes/launcher.md).
  */
 internal class AppsPane(
     private val activity: AppCompatActivity,
@@ -73,13 +73,14 @@ internal class AppsPane(
 ) {
 
     interface Host {
-        /** Start the `.desktop` editor for result; RESULT_OK → [rescan]. */
+        /** Start the entry editor for result; RESULT_OK → [rescan]. */
         fun openEditor(intent: Intent)
         /** Grid scrolled; hide the FAB going down, show it going up. */
         fun onGridScrolled(down: Boolean)
     }
 
     private val store = InstallationStore(activity)
+    private val launcherStore = LauncherStore(store)
     private val density = activity.resources.displayMetrics.density
     private val pad = (16 * density).toInt()
 
@@ -198,7 +199,6 @@ internal class AppsPane(
     }
 
     fun onResume() {
-        // Hide state may have changed elsewhere (another pane instance).
         store.load(installation.id)?.let { installation = it }
         rescan()
     }
@@ -255,47 +255,36 @@ internal class AppsPane(
                 }
             }
         }
-        if (canEditEntries()) {
-            menu.add(Menu.NONE, Menu.NONE, order, R.string.launcher_menu_add_entry).setOnMenuItemClickListener {
-                openEditor(null)
-                true
-            }
+        menu.add(Menu.NONE, Menu.NONE, order, R.string.launcher_menu_add_entry).setOnMenuItemClickListener {
+            openEditor(null)
+            true
         }
     }
 
     fun rescan() {
         val inst = installation
-        val rootfs = store.rootfsDir(inst.id).absolutePath
         uiScope.launch {
             allEntries = withContext(Dispatchers.IO) {
                 iconLoader.dropStale()
-                LauncherEntry.list(activity, inst, rootfs)
+                LauncherEntry.list(activity, inst)
             }
             loaded = true
             applyFilter()
         }
     }
 
-    /** Ids the user hid, from the current metadata record. */
-    private fun hiddenIds(): Set<String> = installation.hiddenDesktopIds.toSet()
-
-    /** Hidden entries that actually exist in this rootfs (stale ids don't count). */
-    private fun hiddenCount(): Int {
-        val hidden = hiddenIds()
-        return allEntries.count { it.id in hidden }
-    }
+    /** Hidden entries that actually exist (stale ids don't count). */
+    private fun hiddenCount(): Int = allEntries.count { it.hidden }
 
     /** Re-filter [allEntries] against hide state + the search field
      *  ([LauncherEntry.filter]) and re-render. */
     private fun applyFilter() {
-        filteredEntries = LauncherEntry.filter(
-            allEntries, hiddenIds(), showHidden, searchField.text.toString(),
-        )
+        filteredEntries = LauncherEntry.filter(allEntries, showHidden, searchField.text.toString())
         renderList()
     }
 
     private fun renderList() {
-        adapter.submit(filteredEntries, hiddenIds())
+        adapter.submit(filteredEntries)
         if (!loaded) return
         if (filteredEntries.isNotEmpty()) {
             emptyView.visibility = View.GONE
@@ -313,22 +302,11 @@ internal class AppsPane(
         emptyView.visibility = View.VISIBLE
     }
 
-    /**
-     * Editor writes are plain app-uid file I/O into the rootfs — works
-     * for tawcroot/proot but not chroot's root-owned rootfs
-     * (notes/launcher.md "Access model"), so chroot installs get no
-     * New/Edit entry points, consistent with the terminal gating.
-     */
-    private fun canEditEntries(): Boolean = installation.method != Installation.METHOD_CHROOT
-
-    /** The editor for [entry], or a new entry when null. */
+    /** The editor for [entry], or a new shortcut when null. */
     private fun openEditor(entry: LauncherEntry?) {
-        val i = Intent(activity, DesktopFileEditorActivity::class.java)
-            .putExtra(DesktopFileEditorActivity.EXTRA_ID, installation.id)
-        if (entry != null) {
-            i.putExtra(DesktopFileEditorActivity.EXTRA_PATH, entry.path)
-            i.putExtra(DesktopFileEditorActivity.EXTRA_SHADOWS, entry.shadows)
-        }
+        val i = Intent(activity, EntryEditorActivity::class.java)
+            .putExtra(EntryEditorActivity.EXTRA_ID, installation.id)
+        if (entry != null) i.putExtra(EntryEditorActivity.EXTRA_ENTRY, entry.id)
         host.openEditor(i)
     }
 
@@ -342,7 +320,7 @@ internal class AppsPane(
     )
 
     private fun entryActionsFor(entry: LauncherEntry): List<EntryAction> {
-        val hidden = entry.id in hiddenIds()
+        val hidden = entry.hidden
         val builtin = entry.builtin
         return listOfNotNull(
             if (hidden) {
@@ -352,10 +330,10 @@ internal class AppsPane(
             },
             EntryAction(activity.getString(R.string.launcher_action_add_home)) { pinEntry(entry) }
                 .takeIf { builtin == null || builtin.opensTerminal },
-            // Any scanned entry; editing a packaged one saves an
-            // override copy in the managed dir (see DesktopEntryFile).
+            // Scanned entries get field overrides, shortcuts are edited
+            // whole; both live in the LauncherStore.
             EntryAction(activity.getString(R.string.launcher_action_edit)) { openEditor(entry) }
-                .takeIf { builtin == null && canEditEntries() },
+                .takeIf { builtin == null },
         )
     }
 
@@ -391,15 +369,16 @@ internal class AppsPane(
     }
 
     /**
-     * Persist hide/unhide through the locked read-modify-write.
-     * [InstallationStore.update] returns the record it wrote, which
-     * becomes the new [installation] so the filter sees the fresh set;
-     * null (lost race against uninstall) just leaves the list as-is —
-     * the whole slot is going away.
+     * Persist hide/unhide through the store's locked read-modify-write,
+     * then flip the entry in place. A failed write (lost race against
+     * uninstall, unwritable store) leaves the list as-is.
      */
     private fun setEntryHidden(entry: LauncherEntry, hidden: Boolean) {
-        store.update(installation.id) { it.withEntryHidden(entry.id, hidden) }
-            ?.let { installation = it }
+        val ok = runCatching {
+            launcherStore.update(installation.id) { e, _ -> e.withField(entry.id, "hidden", if (hidden) true else null) }
+        }.getOrNull() != null
+        if (!ok) return
+        allEntries = allEntries.map { if (it.id == entry.id) it.copy(hidden = hidden) else it }
         applyFilter()
     }
 
@@ -420,11 +399,9 @@ internal class AppsPane(
     /** Grid cells: icon over a one-line, end-ellipsized name. */
     private inner class EntryAdapter : RecyclerView.Adapter<Cell>() {
         private var entries: List<LauncherEntry> = emptyList()
-        private var hidden: Set<String> = emptySet()
 
-        fun submit(entries: List<LauncherEntry>, hidden: Set<String>) {
+        fun submit(entries: List<LauncherEntry>) {
             this.entries = entries
-            this.hidden = hidden
             notifyDataSetChanged()
         }
 
@@ -461,7 +438,7 @@ internal class AppsPane(
             val name = entry.name.ifEmpty { entry.id }
             cell.label.text = name
             cell.root.contentDescription = name
-            cell.root.alpha = if (entry.id in hidden) 0.5f else 1f
+            cell.root.alpha = if (entry.hidden) 0.5f else 1f
             cell.root.setOnClickListener { launchEntry(entry) }
             cell.root.setOnLongClickListener { showEntryMenu(entry); true }
             val builtin = entry.builtin

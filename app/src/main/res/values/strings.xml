@@ -185,7 +185,6 @@
     <string name="editor_delete_confirm">Delete \'%1$s\'?</string>
     <string name="editor_reset">Reset</string>
     <string name="editor_reset_confirm">Reset \'%1$s\' to default? Your edits are discarded.</string>
-    <string name="editor_not_utf8">Can\'t edit: the file isn\'t UTF-8.</string>
     <string name="editor_override_graphics">Override graphics</string>
     <string name="editor_override_pointer_emulation">Override pointer emulation</string>
     <string name="editor_field_env">Environment variables</string>
@@ -199,10 +198,12 @@
     <string name="editor_discard">Discard</string>
     <string name="editor_keep_editing">Keep editing</string>
     <string name="editor_save_failed">Saving failed: %1$s</string>
-    <string name="editor_load_failed">Couldn\'t read the file: %1$s</string>
-    <string name="editor_delete_failed">Delete failed.</string>
+    <string name="editor_delete_failed">Couldn\'t save the change.</string>
     <string name="editor_icon_select">Select</string>
     <string name="editor_icon_load">Load</string>
+    <string name="editor_icon_imported">Imported image</string>
+    <string name="editor_icon_clear">Remove icon</string>
+    <string name="editor_field_reset">Reset to the packaged value</string>
     <string name="editor_icon_import_failed">Couldn\'t import image: %1$s</string>
     <string name="icon_picker_title">Select icon</string>
     <string name="icon_picker_search_hint">Search icons</string>

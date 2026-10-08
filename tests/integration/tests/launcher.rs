@@ -1,9 +1,9 @@
 //! Launcher entry-management coverage via the debug `launcher-list` /
-//! `set-entry-hidden` broker actions (notes/launcher.md, notes/
-//! exec-broker.md). No screenshot scraping: plant a `.desktop` file in
-//! the rootfs, flip hide state through the same locked metadata write
-//! the launcher UI performs, and assert on the post-filter list the
-//! launcher renders from.
+//! `set-entry-override` / `put-shortcut` broker actions (notes/launcher.md,
+//! notes/exec-broker.md). No screenshot scraping: plant a `.desktop` file
+//! in the rootfs, write the launcher store through the same locked write
+//! the UI performs, and assert on the merged list the launcher renders
+//! from.
 
 use tawc_integration::adb;
 use tawc_integration::helpers::assert_broker_ok;
@@ -34,15 +34,117 @@ impl Drop for Cleanup {
     }
 }
 
-/// Slice out the JSON object containing `"id":"<id>"`. Good enough for
-/// the flat, nesting-free objects `launcher-list` emits and the planted
-/// entry's brace-free values.
+/// The top-level objects of a JSON array, as text. String-aware brace
+/// matching, since entries nest (`packaged`, `env`) and the crate has no
+/// JSON dep.
+fn objects(list: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start, mut in_str, mut esc) = (0, 0, false, false);
+    for (i, c) in list.char_indices() {
+        if in_str {
+            match c {
+                _ if esc => esc = false,
+                '\\' => esc = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push(&list[start..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Raw JSON text of `key`'s value at the top level of `obj`.
+fn raw_field<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{key}\":");
+    let (mut depth, mut in_str, mut esc) = (0, false, false);
+    let bytes = obj.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if in_str {
+            match c {
+                _ if esc => esc = false,
+                '\\' => esc = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        if depth == 1 && obj[i..].starts_with(&needle) {
+            let rest = &obj[i + needle.len()..];
+            let end = value_end(rest);
+            return Some(&rest[..end]);
+        }
+        match c {
+            '"' => in_str = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Length of the JSON value at the start of `s`.
+fn value_end(s: &str) -> usize {
+    let (mut depth, mut in_str, mut esc) = (0, false, false);
+    for (i, c) in s.char_indices() {
+        if in_str {
+            match c {
+                _ if esc => esc = false,
+                '\\' => esc = true,
+                '"' => {
+                    in_str = false;
+                    if depth == 0 {
+                        return i + 1;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                if depth == 0 {
+                    return i;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            ',' if depth == 0 => return i,
+            _ => {}
+        }
+    }
+    s.len()
+}
+
+/// The entry object with this id in a `launcher-list` array.
 fn entry_object<'a>(list: &'a str, id: &str) -> Option<&'a str> {
-    let needle = format!("\"id\":\"{id}\"");
-    let key = list.find(&needle)?;
-    let start = list[..key].rfind('{')?;
-    let end = key + list[key..].find('}')?;
-    Some(&list[start..=end])
+    let want = format!("\"{id}\"");
+    objects(list).into_iter().find(|o| raw_field(o, "id") == Some(want.as_str()))
 }
 
 /// Hide/unhide round-trip: a hidden entry disappears from the default
@@ -254,7 +356,7 @@ fn test_scan_dirs_precedence_and_terminal() {
     // org.json escapes `/` as `\/` in launcher-list output.
     assert!(
         user.contains("\\/root\\/.local\\/share\\/applications\\/"),
-        "per-user entry path not in the managed dir: {user}"
+        "per-user entry path not in the user dir: {user}"
     );
 
     assert!(
@@ -268,9 +370,29 @@ fn test_scan_dirs_precedence_and_terminal() {
         dup.contains("tawc-scan-dup-user-exec") && dup.contains("TAWC Scan Dup User"),
         "duplicated id did not resolve to the per-user copy: {dup}"
     );
+    assert!(
+        json_field(dup, "shadows").ends_with(&format!("/usr/share/applications/{DUP_ID}.desktop")),
+        "per-user copy doesn't report the packaged file it shadows: {dup}"
+    );
 }
 
-// ---- overrides + per-entry graphics ----------------------------------
+// ---- launcher store: overrides, shortcuts, migration ------------------
+
+fn store_file() -> String {
+    format!(
+        "{}/distros/{}/launcher/entries.json",
+        tawc_integration::app_data_dir(),
+        tawc_integration::install_id()
+    )
+}
+
+fn store_icons_dir() -> String {
+    format!(
+        "{}/distros/{}/launcher/icons",
+        tawc_integration::app_data_dir(),
+        tawc_integration::install_id()
+    )
+}
 
 const OVERRIDE_ID: &str = "tawc-override-test";
 
@@ -278,69 +400,232 @@ struct OverrideCleanup;
 
 impl Drop for OverrideCleanup {
     fn drop(&mut self) {
-        let _ = adb::set_entry_graphics(OVERRIDE_ID, "");
-        let r = rootfs();
-        let rm = format!(
-            "rm -f '{r}/root/.local/share/applications/{OVERRIDE_ID}.desktop' \
-                   '{r}/usr/share/applications/{OVERRIDE_ID}.desktop'"
-        );
-        let _ = adb::rootfs_host_exec(&["/system/bin/sh", "-c", &rm]);
+        for field in ["name", "exec", "graphics", "env", "icon"] {
+            let _ = adb::set_entry_override(OVERRIDE_ID, field, None);
+        }
+        let _ = adb::rootfs_host_exec(&[
+            "/system/bin/sh",
+            "-c",
+            &format!("rm -f '{}/usr/share/applications/{OVERRIDE_ID}.desktop'", rootfs()),
+        ]);
     }
 }
 
-/// A managed-dir copy of a packaged id is one entry whose `shadows`
-/// names the packaged file; removing it (the editor's Reset) brings
-/// back the packaged entry with empty `shadows`. The editor's graphics
-/// override shows up in `launcher-list` (notes/launcher.md "Managed dir
-/// + .desktop editor").
+/// Field overrides apply one by one over the scanned file: the
+/// overridden name and graphics win, the scanned value is reported as
+/// `packaged`, and a package upgrade (new Exec) still reaches the fields
+/// that aren't overridden. Clearing a field brings the scanned value back.
+/// No `.desktop` file is written.
 #[test]
-fn test_override_shadows_and_entry_graphics() {
+fn test_field_overrides_follow_package_upgrades() {
     tawc_integration::helpers::test_init();
     let _cleanup = OverrideCleanup;
-    let managed = format!(
-        "{}/root/.local/share/applications/{OVERRIDE_ID}.desktop",
-        rootfs()
-    );
 
-    plant_desktop("usr/share/applications", OVERRIDE_ID, "TAWC Packaged", "true", false, "");
+    plant_desktop("usr/share/applications", OVERRIDE_ID, "TAWC Packaged", "tawc-v1", false, "");
+    for (field, value) in [("name", "TAWC Mine"), ("graphics", "cpu"), ("env", r#"{"TAWC_A":"1"}"#)] {
+        assert_broker_ok(
+            adb::set_entry_override(OVERRIDE_ID, field, Some(value)).expect("set-entry-override"),
+            "set-entry-override",
+        );
+    }
     let list = adb::launcher_list(false).expect("launcher-list");
-    let obj = entry_object(&list, OVERRIDE_ID)
-        .unwrap_or_else(|| panic!("packaged entry missing: {list}"));
-    assert_eq!(json_field(obj, "shadows"), "", "packaged entry shadows nothing: {obj}");
-
-    plant_desktop("root/.local/share/applications", OVERRIDE_ID, "TAWC Override", "true", false, "");
-    let list = adb::launcher_list(false).expect("launcher-list");
+    let obj = entry_object(&list, OVERRIDE_ID).unwrap_or_else(|| panic!("entry missing: {list}"));
+    assert_eq!(json_field(obj, "name"), "TAWC Mine", "name override: {obj}");
+    assert_eq!(json_field(obj, "graphics"), "cpu", "graphics override: {obj}");
+    assert_eq!(json_field(obj, "source"), "desktop", "{obj}");
+    assert_eq!(json_field(obj, "exec"), "tawc-v1", "{obj}");
+    let packaged = raw_field(obj, "packaged").unwrap_or_default();
+    assert_eq!(json_field(packaged, "name"), "TAWC Packaged", "packaged name: {obj}");
+    let overridden = raw_field(obj, "overridden").unwrap_or_default();
+    for f in ["\"name\"", "\"graphics\"", "\"env\""] {
+        assert!(overridden.contains(f), "{f} not in overridden: {obj}");
+    }
+    assert!(raw_field(obj, "env").unwrap_or_default().contains("\"TAWC_A\":\"1\""), "env: {obj}");
     assert_eq!(
-        list.matches(&format!("\"id\":\"{OVERRIDE_ID}\"")).count(),
-        1,
-        "override and packaged entry both listed: {list}"
-    );
-    let obj = entry_object(&list, OVERRIDE_ID).expect("override entry");
-    assert_eq!(json_field(obj, "name"), "TAWC Override", "override doesn't win: {obj}");
-    assert!(
-        json_field(obj, "path").ends_with(&format!("/root/.local/share/applications/{OVERRIDE_ID}.desktop")),
-        "override path not in the managed dir: {obj}"
-    );
-    assert!(
-        json_field(obj, "shadows").ends_with(&format!("/usr/share/applications/{OVERRIDE_ID}.desktop")),
-        "override doesn't report the packaged file: {obj}"
+        host_sh(&format!("ls '{}/root/.local/share/applications/{OVERRIDE_ID}.desktop' 2>/dev/null", rootfs())),
+        "",
+        "an override wrote a .desktop file"
     );
 
-    host_sh_ok(&format!("rm '{managed}'"), "remove override");
-    let list = adb::launcher_list(false).expect("launcher-list");
-    let obj = entry_object(&list, OVERRIDE_ID).expect("packaged entry after reset");
-    assert_eq!(json_field(obj, "name"), "TAWC Packaged", "packaged entry not back: {obj}");
-    assert_eq!(json_field(obj, "shadows"), "", "stale shadows after reset: {obj}");
-
-    assert_broker_ok(adb::set_entry_graphics(OVERRIDE_ID, "cpu").expect("set-entry-graphics"), "set-entry-graphics");
+    // "Upgrade" the package: the override survives, Exec follows.
+    plant_desktop("usr/share/applications", OVERRIDE_ID, "TAWC Packaged 2", "tawc-v2", false, "");
     let list = adb::launcher_list(false).expect("launcher-list");
     let obj = entry_object(&list, OVERRIDE_ID).expect("entry");
-    assert_eq!(json_field(obj, "graphics"), "cpu", "graphics override not listed: {obj}");
+    assert_eq!(json_field(obj, "name"), "TAWC Mine", "override lost on upgrade: {obj}");
+    assert_eq!(json_field(obj, "exec"), "tawc-v2", "upgrade didn't reach Exec: {obj}");
+    assert_eq!(
+        json_field(raw_field(obj, "packaged").unwrap_or_default(), "name"),
+        "TAWC Packaged 2",
+        "{obj}"
+    );
 
-    assert_broker_ok(adb::set_entry_graphics(OVERRIDE_ID, "").expect("set-entry-graphics"), "clear graphics");
+    assert_broker_ok(
+        adb::set_entry_override(OVERRIDE_ID, "name", None).expect("set-entry-override"),
+        "clear name",
+    );
     let list = adb::launcher_list(false).expect("launcher-list");
     let obj = entry_object(&list, OVERRIDE_ID).expect("entry");
-    assert_eq!(json_field(obj, "graphics"), "", "graphics override not cleared: {obj}");
+    assert_eq!(json_field(obj, "name"), "TAWC Packaged 2", "cleared name not back: {obj}");
+    assert_eq!(json_field(obj, "graphics"), "cpu", "other override lost: {obj}");
+}
+
+const SHORTCUT_DUP: &str = "tawc-shortcut-dup";
+const RESERVED_FILE: &str = "tawc:reserved";
+
+struct ShortcutCleanup(Vec<String>);
+
+impl Drop for ShortcutCleanup {
+    fn drop(&mut self) {
+        for id in &self.0 {
+            let _ = adb::delete_shortcut(id);
+        }
+        let _ = adb::delete_shortcut(SHORTCUT_DUP);
+        let r = rootfs();
+        let _ = adb::rootfs_host_exec(&[
+            "/system/bin/sh",
+            "-c",
+            &format!(
+                "rm -f '{r}/usr/share/applications/{SHORTCUT_DUP}.desktop' \
+                       '{r}/usr/share/applications/{RESERVED_FILE}.desktop' \
+                       '{icons}/tawc-test-icon.png'",
+                icons = store_icons_dir()
+            ),
+        ]);
+    }
+}
+
+/// Shortcuts: listed with `source: shortcut` under a `tawc:app:` id,
+/// resolve a store `iconFile` (and refuse one that climbs out of
+/// `icons/`), win over a scanned entry with the same id, and go away on
+/// delete. A scanned `.desktop` id with the reserved prefix is dropped.
+#[test]
+fn test_shortcuts() {
+    tawc_integration::helpers::test_init();
+    let mut cleanup = ShortcutCleanup(Vec::new());
+
+    host_sh_ok(&format!("mkdir -p '{}'", store_icons_dir()), "mkdir icons");
+    plant_png(&format!("{}/tawc-test-icon.png", store_icons_dir()));
+    let id = adb::put_shortcut(
+        None,
+        r#"{"name":"TAWC Shortcut","exec":"tawc-shortcut-exec","terminal":true,"iconFile":"tawc-test-icon.png"}"#,
+    )
+    .expect("put-shortcut");
+    cleanup.0.push(id.clone());
+    assert!(id.starts_with("tawc:app:"), "new shortcut id: {id}");
+
+    let list = adb::launcher_list(false).expect("launcher-list");
+    let obj = entry_object(&list, &id).unwrap_or_else(|| panic!("shortcut missing: {list}"));
+    assert_eq!(json_field(obj, "source"), "shortcut", "{obj}");
+    assert_eq!(json_field(obj, "exec"), "tawc-shortcut-exec", "{obj}");
+    assert_eq!(raw_field(obj, "terminal"), Some("true"), "{obj}");
+    assert_eq!(
+        json_field(obj, "iconPath"),
+        format!("{}/tawc-test-icon.png", store_icons_dir()),
+        "store icon not resolved: {obj}"
+    );
+
+    let escape = adb::put_shortcut(
+        None,
+        r#"{"name":"TAWC Escape","exec":"x","iconFile":"../entries.json","icon":"/../../../system/etc/hosts"}"#,
+    )
+    .expect("put-shortcut");
+    cleanup.0.push(escape.clone());
+    let list = adb::launcher_list(false).expect("launcher-list");
+    let obj = entry_object(&list, &escape).expect("escape shortcut");
+    assert_eq!(json_field(obj, "iconPath"), "", "iconFile escaped icons/: {obj}");
+
+    // A shortcut replaces a scanned entry with the same id.
+    plant_desktop("usr/share/applications", SHORTCUT_DUP, "TAWC Scanned", "scanned", false, "");
+    adb::put_shortcut(Some(SHORTCUT_DUP), r#"{"name":"TAWC Shortcut Dup","exec":"mine"}"#).expect("put-shortcut");
+    let list = adb::launcher_list(false).expect("launcher-list");
+    assert_eq!(list.matches(&format!("\"id\":\"{SHORTCUT_DUP}\"")).count(), 1, "{list}");
+    let obj = entry_object(&list, SHORTCUT_DUP).expect("dup");
+    assert_eq!(json_field(obj, "name"), "TAWC Shortcut Dup", "shortcut didn't win: {obj}");
+
+    // Reserved prefix on a scanned file: dropped.
+    plant_desktop("usr/share/applications", RESERVED_FILE, "TAWC Reserved", "x", false, "");
+    let list = adb::launcher_list(false).expect("launcher-list");
+    assert!(entry_object(&list, RESERVED_FILE).is_none(), "reserved scanned id listed: {list}");
+
+    // Delete: gone, and its icon file pruned.
+    assert_broker_ok(adb::delete_shortcut(&id).expect("delete-shortcut"), "delete-shortcut");
+    let list = adb::launcher_list(false).expect("launcher-list");
+    assert!(entry_object(&list, &id).is_none(), "deleted shortcut listed: {list}");
+    assert_eq!(
+        host_sh(&format!("test -e '{}/tawc-test-icon.png' && echo present || echo gone", store_icons_dir())),
+        "gone",
+        "unreferenced icon not pruned"
+    );
+}
+
+const MIG_PERSONAL: &str = "tawc-mig-personal";
+const MIG_HAND: &str = "tawc-mig-hand";
+const MIG_ICON: &str = "tawc-mig-icon";
+
+fn user_apps_dir() -> String {
+    format!("{}/root/.local/share/applications", rootfs())
+}
+
+struct MigrationCleanup;
+
+impl Drop for MigrationCleanup {
+    fn drop(&mut self) {
+        let _ = adb::delete_shortcut(MIG_PERSONAL);
+        let _ = adb::rootfs_host_exec(&[
+            "/system/bin/sh",
+            "-c",
+            &format!(
+                "rm -f '{apps}/{MIG_PERSONAL}.desktop' '{apps}/{MIG_HAND}.desktop' \
+                       '{user}/hicolor/256x256/apps/{MIG_ICON}.png'",
+                apps = user_apps_dir(),
+                user = user_icons_dir(),
+            ),
+        ]);
+    }
+}
+
+/// Migration of the old editor's `.desktop` files: a v3-shaped personal
+/// entry becomes a shortcut under its old id (so a pin keeps resolving),
+/// its `env` prefix and `tawc-*` icon move into the store, and its file
+/// is deleted; a hand-made file with extra keys is left alone.
+#[test]
+fn test_migration_converts_editor_files_only() {
+    tawc_integration::helpers::test_init();
+    let _cleanup = MigrationCleanup;
+
+    // Make sure the store exists, then seed v3 state and re-arm migration.
+    adb::launcher_list(false).expect("launcher-list");
+    plant_png(&format!("{}/hicolor/256x256/apps/{MIG_ICON}.png", user_icons_dir()));
+    host_sh_ok(
+        &format!(
+            "printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=TAWC Mig' \
+             'Exec=env TAWC_M=\"a b\" tawc-mig-exec' 'Icon={MIG_ICON}' 'Terminal=true' \
+             > '{apps}/{MIG_PERSONAL}.desktop' && \
+             printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=TAWC Hand' 'Exec=tawc-hand' \
+             'Categories=Utility;' > '{apps}/{MIG_HAND}.desktop' && \
+             sed -i 's/\"migrated\": 1/\"migrated\": 0/' '{store}'",
+            apps = user_apps_dir(),
+            store = store_file(),
+        ),
+        "seed v3 state",
+    );
+
+    let list = adb::launcher_list(false).expect("launcher-list");
+    let obj = entry_object(&list, MIG_PERSONAL).unwrap_or_else(|| panic!("personal entry missing: {list}"));
+    assert_eq!(json_field(obj, "source"), "shortcut", "not converted: {obj}");
+    assert_eq!(json_field(obj, "exec"), "tawc-mig-exec", "{obj}");
+    assert!(raw_field(obj, "env").unwrap_or_default().contains("\"TAWC_M\":\"a b\""), "env: {obj}");
+    assert_eq!(json_field(obj, "iconFile"), format!("{MIG_ICON}.png"), "icon not moved: {obj}");
+    assert!(json_field(obj, "iconPath").starts_with(&store_icons_dir()), "{obj}");
+    assert_eq!(
+        host_sh(&format!("test -e '{}/{MIG_PERSONAL}.desktop' && echo present || echo gone", user_apps_dir())),
+        "gone",
+        "converted file not deleted"
+    );
+
+    let hand = entry_object(&list, MIG_HAND).unwrap_or_else(|| panic!("hand-made entry missing: {list}"));
+    assert_eq!(json_field(hand, "source"), "desktop", "hand-made file converted: {hand}");
+    assert!(host_sh(&format!("cat '{}'", store_file())).contains("\"migrated\": 1"));
 }
 
 // ---- icon resolution --------------------------------------------------
@@ -375,14 +660,13 @@ fn host_sh_ok(cmd: &str, what: &str) {
     );
 }
 
-/// Value of a flat string field in a `launcher-list` object, with
-/// org.json's `\/` path escaping undone.
+/// Value of a top-level string field in a `launcher-list` object, with
+/// org.json's `\/` and `\"` escaping undone. Empty when absent.
 fn json_field(obj: &str, key: &str) -> String {
-    let needle = format!("\"{key}\":\"");
-    let start = obj.find(&needle).map(|i| i + needle.len());
-    let Some(start) = start else { return String::new() };
-    let end = start + obj[start..].find('"').expect("unterminated JSON string");
-    obj[start..end].replace("\\/", "/")
+    match raw_field(obj, key) {
+        Some(v) if v.starts_with('"') => v[1..v.len() - 1].replace("\\/", "/").replace("\\\"", "\""),
+        _ => String::new(),
+    }
 }
 
 /// `iconPath` of the entry with this id. Panics if the entry is absent —

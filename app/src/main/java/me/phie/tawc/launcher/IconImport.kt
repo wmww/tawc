@@ -5,45 +5,34 @@ import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.provider.OpenableColumns
+import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.Installation
-import me.phie.tawc.install.util.atomicWriteBytes
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 
 /**
- * Copies an image the user picked into a rootfs as a TAWC-owned icon,
- * for the editor's Load button. Imports go into hicolor under the
- * guest's user icon base, named `tawc-<slug>`: a plain theme name, so
- * guest desktops reading the same `.desktop` file find it too, and the
- * prefix keeps clear of anything a package installs. Nothing deletes
- * imports; they're small.
- *
- * Rasters are re-encoded as PNG (the resolver only returns PNGs),
- * scaled down to fit [RASTER_PX]; SVGs are copied as-is.
+ * Turns an image the user picked (the editor's Load button) into a PNG
+ * for the [LauncherStore]'s `icons/` dir. Rasters are scaled down to
+ * fit [RASTER_PX] and re-encoded; SVGs are rasterized once at that
+ * size by the icon cache's renderer ([NativeBridge.nativeRasterizeIcon]).
+ * Storing only PNG keeps "`iconPath` is a decodable PNG" with no cache.
  */
 internal object IconImport {
 
+    /** Name prefix of the old editor's rootfs imports, which
+     *  [LauncherMigration] moves into the store. */
     const val PREFIX = "tawc-"
 
-    /** hicolor under the user icon base (`$HOME` is `/root`). */
-    private const val HICOLOR_SUBDIR = "root/.local/share/icons/hicolor"
-
-    /** Raster imports are scaled to fit this square, never up. A
-     *  smaller image still goes in the `256x256` dir: hicolor tolerates
-     *  that, and our resolver goes by directory order, not size. */
+    /** Imports are scaled to fit this square, never up. */
     const val RASTER_PX = 256
 
     /** Same cap as `icon_cache::MAX_SOURCE_BYTES`: a bigger SVG would
      *  never render. */
     const val MAX_SVG_BYTES = 1024 * 1024
 
-    enum class Kind(val ext: String, val subdir: String) {
-        PNG("png", "256x256/apps"),
-        SVG("svg", "scalable/apps"),
-    }
-
-    fun dir(rootfs: File, kind: Kind) = File(rootfs, "$HICOLOR_SUBDIR/${kind.subdir}")
+    /** An import: PNG [bytes] and the [slug] its file is named after. */
+    class Result(val bytes: ByteArray, val slug: String)
 
     /** Slug for a document named [displayName], extension dropped;
      *  `icon` when nothing slugifiable is left. */
@@ -56,23 +45,17 @@ internal object IconImport {
     }
 
     /**
-     * Icon name for [bytes] of [kind]: `tawc-<slug>`, then `-2`, `-3`, …
-     * The first candidate whose [kind] file holds identical bytes is
-     * reused; otherwise the first with neither extension taken wins.
-     * [existing] returns a candidate file's bytes, or null if absent.
+     * File name for [bytes]: `<slug>.png`, then `<slug>-2.png`, … The
+     * first candidate holding identical bytes is reused; otherwise the
+     * first free one wins. [existing] returns a candidate's bytes, or
+     * null if absent.
      */
-    fun chooseName(
-        slug: String,
-        kind: Kind,
-        bytes: ByteArray,
-        existing: (name: String, kind: Kind) -> ByteArray?,
-    ): String {
+    fun chooseName(slug: String, bytes: ByteArray, existing: (name: String) -> ByteArray?): String {
         var n = 1
         while (true) {
-            val name = if (n == 1) "$PREFIX$slug" else "$PREFIX$slug-$n"
-            val same = existing(name, kind)
-            if (same != null && same.contentEquals(bytes)) return name
-            if (same == null && Kind.entries.all { it == kind || existing(name, it) == null }) return name
+            val name = if (n == 1) "$slug.png" else "$slug-$n.png"
+            val same = existing(name) ?: return name
+            if (same.contentEquals(bytes)) return name
             n++
         }
     }
@@ -82,28 +65,20 @@ internal object IconImport {
         mime == "image/svg+xml" || displayName.orEmpty().endsWith(".svg", ignoreCase = true)
 
     /**
-     * Import [uri] into [rootfs] and return the icon name. Blocking I/O;
-     * call on Dispatchers.IO. Throws [IOException] on anything that
-     * didn't produce an icon (unreadable, undecodable, oversized SVG).
+     * Read [uri] as a PNG. [scratch] is a private dir for the SVG
+     * render. Blocking I/O; call on Dispatchers.IO. Throws
+     * [IOException] on anything that didn't produce an icon.
      */
-    fun import(context: Context, uri: Uri, rootfs: File): String {
+    fun import(context: Context, uri: Uri, scratch: File): Result {
         val resolver = context.contentResolver
         val displayName = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
             ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-        val kind = if (isSvg(resolver.getType(uri), displayName)) Kind.SVG else Kind.PNG
-        val bytes = when (kind) {
-            Kind.SVG -> readSvg(context, uri)
-            Kind.PNG -> encodePng(decodeScaled(context, uri))
+        val bytes = if (isSvg(resolver.getType(uri), displayName)) {
+            rasterizeSvg(readSvg(context, uri), scratch)
+        } else {
+            encodePng(decodeScaled(context, uri))
         }
-        val name = chooseName(slugFor(displayName), kind, bytes) { name, k ->
-            File(dir(rootfs, k), "$name.${k.ext}").takeIf { it.isFile }?.readBytes()
-        }
-        val target = File(dir(rootfs, kind), "$name.${kind.ext}")
-        if (!target.isFile) {
-            target.parentFile?.mkdirs()
-            atomicWriteBytes(target, bytes)
-        }
-        return name
+        return Result(bytes, slugFor(displayName))
     }
 
     private fun readSvg(context: Context, uri: Uri): ByteArray {
@@ -111,6 +86,20 @@ internal object IconImport {
         val bytes = input.use { it.readNBytesCompat(MAX_SVG_BYTES + 1) }
         if (bytes.size > MAX_SVG_BYTES) throw IOException("SVG over 1 MiB")
         return bytes
+    }
+
+    private fun rasterizeSvg(svg: ByteArray, scratch: File): ByteArray {
+        scratch.mkdirs()
+        val src = File.createTempFile("import", ".svg", scratch)
+        val dst = File(scratch, src.name.removeSuffix(".svg") + ".png")
+        try {
+            src.writeBytes(svg)
+            if (!NativeBridge.nativeRasterizeIcon(src.path, dst.path, RASTER_PX)) throw IOException("can't render SVG")
+            return dst.readBytes()
+        } finally {
+            src.delete()
+            dst.delete()
+        }
     }
 
     private fun decodeScaled(context: Context, uri: Uri): Bitmap = try {

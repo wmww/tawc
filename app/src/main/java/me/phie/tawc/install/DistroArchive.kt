@@ -14,8 +14,9 @@ import java.util.Locale
  * [DistroExporter] and [DistroImporter].
  */
 internal object DistroArchive {
-    /** Bump on an incompatible change; importers refuse newer. */
-    const val FORMAT = 1
+    /** Bump on an incompatible change; importers refuse newer.
+     *  2: adds the `launcher/` store (format 1 imports still migrate). */
+    const val FORMAT = 2
 
     const val MANIFEST = "tawc-export.json"
     const val METADATA = "metadata.json"
@@ -35,10 +36,12 @@ internal object DistroArchive {
      *  (`STORE_VERSION_SUPPORTED` in tawcroot/src/linkstore.c). */
     const val LINK_STORE_VERSION = 1
 
-    /** The two install-dir children an archive carries. */
+    /** The install-dir children an archive carries. */
     const val ROOTFS = "rootfs"
     const val STORE = "tawcroot"
-    val ROOTS = listOf(ROOTFS, STORE)
+    /** [me.phie.tawc.launcher.LauncherStore]'s dir. */
+    const val LAUNCHER = "launcher"
+    val ROOTS = listOf(ROOTFS, STORE, LAUNCHER)
 
     fun suggestedFileName(id: String, nowMillis: Long): String =
         "$id-${SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(nowMillis))}$EXTENSION"
@@ -175,14 +178,17 @@ internal object DistroArchive {
 
     /**
      * Export policy for [rel] (relative to the install dir, `/`
-     * separated). Only `rootfs/` and the `tawcroot/` link store travel;
-     * `metadata.json` is written separately as the second entry, and
+     * separated). Only `rootfs/`, the `tawcroot/` link store and the
+     * `launcher/` store travel; `metadata.json` is written separately
+     * as the second entry, and
      * everything else at the top (`ando/`, `bootstrap-work/`,
      * `metadata.json.tmp`) is per-device runtime state.
      */
     fun exportRule(rel: String): ExportRule {
         val top = rel.substringBefore('/')
-        if (top != ROOTFS && top != STORE) return ExportRule.EXCLUDE
+        if (top !in ROOTS) return ExportRule.EXCLUDE
+        // An atomic write's staging file.
+        if (top == LAUNCHER && rel.endsWith(".tmp")) return ExportRule.EXCLUDE
         return when (rel) {
             // Runtime sockets and agent state; the tmp sweeper already
             // treats it as disposable.
@@ -205,14 +211,18 @@ internal object DistroArchive {
     /**
      * Why archive entry [e] may not be extracted on import, or null if
      * it may. The extractor's canonical-path containment still applies
-     * on top; this narrows it to the two roots and keeps the store's
-     * own dirs real directories.
+     * on top; this narrows it to [ROOTS], keeps the link store's own
+     * dirs real directories, and allows only dirs and regular files
+     * under `launcher/` (its icon paths are trusted as files).
      */
     fun importRejection(e: TarArchiveEntry): String? {
         val name = e.name.removeSuffix("/")
         pathRejection(name)?.let { return "${e.name}: $it" }
         if (e.isSymbolicLink && name in PINNED_DIRS) {
             return "${e.name}: must be a directory"
+        }
+        if (name.substringBefore('/') == LAUNCHER && (e.isSymbolicLink || e.isLink)) {
+            return "${e.name}: links are not allowed in $LAUNCHER/"
         }
         if (name == "$STORE/intent" || name.startsWith("$STORE/intent.") ||
             name.startsWith("$STORE/work/")
@@ -225,13 +235,13 @@ internal object DistroArchive {
         return null
     }
 
-    private val PINNED_DIRS = setOf(ROOTFS, STORE, "$STORE/link", "$STORE/tmp", "$STORE/work")
+    private val PINNED_DIRS = setOf(ROOTFS, STORE, LAUNCHER, "$STORE/link", "$STORE/tmp", "$STORE/work")
 
     private fun pathRejection(name: String): String? {
         if (name.isEmpty() || name.startsWith("/")) return "absolute or empty path"
         val parts = name.split('/')
         if (parts.any { it.isEmpty() || it == "." || it == ".." }) return "non-canonical path"
-        if (parts[0] != ROOTFS && parts[0] != STORE) return "outside rootfs/ and tawcroot/"
+        if (parts[0] !in ROOTS) return "outside ${ROOTS.joinToString("/, ")}/"
         return null
     }
 }

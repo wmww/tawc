@@ -8,7 +8,8 @@
 //!
 //! Covers: hardlink/symlink/mode round trip through the tawcroot link
 //! store, a working package manager after import, carried settings
-//! (ando, binds, hidden launcher entries), guests killed and spawns
+//! (ando, binds, the launcher store: overrides, shortcuts, icon files),
+//! migration of legacy launcher metadata, guests killed and spawns
 //! refused during export, the trailer check on a truncated archive
 //! (FAILED slot, normal Delete clears it), and delete-after-export
 //! both failing (source kept) and succeeding (source gone).
@@ -26,6 +27,9 @@ const BAD: &str = "exptest-bad";
 const BIND_HOST: &str = "/data/local/tmp/tawc-dev/exptest-bind";
 const BIND_GUEST: &str = "/mnt/exptest";
 const HIDDEN: &str = "exptest-hidden-entry";
+const SHORTCUT: &str = "tawc:app:exptest";
+/// A 4×4 PNG, as base64.
+const ICON_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGP4z8DwHxkzkC4AADxAH+HggXe0AAAAAElFTkSuQmCC";
 
 fn slot_dir(id: &str) -> String {
     format!("{}/distros/{id}", tawc_integration::app_data_dir())
@@ -83,6 +87,11 @@ fn slot_exists(id: &str) -> bool {
 
 fn metadata(id: &str) -> String {
     let out = host_sh(&format!("cat {}/metadata.json", slot_dir(id)));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn launcher_store(id: &str) -> String {
+    let out = host_sh(&format!("cat {}/launcher/entries.json", slot_dir(id)));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -154,7 +163,7 @@ fn test_distro_export_import() {
     ))
     .expect("adb shell");
 
-    // --- source distro with ando, a bind and a hidden entry ----------
+    // --- source distro with ando, a bind and launcher state ---------
     let binds = format!(r#"[{{"hostPath":"{BIND_HOST}","guestPath":"{BIND_GUEST}"}}]"#);
     let out = action(
         "install",
@@ -167,10 +176,24 @@ fn test_distro_export_import() {
     );
     assert!(out.status.success(), "install failed:\n{}", text(&out));
     let out = action(
-        "set-entry-hidden",
-        &[("installId", SRC), ("entryId", HIDDEN), ("hidden", "true")],
+        "set-entry-override",
+        &[("installId", SRC), ("entryId", HIDDEN), ("field", "hidden"), ("value", "true")],
     );
-    assert!(out.status.success(), "set-entry-hidden failed:\n{}", text(&out));
+    assert!(out.status.success(), "set-entry-override failed:\n{}", text(&out));
+    let out = host_sh(&format!(
+        "mkdir -p {d}/launcher/icons && echo {ICON_B64} | base64 -d > {d}/launcher/icons/exptest.png",
+        d = slot_dir(SRC)
+    ));
+    assert!(out.status.success(), "plant icon failed:\n{}", text(&out));
+    let out = action(
+        "put-shortcut",
+        &[
+            ("installId", SRC),
+            ("entryId", SHORTCUT),
+            ("fields", r#"{"name":"Exptest","exec":"true","iconFile":"exptest.png"}"#),
+        ],
+    );
+    assert!(out.status.success(), "put-shortcut failed:\n{}", text(&out));
     run_ok(
         SRC,
         "set -e; cd /root; echo payload > a; ln a b; ln -s a c; \
@@ -226,13 +249,36 @@ fn test_distro_export_import() {
     // Carried settings.
     assert!(run_ok(IMP, &format!("cat {BIND_GUEST}/marker")).contains("bound"));
     assert!(run_ok(IMP, "ando /system/bin/echo ando-ok").contains("ando-ok"));
+    let store = launcher_store(IMP);
+    assert!(store.contains(HIDDEN), "hidden entry not carried:\n{store}");
+    assert!(store.contains(SHORTCUT), "shortcut not carried:\n{store}");
+    let icon = host_sh(&format!("base64 {}/launcher/icons/exptest.png", slot_dir(IMP)));
+    assert_eq!(
+        String::from_utf8_lossy(&icon.stdout).split_whitespace().collect::<String>(),
+        ICON_B64,
+        "shortcut icon not carried"
+    );
     let meta = metadata(IMP);
-    assert!(meta.contains(HIDDEN), "hidden entry not carried:\n{meta}");
     assert!(meta.contains("\"importedAtMillis\""), "{meta}");
     assert!(meta.contains("\"label\": \"Exptest Imported\""), "{meta}");
     assert!(meta.contains("\"state\": \"READY\""), "{meta}");
     // The source is untouched.
     assert_eq!(run_ok(SRC, "cat /root/a"), "payload\n");
+
+    // Legacy launcher metadata (what a format-1 export carries) moves
+    // into the store on the first load.
+    let out = host_sh(&format!(
+        "sed -i 's/\"state\": \"READY\"/\"state\": \"READY\", \"entryGraphics\": {{\"exptest-legacy\": \"cpu\"}}/' \
+         {d}/metadata.json && sed -i 's/\"migrated\": 1/\"migrated\": 0/' {d}/launcher/entries.json",
+        d = slot_dir(IMP)
+    ));
+    assert!(out.status.success(), "seed legacy metadata failed:\n{}", text(&out));
+    assert!(metadata(IMP).contains("exptest-legacy"), "legacy field not seeded");
+    let out = action("launcher-list", &[("installId", IMP)]);
+    assert!(out.status.success(), "launcher-list failed:\n{}", text(&out));
+    let store = launcher_store(IMP);
+    assert!(store.contains("exptest-legacy") && store.contains("\"migrated\": 1"), "not migrated:\n{store}");
+    assert!(!metadata(IMP).contains("exptest-legacy"), "legacy field left in metadata");
 
     // --- truncated archive -> FAILED, Delete clears it ---------------
     {
