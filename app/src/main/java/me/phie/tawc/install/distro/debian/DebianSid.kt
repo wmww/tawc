@@ -83,7 +83,7 @@ internal sealed class DebianSid(
     ) = AptCommon.configure(
         method = method,
         rootfs = rootfs,
-        suite = SUITE,
+        suites = listOf(SUITE),
         repoUrl = REPO_URL,
         signedBy = DEBIAN_ARCHIVE_KEYRING,
         mirrorProxy = mirrorProxy,

@@ -6,21 +6,22 @@ documents the code-level abstraction that lets us add new families.
 
 We currently ship **Arch Linux ARM** (aarch64), **Arch Linux**
 (x86_64, for the emulator), **Manjaro ARM** (aarch64), **Void
-Linux** glibc (x86_64 and aarch64), and **Debian sid** (x86_64 and
-aarch64). This note exists because ALARM is
+Linux** glibc (x86_64 and aarch64), **Debian sid** (x86_64 and
+aarch64), and **Ubuntu 24.04 LTS** (x86_64 and aarch64). This note exists because ALARM is
 under-maintained and somewhat bloated for our needs, and we keep
 getting asked "what about $distro?".
 
 ## Which distros are supported
 
-Only two, for users:
+Three, for users:
 
 - **Arch Linux ARM** (aarch64)
 - **Debian sid** (aarch64, and x86_64 for the emulator)
+- **Ubuntu 24.04 LTS** (aarch64, and x86_64 for the emulator)
 
-Everything else — Manjaro ARM, Void Linux, and Arch Linux x86_64 —
-still ships in every build (release included) but is dev /
-experimental: less tested, and free to break. Arch Linux x86_64 is
+Everything else — Manjaro ARM, Void Linux, and Arch
+Linux x86_64 — still ships in every build (release included) but is
+dev / experimental: less tested, and free to break. Arch Linux x86_64 is
 flagged supported in the code purely because it is the emulator's
 stand-in for ALARM (there is no aarch64 emulator path), so the
 emulator dev loop mirrors the phone's default; no user runs an
@@ -176,19 +177,43 @@ Void glibc.
 
 ### Ubuntu
 
-Technically viable, practically a worse Debian for this:
+Shipped since 2026-10, **supported** since 2026-10-01 (first install
+verified end to end on a Galaxy Tab S9: bootstrap trust chain, ports
+sources, `apt-get update`, base packages, and GUI apps launched from
+the in-app launcher and a pinned shortcut). The concerns below still shape how it is wired:
 
-- It's Debian underneath — same `debootstrap`, same `apt`, same arm64
-  story. No technical advantage over Debian.
-- Larger and more opinionated base (snapd hooks, netplan, cloud-init
-  bits, ESM/livepatch noise in apt config). You'd spend time stripping
-  it down to match a Debian minbase.
-- **Snap is hostile to chroots.** Default-repo Firefox is a snap and
-  needs systemd + snapd + loop mounts. You end up using the Mozilla
-  PPA or Debian's `.deb` — at which point you're using Debian with
-  extra friction.
-- None of Ubuntu's value-adds (HWE kernels, cloud images, LTS support,
-  Pro) apply to us.
+- It is Debian underneath — same `apt`, same arm64 story — so it adds
+  no capability Debian sid lacks. It exists for familiarity:
+  `ubuntu-base` is a ~30 MB non-snap rootfs, and it is the name many
+  users ask for first. `Ubuntu2404` is a thin data object over
+  `AptCommon`, deliberately.
+- **Snap does not apply, and `snapd` is refused**. `ubuntu-base` ships
+  no snapd and TAWC neither installs it nor lets apt do so: `Ubuntu2404`
+  writes an apt preference pinning `snapd` to `Pin-Priority: -1`
+  (`AptCommon.blockedPackagesBody`). Without the pin, a user who follows
+  Ubuntu's own "install the Firefox snap" advice gets
+  `unable to set CAP_SETFCAP effective capability` from snapd's postinst
+  (tawcroot is fake root with `CapEff: 0`), which leaves dpkg
+  half-configured and makes **every later apt transaction exit
+  non-zero**. Snaps cannot work here anyway — they need systemd, loop
+  mounts and apparmor — so apt answers with "no installation candidate"
+  instead. The transitional `firefox` `.deb` then fails on its own
+  `PreDepends: snapd (>= 2.54)` — verified on device: apt reports
+  `Package 'snapd' has no installation candidate`, so the user gets a
+  clear error rather than a browser stub. Real Firefox comes from the
+  Mozilla PPA or the upstream tarball.
+- **arm64 is on `ports`, not `archive`.** `Ubuntu2404Aarch64` points at
+  `ports.ubuntu.com/ubuntu-ports` and `Ubuntu2404X86_64` at
+  `archive.ubuntu.com/ubuntu`, so the two repository roots are not
+  interchangeable between the two flavours.
+- `systemd-standalone-sysusers` / `-tmpfiles` are **universe**-only in
+  noble, so the apt source carries `main universe` (Debian's stays
+  `main`).
+- `supported = true`, so the install form lists it in the main group
+  with ALARM and Debian sid — see *Which distros are supported* above.
+- None of Ubuntu's value-adds (HWE kernels, cloud images, Pro) apply to
+  us, and the LTS cadence is the only reason to prefer 24.04 over a
+  rolling distro.
 
 ### Pop!_OS / Mint / Zorin / elementary
 
