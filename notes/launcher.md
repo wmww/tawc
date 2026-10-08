@@ -20,7 +20,11 @@ screen"), plus pinned shortcuts.
 3. **launcher.rs** walks `APPS_SUBDIRS` under the rootfs —
    `root/.local/share/applications` (the guest's XDG per-user dir;
    fake root, so `$HOME` is `/root`), `usr/local/share/applications`,
-   `usr/share/applications`, flatpak/snap exports — parses each
+   `usr/share/applications`, flatpak/snap exports — resolving
+   symlinks inside the rootfs (`resolve_in_rootfs`; LibreOffice ships
+   absolute links into `/usr/lib/libreoffice/share/xdg/` that dangle
+   on the host, and the editor's `DesktopEntryFile.fileInRootfs`
+   mirrors this) — parses each
    `.desktop` via the `freedesktop-desktop-entry` crate, filters
    non-Application / NoDisplay / Hidden / Exec-less entries, and (in
    `scan_json`, not the entry walk — see "Icon resolution") resolves

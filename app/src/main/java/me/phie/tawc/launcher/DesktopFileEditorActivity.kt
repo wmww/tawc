@@ -164,7 +164,7 @@ class DesktopFileEditorActivity : AppCompatActivity() {
             }
             source = f
             sourceText = text
-            target = DesktopEntryFile.targetFor(f, rootfs)
+            target = DesktopEntryFile.targetFor(File(path), rootfs)
             shadows = intent?.getStringExtra(EXTRA_SHADOWS)
                 ?.takeIf { it.isNotEmpty() && DesktopEntryFile.isManaged(f.path, rootfs) }
                 ?.let { DesktopEntryFile.fileInRootfs(it, rootfs) }

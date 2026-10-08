@@ -1,6 +1,7 @@
 package me.phie.tawc.launcher
 
 import java.io.File
+import java.nio.file.Files
 import me.phie.tawc.install.Installation
 
 /**
@@ -31,10 +32,42 @@ internal object DesktopEntryFile {
     fun isManaged(entryPath: String, rootfs: File): Boolean =
         canonical(File(entryPath)).path.startsWith(managedDir(rootfs).path + "/")
 
-    /** [path] canonicalized, if it is a regular file inside [rootfs]; else null. */
+    /**
+     * The readable file behind [path], if it is a regular file inside
+     * [rootfs]; else null. Symlinks resolve as the guest sees them
+     * (absolute targets re-root at [rootfs]): packaged entries like
+     * LibreOffice's are absolute links that dangle on the host.
+     */
     fun fileInRootfs(path: String, rootfs: File): File? {
-        val f = canonical(File(path))
-        return f.takeIf { it.path.startsWith(canonical(rootfs).path + "/") && it.isFile }
+        val root = canonical(rootfs)
+        // Canonicalize the parent only: the leaf may dangle on the host.
+        val raw = File(path)
+        val f = File(canonical(raw.parentFile ?: return null), raw.name)
+        val rel = f.path.removePrefix(root.path + "/").takeIf { it != f.path } ?: return null
+        return resolveInRootfs(root, rel)?.takeIf { it.isFile }
+    }
+
+    /** Mirrors the Rust scanner's `resolve_in_rootfs`: walk [rel]
+     *  under canonical [root], following symlinks without leaving it. */
+    private fun resolveInRootfs(root: File, rel: String): File? {
+        val todo = ArrayDeque(rel.split('/'))
+        var cur = root
+        var hops = 0
+        while (todo.isNotEmpty()) {
+            val comp = todo.removeFirst()
+            when (comp) {
+                "", "." -> continue
+                ".." -> { if (cur != root) cur = cur.parentFile ?: root; continue }
+            }
+            val next = File(cur, comp)
+            val link = next.toPath()
+            if (!Files.isSymbolicLink(link)) { cur = next; continue }
+            if (++hops > 40) return null
+            val target = Files.readSymbolicLink(link).toString()
+            if (target.startsWith("/")) cur = root
+            target.split('/').asReversed().forEach { todo.addFirst(it) }
+        }
+        return cur
     }
 
     /**
@@ -49,14 +82,15 @@ internal object DesktopEntryFile {
     }
 
     /**
-     * Where an edit of [source] is saved: [source] itself when it is
-     * already managed, else `<managedDir>/<id>.desktop` — same id, so
-     * the copy shadows the packaged file and inherits its hide state
-     * and pins.
+     * Where an edit of the entry at [entry] (a [LauncherEntry.path],
+     * not its symlink target — that names the id) is saved: the file
+     * itself when it is already managed, else
+     * `<managedDir>/<id>.desktop` — same id, so the copy shadows the
+     * packaged file and inherits its hide state and pins.
      */
-    fun targetFor(source: File, rootfs: File): File =
-        if (isManaged(source.path, rootfs)) source
-        else File(managedDir(rootfs), "${idFor(source.path)}.desktop")
+    fun targetFor(entry: File, rootfs: File): File =
+        if (isManaged(entry.path, rootfs)) canonical(entry)
+        else File(managedDir(rootfs), "${idFor(entry.path)}.desktop")
 
     private fun canonical(f: File): File = runCatching { f.canonicalFile }.getOrDefault(f)
 

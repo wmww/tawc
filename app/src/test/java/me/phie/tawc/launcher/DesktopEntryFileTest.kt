@@ -2,11 +2,14 @@ package me.phie.tawc.launcher
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Paths
 
 /** Serializer/patch round-trips, ids and filename slugs for the `.desktop` editor. */
 class DesktopEntryFileTest {
@@ -157,6 +160,25 @@ class DesktopEntryFileTest {
         )
         val managed = File(DesktopEntryFile.managedDir(rootfs), "mine.desktop")
         assertEquals(managed, DesktopEntryFile.targetFor(managed, rootfs))
+    }
+
+    @Test
+    fun absoluteSymlinksResolveInsideRootfs() {
+        val rootfs = tmp.newFolder("rootfs").canonicalFile
+        val real = File(rootfs, "usr/lib/libreoffice/share/xdg/writer.desktop")
+        real.parentFile.mkdirs()
+        real.writeText("[Desktop Entry]\n")
+        val apps = File(rootfs, "usr/share/applications").apply { mkdirs() }
+        val link = File(apps, "libreoffice-writer.desktop")
+        Files.createSymbolicLink(link.toPath(), Paths.get("/usr/lib/libreoffice/share/xdg/writer.desktop"))
+        assertEquals(real, DesktopEntryFile.fileInRootfs(link.path, rootfs))
+        assertEquals(
+            File(DesktopEntryFile.managedDir(rootfs), "libreoffice-writer.desktop"),
+            DesktopEntryFile.targetFor(link, rootfs),
+        )
+        val escape = File(apps, "escape.desktop")
+        Files.createSymbolicLink(escape.toPath(), Paths.get("../../../../etc/x.desktop"))
+        assertNull(DesktopEntryFile.fileInRootfs(escape.path, rootfs))
     }
 
     @Test

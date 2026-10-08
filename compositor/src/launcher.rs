@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 
-use freedesktop_desktop_entry::{DesktopEntry, Iter};
+use freedesktop_desktop_entry::DesktopEntry;
 use log::warn;
 use serde_json::json;
 
@@ -138,16 +138,16 @@ pub struct Entry {
 /// (the launcher list); metadata resolution keeps them — a *running*
 /// NoDisplay app still needs its icon/title resolved.
 fn scan_entries(rootfs: &Path, launchable_only: bool) -> Vec<Entry> {
-    let dirs: Vec<PathBuf> = APPS_SUBDIRS
-        .iter()
-        .map(|sub| rootfs.join(sub))
-        .filter(|p| p.exists())
-        .collect();
-
+    // Canonical, so reported paths use `/data/data/<pkg>` (see
+    // [IconResolver::new]) and guest symlinks resolve against it.
+    let rootfs = rootfs.canonicalize().unwrap_or_else(|_| rootfs.to_path_buf());
     let mut entries: Vec<Entry> = Vec::new();
     let locales = current_locales();
-    for path in Iter::new(dirs.into_iter()) {
-        let de = match DesktopEntry::from_path(path, Some(&locales)) {
+    for (path, real) in desktop_files(&rootfs) {
+        let Ok(text) = std::fs::read_to_string(&real) else { continue };
+        // Parse under the walked path, not the target: the desktop id
+        // comes from the name under `applications/`.
+        let de = match DesktopEntry::from_str(path, &text, Some(&locales)) {
             Ok(de) => de,
             Err(_) => continue,
         };
@@ -178,7 +178,7 @@ fn scan_entries(rootfs: &Path, launchable_only: bool) -> Vec<Entry> {
         });
     }
 
-    // De-dup by id in walk order *before* sorting: Iter walks the dirs
+    // De-dup by id in walk order *before* sorting: [desktop_files] walks the dirs
     // in APPS_SUBDIRS order, which is user-first, so the first
     // occurrence is the highest-priority copy. The winner remembers the
     // next copy it hid.
@@ -327,6 +327,94 @@ pub fn list_icons_json(rootfs: &Path) -> String {
         .map(|(name, user)| json!({ "name": name, "user": user }))
         .collect();
     serde_json::Value::Array(arr).to_string()
+}
+
+/// Every `.desktop` file under [APPS_SUBDIRS] of [rootfs] (canonical),
+/// in de-dup priority order, as (walked path, readable host path).
+/// Unlike the crate's `Iter`, symlinks resolve inside the rootfs:
+/// packages like LibreOffice ship absolute ones
+/// (`/usr/share/applications/libreoffice-writer.desktop` →
+/// `/usr/lib/libreoffice/share/xdg/writer.desktop`) that dangle on the
+/// host. Subdirs are walked too (`kde4/foo.desktop` is `kde4-foo`).
+fn desktop_files(rootfs: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let mut out = Vec::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    for sub in APPS_SUBDIRS {
+        let dir = rootfs.join(sub);
+        let Some(real) = resolve_in_rootfs(rootfs, &dir) else { continue };
+        walk_desktop_dir(rootfs, &dir, &real, &mut visited, &mut out);
+    }
+    out
+}
+
+fn walk_desktop_dir(
+    rootfs: &Path,
+    dir: &Path,
+    real: &Path,
+    visited: &mut HashSet<PathBuf>,
+    out: &mut Vec<(PathBuf, PathBuf)>,
+) {
+    // Keyed on the resolved dir, so symlink loops terminate.
+    if !visited.insert(real.to_path_buf()) {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(real) else { return };
+    // Sorted: walk order decides de-dup winners within a dir tree.
+    let mut names: Vec<_> = rd.flatten().map(|e| e.file_name()).collect();
+    names.sort_unstable();
+    for name in names {
+        let path = dir.join(&name);
+        let Some(target) = resolve_in_rootfs(rootfs, &real.join(&name)) else { continue };
+        let Ok(meta) = std::fs::metadata(&target) else { continue };
+        if meta.is_dir() {
+            walk_desktop_dir(rootfs, &path, &target, visited, out);
+        } else if meta.is_file() && path.extension().is_some_and(|e| e == "desktop") {
+            out.push((path, target));
+        }
+    }
+}
+
+/// Resolve every symlink in [path] (a host path under canonical
+/// [rootfs]) the way the guest would see it: absolute targets re-root
+/// at [rootfs] and `..` stops at its top, so the result never leaves
+/// the install. None on a symlink loop or a path outside [rootfs].
+/// The final component need not exist.
+fn resolve_in_rootfs(rootfs: &Path, path: &Path) -> Option<PathBuf> {
+    let rel = path.strip_prefix(rootfs).ok()?;
+    // Pending components, front = next to visit.
+    let mut todo: VecDeque<std::ffi::OsString> =
+        rel.components().map(|c| c.as_os_str().to_owned()).collect();
+    let mut cur = rootfs.to_path_buf();
+    let mut hops = 0;
+    while let Some(comp) = todo.pop_front() {
+        match Path::new(&comp).components().next() {
+            Some(Component::Normal(_)) => {}
+            Some(Component::ParentDir) => {
+                if cur != rootfs {
+                    cur.pop();
+                }
+                continue;
+            }
+            _ => continue,
+        }
+        let next = cur.join(&comp);
+        match std::fs::read_link(&next) {
+            Ok(target) => {
+                hops += 1;
+                if hops > 40 {
+                    return None;
+                }
+                if target.is_absolute() {
+                    cur = rootfs.to_path_buf();
+                }
+                for c in target.components().rev() {
+                    todo.push_front(c.as_os_str().to_owned());
+                }
+            }
+            Err(_) => cur = next,
+        }
+    }
+    Some(cur)
 }
 
 /// `Type=Application` and not `Hidden`; `launchable_only` (see
