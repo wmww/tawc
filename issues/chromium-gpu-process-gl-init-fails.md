@@ -1,80 +1,62 @@
 # Chromium's GPU process fails GL init; falls back to software
 
-Chromium and Electron start under tawcroot (OnePlus 9, Arch Linux ARM,
-libhybris, 2026-09-28) but the GPU process exits during init and they
-composite in software. Reported upstream as
-https://github.com/wmww/tawc/issues/1 (ChatGPT Electron app, Pixel 9
-Pro XL / Mali, Debian sid): that app refuses software fallback, so it
-exits with `GPU process isn't usable`. Still reproduces on Pixel 9 Pro
-(Mali-G715, ALARM, Chromium 153, 2026-10-08).
+Chromium and Electron start under tawcroot with libhybris, but the GPU
+process exits during init and they render and composite in software
+(OnePlus 9 / Adreno 660, Pixel 9 Pro / Mali-G715; ALARM, Chromium 153;
+last seen 2026-10-08). Upstream report: https://github.com/wmww/tawc/issues/1.
 
     ANGLE Display::initialize error 12289: Failed to get system egl display
     Initialization of all (2) EGL display types failed.
     Exiting GPU process due to errors during initialization
 
-## Cause (verified, Chromium 153, 2026-09-28)
+Electron apps survive it now: ChatGPT 26.1002.52244 (arm64 .deb in
+ALARM, `--no-sandbox`) fails the GPU process 3x, then renders in
+software. With the `cpu` backend (distro Mesa llvmpipe) GPU init is
+clean, but that's software too.
 
-With the Wayland ozone platform the GPU process has no wl_display: ANGLE
-(`FunctionsEGL::initialize`, GL backend) calls
-`eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, NULL)`. It gates that on
-`EGL_EXT_platform_base` + `EGL_KHR_platform_gbm` in the client extension
-string. libhybris advertises neither (only `EGL_EXT_platform_wayland`/
-`EGL_KHR_platform_wayland`, `deps/libhybris/hybris/egl/egl.c`), and
-`__eglHybrisGetPlatformDisplayCommon` rejects GBM with
-`EGL_BAD_PARAMETER`. The device-enumeration fallbacks need
-`EGL_EXT_device_*`, also absent. So ANGLE never calls into the driver.
+## Cause (per upstream source; re-verify on device)
 
-The browser process itself is fine: it uses
-`EGL_PLATFORM_WAYLAND_KHR` with its real wl_display.
+In multi-process mode the GPU process has no wl_display
+(`connection_` is null). `GLOzoneEGLWayland::GetNativeDisplay`
+(`ui/ozone/platform/wayland/gpu/wayland_surface_factory.cc`) then picks
+GBM only if it opened a GBM device (it can't: no `/dev/dri`), else
+`EGL_PLATFORM_SURFACELESS_MESA` if advertised, else
+`EGL_DEFAULT_DISPLAY`. ANGLE's `FunctionsEGL::getPlatformDisplay`
+requires the system EGL to advertise `EGL_EXT_platform_base` and the
+matching platform extension; libhybris advertises only the Wayland
+ones (`deps/libhybris/hybris/egl/egl.c`, `eglQueryString`), so ANGLE
+gets no display. Which platform Chromium 153 actually requests hasn't
+been confirmed by tracing.
 
-## Verified workaround
+An earlier LD_LIBRARY_PATH shim that advertised `EGL_KHR_platform_gbm`
+and mapped GBM/NULL to `eglGetDisplay(EGL_DEFAULT_DISPLAY)` made GL
+init succeed (ANGLE on Adreno 660; rasterization, canvas, WebGL on;
+`gpu_compositing` still `disabled_software`). Faking GBM is not the
+fix: we can't accept a real `gbm_device`, and notes/xwayland.md already
+rejected GBM aliasing. Also note that with `HYBRIS_EGLPLATFORM=wayland`
+(RootfsEnv.kt) the default display opens its own Wayland connection
+(`waylandws_GetDisplay`), and aborts if it can't.
 
-An LD_LIBRARY_PATH shim `libEGL.so.1` in front of hybris that appends
-`EGL_EXT_platform_base EGL_KHR_platform_gbm` to the client extensions
-and maps `EGL_PLATFORM_GBM_KHR`/NULL to hybris `eglGetDisplay(EGL_DEFAULT_DISPLAY)`
-makes the GPU process initialize. `SystemInfo.getInfo` (CDP) then shows:
+## Option 1: surfaceless in libhybris
 
-- GL: `ANGLE (Qualcomm, Adreno (TM) 660, OpenGL ES 3.2 ...)`,
-  `gl=egl-angle,angle=opengl`
-- rasterization, 2d_canvas, opengl: enabled; webgl/webgpu:
-  `enabled_readback`
-- gpu_compositing: still `disabled_software`
+Advertise `EGL_MESA_platform_surfaceless` and back it with the `null`
+ws. Fixes GL (GPU rasterization/WebGL) for every Chromium-family app
+however launched; compositing stays software (readback to SHM, magenta
+tinted). Plan: [plans/libhybris-surfaceless.md](../plans/libhybris-surfaceless.md).
 
-Pages render correctly (checked NTP).
+## Option 2: `--in-process-gpu`
 
-## Proposed fix (libhybris fork)
+GPU work then runs in the browser process, which has the real
+wl_display, so `GetNativeDisplay` returns the Wayland platform, which
+libhybris supports. If Chromium then renders through `wl_egl_window`,
+frames go AHB → `android_wlegl` like Firefox: real GPU compositing with
+no dmabuf. Untested; Chromium may still insist on its NativePixmap
+(dmabuf) path. Costs: only launcher-started apps get the flag, a GPU
+crash kills the app, and it's a less-tested upstream mode. Try after
+option 1; ship in the launcher only if it really gets GPU compositing.
 
-In `egl.c`: advertise `EGL_EXT_platform_base EGL_KHR_platform_gbm`
-(maybe `EGL_MESA_platform_surfaceless` too), and treat
-`EGL_PLATFORM_GBM_KHR` with a NULL device (and
-`EGL_PLATFORM_SURFACELESS_MESA`) as the default ws with a NULL native
-display. Reject a non-NULL gbm_device with `EGL_BAD_PARAMETER`. Risk:
-other clients that see `EGL_KHR_platform_gbm` may try GBM, but they
-cannot open `/dev/dri` here anyway.
-
-## Remaining: GPU compositing
-
-Even with GL working, Chromium's Wayland GPU side needs a DRM render
-node / GBM to allocate dmabufs for the compositor
-(`drmGetDevices2() has not found any devices: Permission denied`), so
-compositing stays software (readback to SHM). Real GPU compositing
-needs a buffer-sharing path Chromium understands (dmabuf via
-zwp_linux_dmabuf, or similar); not investigated.
-
-## CPU backend avoids it
-
-With the `cpu` graphics backend (no hybris on `LD_LIBRARY_PATH`, distro
-Mesa llvmpipe) the GPU process initializes with no EGL errors and
-Chromium renders (Pixel 9 Pro, 2026-10-08).
-
-ChatGPT 26.1002.52244 (arm64 .deb unpacked into ALARM, `--no-sandbox`)
-no longer dies with `GPU process isn't usable` even on libhybris: the
-GPU process fails 3x, then it renders in software and shows its window.
-Same on cpu (clean GPU init). Defaults to X11 (no GLX here);
-`--ozone-platform=wayland` picks Wayland. Its "Organization settings
-could not be loaded" dialog was its bundled `codex app-server` dying
-under tawcroot (fixed; notes/tawcroot/sigsys-handler.md); it now
-reaches the sign-in screen.
+`zwp_linux_dmabuf_v1` is not an option: stock drivers can't import
+dmabufs (notes/gpu-strategy.md).
 
 ## ANGLE Vulkan (`--use-angle=vulkan`)
 
@@ -91,6 +73,7 @@ crashes silently (`exit_code=7`). Not investigated further.
 
 Under X11 (Xwayland) it fails earlier with `Could not load GLX entry
 point glXCreateContext` (`GLX is not present` with the cpu backend).
+Electron defaults to X11 here; `--ozone-platform=wayland` picks Wayland.
 
 Sandbox: Electron gets `--no-sandbox` from `ELECTRON_DISABLE_SANDBOX=1`
 in the guest env; launcher entries for Chromium-family apps get it
