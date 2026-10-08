@@ -161,9 +161,10 @@ Activity to spawn. Single-activity mode never claims a launch.
 
 A splash task restored after process death (or reopened once closed)
 has no record and finishes itself. Matched windows never need
-`spawnActivity`, so the background-launch block
-(issues/windows-cannot-open-with-no-tawc-activity-visible.md) doesn't
-apply to them.
+`spawnActivity`, so Android's background-activity-launch block doesn't
+apply to them. Unmatched windows from a client with no TAWC activity in
+front (e.g. a `nohup` job after a swipe) can't get a `CompositorActivity`
+and never show; that is Android policy, not a TAWC bug.
 
 Debug broker: `launcher-launch` (the tap path, with a settable
 `timeoutMs`) and `launch-state`; `query-state` reports
