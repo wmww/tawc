@@ -66,11 +66,8 @@ internal class DistroHome(
 
     val canOpenTerminal: Boolean get() = terminal != null
 
-    /** The tab bar's current fill, for the status band above it. */
+    /** The tab bar's fill, for the status band above it. */
     val barColor: Int get() = bar.barColor
-
-    /** The bar is in its dark palette (terminal tabs exist). */
-    val barIsDark: Boolean get() = bar.hasTabs
 
     val view: LinearLayout
 

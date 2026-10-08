@@ -346,8 +346,8 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * The home's tab bar continues into the status band; the nav band
-     * is black under a terminal, else the window's own. Light bar icons
-     * on whichever is dark.
+     * is black under a terminal, else the window's own. Light nav icons
+     * under a terminal.
      */
     private fun styleBars() {
         val home = (pane as? Pane.Home)?.home
@@ -358,7 +358,7 @@ class MainActivity : AppCompatActivity() {
             SystemBands(screen.root, it.barColor, if (terminal) Color.BLACK else getColor(R.color.tawc_window_bg))
         }
         WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = home?.barIsDark != true && defaultLightBars && !night
+            isAppearanceLightStatusBars = defaultLightBars && !night
             isAppearanceLightNavigationBars = !terminal && defaultLightBars && !night
         }
     }

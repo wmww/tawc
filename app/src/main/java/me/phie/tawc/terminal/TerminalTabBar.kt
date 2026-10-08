@@ -35,10 +35,8 @@ import me.phie.tawc.R
  * callbacks. Click handlers resolve the index at click time
  * (`indexOfChild`) so removals don't stale captured positions.
  *
- * Two palettes: with no terminal tabs the bar (just the title) blends
- * into the window background (theme-following); with tabs it is fixed
- * dark regardless of day/night or the selected tab, matching the
- * always-black terminal surface.
+ * The bar always blends into the window background (theme-following),
+ * so it keeps its color when a terminal tab is selected.
  */
 internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLayout(context) {
 
@@ -57,16 +55,15 @@ internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLay
     private val tabsRow: LinearLayout
     private val buttons = mutableListOf<ImageButton>()
 
-    private val appsPalette = Palette(
+    private val palette = Palette(
         bg = context.getColor(R.color.tawc_window_bg),
         tabSelected = context.getColor(R.color.tawc_nav_selected),
         fgSelected = themeColor(com.google.android.material.R.attr.colorOnSurface),
         fgUnselected = themeColor(com.google.android.material.R.attr.colorOnSurfaceVariant),
     )
-    private var palette = appsPalette
     private var selectedIndex = APPS
 
-    /** Current fill; MainActivity continues it into the status band. */
+    /** Fill; MainActivity continues it into the status band. */
     val barColor: Int get() = palette.bg
 
     init {
@@ -168,14 +165,10 @@ internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLay
 
     private fun tabCount(): Int = strip.childCount
 
-    /** Any terminal tabs; the bar is dark exactly then. */
-    val hasTabs: Boolean get() = tabCount() > 0
-
     /** Highlight terminal tab [index], or the apps tab for [APPS]. */
     fun setSelected(index: Int) {
         selectedIndex = index
         val apps = index == APPS
-        palette = if (hasTabs) TERMINAL_PALETTE else appsPalette
         setBackgroundColor(palette.bg)
         titleView.setTextColor(palette.fgSelected)
         for (b in buttons) b.imageTintList = ColorStateList.valueOf(palette.fgUnselected)
@@ -250,12 +243,6 @@ internal class TerminalTabBar(context: Context, title: CharSequence) : LinearLay
         /** [setSelected] index of the apps tab. */
         const val APPS = -1
 
-        private val TERMINAL_PALETTE = Palette(
-            bg = Color.parseColor("#1A1A1A"),
-            tabSelected = Color.parseColor("#2C2C2C"),
-            fgSelected = Color.parseColor("#FFFFFF"),
-            fgUnselected = Color.parseColor("#9E9E9E"),
-        )
         private const val TITLE_PAD_DP = 8
         private const val TAB_TEXT_SP = 13f
         private const val SELECTED_BORDER_DP = 2
