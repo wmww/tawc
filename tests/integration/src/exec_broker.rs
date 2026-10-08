@@ -496,7 +496,15 @@ fn connect(invocation: &Invocation) -> io::Result<(TcpStream, Option<AdbForward>
                 ),
             )
         };
-        let mut sock = TcpStream::connect(("127.0.0.1", port)).map_err(suite_err)?;
+        let mut sock = match TcpStream::connect(("127.0.0.1", port)) {
+            // adb drops a device's forwards when its USB link resets;
+            // the app outlives that, so put the forward back once.
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+                restore_suite_forward(serial.as_deref(), port).map_err(suite_err)?;
+                TcpStream::connect(("127.0.0.1", port)).map_err(suite_err)?
+            }
+            r => r.map_err(suite_err)?,
+        };
         sock.set_nodelay(true)?;
         write_header(&mut sock, &invocation.request)
             .and_then(|()| sock.flush())
@@ -528,6 +536,29 @@ fn connect(invocation: &Invocation) -> io::Result<(TcpStream, Option<AdbForward>
     sock.flush()?;
 
     Ok((sock, Some(fwd)))
+}
+
+/// Wait for the device to come back after a USB reset and re-add the
+/// suite's forward (the run script removes it at the end).
+fn restore_suite_forward(serial: Option<&str>, port: u16) -> io::Result<()> {
+    eprintln!("tawc-exec: suite forward on port {port} is gone (USB reset?); restoring it");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let mut cmd = Command::new("adb");
+        if let Some(s) = serial {
+            cmd.args(["-s", s]);
+        }
+        let out = cmd.arg("get-state").stderr(Stdio::null()).output()?;
+        if String::from_utf8_lossy(&out.stdout).trim() == "device" {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::other("device did not come back within 30s"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    std::mem::forget(AdbForward::start(serial, port)?);
+    Ok(())
 }
 
 fn ensure_broker_ready(invocation: &Invocation, serial: Option<&str>) -> io::Result<()> {

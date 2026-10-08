@@ -154,7 +154,7 @@ fn test_wrapper_script_matches_by_session() {
 #[test]
 fn test_backgrounding_launcher_keeps_waiting() {
     let mut fx = Fixture::new();
-    fx.plant("tawc-splash-bg", &format!("(sleep 2; exec {WAYLAND_APP} render-pattern) &"));
+    fx.plant("tawc-splash-bg", &format!("(sleep 1; exec {WAYLAND_APP} render-pattern) &"));
     let launch = fx.launch("tawc-splash-bg", None);
     wait_launch_state(&launch, "shown", SHOWN_TIMEOUT);
     assert_window_on_launch_host(&launch);
@@ -225,8 +225,8 @@ fn test_failed_launch_shows_log_and_code() {
 #[test]
 fn test_timeout_then_late_window_still_matches() {
     let mut fx = Fixture::new();
-    fx.plant("tawc-splash-late", &format!("echo waiting; sleep 4; exec {WAYLAND_APP} render-pattern"));
-    let launch = fx.launch("tawc-splash-late", Some(1000));
+    fx.plant("tawc-splash-late", &format!("echo waiting; sleep 2; exec {WAYLAND_APP} render-pattern"));
+    let launch = fx.launch("tawc-splash-late", Some(500));
     let json = wait_launch_state(&launch, "timedout", SHOWN_TIMEOUT);
     assert!(json.contains("waiting"), "live log missing: {json}");
     wait_launch_state(&launch, "shown", SHOWN_TIMEOUT);

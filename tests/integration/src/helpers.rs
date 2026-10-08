@@ -672,12 +672,38 @@ pub fn wait_terminal_state(want: &str) {
 
 /// Bring the home screen to the front with one new terminal tab (the
 /// test install must have none) and wait until MainActivity has window
-/// focus (typed text goes to the focused window) and the shell has had
-/// time to print its prompt.
+/// focus (typed text goes to the focused window) and the shell runs
+/// typed commands.
 pub fn show_home_terminal() {
     show_home_tab("new");
     wait_terminal_state("tabs:1 selected:0");
-    thread::sleep(Duration::from_secs(1));
+    wait_terminal_shell();
+}
+
+/// Wait until the selected terminal's shell runs what is typed into it:
+/// type a `touch` until its marker shows up in the rootfs.
+pub fn wait_terminal_shell() {
+    const MARKER: &str = "/tmp/tawc-term-ready";
+    let exists = || {
+        let out = adb::rootfs_run_with(GraphicsBackend::Cpu, &format!("test -e {MARKER}"))
+            .expect("rootfs run");
+        out.status.success()
+    };
+    adb::rootfs_run_with(GraphicsBackend::Cpu, &format!("rm -f {MARKER}")).expect("rootfs run");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        terminal_run(&format!("touch%s{MARKER}"));
+        let retype = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < retype {
+            if exists() {
+                adb::rootfs_run_with(GraphicsBackend::Cpu, &format!("rm -f {MARKER}"))
+                    .expect("rootfs run");
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(Instant::now() < deadline, "terminal shell never ran a typed command");
+    }
 }
 
 /// Bring the home screen to the front on `tab` ([adb::home_tab]) and
@@ -736,10 +762,13 @@ pub fn wait_for_rootfs_file(backend: GraphicsBackend, path: &str, timeout: Durat
 /// The app process's open fds as `readlink` targets with numbers
 /// blanked (`socket:[N]`, `anon_inode:malitl_N_N`), so leak checks can
 /// name what grew. In-flight fence fds (`sync_file`) swing by a dozen
-/// with frame timing, so they are left out.
+/// with frame timing, so they are left out. Each socket counts once:
+/// every IME focus hands the app another dup of its IME channel, which
+/// lingers until a GC cleaner runs; a real leak makes new sockets.
 pub fn app_fd_targets() -> Vec<String> {
     let out = adb::host_sh(
-        "for f in /proc/$PPID/fd/*; do readlink $f; done | sed -E 's/(0x)?[0-9a-f]*[0-9][0-9a-f]*/N/g'",
+        "for f in /proc/$PPID/fd/*; do readlink $f; done | awk '!/^socket:/ || !s[$0]++' \
+         | sed -E 's/(0x)?[0-9a-f]*[0-9][0-9a-f]*/N/g'",
     )
     .expect("host-sh fd list");
     String::from_utf8_lossy(&out.stdout)

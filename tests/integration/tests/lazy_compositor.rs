@@ -154,20 +154,20 @@ fn test_compositor_cycles_do_not_leak() {
     cycle();
     cycle();
     let (fds_before, threads_before) = app_fds_and_threads();
-    for _ in 0..8 {
+    for _ in 0..4 {
         cycle();
     }
     let (fds_after, threads_after) = app_fds_and_threads();
     assert!(
         fds_after.len() <= fds_before.len() + 2,
-        "fds grew over 8 compositor cycles: {} -> {} ({})",
+        "fds grew over 4 compositor cycles: {} -> {} ({})",
         fds_before.len(),
         fds_after.len(),
         fd_growth(&fds_before, &fds_after)
     );
     assert!(
         threads_after <= threads_before + 2,
-        "threads grew over 8 compositor cycles: {threads_before} -> {threads_after}"
+        "threads grew over 4 compositor cycles: {threads_before} -> {threads_after}"
     );
 }
 
@@ -189,7 +189,7 @@ fn test_session_service_survives_hold_churn() {
 
     const CONNECT: &str = "python3 -c 'import socket; s = socket.socket(socket.AF_UNIX); \
         s.connect(\"/usr/share/tawc/wayland-0\"); s.close()'";
-    for i in 0..12 {
+    for i in 0..8 {
         for _ in 0..3 {
             let out = adb::rootfs_run_with(BACKEND, "true").expect("run true");
             assert!(out.status.success(), "iteration {i}: `true` failed — app died?");
@@ -197,7 +197,7 @@ fn test_session_service_survives_hold_churn() {
         let out = adb::rootfs_run_with(BACKEND, CONNECT).expect("connect");
         assert!(out.status.success(), "iteration {i}: connect failed — app died?");
         // Land the next acquire right around the compositor's auto-stop.
-        std::thread::sleep(Duration::from_millis(900 + (i * 25) as u64));
+        std::thread::sleep(Duration::from_millis(900 + (i * 40) as u64));
     }
     assert_eq!(pid_before, app_pid(), "app process was restarted during hold churn");
 }

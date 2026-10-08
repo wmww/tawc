@@ -482,101 +482,16 @@ fn test_preedit_lifecycle_and_autocorrect_commit() {
 /// Qt/KTextEditor (Kate) render preedit by inserting it into the document
 /// buffer, so every preedit update comes back to the compositor as a
 /// `set_surrounding_text(cause=input_method)` report that *includes* the
-/// preedit. That echo carries no new information; mirroring it into the
-/// Android Editable as if the committed text changed destroys the
-/// composing span and tells the IME (via `updateSelection(-1, -1)`) that
-/// the composition ended mid-word. Real IMEs react to that signal with a
-/// defensive `finishComposingText`, force-committing every keystroke's
-/// preedit — typing "hello" in Kate produced "he hel hell hello hello".
+/// preedit. Mirroring that echo into the Android Editable as if the
+/// committed text changed destroys the composing span and tells the IME
+/// (via `updateSelection(-1, -1)`) that the composition ended mid-word.
 ///
-/// This test asserts the echo is absorbed: composing h→he→hel must not
-/// emit any composition-ended `updateSelection` to the IME, and the final
-/// finish must land exactly one "hel".
-#[test]
-fn test_preedit_echo_client_does_not_cancel_ime_composition() {
-    tawc_integration::helpers::test_init();
-    let mut app = start_wayland_debug_text_input_echo_preedit(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
-
-    // Let any enable-time surrounding report settle before the baseline.
-    thread::sleep(Duration::from_millis(300));
-    let baseline = adb::ime_selection_updates()
-        .expect("ime-selection-updates baseline")
-        .len();
-
-    for prefix in ["h", "he", "hel"] {
-        adb::ic_set_composing_text(prefix).expect("setComposingText");
-        app.wait_for_preedit(prefix, TIMEOUT)
-            .unwrap_or_else(|e| panic!("preedit not '{}': {}", prefix, e));
-        // Give the client's surrounding-text echo time to round-trip
-        // back through the compositor into the Android IC.
-        thread::sleep(Duration::from_millis(400));
-    }
-
-    let during = adb::ime_selection_updates().expect("ime-selection-updates during composition");
-    let cancels: Vec<_> = during[baseline.min(during.len())..]
-        .iter()
-        .filter(|u| u.signals_composition_ended())
-        .collect();
-    assert!(
-        cancels.is_empty(),
-        "client's preedit echo was mirrored as a committed-text change and \
-         signalled composition-ended to the IME mid-word: {cancels:?}"
-    );
-
-    adb::ic_finish_composing().expect("finishComposingText");
-    app.wait_for_text("hel", TIMEOUT)
-        .expect("'hel' committed once after finishComposingText");
-    app.wait_for_preedit("", TIMEOUT)
-        .expect("preedit cleared after finishComposingText");
-
-    // The post-finish report always mirrors (no preedit is active any
-    // more) and client reports travel an ordered path (client socket →
-    // compositor → main looper → recorder), so once it is recorded,
-    // every earlier echo has been fully processed. Anchoring the count
-    // assertion on it means slow echoes make the test fail loudly
-    // instead of passing vacuously inside the sleep windows above.
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        let n = adb::ime_selection_updates()
-            .expect("ime-selection-updates after finish")
-            .len();
-        if n > baseline {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "post-finish surrounding report was never mirrored to the IME"
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-    thread::sleep(Duration::from_millis(250));
-    let updates = adb::ime_selection_updates().expect("ime-selection-updates settled");
-    let new = &updates[baseline..];
-    assert!(
-        new.len() == 1 && (new[0].sel_start, new[0].sel_end) == (3, 3),
-        "expected exactly one post-finish updateSelection (3,3); anything \
-         more means composition echoes reached the IME: {new:?}"
-    );
-
-    // Cursor bookkeeping (wireCursor/lastSyncedCursor) must be resynced
-    // by the post-finish mirror or this delta-bearing region replace is
-    // rejected (broker action fails) or slices the wrong bytes.
-    adb::ic_set_composing_region(0, 3).expect("setComposingRegion 0..3");
-    adb::ic_commit_text("HEL").expect("commitText replacing marked region");
-    app.wait_for_text("HEL", TIMEOUT)
-        .expect("region replace after echo-heavy composition should land");
-
-    app.stop()
-        .expect("debug app crashed or failed to stop cleanly");
-    assert_compositor_clean();
-}
-
-/// End-to-end model of the Kate corruption: drive the same word Gboard
-/// would, *including* the IME's contractual reaction to the editor
-/// reporting "composition ended" (`updateSelection` with composing
-/// -1,-1 → defensive `finishComposingText`, per the ImeOutput docs).
-/// Against a preedit-echoing client the buggy mirror force-committed
-/// every prefix, producing "hhehelhellhello"; the word must land once.
+/// End-to-end model of the resulting corruption: drive the same word
+/// Gboard would, *including* the IME's contractual reaction to the
+/// editor reporting "composition ended" (defensive `finishComposingText`,
+/// per the ImeOutput docs). Against a preedit-echoing client the buggy
+/// mirror force-committed every prefix, producing "hhehelhellhello"; the
+/// word must land once, and no echo may reach the IME at all.
 #[test]
 fn test_preedit_echo_client_with_defensive_ime_types_word_once() {
     tawc_integration::helpers::test_init();
@@ -650,8 +565,16 @@ fn test_preedit_echo_client_with_defensive_ime_types_word_once() {
     assert!(
         new.len() == 1 && (new[0].sel_start, new[0].sel_end) == (5, 5),
         "expected exactly one post-finish updateSelection (5,5); anything \
-         more means composition echoes reached the IME late: {new:?}"
+         more means composition echoes reached the IME: {new:?}"
     );
+
+    // Cursor bookkeeping (wireCursor/lastSyncedCursor) must be resynced
+    // by the post-finish mirror or this delta-bearing region replace is
+    // rejected (broker action fails) or slices the wrong bytes.
+    adb::ic_set_composing_region(0, 5).expect("setComposingRegion 0..5");
+    adb::ic_commit_text("HELLO").expect("commitText replacing marked region");
+    app.wait_for_text("HELLO", TIMEOUT)
+        .expect("region replace after echo-heavy composition should land");
 
     app.stop()
         .expect("debug app crashed or failed to stop cleanly");
@@ -1470,7 +1393,7 @@ fn test_client_clipboard_over_cap_does_not_replace_android() {
     wait_for_android_clipboard(sentinel, TIMEOUT);
 
     let mut copy_app = start_wayland_debug_clipboard_overcap(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
-    assert_android_clipboard_stays(sentinel, Duration::from_secs(2));
+    assert_android_clipboard_stays(sentinel, Duration::from_secs(1));
     copy_app
         .stop()
         .expect("clipboard overcap app crashed or failed to stop cleanly");

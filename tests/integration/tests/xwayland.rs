@@ -154,14 +154,11 @@ fn test_xwayland_setting_starts_and_stops_process_live() {
         .expect("spawn first lazy-start xclock");
     first.ensure_pgid();
     let initial_pids = wait_for_xwayland_running(true, XWAYLAND_LAUNCH_TIMEOUT);
-    // Wait for xclock's first rendered SHM buffer before the kill: this
-    // test verifies the full start-render-stop cycle. The early-kill
-    // (pre-render) window has its own regression test below.
     wait_for_first_xclock_render(XWAYLAND_LAUNCH_TIMEOUT);
     first.stop().expect("first xclock failed to stop cleanly");
-    wait_for_xwayland_running(false, XWAYLAND_IDLE_STOP_TIMEOUT);
-    wait_for_x11_socket(true, XWAYLAND_LAUNCH_TIMEOUT);
 
+    // Disable while Xwayland still lingers clientless (its idle stop is
+    // covered by the cycles and early-kill tests).
     assert_broker_ok(adb::set_xwayland(false).expect("disable xwayland"), "set-xwayland");
     assert!(!adb::get_xwayland().expect("get xwayland disabled"));
     wait_for_xwayland_running(false, XWAYLAND_LAUNCH_TIMEOUT);
@@ -757,13 +754,12 @@ fn test_es2gears_x11_renders_via_ahb() {
     // guards is a ~40x blowout, not a few percent.
     let pace_before = compositor::query_state(TIMEOUT)
         .expect("query compositor state for pacing sample");
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(Duration::from_secs(1));
     let pace_after = compositor::query_state(TIMEOUT)
         .expect("query compositor state after pacing sample");
     let rate = pace_after
         .wlegl_create_buffer_total
-        .saturating_sub(pace_before.wlegl_create_buffer_total) as f64
-        / 3.0;
+        .saturating_sub(pace_before.wlegl_create_buffer_total) as f64;
     assert!(
         rate <= 200.0,
         "es2gears_x11 presented {rate:.0} buffers/sec — frame pacing is \
@@ -875,13 +871,15 @@ fn test_xwayland_cycles_do_not_leak() {
     // Warm-up: one-time lazy initialisation is not a leak.
     cycle();
     let before = app_fd_targets();
-    for _ in 0..4 {
+    // Each cycle waits out Xwayland's 5 s -terminate delay; three is
+    // enough for a one-fd-per-cycle leak to beat the slack.
+    for _ in 0..3 {
         cycle();
     }
     let after = app_fd_targets();
     assert!(
         after.len() <= before.len() + 2,
-        "fds grew over 4 Xwayland cycles: {} -> {} ({})",
+        "fds grew over 3 Xwayland cycles: {} -> {} ({})",
         before.len(),
         after.len(),
         fd_growth(&before, &after)

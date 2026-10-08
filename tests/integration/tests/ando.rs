@@ -406,8 +406,9 @@ fn test_ando_disable_kills_in_flight_child() {
 
     // Confirm it genuinely survived session teardown — if the client had
     // died with the session, disconnect-kill (not disable) would have
-    // already reaped the sleep, making a later "gone" a false pass.
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // already reaped the sleep (within milliseconds), making a later
+    // "gone" a false pass.
+    std::thread::sleep(std::time::Duration::from_millis(500));
     assert_eq!(
         android_proc_count(sleep_pat),
         1,
