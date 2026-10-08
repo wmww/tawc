@@ -1,5 +1,6 @@
 # Gradle
 .gradle/
+.kotlin/
 build/
 local.properties
 **/libs.versions.toml
