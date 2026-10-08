@@ -11,6 +11,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Point};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::xwayland::X11Surface;
 
 use crate::host::{ActivityId, OutputHost};
@@ -20,6 +21,16 @@ pub fn desktop_window_map_location(window: &Window) -> Point<i32, Logical> {
     // origin. TAWC's Android host model keeps the wl_surface origin at the
     // output origin, so map each window at its current geometry offset.
     window.geometry().loc
+}
+
+fn is_child_of(candidate: &Window, parent: &Window) -> bool {
+    if let Some(toplevel) = candidate.toplevel() {
+        return toplevel.parent().is_some_and(|p| parent.wl_surface().is_some_and(|s| *s == p));
+    }
+    let (Some(child), Some(parent)) = (candidate.x11_surface(), parent.x11_surface()) else {
+        return false;
+    };
+    child.is_transient_for() == Some(parent.window_id())
 }
 
 /// Result of assigning a desktop window to an Android host. Caller owns the
@@ -202,6 +213,21 @@ impl DesktopRegistry {
         self.host_spaces.get(host_id)
     }
 
+    pub fn window(&self, root: &WlSurface) -> Option<&Window> {
+        self.windows.get(root)
+    }
+
+    /// Root surface of the topmost window on `host_id` that can take
+    /// keyboard focus (X11 override-redirect menus can't).
+    pub fn topmost_focusable_surface(&self, host_id: &ActivityId) -> Option<WlSurface> {
+        self.host_spaces
+            .get(host_id)?
+            .elements()
+            .rev()
+            .filter(|window| !window.x11_surface().is_some_and(|x11| x11.is_override_redirect()))
+            .find_map(|window| window.wl_surface().map(|surface| surface.into_owned()))
+    }
+
     pub fn assigned_host(&self, surface: &WlSurface) -> Option<&ActivityId> {
         self.surface_to_host.get(surface)
     }
@@ -272,9 +298,18 @@ impl DesktopRegistry {
         self.map_window_to_host(&window, &host_id);
     }
 
+    /// Map `window` on top of `host_id`'s stack, keeping its dialogs above it.
     fn map_window_to_host(&mut self, window: &Window, host_id: &ActivityId) {
         let space = self.host_spaces.entry(host_id.clone()).or_default();
         space.map_element(window.clone(), desktop_window_map_location(window), false);
+        let children: Vec<Window> = space
+            .elements()
+            .filter(|candidate| is_child_of(candidate, window))
+            .cloned()
+            .collect();
+        for child in &children {
+            space.raise_element(child, false);
+        }
         space.refresh();
     }
 

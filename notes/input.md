@@ -16,7 +16,15 @@ Touch events flow: Android `onTouchEvent` -> JNI `nativeOnTouchEvent` -> `calloo
   `.frame()`. Events are flushed immediately to minimize latency.
 - Coordinates arrive in physical pixels from Android and are divided by the current
   output scale to get logical Wayland coordinates.
-- Touch-down hit-tests the host's toplevel, subsurface, and popup trees in draw
+- Touch-down hit-tests the host's windows top-down through each window's
+  placement (`surface_at`; see [rendering.md](rendering.md) "Window
+  Management"): the screen point is mapped into the window's frame, and
+  smithay gets that frame's location and surface origin. The scrim under a
+  dialog swallows a point that misses the dialog; nothing below it is hit.
+  Each touch slot remembers the window it went down on (`touch_frames`), and
+  its motion is mapped through *that* window's placement, so a drag that
+  leaves a scaled or centered window keeps consistent coordinates.
+  Within a window, toplevel, subsurface, and popup trees are hit in draw
   order. A surface with an explicit `wl_surface.set_input_region` only receives
   the touch if the local point is inside that region; `NULL` input region keeps
   the Wayland default of the whole surface. This matters for Firefox/WebRender:
@@ -100,6 +108,16 @@ settle.
 the same path as touch-down: it dismisses a menu it lands outside of and moves
 keyboard/text-input focus. Smithay's default grab keeps pointer focus while a
 button is held, and `PopupPointerGrab` is installed on `xdg_popup` grab.
+Pointer motion is mapped into `pointer_frame`'s placement: the hovered window,
+pinned while smithay reports a grab; a hit on another window during a grab is
+delivered as no focus. `pointer_location` is in that window frame;
+`pointer_screen_location` is the screen position, which `query-state` reports
+as `pointer_x`/`pointer_y`. Scroll is not scaled.
+
+Keyboard focus after a window change goes to the topmost focusable window on
+the visible host (`first_toplevel_for_host`), so a dialog takes focus over its
+parent and focus returns to the parent when it closes. Back sends Escape to the
+focused dialog, which closes most.
 
 **Crossing.** Android synthesizes `ACTION_HOVER_EXIT` before every mouse
 `ACTION_DOWN` and `ACTION_HOVER_ENTER` after the matching `ACTION_UP`. Those

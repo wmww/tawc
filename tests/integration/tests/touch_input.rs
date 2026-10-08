@@ -6,6 +6,7 @@
 //! the point is how the compositor dispatches touch, not how clients render.
 
 use tawc_integration::adb;
+use tawc_integration::compositor;
 use tawc_integration::debug_app::DebugApp;
 use tawc_integration::helpers::{
     assert_compositor_clean, start_wayland_debug_popup, start_wayland_debug_popup_switch,
@@ -253,8 +254,17 @@ fn assert_popup_shadow_geometry_tap_delivered(app: &DebugApp) {
     let down = surface_touch_events(app, "SURFACE_TOUCH_DOWN")
         .pop()
         .expect("popup touch down");
-    let expected_x = f64::from(layout.shadow) + f64::from(layout.content_w) / 2.0;
-    let expected_y = f64::from(layout.shadow) + f64::from(layout.content_h) / 2.0;
+    // `tap` lands at (0.30, 0.35) of the screen. The parent's window
+    // geometry is inset unevenly, so centering moves it a few pixels; map
+    // the tap into the parent's frame through its placement.
+    let state = compositor::query_state(TIMEOUT).expect("query compositor state");
+    let parent = state.window_with_role("toplevel").expect("popup parent placement");
+    let (tap_x, tap_y) = parent.to_window(
+        0.30 * f64::from(state.output_logical_w),
+        0.35 * f64::from(state.output_logical_h),
+    );
+    let expected_x = f64::from(layout.shadow) + tap_x - f64::from(layout.child_x);
+    let expected_y = f64::from(layout.shadow) + tap_y - f64::from(layout.child_y);
     assert!(
         (down.x - expected_x).abs() <= 2.0 && (down.y - expected_y).abs() <= 2.0,
         "popup surface-local touch should include shadow/window-geometry offset: \

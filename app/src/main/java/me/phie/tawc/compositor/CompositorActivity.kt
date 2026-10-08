@@ -721,7 +721,13 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
      * multi-touch. Events are dispatched through the SurfaceView, so this
      * still exercises the Activity's MotionEvent decoding before JNI.
      */
-    fun injectTouchSequenceForDev(kind: String, logicalX: Float? = null, logicalY: Float? = null): String? {
+    fun injectTouchSequenceForDev(
+        kind: String,
+        logicalX: Float? = null,
+        logicalY: Float? = null,
+        logicalX2: Float? = null,
+        logicalY2: Float? = null,
+    ): String? {
         val width = surfaceView.width.toFloat()
         val height = surfaceView.height.toFloat()
         if (width <= 0f || height <= 0f) {
@@ -836,6 +842,19 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
                     )
                 }
                 send(MotionEvent.ACTION_UP, 0, ids, arrayOf(point(0.70f, 0.60f)))
+            }
+            "drag-logical" -> {
+                if (logicalX == null || logicalY == null || logicalX2 == null || logicalY2 == null) {
+                    return "drag-logical requires x, y, x2 and y2"
+                }
+                val scale = Settings.outputScale
+                val ids = intArrayOf(0)
+                fun at(i: Int) = (lerp(logicalX, logicalX2, i, 6) * scale) to (lerp(logicalY, logicalY2, i, 6) * scale)
+                send(MotionEvent.ACTION_DOWN, 0, ids, arrayOf(at(0)))
+                for (i in 1..6) {
+                    send(MotionEvent.ACTION_MOVE, 0, ids, arrayOf(at(i)))
+                }
+                send(MotionEvent.ACTION_UP, 0, ids, arrayOf(at(6)))
             }
             "multitouch" -> {
                 send(MotionEvent.ACTION_DOWN, 0, intArrayOf(0), arrayOf(point(0.25f, 0.35f)))

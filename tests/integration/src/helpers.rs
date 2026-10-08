@@ -288,6 +288,17 @@ pub fn start_wayland_debug_popup(backend: GraphicsBackend, env: &str) -> DebugAp
     app
 }
 
+/// Start one of wayland-debug-app's placement scenes (`oversize`, `small`,
+/// `small-popup`, `dialog`) and wait until it is drawn.
+pub fn start_wayland_debug_scene(backend: GraphicsBackend, env: &str, scene: &str) -> DebugApp {
+    let binary = ensure_wayland_debug_app();
+    let app = DebugApp::start(backend, &binary, scene, env)
+        .unwrap_or_else(|e| panic!("Failed to start wayland debug app {scene}: {e}"));
+    app.wait_ready()
+        .unwrap_or_else(|e| panic!("Wayland debug app {scene} did not become ready: {e}"));
+    app
+}
+
 /// Start wayland-debug-app's grabbed popup switching scene.
 pub fn start_wayland_debug_popup_switch(backend: GraphicsBackend, env: &str) -> DebugApp {
     let binary = ensure_wayland_debug_app();

@@ -79,7 +79,7 @@ import me.phie.tawc.terminal.TerminalTabBar
  * | `ic-finish-hidden-composing` | — | `RecordingImeOutput` stale hidden IC `finishComposingText()` |
  * | `hardware-key` | `keycode`, `action=down|up|press`, `repeat` | focused Activity/view `dispatchKeyEvent(KeyEvent(...))` |
  * | `back` | — | focused Activity back-press path (same entry as the system OnBackInvoked callback) |
- * | `inject-touch` | `kind=tap|tap-logical|tap-outside-popup|drag|multitouch` | Dispatch MotionEvents to the focused SurfaceView |
+ * | `inject-touch` | `kind=tap|tap-logical|tap-outside-popup|drag|drag-logical|multitouch` (`x`/`y`, plus `x2`/`y2` for `drag-logical`) | Dispatch MotionEvents to the focused SurfaceView |
  * | `inject-pointer` | `kind=move|button|scroll|hscroll|hover-exit`, `x`, `y`, `button`, `amount` | Dispatch SOURCE_MOUSE MotionEvents to the focused SurfaceView |
  *
  * Test-mode helpers:
@@ -434,18 +434,18 @@ internal object InputActions {
      */
     private object InjectTouchAction : BrokerAction {
         override fun run(args: Map<String, String>, ctx: ActionContext): Int {
-            val kind = args["kind"] ?: return ctx.fail("inject-touch: --arg kind=tap|tap-logical|tap-outside-popup|tap-menu-a|tap-menu-b|drag|multitouch required")
-            if (kind !in setOf("tap", "tap-logical", "tap-outside-popup", "tap-menu-a", "tap-menu-b", "drag", "multitouch")) {
+            val kind = args["kind"] ?: return ctx.fail("inject-touch: --arg kind=tap|tap-logical|tap-outside-popup|tap-menu-a|tap-menu-b|drag|drag-logical|multitouch required")
+            if (kind !in setOf("tap", "tap-logical", "tap-outside-popup", "tap-menu-a", "tap-menu-b", "drag", "drag-logical", "multitouch")) {
                 return ctx.fail("inject-touch: unknown kind '$kind'")
             }
-            val x = args["x"]?.toFloatOrNull()
-            val y = args["y"]?.toFloatOrNull()
-            if ((args["x"] != null && x == null) || (args["y"] != null && y == null)) {
-                return ctx.fail("inject-touch: x/y must be numbers")
+            val coords = listOf("x", "y", "x2", "y2").map { args[it] to args[it]?.toFloatOrNull() }
+            if (coords.any { (raw, value) -> raw != null && value == null }) {
+                return ctx.fail("inject-touch: x/y/x2/y2 must be numbers")
             }
+            val (x, y, x2, y2) = coords.map { it.second }
             var injectError: String? = null
             val status = withFocusedActivity(ctx) { activity ->
-                injectError = activity.injectTouchSequenceForDev(kind, x, y)
+                injectError = activity.injectTouchSequenceForDev(kind, x, y, x2, y2)
             }
             if (status != 0) return status
             return injectError?.let { ctx.fail("inject-touch: $it") } ?: 0

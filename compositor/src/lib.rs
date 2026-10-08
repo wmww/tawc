@@ -33,6 +33,7 @@ mod compositor;
 mod cursor;
 mod desktop;
 mod render;
+mod placement;
 mod scale;
 mod event_loop;
 mod input;

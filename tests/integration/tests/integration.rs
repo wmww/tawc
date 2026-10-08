@@ -14,6 +14,7 @@ mod linker_config;
 mod pointer_input;
 mod remote;
 mod rendering;
+mod window_placement;
 mod settings;
 mod tawcroot;
 mod tawcroot_dac;

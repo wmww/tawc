@@ -20,9 +20,11 @@ use smithay::backend::renderer::gles::{
 use smithay::backend::renderer::element::{
     Element, Id as RenderElementId, Kind as RenderElementKind, RenderElement,
 };
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, WaylandSurfaceTexture,
 };
+use smithay::backend::renderer::element::AsRenderElements;
 use smithay::backend::renderer::{buffer_type, Bind, BufferType, Color32F, Frame, Renderer};
 use smithay::backend::renderer::utils::{
     draw_render_elements, CommitCounter, DamageSet, OpaqueRegions,
@@ -39,6 +41,7 @@ use crate::compositor::TawcState;
 use crate::egl_android::AndroidNativeSurface;
 use crate::gl_import::AhbTextureImporter;
 use crate::host::OutputHost;
+use crate::placement::Layout;
 use crate::scale::OutputScale;
 use crate::wlegl::{wlegl_buffer_data, BufferOrigin};
 
@@ -410,6 +413,16 @@ struct TawcWaylandRenderElement<'a> {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
     shader: Option<&'a GlesTexProgram>,
     uniforms: Vec<Uniform<'static>>,
+    /// The window's placement scale. Smithay sizes surface elements from
+    /// the scale passed at draw time, so it is folded in here; locations
+    /// were already computed at the combined scale.
+    window_scale: f64,
+}
+
+impl TawcWaylandRenderElement<'_> {
+    fn scale(&self, scale: Scale<f64>) -> Scale<f64> {
+        Scale::from((scale.x * self.window_scale, scale.y * self.window_scale))
+    }
 }
 
 impl Element for TawcWaylandRenderElement<'_> {
@@ -430,7 +443,7 @@ impl Element for TawcWaylandRenderElement<'_> {
     }
 
     fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.inner.geometry(scale)
+        self.inner.geometry(self.scale(scale))
     }
 
     fn damage_since(
@@ -438,11 +451,11 @@ impl Element for TawcWaylandRenderElement<'_> {
         scale: Scale<f64>,
         commit: Option<CommitCounter>,
     ) -> DamageSet<i32, Physical> {
-        self.inner.damage_since(scale, commit)
+        self.inner.damage_since(self.scale(scale), commit)
     }
 
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        self.inner.opaque_regions(scale)
+        self.inner.opaque_regions(self.scale(scale))
     }
 
     fn alpha(&self) -> f32 {
@@ -497,6 +510,7 @@ fn surface_kind_for_buffer(buffer: &WlBuffer) -> (SurfaceKind, bool) {
 
 fn wrap_wayland_render_element<'a>(
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
+    window_scale: f64,
     plain_shader: Option<&'a GlesTexProgram>,
     tint_shader: Option<&'a GlesTexProgram>,
     tint_enabled: bool,
@@ -524,30 +538,108 @@ fn wrap_wayland_render_element<'a>(
         inner,
         shader,
         uniforms: uniforms.into_iter().map(|u| u.into_owned()).collect(),
+        window_scale,
     }
 }
 
-fn collect_wayland_render_elements<'a>(
-    surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
-    plain_shader: Option<&'a GlesTexProgram>,
-    tint_shader: Option<&'a GlesTexProgram>,
-    tint_enabled: bool,
-) -> Vec<TawcWaylandRenderElement<'a>> {
-    surfaces
-        .into_iter()
-        .map(|surface| {
-            wrap_wayland_render_element(
-                surface,
-                plain_shader,
-                tint_shader,
-                tint_enabled,
-            )
-        })
-        .collect()
+/// Dim behind a dialog, like Android's dialog scrim.
+const SCRIM_COLOR: Color32F = Color32F::new(0.0, 0.0, 0.0, 0.5);
+
+enum TawcRenderElement<'a> {
+    Wayland(TawcWaylandRenderElement<'a>),
+    Solid(SolidColorRenderElement),
 }
 
-fn draw_wayland_elements(
-    elements: &[TawcWaylandRenderElement<'_>],
+impl Element for TawcRenderElement<'_> {
+    fn id(&self) -> &RenderElementId {
+        match self {
+            Self::Wayland(e) => e.id(),
+            Self::Solid(e) => e.id(),
+        }
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        match self {
+            Self::Wayland(e) => e.current_commit(),
+            Self::Solid(e) => e.current_commit(),
+        }
+    }
+
+    fn src(&self) -> Rectangle<f64, BufferCoord> {
+        match self {
+            Self::Wayland(e) => e.src(),
+            Self::Solid(e) => e.src(),
+        }
+    }
+
+    fn transform(&self) -> Transform {
+        match self {
+            Self::Wayland(e) => e.transform(),
+            Self::Solid(e) => e.transform(),
+        }
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        match self {
+            Self::Wayland(e) => e.geometry(scale),
+            Self::Solid(e) => e.geometry(scale),
+        }
+    }
+
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        match self {
+            Self::Wayland(e) => e.damage_since(scale, commit),
+            Self::Solid(e) => e.damage_since(scale, commit),
+        }
+    }
+
+    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        match self {
+            Self::Wayland(e) => e.opaque_regions(scale),
+            Self::Solid(e) => e.opaque_regions(scale),
+        }
+    }
+
+    fn alpha(&self) -> f32 {
+        match self {
+            Self::Wayland(e) => e.alpha(),
+            Self::Solid(e) => e.alpha(),
+        }
+    }
+
+    fn kind(&self) -> RenderElementKind {
+        match self {
+            Self::Wayland(e) => e.kind(),
+            Self::Solid(e) => e.kind(),
+        }
+    }
+}
+
+impl RenderElement<GlesRenderer> for TawcRenderElement<'_> {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
+    ) -> Result<(), smithay::backend::renderer::gles::GlesError> {
+        match self {
+            Self::Wayland(e) => e.draw(frame, src, dst, damage, opaque_regions, cache),
+            Self::Solid(e) => RenderElement::<GlesRenderer>::draw(
+                e, frame, src, dst, damage, opaque_regions, cache,
+            ),
+        }
+    }
+}
+
+fn draw_elements(
+    elements: &[TawcRenderElement<'_>],
     frame: &mut GlesFrame<'_, '_>,
     scale: OutputScale,
     screen_w: i32,
@@ -564,8 +656,8 @@ fn draw_wayland_elements(
 }
 
 /// Render one frame for the active desktop host: bind that host's EGL surface,
-/// clear, draw Smithay desktop-space elements, and swap. Caller skips hosts
-/// whose `egl_surface` is `None`.
+/// clear, draw each window at its placement (with a scrim under the topmost
+/// dialog), and swap. Caller skips hosts whose `egl_surface` is `None`.
 pub fn render_frame(
     state: &mut TawcState,
     host: &mut OutputHost,
@@ -579,27 +671,46 @@ pub fn render_frame(
     let scale = state.output_scale;
     let screen_w = output_size.w;
     let screen_h = output_size.h;
-    let region = Rectangle::from_size(Size::from(host.logical_size));
 
     let render = state.render.get().ok_or("renderer unavailable")?;
     let plain_shader = render.plain_shader.as_ref();
     let tint_shader = render.tint_shader.as_ref();
     let tint_enabled = TINT_BUFFERS_BY_TYPE.load(Ordering::Relaxed);
-    let surfaces = match state.desktop.host_space(&host.activity_id) {
-        Some(host_space) => host_space.render_elements_for_region(
-            &mut render.renderer,
-            &region,
-            Scale::from(scale.fractional()),
-            1.0,
-        ),
-        None => Vec::new(),
-    };
-    let elements = collect_wayland_render_elements(
-        surfaces,
-        plain_shader,
-        tint_shader,
-        tint_enabled,
-    );
+    // Front to back, as `draw_render_elements` expects.
+    let mut elements: Vec<TawcRenderElement> = Vec::new();
+    if let Some(space) = state.desktop.host_space(&host.activity_id) {
+        let layout = Layout::new(space, Size::from(host.logical_size));
+        for (i, entry) in layout.entries.iter().enumerate().rev() {
+            let placement = entry.placement;
+            let location = placement.offset.to_physical(scale.fractional()).to_i32_round();
+            let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = entry
+                .window
+                .render_elements(
+                    &mut render.renderer,
+                    location,
+                    Scale::from(scale.fractional() * placement.scale),
+                    1.0,
+                );
+            elements.extend(surfaces.into_iter().map(|surface| {
+                TawcRenderElement::Wayland(wrap_wayland_render_element(
+                    surface,
+                    placement.scale,
+                    plain_shader,
+                    tint_shader,
+                    tint_enabled,
+                ))
+            }));
+            if layout.scrim_below == Some(i) {
+                elements.push(TawcRenderElement::Solid(SolidColorRenderElement::new(
+                    RenderElementId::new(),
+                    Rectangle::from_size(output_size),
+                    CommitCounter::default(),
+                    SCRIM_COLOR,
+                    RenderElementKind::Unspecified,
+                )));
+            }
+        }
+    }
 
     let mut target = render.renderer.bind(egl_surface)?;
     let mut frame = render
@@ -610,7 +721,7 @@ pub fn render_frame(
     // of the app (home / install / distro-info screens).
     frame.clear(BACKGROUND_COLOR, &[Rectangle::from_size(output_size)])?;
 
-    draw_wayland_elements(&elements, &mut frame, scale, screen_w, screen_h)?;
+    draw_elements(&elements, &mut frame, scale, screen_w, screen_h)?;
 
     let _ = frame.finish()?;
     drop(target);

@@ -80,14 +80,16 @@ pub(crate) fn after_commit(data: &mut TawcState, committed: &WlSurface) {
     if !has_buffer {
         return;
     }
-    let Some(host_id) = data.desktop.assigned_host(surface).cloned() else {
+    if data.desktop.assigned_host(surface).is_none() {
+        return;
+    }
+    // The center of the window's own geometry, in its frame.
+    let Some(geometry) = data.desktop.window(surface).map(|window| window.geometry()) else {
         return;
     };
-    let Some((w, h)) = data.host_logical_size(&host_id) else {
-        return;
-    };
+    let center = geometry.loc.to_f64() + geometry.size.to_f64().downscale(2.0).to_point();
 
-    prime_toplevel(data, surface, w, h);
+    prime_toplevel(data, surface, center);
     data.gtk3_broken_menus_workaround.primed.insert(id);
 }
 
@@ -97,7 +99,7 @@ pub(crate) fn toplevel_destroyed(data: &mut TawcState, surface: &WlSurface) {
         .remove(&surface.id());
 }
 
-fn prime_toplevel(data: &mut TawcState, surface: &WlSurface, width: i32, height: i32) {
+fn prime_toplevel(data: &mut TawcState, surface: &WlSurface, location: Point<f64, Logical>) {
     if !data.gtk3_broken_menus_workaround.enabled {
         return;
     }
@@ -105,9 +107,7 @@ fn prime_toplevel(data: &mut TawcState, surface: &WlSurface, width: i32, height:
         return;
     };
 
-    let cx = (width.max(1) as f64) / 2.0;
-    let cy = (height.max(1) as f64) / 2.0;
-    let location: Point<f64, Logical> = (cx, cy).into();
+    let (cx, cy) = (location.x, location.y);
     let time = data.start_time.elapsed().as_millis() as u32;
 
     info!(

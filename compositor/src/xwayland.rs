@@ -36,7 +36,7 @@ use std::os::fd::AsRawFd;
 use log::{error, info, warn};
 use smithay::reexports::calloop::generic::{FdWrapper, Generic};
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Rectangle, Size};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 use smithay::xwayland::{
     xwm::{Reorder, ResizeEdge, WmWindowProperty, XwmId},
@@ -64,10 +64,14 @@ enum StartResult {
     Unavailable,
 }
 
+/// Toplevels fill their host. Transients (dialogs) keep the size they ask
+/// for (`requested`, else their current one), clamped to the host; their
+/// placement centers them over the parent.
 fn configure_x11_toplevel_for_host(
     state: &TawcState,
     surface: &X11Surface,
     host_id: &ActivityId,
+    requested: Option<Size<i32, Logical>>,
 ) -> Option<(i32, i32)> {
     if surface.is_override_redirect() {
         return None;
@@ -76,7 +80,12 @@ fn configure_x11_toplevel_for_host(
     let (w, h) = state.host_logical_size(host_id)?;
     let mut geo = surface.geometry();
     geo.loc = (0, 0).into();
-    geo.size = (w, h).into();
+    geo.size = if surface.is_transient_for().is_some() {
+        let size = requested.unwrap_or(geo.size);
+        (size.w.clamp(1, w), size.h.clamp(1, h)).into()
+    } else {
+        (w, h).into()
+    };
     if let Err(e) = surface.configure(geo) {
         warn!("xwayland: configure failed: {}", e);
         return None;
@@ -90,7 +99,7 @@ pub fn configure_x11_toplevels_for_hosts(state: &TawcState) -> bool {
         let Some(host_id) = state.x11_surface_host(surface) else {
             continue;
         };
-        configured |= configure_x11_toplevel_for_host(state, surface, &host_id).is_some();
+        configured |= configure_x11_toplevel_for_host(state, surface, &host_id, None).is_some();
     }
     configured
 }
@@ -591,7 +600,7 @@ impl XwmHandler for TawcState {
             warn!("xwayland: set_mapped(true) failed: {}", e);
             return;
         }
-        if configure_x11_toplevel_for_host(self, &window, &assignment.host).is_none() {
+        if configure_x11_toplevel_for_host(self, &window, &assignment.host, None).is_none() {
             let mut geo = window.geometry();
             geo.loc = (0, 0).into();
             if geo.size.w <= 0 || geo.size.h <= 0 {
@@ -678,12 +687,6 @@ impl XwmHandler for TawcState {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        if let Some(host) = self.x11_surface_host(&window) {
-            if configure_x11_toplevel_for_host(self, &window, &host).is_some() {
-                return;
-            }
-        }
-
         let mut geo = window.geometry();
         geo.loc = (0, 0).into();
         if let Some(w) = w {
@@ -692,19 +695,26 @@ impl XwmHandler for TawcState {
         if let Some(h) = h {
             geo.size.h = (h as i32).max(1);
         }
+        if let Some(host) = self.x11_surface_host(&window) {
+            if configure_x11_toplevel_for_host(self, &window, &host, Some(geo.size)).is_some() {
+                return;
+            }
+        }
         let _ = window.configure(geo);
     }
 
     fn configure_notify(
         &mut self,
         _xwm: XwmId,
-        _window: X11Surface,
+        window: X11Surface,
         _geometry: Rectangle<i32, Logical>,
         _above: Option<u32>,
     ) {
-        // Override-redirect windows update their on-screen rect via this
-        // path. We don't track per-X11-surface positions yet; everything
-        // renders at the host origin.
+        // Override-redirect windows move through this path; smithay has
+        // already stored the new geometry, which placement.rs reads.
+        if window.is_override_redirect() {
+            self.needs_render = true;
+        }
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, _window: X11Surface) {}

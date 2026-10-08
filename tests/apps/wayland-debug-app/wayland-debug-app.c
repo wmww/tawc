@@ -76,6 +76,11 @@
 #define POPUP_PARENT_GEOM_Y 9
 #define POPUP_PARENT_GEOM_R 11
 #define POPUP_PARENT_GEOM_B 7
+#define SMALL_W 200
+#define SMALL_H 150
+#define DIALOG_W 240
+#define DIALOG_H 180
+#define CONSTRAINED_POPUP_OFFSET_Y 100000
 #define TAP_FRAC_X 0.30
 #define TAP_FRAC_Y 0.35
 #define TEXT_X 24.0
@@ -87,6 +92,7 @@
 #define MAX_TOUCHES 16
 #define MAIN_BUFFER_COUNT 2
 
+#define KEY_ESC 1
 #define KEY_BACKSPACE 14
 #define KEY_TAB 15
 #define KEY_ENTER 28
@@ -262,6 +268,7 @@ struct app {
     struct wl_callback *child_ready_callback;
     struct xdg_surface *child_xdg_surface;
     struct xdg_popup *child_popup;
+    struct xdg_toplevel *child_toplevel;
     struct wl_surface *second_child_surface;
     struct wl_callback *second_child_ready_callback;
     struct xdg_surface *second_child_xdg_surface;
@@ -289,6 +296,7 @@ struct app {
     int fullscreen;
     int report_scale;
     int render_pattern;
+    int fixed_size;
     int request_decoration;
     int use_data_device;
     int copy_clipboard_on_focus;
@@ -338,6 +346,19 @@ enum scene_kind {
     SCENE_SUBSURFACE = 1,
     SCENE_POPUP = 2,
     SCENE_POPUP_SWITCH = 3,
+    /* Child xdg_toplevel with set_parent, fixed size. */
+    SCENE_DIALOG = 4,
+    /* Popup pushed far below the screen with slide-y, to check the
+     * compositor's constraint rect. */
+    SCENE_POPUP_CONSTRAINED = 5,
+};
+
+/* Sizes a toplevel commits regardless of its configure. */
+enum fixed_size {
+    FIXED_NONE = 0,
+    /* Twice the configured width, configured height. */
+    FIXED_DOUBLE_WIDTH = 1,
+    FIXED_SMALL = 2,
 };
 
 struct wayland_mode {
@@ -354,6 +375,7 @@ struct wayland_mode {
     int fullscreen;
     int report_scale;
     int render_pattern;
+    int fixed_size;
     int request_decoration;
     int use_data_device;
     const char *clipboard_copy_text;
@@ -1173,8 +1195,11 @@ static const char *surface_label_for_touch(struct app *app,
     if (surface == app->child_surface) {
         if (app->scene_kind == SCENE_SUBSURFACE)
             return "subsurface";
+        if (app->scene_kind == SCENE_DIALOG)
+            return "dialog";
         if (app->scene_kind == SCENE_POPUP ||
-            app->scene_kind == SCENE_POPUP_SWITCH)
+            app->scene_kind == SCENE_POPUP_SWITCH ||
+            app->scene_kind == SCENE_POPUP_CONSTRAINED)
             return "popup";
     }
     if (surface == app->second_child_surface)
@@ -1223,12 +1248,10 @@ static void child_ready_done(void *data, struct wl_callback *callback,
     app->child_ready_callback = NULL;
     app->scene_child_ready = 1;
     if (app->scene_kind == SCENE_POPUP ||
-        app->scene_kind == SCENE_POPUP_SWITCH)
+        app->scene_kind == SCENE_POPUP_SWITCH ||
+        app->scene_kind == SCENE_POPUP_CONSTRAINED)
         emit_popup_layout(app);
-    debug_emit("SURFACE_READY",
-               (app->scene_kind == SCENE_POPUP ||
-                app->scene_kind == SCENE_POPUP_SWITCH)
-                   ? "popup" : "subsurface");
+    debug_emit("SURFACE_READY", surface_label_for_touch(app, app->child_surface));
     if (!app->ready_emitted) {
         app->ready_emitted = 1;
         debug_emit("READY", NULL);
@@ -1420,6 +1443,12 @@ static void request_redraw(struct app *app)
 
     if (app->render_pattern) {
         draw_render_pattern(app, cr);
+    } else if (app->fixed_size == FIXED_SMALL) {
+        cairo_set_source_rgb(cr, 0.10, 0.60, 0.60);
+        cairo_paint(cr);
+    } else if (app->scene_kind == SCENE_DIALOG) {
+        cairo_set_source_rgb(cr, 0.90, 0.90, 0.90);
+        cairo_paint(cr);
     } else if (app->touch_debug) {
         draw_touch_debug(app, cr);
     } else {
@@ -1580,6 +1609,13 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xdg_surface,
 {
     struct app *app = data;
     xdg_surface_ack_configure(xdg_surface, serial);
+    if (xdg_surface == app->child_xdg_surface &&
+        app->scene_kind == SCENE_DIALOG) {
+        attach_labeled_buffer(app, app->child_surface, DIALOG_W, DIALOG_H,
+                              "dialog", 0.15, 0.25, 0.92);
+        checked_flush(app->display);
+        return;
+    }
     if (xdg_surface == app->child_xdg_surface) {
         xdg_surface_set_window_geometry(app->child_xdg_surface, POPUP_SHADOW,
                                         POPUP_SHADOW, CHILD_W, CHILD_H);
@@ -1647,6 +1683,42 @@ static void toplevel_configure(void *data, struct xdg_toplevel *toplevel,
         app->win_w = width;
         app->win_h = height;
     }
+    if (app->fixed_size == FIXED_DOUBLE_WIDTH && width > 0) {
+        app->win_w = width * 2;
+    } else if (app->fixed_size == FIXED_SMALL) {
+        app->win_w = SMALL_W;
+        app->win_h = SMALL_H;
+    }
+}
+
+static void dialog_configure(void *data, struct xdg_toplevel *toplevel,
+                             int32_t width, int32_t height,
+                             struct wl_array *states)
+{
+    uint32_t *state;
+    int maximized = 0;
+    (void)data;
+    (void)toplevel;
+    wl_array_for_each(state, states) {
+        if (*state == XDG_TOPLEVEL_STATE_MAXIMIZED)
+            maximized = 1;
+    }
+    debug_emit("DIALOG_CONFIGURE_STATE", maximized ? "maximized" : "other");
+    debug_emit_i32_pair("DIALOG_CONFIGURE_SIZE", width, height);
+}
+
+static void dialog_close(void *data, struct xdg_toplevel *toplevel)
+{
+    (void)data;
+    (void)toplevel;
+}
+
+static void dialog_configure_bounds(void *data, struct xdg_toplevel *toplevel,
+                                    int32_t width, int32_t height)
+{
+    (void)data;
+    (void)toplevel;
+    debug_emit_i32_pair("DIALOG_CONFIGURE_BOUNDS", width, height);
 }
 
 static void toplevel_close(void *data, struct xdg_toplevel *toplevel)
@@ -1678,6 +1750,31 @@ static const struct xdg_toplevel_listener toplevel_listener = {
     .configure_bounds = toplevel_configure_bounds,
     .wm_capabilities = toplevel_wm_capabilities,
 };
+
+static const struct xdg_toplevel_listener dialog_listener = {
+    .configure = dialog_configure,
+    .close = dialog_close,
+    .configure_bounds = dialog_configure_bounds,
+    .wm_capabilities = toplevel_wm_capabilities,
+};
+
+static void close_dialog(struct app *app)
+{
+    if (!app->child_toplevel)
+        return;
+    xdg_toplevel_destroy(app->child_toplevel);
+    app->child_toplevel = NULL;
+    xdg_surface_destroy(app->child_xdg_surface);
+    app->child_xdg_surface = NULL;
+    if (app->child_ready_callback) {
+        wl_callback_destroy(app->child_ready_callback);
+        app->child_ready_callback = NULL;
+    }
+    wl_surface_destroy(app->child_surface);
+    app->child_surface = NULL;
+    checked_flush(app->display);
+    debug_emit("DIALOG_CLOSED", NULL);
+}
 
 static void popup_configure(void *data, struct xdg_popup *popup, int32_t x,
                             int32_t y, int32_t width, int32_t height)
@@ -1761,6 +1858,51 @@ static void create_scene_child(struct app *app)
         attach_labeled_buffer(app, app->child_surface, CHILD_W, CHILD_H,
                               "subsurface", 0.35, 0.86, 0.62);
         wl_surface_commit(app->surface);
+        checked_flush(app->display);
+    } else if (app->scene_kind == SCENE_DIALOG) {
+        app->child_xdg_surface =
+            xdg_wm_base_get_xdg_surface(app->wm_base, app->child_surface);
+        require_true(app->child_xdg_surface != NULL,
+                     "xdg_wm_base_get_xdg_surface dialog returned NULL");
+        xdg_surface_add_listener(app->child_xdg_surface,
+                                 &xdg_surface_listener, app);
+        app->child_toplevel = xdg_surface_get_toplevel(app->child_xdg_surface);
+        require_true(app->child_toplevel != NULL,
+                     "xdg_surface_get_toplevel dialog returned NULL");
+        xdg_toplevel_add_listener(app->child_toplevel, &dialog_listener, app);
+        xdg_toplevel_set_parent(app->child_toplevel, app->toplevel);
+        xdg_toplevel_set_title(app->child_toplevel, "TAWC wayland dialog");
+        wl_surface_commit(app->child_surface);
+        checked_flush(app->display);
+    } else if (app->scene_kind == SCENE_POPUP_CONSTRAINED) {
+        app->child_xdg_surface =
+            xdg_wm_base_get_xdg_surface(app->wm_base, app->child_surface);
+        require_true(app->child_xdg_surface != NULL,
+                     "xdg_wm_base_get_xdg_surface popup returned NULL");
+        xdg_surface_add_listener(app->child_xdg_surface,
+                                 &xdg_surface_listener, app);
+
+        struct xdg_positioner *positioner =
+            xdg_wm_base_create_positioner(app->wm_base);
+        require_true(positioner != NULL,
+                     "xdg_wm_base_create_positioner returned NULL");
+        xdg_positioner_set_size(positioner, CHILD_W, CHILD_H);
+        xdg_positioner_set_anchor_rect(positioner, 0, 0, 1, 1);
+        xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT);
+        xdg_positioner_set_gravity(positioner,
+                                   XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
+        xdg_positioner_set_offset(positioner, 0, CONSTRAINED_POPUP_OFFSET_Y);
+        xdg_positioner_set_constraint_adjustment(
+            positioner, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y);
+        app->child_popup = xdg_surface_get_popup(
+            app->child_xdg_surface, app->xdg_surface, positioner);
+        require_true(app->child_popup != NULL,
+                     "xdg_surface_get_popup returned NULL");
+        xdg_popup_add_listener(app->child_popup, &popup_listener, app);
+        xdg_surface_set_window_geometry(app->child_xdg_surface, POPUP_SHADOW,
+                                        POPUP_SHADOW, CHILD_W, CHILD_H);
+        xdg_positioner_destroy(positioner);
+        wl_surface_commit(app->child_surface);
         checked_flush(app->display);
     } else if (app->scene_kind == SCENE_POPUP) {
         app->child_xdg_surface =
@@ -2054,6 +2196,8 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
         changed_by_input_method(app);
     } else {
         debug_emit("KEY", payload);
+        if (key == KEY_ESC && app->scene_kind == SCENE_DIALOG)
+            close_dialog(app);
     }
 }
 
@@ -2553,6 +2697,7 @@ static void setup_wayland(struct app *app, const struct wayland_mode *mode)
     app->fullscreen = mode->fullscreen;
     app->report_scale = mode->report_scale;
     app->render_pattern = mode->render_pattern;
+    app->fixed_size = mode->fixed_size;
     app->use_data_device = mode->use_data_device;
     app->paste_clipboard_on_selection = mode->clipboard_paste;
     app->clipboard_double_set = mode->clipboard_double_set;
@@ -2703,6 +2848,8 @@ static void teardown_wayland(struct app *app)
         wl_surface_destroy(app->second_child_surface);
     if (app->child_popup)
         xdg_popup_destroy(app->child_popup);
+    if (app->child_toplevel)
+        xdg_toplevel_destroy(app->child_toplevel);
     if (app->child_xdg_surface)
         xdg_surface_destroy(app->child_xdg_surface);
     if (app->child_subsurface)
@@ -3336,6 +3483,64 @@ static int cmd_popup_switch(int argc, char **argv)
     return run_scene_command(&mode);
 }
 
+static int cmd_oversize(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "TAWC wayland oversize",
+        .app_id = "wayland-debug-app-oversize",
+        .render_pattern = 1,
+        .fullscreen = 1,
+        .fixed_size = FIXED_DOUBLE_WIDTH,
+    };
+
+    (void)argc;
+    (void)argv;
+    return run_scene_command(&mode);
+}
+
+static int cmd_small(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "TAWC wayland small",
+        .app_id = "wayland-debug-app-small",
+        .fixed_size = FIXED_SMALL,
+        .fullscreen = 1,
+    };
+
+    (void)argc;
+    (void)argv;
+    return run_scene_command(&mode);
+}
+
+static int cmd_small_popup(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "TAWC wayland small popup",
+        .app_id = "wayland-debug-app-small-popup",
+        .fixed_size = FIXED_SMALL,
+        .fullscreen = 1,
+        .scene_kind = SCENE_POPUP_CONSTRAINED,
+    };
+
+    (void)argc;
+    (void)argv;
+    return run_scene_command(&mode);
+}
+
+static int cmd_dialog(int argc, char **argv)
+{
+    static const struct wayland_mode mode = {
+        .title = "TAWC wayland dialog parent",
+        .app_id = "wayland-debug-app-dialog",
+        .fullscreen = 1,
+        .scene_kind = SCENE_DIALOG,
+    };
+
+    (void)argc;
+    (void)argv;
+    return run_scene_command(&mode);
+}
+
 typedef int (*command_fn)(int argc, char **argv);
 
 struct command {
@@ -3385,6 +3590,14 @@ static const struct command commands[] = {
     { "popup", "Fullscreen toplevel with a touchable xdg_popup", cmd_popup },
     { "popup-switch", "Two touch-opened grabbed xdg_popups",
       cmd_popup_switch },
+    { "oversize", "Color pattern committed at twice the configured width",
+      cmd_oversize },
+    { "small", "Toplevel committed at a fixed 200x150", cmd_small },
+    { "small-popup",
+      "Fixed 200x150 toplevel with a popup slid back on screen",
+      cmd_small_popup },
+    { "dialog", "Toplevel with a fixed-size child toplevel (set_parent)",
+      cmd_dialog },
     { NULL, NULL, NULL },
 };
 

@@ -732,7 +732,16 @@ activity policy used for Wayland toplevels:
   per dropdown would be ridiculous.
 - **`transient_for` windows** (modal dialogs, file pickers, "About"
   boxes) likewise ride on the parent's host — same logic as
-  Wayland's `toplevel.parent()` short-circuit.
+  Wayland's `toplevel.parent()` short-circuit. They keep the size they
+  ask for (map and `configure_request`), clamped to the host, and are
+  centered over a scrim like Wayland dialogs.
+
+Every non-override-redirect X11 window sits at X position `(0,0)`; centering
+and fit-scaling happen only at composite time (`placement.rs`). Override-redirect
+windows keep their own X position: smithay stores it on `ConfigureNotify`
+(`X11Surface::geometry().loc`), and the window is drawn at that position
+relative to its `WM_TRANSIENT_FOR` window, else the topmost window below it,
+through that window's placement and scale.
 - **Plain toplevels** (e.g. `xterm`, `xeyes`, `glxgears`, the main
   window of a Wine app) each mint a fresh `ActivityId` and trigger
   `spawn_activity_from_native(&host)` — the same reverse-JNI to

@@ -28,17 +28,50 @@ The compositor clears every frame to a flat color matching the rest of the app U
 
 ## Window Management
 
-All toplevels are configured as maximized at the full logical output size:
-`round(physical_size / output_scale)`. The xdg-decoration and legacy KDE
+Root toplevels are configured as maximized at their host's logical size
+(`round(physical_size / output_scale)`), with `bounds` set to the same size.
+Child toplevels (`xdg_toplevel.set_parent`) get no size, no `Maximized`, and
+`bounds` = host size, so they pick their natural size; X11 transients keep
+their requested size clamped to the host. The xdg-decoration and legacy KDE
 server-decoration protocols are implemented to suppress desktop titlebars; TAWC
-presents each Linux toplevel as an Android app surface. Surfaces are rendered at
-(0,0) instead of centered.
+presents each Linux toplevel as an Android app surface.
+
+smithay reports a new xdg toplevel before its `set_parent`, so
+`XdgShellHandler::parent_changed` moves a toplevel onto its parent's host and
+reconfigures it. The Activity for a freshly minted host is spawned after the
+dispatch (`pending_activity_spawns`), so a dialog never flashes its own task.
+
+**Placement** (`placement.rs`): every window is drawn through a per-window
+transform `screen = offset + window_pt * scale`, recomputed from its geometry
+(`Window::geometry()`, which leaves out CSD shadows) whenever it is needed:
+
+```
+s      = min(1, H.w / g.w, H.h / g.h)
+offset = (H - g.size * s) / 2 - g.loc * s
+```
+
+So too-big windows are scaled down to fit and centered, small ones centered,
+and a maximized window filling the host gets the identity. Child toplevels
+are centered the same way, above a black 50% scrim drawn just below the
+topmost one. Popups and subsurfaces inherit their root window's transform.
+X11 override-redirect windows (menus, tooltips) are placed at their X position
+relative to their `WM_TRANSIENT_FOR` window, else the topmost window below
+them, through that window's placement. A dialog's parent, mapped again, keeps
+its dialogs above it (`DesktopRegistry::map_window_to_host`). The visible
+host's placements are in `query-state` (`windows=`, `scrim=`).
+
+Downscaled windows are sampled with smithay's texture shader filtering; a
+per-window fractional `preferred_scale` (so clients render at the physical
+size) is not implemented.
 
 ## Popup and Subsurface Positioning
 
 Popup surfaces (xdg_popup) are tracked via Smithay's `PopupManager`. On `new_popup`, we
 compute constrained geometry using `PositionerState::get_unconstrained_geometry()` and send
-a configure. The PopupManager handles the popup tree hierarchy and provides popup positions
+a configure. The constraint target is the visible host rect mapped into the root window's
+frame through its placement, minus the root's geometry origin and the parent popup chain
+(`TawcState::popup_constraint_target`). A popup is not re-constrained if its window's
+placement changes while it is open. The PopupManager handles the popup tree hierarchy and provides popup positions
 relative to their toplevel root.
 
 **Note:** Firefox uses wl_subsurface (not xdg_popup) for its dropdown menus. Both paths go
@@ -54,9 +87,9 @@ toplevel by default (Wayland z-order), so the subsurface's pixels must overlap
 the toplevel's placeholder.
 
 Both wlegl and SHM surfaces now use Smithay's desktop render-element path.
-`Space<Window>::render_elements_for_region` asks each mapped window for
-`WaylandSurfaceRenderElement`s, so Smithay owns the parent/subsurface/popup
-ordering. Firefox must still render the WebRender subsurface above the
+`render_frame` walks the host's `Space` in z-order and asks each window for
+`WaylandSurfaceRenderElement`s at its placement, so Smithay owns the
+parent/subsurface/popup ordering within a window. Firefox must still render the WebRender subsurface above the
 toplevel placeholder; the integration pixel tests cover this through the
 Smithay element path rather than TAWC's old reversed draw list.
 
@@ -79,10 +112,14 @@ SHM buffers also use Smithay's renderer import helper. TAWC no longer keeps
 parallel per-surface SHM or WLEGL texture maps; diagnostics that need attached
 buffer counts read Smithay renderer surface state for mapped desktop windows.
 
-Rendering asks a host-local Smithay `Space<Window>` projection for that
-host's render elements, then wraps each `WaylandSurfaceRenderElement` in TAWC's custom
+Rendering asks each window in a host-local Smithay `Space<Window>` projection
+for its render elements at physical location `round(offset * output_scale)` and
+scale `output_scale * s`, then wraps each `WaylandSurfaceRenderElement` in TAWC's custom
 `RenderElement<GlesRenderer>` to preserve SHM/AHB tinting and forced-opaque
-shader policy. Smithay owns window ordering, popup/subsurface collection,
+shader policy. Smithay sizes surface elements from the scale passed at *draw*
+time, so the wrapper multiplies that by the window's `s`; locations were
+already computed at the combined scale. The scrim is a
+`SolidColorRenderElement` in the same list. Smithay owns window ordering, popup/subsurface collection,
 surface geometry, viewport handling, and damage inside those elements; TAWC
 still owns Android host selection and the final shader uniforms. The
 frame/output transform owns the framebuffer Y flip; the wrapper leaves Smithay
@@ -97,13 +134,15 @@ space. Smithay owns popup/subsurface traversal and output visibility
 bookkeeping while TAWC keeps Android Activity policy.
 
 Smithay `Space` locations are window-geometry locations. TAWC maps each window
-at `window.geometry().loc` so the underlying `wl_surface` origin remains at
-the Android output origin; this preserves popup placement for clients that set
-non-zero xdg window geometry.
+at `window.geometry().loc` so the underlying `wl_surface` origin sits at the
+`Space` origin: `Space` holds every window in its own *window frame*, and the
+placement transform is applied only at render and input time.
 
-For input, touch picking asks the mapped Smithay desktop windows via
-`Window::surface_under(WindowSurfaceType::ALL)`. Keyboard and text-input focus
-policy remains TAWC-owned after the surface has been picked.
+For input, touch and pointer picking map the screen point into each window's
+frame through its placement, top-down, and ask
+`Window::surface_under(WindowSurfaceType::ALL)` (see [input.md](input.md)).
+Keyboard and text-input focus policy remains TAWC-owned after the surface has
+been picked.
 
 `tests/integration/tests/rendering.rs` contains a raw-screenshot pixel test
 for a deterministic SHM pattern. It catches output-scale, y-orientation, and
@@ -124,7 +163,13 @@ basic placement regressions in the Smithay element path.
    Per-surface buffer transforms stay owned by `WaylandSurfaceRenderElement`
    and are passed through when the wrapper draws with TAWC's tint shader.
 
-3. **Surface size follows the wl_surface spec:**
+3. **Window frame vs screen:** smithay (`Space`, popups, subsurfaces, seat
+   focus origins and event locations) works in each window's frame, root
+   surface origin at `(0,0)`. Host logical "screen" coordinates are
+   `placement.offset + window_pt * placement.scale`. Convert only at the
+   edges: rendering, incoming input, popup constraint targets.
+
+4. **Surface size follows the wl_surface spec:**
    - `surface_logical_size = wp_viewport.dst` if set, otherwise
      `buffer_size / buffer_scale`.
    - `surface_physical_size = surface_logical_size * output_scale`.

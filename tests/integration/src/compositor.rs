@@ -47,9 +47,62 @@ pub struct CompositorState {
     pub pending_launches: u32,
     /// `<host>:<windows>` per registered host, comma-separated; `-` for none.
     pub host_windows: String,
+    /// The visible host's window placements, back to front.
+    pub windows: Vec<WindowPlacement>,
+    /// Whether a dialog scrim is drawn on the visible host.
+    pub scrim: bool,
+}
+
+/// Where the compositor draws one window: `screen = offset + window_pt * scale`,
+/// with the window's root surface origin at `(0,0)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowPlacement {
+    pub surface_id: u32,
+    /// `toplevel`, `child` or `override`.
+    pub role: String,
+    /// Window geometry `(x, y, w, h)` in the window's own frame.
+    pub geometry: (i32, i32, i32, i32),
+    pub offset: (f64, f64),
+    pub scale: f64,
+}
+
+impl WindowPlacement {
+    pub fn to_screen(&self, x: f64, y: f64) -> (f64, f64) {
+        (self.offset.0 + x * self.scale, self.offset.1 + y * self.scale)
+    }
+
+    pub fn to_window(&self, x: f64, y: f64) -> (f64, f64) {
+        ((x - self.offset.0) / self.scale, (y - self.offset.1) / self.scale)
+    }
+}
+
+fn parse_window_placement(entry: &str) -> Option<WindowPlacement> {
+    let mut parts = entry.split(':');
+    let surface_id = parts.next()?.parse().ok()?;
+    let role = parts.next()?.to_string();
+    let g: Vec<i32> = parts.next()?.split(',').map(|v| v.parse().ok()).collect::<Option<_>>()?;
+    let o: Vec<f64> = parts.next()?.split(',').map(|v| v.parse().ok()).collect::<Option<_>>()?;
+    let scale = parts.next()?.parse().ok()?;
+    if g.len() != 4 || o.len() != 2 || parts.next().is_some() {
+        return None;
+    }
+    Some(WindowPlacement {
+        surface_id,
+        role,
+        geometry: (g[0], g[1], g[2], g[3]),
+        offset: (o[0], o[1]),
+        scale,
+    })
 }
 
 impl CompositorState {
+    /// The visible host's only window with `role`.
+    pub fn window_with_role(&self, role: &str) -> Option<&WindowPlacement> {
+        let mut matches = self.windows.iter().filter(|w| w.role == role);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
+
     /// Windows assigned to registered host `id`, or None if no such host.
     pub fn host_windows(&self, id: &str) -> Option<u32> {
         self.host_windows
@@ -170,6 +223,8 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
     let mut output_refresh_mhz = None;
     let mut pending_launches = None;
     let mut host_windows = None;
+    let mut windows = Vec::new();
+    let mut scrim = false;
     for part in payload.split_whitespace() {
         if let Some((key, val)) = part.split_once('=') {
             match key {
@@ -207,6 +262,13 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
                 "output_refresh_mhz" => output_refresh_mhz = Some(val.parse().ok()?),
                 "pending_launches" => pending_launches = Some(val.parse().ok()?),
                 "host_windows" => host_windows = Some(val.to_string()),
+                "windows" if val != "-" => {
+                    windows = val
+                        .split(';')
+                        .map(parse_window_placement)
+                        .collect::<Option<Vec<_>>>()?
+                }
+                "scrim" => scrim = val == "yes",
                 _ => {}
             }
         }
@@ -239,6 +301,8 @@ fn parse_compositor_state_payload(payload: &str) -> Option<CompositorState> {
         output_refresh_mhz: output_refresh_mhz.unwrap_or_default(),
         pending_launches: pending_launches.unwrap_or_default(),
         host_windows: host_windows.unwrap_or_default(),
+        windows,
+        scrim,
     })
 }
 

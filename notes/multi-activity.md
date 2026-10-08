@@ -148,6 +148,12 @@ on new_toplevel(t):
     configure t with hosts[desktop.assigned_host(t)].logical_size
 ```
 
+As built, smithay reports `new_toplevel` before the client's `set_parent`,
+so the parent check really happens in `parent_changed`, which moves the
+toplevel onto its parent's host. The spawn is deferred to after the
+dispatch (`pending_activity_spawns`) and dropped if the host lost its window
+by then, so a dialog never flashes its own task.
+
 Single-Activity mode is the same function with a one-line change: always
 return the first host's id. Keeping that escape hatch is a hard requirement
 of this design.

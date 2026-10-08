@@ -668,6 +668,20 @@ pub fn inject_touch_logical(x: f32, y: f32) -> io::Result<Output> {
     inject_touch_inner(&[("kind", "tap-logical"), ("x", &x), ("y", &y)])
 }
 
+/// Inject a one-finger drag from `from` to `to`, Wayland logical
+/// coordinates, through the focused compositor SurfaceView.
+pub fn inject_drag_logical(from: (f32, f32), to: (f32, f32)) -> io::Result<Output> {
+    let (x, y) = (format!("{:.2}", from.0), format!("{:.2}", from.1));
+    let (x2, y2) = (format!("{:.2}", to.0), format!("{:.2}", to.1));
+    inject_touch_inner(&[
+        ("kind", "drag-logical"),
+        ("x", &x),
+        ("y", &y),
+        ("x2", &x2),
+        ("y2", &y2),
+    ])
+}
+
 fn inject_touch_inner(args: &[(&str, &str)]) -> io::Result<Output> {
     inject_input_inner("inject-touch", args)
 }
@@ -706,6 +720,12 @@ pub fn inject_pointer_hscroll(detents: f32) -> io::Result<Output> {
 /// mouse press, and it must not become a `wl_pointer.leave`.
 pub fn inject_pointer_hover_exit() -> io::Result<Output> {
     inject_pointer_inner(&[("kind", "hover-exit")])
+}
+
+/// Hover-move the mouse to Wayland logical `(x, y)`.
+pub fn inject_pointer_move_logical(x: f32, y: f32) -> io::Result<Output> {
+    let (x, y) = (format!("{x:.2}"), format!("{y:.2}"));
+    inject_pointer_inner(&[("kind", "move"), ("x", &x), ("y", &y)])
 }
 
 fn inject_pointer_inner(args: &[(&str, &str)]) -> io::Result<Output> {

@@ -31,7 +31,7 @@ use smithay::reexports::wayland_protocols_misc::server_decoration::server::{
     },
     org_kde_kwin_server_decoration_manager::Mode as KdeDefaultDecorationMode,
 };
-use smithay::utils::{Logical, Point, Serial};
+use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self, CompositorClientState, CompositorHandler, CompositorState,
@@ -52,7 +52,8 @@ use smithay::wayland::selection::wlr_data_control::{
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use std::os::fd::OwnedFd;
 use smithay::desktop::{
-    find_popup_root_surface, PopupGrab, PopupKeyboardGrab, PopupManager, PopupPointerGrab, Window,
+    find_popup_root_surface, get_popup_toplevel_coords, PopupGrab, PopupKeyboardGrab, PopupKind,
+    PopupManager, PopupPointerGrab, Window,
 };
 use smithay::input::pointer::Focus as PointerFocusMode;
 use smithay::wayland::shell::kde::decoration::{
@@ -164,13 +165,22 @@ pub struct TawcState {
     /// [`TawcState::sync_pointer_capability`].
     pub mouse_attached: bool,
 
-    /// Last real pointer position (logical, compositor space) and the focus
-    /// it resolved to (surface + surface origin) — i.e. what was last handed
-    /// to `PointerHandle::motion`, so the GTK3 prime can restore it instead
-    /// of leaving to `None`. Not authoritative while a grab is active:
-    /// smithay's own `current_focus` is, and the state query reads that.
+    /// Last real pointer position and the focus it resolved to (surface +
+    /// surface origin), both in `pointer_frame`'s window frame — i.e. what
+    /// was last handed to `PointerHandle::motion`, so the GTK3 prime can
+    /// restore it instead of leaving to `None`. Not authoritative while a
+    /// grab is active: smithay's own `current_focus` is, and the state
+    /// query reads that.
     pub pointer_location: Point<f64, Logical>,
     pub pointer_focus: Option<(WlSurface, Point<f64, Logical>)>,
+    /// The pointer's position in host logical (screen) coordinates.
+    pub pointer_screen_location: Point<f64, Logical>,
+    /// Window whose placement maps pointer motion into smithay's
+    /// coordinates. Follows the hovered window, but is pinned while smithay
+    /// holds a pointer grab (button held, popup grab).
+    pub pointer_frame: Option<Window>,
+    /// Same, per touch slot: the window touched at down.
+    pub touch_frames: HashMap<i32, Window>,
 
     /// Cursor presentation state. Android draws the pointer sprite; this
     /// tracks what was last pushed to the Activity's `PointerIcon`.
@@ -225,6 +235,11 @@ pub struct TawcState {
     /// Rootfs desktop-entry lookup cache. Includes misses so repeated
     /// title updates for unmatched app ids never rescan the filesystem.
     pub app_metadata_cache: HashMap<String, Option<launcher::DesktopAppMetadata>>,
+
+    /// Hosts minted for new xdg toplevels whose Activity is spawned after
+    /// this dispatch, once a `set_parent` in the same batch has had the
+    /// chance to move the toplevel onto its parent's host instead.
+    pub pending_activity_spawns: Vec<ActivityId>,
 
     /// Hosts reserved by launcher taps, waiting for their window
     /// (launch.rs). Oldest first.
@@ -429,6 +444,9 @@ impl TawcState {
             cursor: crate::cursor::State::new(),
             pointer_location: Point::from((0.0, 0.0)),
             pointer_focus: None,
+            pointer_screen_location: Point::from((0.0, 0.0)),
+            pointer_frame: None,
+            touch_frames: HashMap::new(),
             gtk3_broken_menus_workaround: crate::gtk3_menus_workaround::State::new(
                 gtk3_broken_menus_workaround_enabled,
             ),
@@ -450,6 +468,7 @@ impl TawcState {
             host_fullscreen: HashMap::new(),
             window_metadata: HashMap::new(),
             app_metadata_cache: HashMap::new(),
+            pending_activity_spawns: Vec::new(),
             pending_launches: Vec::new(),
             launch_first_frame: HashSet::new(),
             xdg_activation_state,
@@ -650,6 +669,16 @@ impl TawcState {
         host_id: &ActivityId,
     ) -> Option<(i32, i32)> {
         let (w, h) = self.host_logical_size(host_id)?;
+        if toplevel.parent().is_some() {
+            // Dialogs pick their natural size, capped by bounds, and are
+            // centered over their dimmed parent (placement.rs).
+            toplevel.with_pending_state(|state| {
+                state.size = None;
+                state.bounds = Some((w, h).into());
+            });
+            set_toplevel_fullscreen_state(toplevel, false, None);
+            return Some((w, h));
+        }
         let fullscreen = self.host_fullscreen(host_id);
         toplevel.with_pending_state(|state| {
             state.size = Some((w, h).into());
@@ -766,6 +795,10 @@ impl TawcState {
     }
 
     pub fn update_wayland_window_metadata(&mut self, toplevel: &ToplevelSurface) {
+        // A host is named after its root window, not its dialogs.
+        if toplevel.parent().is_some() {
+            return;
+        }
         let Some(host_id) = self.desktop.assigned_host(toplevel.wl_surface()).cloned() else {
             return;
         };
@@ -802,9 +835,12 @@ impl TawcState {
     }
 
     pub fn finish_host(&mut self, host_id: &ActivityId) {
-        let should_finish_activity = self.hosts.contains_key(host_id)
-            || self.window_metadata.contains_key(host_id)
-            || self.host_fullscreen.contains_key(host_id);
+        let unspawned = self.pending_activity_spawns.contains(host_id);
+        self.pending_activity_spawns.retain(|h| h != host_id);
+        let should_finish_activity = !unspawned
+            && (self.hosts.contains_key(host_id)
+                || self.window_metadata.contains_key(host_id)
+                || self.host_fullscreen.contains_key(host_id));
         self.window_metadata.remove(host_id);
         self.host_fullscreen.remove(host_id);
         self.desktop.clear_foreground_host_if(host_id);
@@ -935,9 +971,55 @@ impl TawcState {
             .map(|t| t.wl_surface().clone())
     }
 
+    /// The window that should hold keyboard focus on `host_id`: the topmost
+    /// one, so a dialog keeps focus over its parent and focus falls back to
+    /// the parent when the dialog closes.
     pub fn first_toplevel_for_host(&self, host_id: &ActivityId) -> Option<WlSurface> {
-        self.first_wayland_toplevel_for_host(host_id)
+        self.desktop
+            .topmost_focusable_surface(host_id)
+            .or_else(|| self.first_wayland_toplevel_for_host(host_id))
             .or_else(|| self.desktop.first_surface_for_host(host_id))
+    }
+
+    /// Placement of every window on `host_id`, if the host has a size.
+    pub fn host_layout(&self, host_id: &ActivityId) -> Option<crate::placement::Layout> {
+        let size = self.host_logical_size(host_id)?;
+        let space = self.desktop.host_space(host_id)?;
+        Some(crate::placement::Layout::new(space, size.into()))
+    }
+
+    /// Current placement of `window` on its host.
+    pub fn window_placement(&self, window: &Window) -> Option<crate::placement::Placement> {
+        use smithay::wayland::seat::WaylandFocus;
+        let surface = window.wl_surface()?;
+        let host_id = self.desktop.assigned_host(&surface)?;
+        self.host_layout(host_id)?.placement_of(window)
+    }
+
+    /// Where an xdg_popup may be placed: the visible part of its host, in
+    /// its parent's window-geometry frame.
+    fn popup_constraint_target(&self, popup: &PopupSurface) -> Rectangle<i32, Logical> {
+        let fallback = Rectangle::from_size(Size::from(self.output_logical_size));
+        let kind = PopupKind::Xdg(popup.clone());
+        let Ok(root) = find_popup_root_surface(&kind) else {
+            return fallback;
+        };
+        let (Some(window), Some(host_id)) =
+            (self.desktop.window(&root), self.desktop.assigned_host(&root))
+        else {
+            return fallback;
+        };
+        let Some(size) = self.host_logical_size(host_id) else {
+            return fallback;
+        };
+        let placement = self
+            .host_layout(host_id)
+            .and_then(|layout| layout.placement_of(window))
+            .unwrap_or(crate::placement::Placement::IDENTITY);
+        let screen = Rectangle::from_size(Size::<i32, Logical>::from(size)).to_f64();
+        let mut target = placement.rect_to_window(screen).to_i32_round();
+        target.loc -= window.geometry().loc + get_popup_toplevel_coords(&kind);
+        target
     }
 }
 
@@ -963,8 +1045,13 @@ pub fn set_toplevel_fullscreen_state(
 ) {
     use wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
 
+    let child = toplevel.parent().is_some();
     toplevel.with_pending_state(|state| {
-        if fullscreen {
+        if child {
+            state.states.unset(XdgState::Fullscreen);
+            state.states.unset(XdgState::Maximized);
+            state.fullscreen_output = None;
+        } else if fullscreen {
             state.states.set(XdgState::Fullscreen);
             state.states.unset(XdgState::Maximized);
             state.fullscreen_output = output;
@@ -1111,15 +1198,16 @@ impl XdgShellHandler for TawcState {
         }
         self.update_wayland_window_metadata(&surface);
 
-        // Reverse-JNI side effects after the &mut self borrow is released.
+        // Spawned after this dispatch (`event_loop::after_dispatch`): a
+        // `set_parent` usually follows in the same batch and moves the
+        // toplevel onto its parent's host instead.
         if assignment.spawn_activity {
-            crate::spawn_activity_from_native(&assignment.host);
+            self.pending_activity_spawns.push(assignment.host);
         }
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
-        let (output_w, output_h) = self.output_logical_size;
-        let target = smithay::utils::Rectangle::from_size(smithay::utils::Size::from((output_w, output_h)));
+        let target = self.popup_constraint_target(&surface);
         let geometry = positioner.get_unconstrained_geometry(target);
         surface.with_pending_state(|state| {
             state.geometry = geometry;
@@ -1142,7 +1230,7 @@ impl XdgShellHandler for TawcState {
         };
         let grab = match self
             .popup_manager
-            .grab_popup::<Self>(root, popup, &self.seat, serial)
+            .grab_popup::<Self>(root.clone(), popup, &self.seat, serial)
         {
             Ok(grab) => grab,
             Err(e) => {
@@ -1151,6 +1239,8 @@ impl XdgShellHandler for TawcState {
             }
         };
         self.active_popup_grab = Some(grab.clone());
+        // Pointer motion during the grab stays in the menu's window frame.
+        self.pointer_frame = self.desktop.window(&root).cloned();
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
         }
@@ -1169,8 +1259,7 @@ impl XdgShellHandler for TawcState {
         positioner: PositionerState,
         token: u32,
     ) {
-        let (output_w, output_h) = self.output_logical_size;
-        let target = smithay::utils::Rectangle::from_size(smithay::utils::Size::from((output_w, output_h)));
+        let target = self.popup_constraint_target(&surface);
         surface.with_pending_state(|state| {
             state.geometry = positioner.get_unconstrained_geometry(target);
         });
@@ -1215,6 +1304,30 @@ impl XdgShellHandler for TawcState {
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
         self.update_wayland_window_metadata(&surface);
+    }
+
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        // smithay reports a new toplevel before its `set_parent`, so the
+        // host chosen in `new_toplevel` may be the wrong one.
+        let root = surface.wl_surface().clone();
+        let current = self.desktop.assigned_host(&root).cloned();
+        let parent_host = surface
+            .parent()
+            .and_then(|parent| self.desktop.assigned_host(&parent).cloned());
+        if let Some(parent_host) = parent_host.filter(|host| Some(host) != current.as_ref()) {
+            self.desktop.assign_surface_to_host(root.clone(), parent_host);
+            self.sync_desktop_hosts();
+            self.toplevels_changed = true;
+            self.needs_render = true;
+            if let Some(old) = current {
+                self.finish_host_if_unused(&old);
+            }
+        }
+        if let Some(host_id) = self.desktop.assigned_host(&root).cloned() {
+            if self.configure_toplevel_for_host(&surface, &host_id).is_some() {
+                surface.send_pending_configure();
+            }
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {

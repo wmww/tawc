@@ -13,7 +13,7 @@ use log::{error, info};
 use smithay::reexports::wayland_server::Resource;
 
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState, TouchSlot};
-use smithay::desktop::{PopupManager, WindowSurfaceType};
+use smithay::desktop::{PopupManager, Window, WindowSurfaceType};
 use smithay::desktop::PopupUngrabStrategy;
 use smithay::input::keyboard::{FilterResult, Keycode};
 use smithay::input::pointer::{
@@ -29,6 +29,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use smithay::wayland::compositor::{
     get_parent, get_role, SUBSURFACE_ROLE,
 };
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::xdg::XDG_POPUP_ROLE;
 use wayland_server::Display;
 
@@ -49,40 +50,68 @@ enum KeyboardFocusAction {
 }
 
 struct TouchResolution {
-    touch_focus: Option<(WlSurface, Point<f64, Logical>)>,
-    popup_focus: Option<WlSurface>,
+    hit: Option<Hit>,
     keyboard_focus: KeyboardFocusAction,
 }
 
-/// Hit-test the visible host's window stack at a compositor-space logical
-/// point. Shared by touch and pointer: both honour the visible-host guard
-/// and `WindowSurfaceType::ALL`, which respects `wl_surface.set_input_region`
-/// (Firefox/WebRender attaches render-only children with an empty region).
-///
-/// Returns the target surface and its origin in compositor space; smithay
-/// subtracts the origin before sending surface-local coordinates.
+/// A surface under a screen point. `origin` and `local` are in `window`'s
+/// frame (root surface origin at `(0,0)`), which is what smithay's seat code
+/// gets: it subtracts the origin before sending surface-local coordinates.
+struct Hit {
+    surface: WlSurface,
+    origin: Point<f64, Logical>,
+    window: Window,
+    local: Point<f64, Logical>,
+}
+
+impl Hit {
+    fn focus(&self) -> (WlSurface, Point<f64, Logical>) {
+        (self.surface.clone(), self.origin)
+    }
+}
+
+/// Hit-test the visible host's window stack at a screen (host logical)
+/// point, through each window's placement. Shared by touch and pointer: both
+/// honour the visible-host guard and `WindowSurfaceType::ALL`, which
+/// respects `wl_surface.set_input_region` (Firefox/WebRender attaches
+/// render-only children with an empty region). The scrim under a dialog
+/// swallows points that miss it.
 fn surface_at(
     data: &TawcState,
     activity_id: &ActivityId,
-    location: Point<f64, Logical>,
-) -> Option<(WlSurface, Point<f64, Logical>)> {
+    screen: Point<f64, Logical>,
+) -> Option<Hit> {
     if data.desktop_visible_host_id().as_ref() != Some(activity_id) {
         return None;
     }
-
-    let Some(visible_space) = data.desktop.visible_space(&data.hosts) else {
-        return None;
-    };
-    if let Some((window, window_location)) = visible_space.element_under(location) {
-        let window_point = location - window_location.to_f64();
-        if let Some((surface, origin)) = window.surface_under(window_point, WindowSurfaceType::ALL) {
-            return Some((
+    let layout = data.host_layout(activity_id)?;
+    for (i, entry) in layout.entries.iter().enumerate().rev() {
+        let local = entry.placement.to_window(screen);
+        if let Some((surface, origin)) = entry.window.surface_under(local, WindowSurfaceType::ALL) {
+            return Some(Hit {
                 surface,
-                Point::from((origin.x as f64, origin.y as f64)),
-            ));
+                origin: origin.to_f64(),
+                window: entry.window.clone(),
+                local,
+            });
+        }
+        if layout.scrim_below == Some(i) {
+            return None;
         }
     }
     None
+}
+
+/// `screen` in the frame of `window`, or unchanged when it has no placement
+/// (gone, or never hit anything).
+fn to_window_frame(
+    data: &TawcState,
+    window: Option<&Window>,
+    screen: Point<f64, Logical>,
+) -> Point<f64, Logical> {
+    window
+        .and_then(|window| data.window_placement(window))
+        .map_or(screen, |placement| placement.to_window(screen))
 }
 
 fn is_in_xdg_popup_tree(surface: &WlSurface) -> bool {
@@ -110,21 +139,16 @@ fn main_surface_for_subsurface_tree(surface: &WlSurface) -> WlSurface {
 fn resolve_touch_down(
     data: &TawcState,
     activity_id: &ActivityId,
-    location: Point<f64, Logical>,
+    screen: Point<f64, Logical>,
 ) -> TouchResolution {
-    let touch_focus = surface_at(data, activity_id, location);
-    let popup_focus = touch_focus.as_ref().map(|(surface, _)| surface.clone());
-    let keyboard_focus = match touch_focus.as_ref().map(|(surface, _)| surface) {
+    let hit = surface_at(data, activity_id, screen);
+    let keyboard_focus = match hit.as_ref().map(|hit| &hit.surface) {
         Some(surface) if is_in_xdg_popup_tree(surface) => KeyboardFocusAction::Keep,
         Some(surface) => KeyboardFocusAction::Set(main_surface_for_subsurface_tree(surface)),
         None => KeyboardFocusAction::Clear,
     };
 
-    TouchResolution {
-        touch_focus,
-        popup_focus,
-        keyboard_focus,
-    }
+    TouchResolution { hit, keyboard_focus }
 }
 
 fn apply_keyboard_focus_action(data: &mut TawcState, action: KeyboardFocusAction) {
@@ -147,6 +171,7 @@ fn clear_pointer_focus(data: &mut TawcState) {
         return;
     }
     data.pointer_focus = None;
+    data.pointer_frame = None;
     let Some(pointer) = data.seat.get_pointer() else {
         return;
     };
@@ -426,9 +451,9 @@ pub fn run(
             None => return,
         };
 
-        // Identify the touch's host and the surface under the event. Touch
-        // focus stores the surface origin in compositor space; Smithay
-        // subtracts it before sending surface-local wl_touch coordinates.
+        // Identify the touch's host and the surface under the event. Smithay
+        // gets coordinates in the touched window's frame and subtracts the
+        // surface origin to make them surface-local.
         let activity_id = match &evt {
             TouchEvent::Down { activity_id, .. }
             | TouchEvent::Motion { activity_id, .. }
@@ -440,13 +465,13 @@ pub fn run(
 
         match evt {
             TouchEvent::Down { id, x, y, time, .. } => {
-                let location: Point<f64, smithay::utils::Logical> =
+                let screen: Point<f64, smithay::utils::Logical> =
                     (touch_scale.logical_coord(x as f64), touch_scale.logical_coord(y as f64)).into();
-                let touch_resolution = resolve_touch_down(data, &activity_id, location);
+                let touch_resolution = resolve_touch_down(data, &activity_id, screen);
                 dismiss_host_popups_if_touch_is_outside_popup(
                     data,
                     &activity_id,
-                    touch_resolution.popup_focus.as_ref(),
+                    touch_resolution.hit.as_ref().map(|hit| &hit.surface),
                     serial,
                     time,
                 );
@@ -459,9 +484,17 @@ pub fn run(
                 // moves the cursor, its following
                 // set_surrounding_text(cause=other) drives preedit cleanup.
                 apply_keyboard_focus_action(data, touch_resolution.keyboard_focus);
+                // The slot's motion stays in the touched window's frame
+                // even after the finger leaves it.
+                let hit = touch_resolution.hit;
+                let location = hit.as_ref().map_or(screen, |hit| hit.local);
+                match &hit {
+                    Some(hit) => data.touch_frames.insert(id, hit.window.clone()),
+                    None => data.touch_frames.remove(&id),
+                };
                 touch.down(
                     data,
-                    touch_resolution.touch_focus,
+                    hit.as_ref().map(Hit::focus),
                     &DownEvent {
                         slot: TouchSlot::from(Some(id as u32)),
                         location,
@@ -472,12 +505,13 @@ pub fn run(
                 touch.frame(data);
             }
             TouchEvent::Motion { id, x, y, time, .. } => {
-                let location: Point<f64, smithay::utils::Logical> =
+                let screen: Point<f64, smithay::utils::Logical> =
                     (touch_scale.logical_coord(x as f64), touch_scale.logical_coord(y as f64)).into();
-                let focus = surface_at(data, &activity_id, location);
+                let location = to_window_frame(data, data.touch_frames.get(&id), screen);
+                // Smithay keeps the focus from down; this argument is unused.
                 touch.motion(
                     data,
-                    focus,
+                    None,
                     &MotionEvent {
                         slot: TouchSlot::from(Some(id as u32)),
                         location,
@@ -487,6 +521,7 @@ pub fn run(
                 touch.frame(data);
             }
             TouchEvent::Up { id, time, .. } => {
+                data.touch_frames.remove(&id);
                 touch.up(
                     data,
                     &UpEvent {
@@ -538,10 +573,20 @@ pub fn run(
 
         match evt {
             PointerEvent::Motion { x, y, time, .. } => {
-                let location: Point<f64, Logical> =
+                let screen: Point<f64, Logical> =
                     (scale.logical_coord(x as f64), scale.logical_coord(y as f64)).into();
                 // Hover is not activation: motion never moves keyboard focus.
-                let focus = surface_at(data, &activity_id, location);
+                let hit = surface_at(data, &activity_id, screen);
+                // A grab (held button, popup) keeps delivering in the frame
+                // it started in; a hit on another window is outside it.
+                if !pointer.is_grabbed() {
+                    data.pointer_frame = hit.as_ref().map(|hit| hit.window.clone());
+                }
+                let location = to_window_frame(data, data.pointer_frame.as_ref(), screen);
+                let focus = hit
+                    .filter(|hit| data.pointer_frame.as_ref() == Some(&hit.window))
+                    .map(|hit| hit.focus());
+                data.pointer_screen_location = screen;
                 data.pointer_location = location;
                 data.pointer_focus = focus.clone();
                 pointer.motion(
@@ -557,12 +602,12 @@ pub fn run(
                     // dismisses it, click in a toplevel moves keyboard and
                     // text-input focus. Smithay's default grab keeps pointer
                     // focus while the button is held.
-                    let location = data.pointer_location;
-                    let resolution = resolve_touch_down(data, &activity_id, location);
+                    let screen = data.pointer_screen_location;
+                    let resolution = resolve_touch_down(data, &activity_id, screen);
                     dismiss_host_popups_if_touch_is_outside_popup(
                         data,
                         &activity_id,
-                        resolution.popup_focus.as_ref(),
+                        resolution.hit.as_ref().map(|hit| &hit.surface),
                         serial,
                         time,
                     );
@@ -742,8 +787,10 @@ pub fn run(
     loop_handle.insert_source(state_query_channel, move |event, _, data: &mut TawcState| {
         if let ChannelEvent::Msg(response) = event {
             let clients = data.client_count.load(std::sync::atomic::Ordering::Relaxed);
-            // Report smithay's live pointer, not TAWC's tracked copy: a grab
-            // can hold focus somewhere other than the last resolved hit test.
+            // Report smithay's live pointer focus, not TAWC's tracked copy:
+            // a grab can hold focus somewhere other than the last resolved
+            // hit test. The position is TAWC's screen copy; smithay's is in
+            // a window frame.
             let pointer = data.seat.get_pointer();
             let bound_hosts = data
                 .hosts
@@ -774,8 +821,9 @@ pub fn run(
             } else {
                 host_windows.join(",")
             };
+            let (windows, scrim) = visible_layout_debug(data);
             let payload = format!(
-                "clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={} hosts={} bound_hosts={} xwayland_running={} xwayland_pids={} x11_surfaces={} x11_surfaces_with_host={} wlegl_create_buffer_total={} wlegl_import_texture_total={} wlegl_buffer_destroy_total={} last_wlegl_width={} last_wlegl_height={} last_wlegl_format={} output_scale={:.2} output_physical_w={} output_physical_h={} output_logical_w={} output_logical_h={} pointer_present={} pointer_x={:.2} pointer_y={:.2} pointer_focus={} cursor_shape={} vsync_ticks={} last_vsync_ns={} vsync_period_ns={} tick_latency_max_ns={} output_refresh_mhz={} pending_launches={} host_windows={}",
+                "clients={} toplevels={} surfaces_wlegl={} surfaces_shm={} frames={} rendered_toplevels={} hosts={} bound_hosts={} xwayland_running={} xwayland_pids={} x11_surfaces={} x11_surfaces_with_host={} wlegl_create_buffer_total={} wlegl_import_texture_total={} wlegl_buffer_destroy_total={} last_wlegl_width={} last_wlegl_height={} last_wlegl_format={} output_scale={:.2} output_physical_w={} output_physical_h={} output_logical_w={} output_logical_h={} pointer_present={} pointer_x={:.2} pointer_y={:.2} pointer_focus={} cursor_shape={} vsync_ticks={} last_vsync_ns={} vsync_period_ns={} tick_latency_max_ns={} output_refresh_mhz={} pending_launches={} host_windows={} windows={} scrim={}",
                 clients,
                 toplevel_count(data),
                 surfaces_wlegl,
@@ -800,8 +848,8 @@ pub fn run(
                 data.output_logical_size.0,
                 data.output_logical_size.1,
                 pointer.is_some(),
-                pointer.as_ref().map(|p| p.current_location().x).unwrap_or(0.0),
-                pointer.as_ref().map(|p| p.current_location().y).unwrap_or(0.0),
+                if pointer.is_some() { data.pointer_screen_location.x } else { 0.0 },
+                if pointer.is_some() { data.pointer_screen_location.y } else { 0.0 },
                 if pointer.as_ref().is_some_and(|p| p.current_focus().is_some()) {
                     "yes"
                 } else {
@@ -815,6 +863,8 @@ pub fn run(
                 data.output_refresh_mhz,
                 data.pending_launches.len(),
                 host_windows,
+                windows,
+                scrim,
             );
             let _ = response.send(payload);
         }
@@ -934,6 +984,12 @@ const HOUSEKEEPING_PERIOD: Duration = Duration::from_millis(250);
 /// `needs_render` or `toplevels_changed` doesn't have to arm anything.
 /// Ends by arming a vsync tick when there's a frame to draw.
 fn after_dispatch(data: &mut TawcState, vsync: &crate::vsync::Vsync) {
+    // Activities for hosts that kept their window through the dispatch;
+    // the rest were dropped by `finish_host`.
+    for host in std::mem::take(&mut data.pending_activity_spawns) {
+        crate::spawn_activity_from_native(&host);
+    }
+
     crate::xwayland::service_pending(&data.loop_handle(), data);
 
     // Catch up on XWayland surface ↔ host associations that can land
@@ -1120,6 +1176,44 @@ fn render_visible_host(data: &mut TawcState) -> bool {
         }
     }
     rendered
+}
+
+/// The visible host's placements for `query-state`, back to front:
+/// `<surface id>:<role>:<gx>,<gy>,<gw>,<gh>:<offset x>,<offset y>:<scale>`
+/// joined by `;` (`-` for none), and whether a scrim is drawn.
+fn visible_layout_debug(data: &TawcState) -> (String, &'static str) {
+    let Some(layout) = data
+        .desktop_visible_host_id()
+        .and_then(|host| data.host_layout(&host))
+    else {
+        return ("-".to_string(), "no");
+    };
+    let windows = layout
+        .entries
+        .iter()
+        .map(|entry| {
+            let id = entry
+                .window
+                .wl_surface()
+                .map_or(0, |surface| surface.id().protocol_id());
+            let g = entry.window.geometry();
+            let p = entry.placement;
+            format!(
+                "{}:{}:{},{},{},{}:{:.2},{:.2}:{:.4}",
+                id,
+                entry.role.name(),
+                g.loc.x,
+                g.loc.y,
+                g.size.w,
+                g.size.h,
+                p.offset.x,
+                p.offset.y,
+                p.scale,
+            )
+        })
+        .collect::<Vec<_>>();
+    let windows = if windows.is_empty() { "-".to_string() } else { windows.join(";") };
+    (windows, if layout.scrim_below.is_some() { "yes" } else { "no" })
 }
 
 fn toplevel_count(data: &TawcState) -> usize {

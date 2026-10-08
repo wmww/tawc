@@ -43,7 +43,7 @@ fn check_rootfs_app(name: &str) -> io::Result<String> {
 /// `wayland-debug-app` — toolkitless Wayland protocol test driver.
 pub fn ensure_wayland_debug_app() -> io::Result<String> {
     let bin = check_rootfs_app("wayland-debug-app")?;
-    let probe = format!("grep -a -q 'clipboard-copy-timeout' {bin} && echo OK || echo STALE");
+    let probe = format!("grep -a -q 'small-popup' {bin} && echo OK || echo STALE");
     let output = adb::rootfs_run(&probe)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.lines().any(|l| l.trim() == "OK") {
@@ -52,7 +52,7 @@ pub fn ensure_wayland_debug_app() -> io::Result<String> {
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         format!(
-            "{bin} is stale and does not include the hostile clipboard modes. Run \
+            "{bin} is stale and does not include the newest scene modes. Run \
              `scripts/run-integration-tests.sh` so the changed test app \
              is rebuilt and deployed."
         ),

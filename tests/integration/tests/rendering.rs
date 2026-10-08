@@ -143,15 +143,17 @@ fn test_shm_xdg_popup_position_pixels() {
     let state = compositor::query_state(TIMEOUT).expect("query compositor state");
     let shot = adb::screencap_raw().expect("raw screencap");
 
-    let sample = sample_logical(
-        &shot,
-        &state,
-        layout.child_x + layout.content_w / 2,
-        layout.child_y + layout.content_h / 2,
+    // The parent's window geometry is inset unevenly, so centering moves it a
+    // few pixels; the popup follows its parent's placement.
+    let parent = state.window_with_role("toplevel").expect("popup parent placement");
+    let (x, y) = parent.to_screen(
+        f64::from(layout.child_x + layout.content_w / 2),
+        f64::from(layout.child_y + layout.content_h / 2),
     );
+    let sample = sample_logical(&shot, &state, x.round() as i32, y.round() as i32);
     assert!(
         sample.r > 150 && sample.g > 90 && sample.b < 130,
-        "popup center should be orange at its configured logical position: \
+        "popup center should be orange at its parent-placed position: \
          sample={sample:?} layout={layout:?} state={state:?}"
     );
 
