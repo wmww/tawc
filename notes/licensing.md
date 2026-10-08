@@ -48,9 +48,8 @@ before 0.45 were MPL-2.0, so check the license again on a version bump.
 Remote access (`remote/`, [remote-access.md](remote-access.md)) added
 ~100 more (russh, rustls/ring, tokio-tungstenite, …), also permissive:
 `ring` is `Apache-2.0 AND ISC`, `webpki-roots` (Mozilla's CA list) is
-`CDLA-Permissive-2.0`. It also compiles in word lists: RFC 1751's dictionary (secrets and
-current sshyeet ids) and earlier sshyeet relays' id lists (used with the
-author's permission); both in `licenses/sshyeet-words.txt`. Its `sftp-server` is OpenSSH (BSD-style
+`CDLA-Permissive-2.0`. It also compiles in RFC 1751's dictionary (ids and secrets),
+`licenses/rfc1751.txt`. Its `sftp-server` is OpenSSH (BSD-style
 `LICENCE`, from `deps/openssh-portable`).
 
 ## How the obligations are met

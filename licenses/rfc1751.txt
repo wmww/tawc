@@ -1,0 +1,7 @@
+RFC 1751 dictionary
+
+"A Convention for Human-Readable 128-bit Keys", D. McDonald, 1994
+(https://www.rfc-editor.org/rfc/rfc1751): 2048 words, used by sshyeet
+relays for session ids and by TAWC for those ids and login secrets
+(remote/src/sid/rfc1751.rs). The RFC states: "Distribution of this memo
+is unlimited."

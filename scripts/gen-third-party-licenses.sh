@@ -95,7 +95,7 @@ CURATED_NATIVE = {
     "libdrm": ("MIT", "deps/xwayland-src/libx11/COPYING"),
     "android-headers (Halium)": ("Apache-2.0", "deps/libhybris/LICENSE.Apache2"),
     # Data compiled into the remote access crate (remote/src).
-    "RFC 1751 dictionary, sshyeet id word lists": ("RFC 1751; used with permission", "licenses/sshyeet-words.txt"),
+    "RFC 1751 dictionary": ("RFC 1751", "licenses/rfc1751.txt"),
     # Terminal font, checked in as app/src/main/res/font/hack_regular.ttf.
     "Hack font v3.003": ("MIT, Bitstream Vera", "licenses/hack.txt"),
 }

@@ -1,5 +1,6 @@
 //! WebSocket transport to the relay: every binary message is a chunk of
-//! one byte stream, which carries yamux.
+//! one byte stream, which carries yamux. Pings keep idle proxies from
+//! dropping it and find a dead one.
 
 use std::io;
 use std::sync::Arc;
@@ -17,6 +18,9 @@ use tokio_tungstenite::Connector;
 use crate::proto;
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(45);
+/// Upstream's: ping every 25 s, give up after 75 s with nothing received.
+const PING_EVERY: Duration = Duration::from_secs(25);
+const DEAD_AFTER: Duration = Duration::from_secs(75);
 
 /// `https://host[:port][/base]` -> `wss://host[:port]/base/v1/tunnel`
 /// (`http` -> `ws`, for local test relays).
@@ -119,7 +123,7 @@ where
     let (mut sink, mut stream) = ws.split();
     let (mut rd, mut wr) = tokio::io::split(theirs);
     let down = tokio::spawn(async move {
-        while let Some(Ok(msg)) = stream.next().await {
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout(DEAD_AFTER, stream.next()).await {
             match msg {
                 Message::Binary(b) => {
                     if wr.write_all(&b).await.is_err() {
@@ -134,14 +138,18 @@ where
     });
     let up = tokio::spawn(async move {
         let mut buf = vec![0u8; 64 * 1024];
+        let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            match rd.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if sink.send(Message::Binary(buf[..n].to_vec().into())).await.is_err() {
-                        break;
-                    }
-                }
+            let msg = tokio::select! {
+                r = rd.read(&mut buf) => match r {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => Message::Binary(buf[..n].to_vec().into()),
+                },
+                _ = ping.tick() => Message::Ping(Vec::new().into()),
+            };
+            if sink.send(msg).await.is_err() {
+                break;
             }
         }
         let _ = tokio::time::timeout(Duration::from_secs(2), sink.close()).await;

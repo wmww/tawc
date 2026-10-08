@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use data_encoding::BASE64;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{json, Value};
-use tawc_remote::{proto, sid, tunnel, yamux};
+use tawc_remote::{mux, proto, sid, tunnel};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -34,9 +34,6 @@ pub struct Behaviour {
     pub version: AtomicU32,
     /// Assign an id that doesn't match the key.
     pub wrong_id: AtomicBool,
-    /// Behave like a relay from before RFC 1751 ids: ignore `id_words`,
-    /// assign the three-word legacy id.
-    pub legacy: AtomicBool,
 }
 
 enum Cmd {
@@ -47,7 +44,7 @@ struct State {
     beh: Behaviour,
     hellos: Mutex<Vec<HelloRec>>,
     tunnels: AtomicUsize,
-    current: Mutex<Option<(yamux::Control, mpsc::UnboundedSender<Cmd>)>>,
+    current: Mutex<Option<(mux::Control, mpsc::UnboundedSender<Cmd>)>>,
 }
 
 pub struct Relay {
@@ -142,7 +139,7 @@ async fn line(w: &mut (impl AsyncWriteExt + Unpin), v: Value) {
 async fn tunnel_conn(tcp: TcpStream, st: Arc<State>, ssh_port: u16) {
     let Ok(ws) = tokio_tungstenite::accept_async(tcp).await else { return };
     let (io, _pumps) = tunnel::byte_stream(ws);
-    let (ctl, mut incoming) = yamux::session(io, yamux::Mode::Server);
+    let (ctl, mut incoming) = mux::session(io, mux::Mode::Server);
     let Some(control) = incoming.accept().await else { return };
     let mut br = BufReader::new(control);
     let mut nonce = [0u8; 24];
@@ -171,8 +168,6 @@ async fn tunnel_conn(tcp: TcpStream, st: Arc<State>, ssh_port: u16) {
     }
     let id = if st.beh.wrong_id.load(Ordering::SeqCst) {
         "able-able-ant".to_string()
-    } else if st.beh.legacy.load(Ordering::SeqCst) {
-        sid::legacy::derive(&wire)
     } else {
         // Upstream: 0 = its default (2), else 1..=8.
         let n = hello["id_words"].as_u64().unwrap_or(0) as usize;
@@ -206,7 +201,7 @@ async fn tunnel_conn(tcp: TcpStream, st: Arc<State>, ssh_port: u16) {
 async fn client_conn(mut tcp: TcpStream, peer: SocketAddr, st: Arc<State>) {
     let ctl = st.current.lock().unwrap().as_ref().map(|(c, _)| c.clone());
     let Some(ctl) = ctl else { return };
-    let Ok(mut s) = ctl.open() else { return };
+    let Ok(mut s) = ctl.open().await else { return };
     line(&mut s, json!({"from": peer.to_string(), "via": "test"})).await;
     let _ = tokio::io::copy_bidirectional(&mut s, &mut tcp).await;
 }

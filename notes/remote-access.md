@@ -83,9 +83,9 @@ default), the notification's Exit, or the distro's uninstall.
 | Where | What |
 |---|---|
 | `remote/src/proto.rs` | control messages, 16 KiB line framing, `ready` validation |
-| `remote/src/sid/` | session ids (below); the RFC 1751 dictionary (checked against the RFC text) and, for old relays, upstream's former lists (used with the author's permission) |
-| `remote/src/yamux.rs` | minimal hashicorp-yamux client/server (below) |
-| `remote/src/tunnel.rs` | WebSocket dial (rustls + ring + webpki-roots), byte pump |
+| `remote/src/sid/` | session ids (below); the RFC 1751 dictionary (checked against the RFC text) |
+| `remote/src/mux.rs` | the `yamux` crate behind a small open/accept/close handle (below) |
+| `remote/src/tunnel.rs` | WebSocket dial (rustls + ring + webpki-roots), byte pump, pings |
 | `remote/src/sshd/` | russh server: auth policy, session channels, `-L`/`-R` |
 | `remote/src/spawn.rs` | `Launcher` trait; pty/pipe spawn in a new session |
 | `remote/src/agent.rs` | transports (relay loop / local listeners), login, idle close, status, one thread |
@@ -167,20 +167,18 @@ Control stream (first stream, NDJSON, alternating): relay `challenge`
 over `"sshyeet hello v1\0" ‖ nonce`, `ttl` 0 = the relay's maximum,
 `agent`, `id_words`) → relay `ready` or `error`.
 
-**Session ids** (espes/sshyeet#1): `H = SHA-256("sshyeet id v3\0" ‖
-wire(key))`, `id_words` (default 2) RFC 1751 words from 11-bit fields of
-`H[0:16]`, long form `-base32(H[16:26])`. A relay from before that
-ignores `id_words` (the protocol stays v1) and assigns the old
-`ADJ-ADJ-NOUN` from `SHA-256("sshyeet id v2\0" ‖ wire(key))`; `ready`
-is accepted if its id is exactly either derivation of *our* key (the
-new one at the count asked for), anything else is fatal. Drop the
-legacy half once sshyeet.com runs the new relay.
+**Session ids**: `H = SHA-256("sshyeet id v3\0" ‖ wire(key))`,
+`id_words` (default 2) RFC 1751 words from 11-bit fields of `H[0:16]`,
+long form `-base32(H[16:26])`; `sid` carries upstream's golden vector.
+`ready` is accepted only if its id is exactly that derivation of *our*
+key at the count asked for; anything else is fatal.
 
-`"session id taken"` (another key holds our words): first ask for one
-more word with the same key; if that collides too (or the relay is old
-and ignored it), use a throwaway key and secret for this run — never
-saved, so the next Start tries the device key again; then more words, up
-to 8. Other errors are fatal. Later `bye`:
+`"session id taken"` (another key holds our words), as upstream's
+persistent-key agent: ask again at once with one more word, same key (so
+known_hosts and local mode stay valid), up to 8, then fail. The longer
+id lasts this run; the next Start asks for 2 again. With no saved key
+(tests only) it's upstream's per-run policy: new key and secret first,
+then also a word per collision. Other errors are fatal. Later `bye`:
 `reconnect: true` → back off (1 s doubling to 1 min, reset after a
 minute up) and reconnect with the same identity; otherwise fatal. A
 silent drop reconnects too; 5 failed attempts before the first `ready`
@@ -189,12 +187,13 @@ give up.
 Client streams (relay-opened): one JSON header line `{"from","via"}`
 (15 s deadline), then raw SSH.
 
-**Why our own yamux:** libp2p's `yamux` opens outbound streams lazily
-(SYN on the first data frame), but the relay speaks first on the control
-stream — a deadlock. Ours sends a zero-delta WindowUpdate+SYN on open
-and +ACK on accept, keeps the spec's fixed 256 KiB windows, answers
-pings, and pings every 25 s itself (a whole interval without a pong
-kills the session).
+**yamux**, as upstream's agent: libp2p's `yamux` crate (0.13, 256
+streams max, read after close), driven by one task in `mux.rs` that also
+serves opens. The crate opens streams lazily (SYN on the first data
+frame), but the relay speaks first on the control stream, so `open`
+writes an empty frame to send the SYN. Liveness is the WebSocket's: a
+ping every 25 s, the tunnel drops after 75 s with nothing received
+(`tunnel::byte_stream`).
 
 ### russh notes
 
@@ -252,14 +251,14 @@ UnifiedPush/ntfy): [../plans/remote-wake.md](../plans/remote-wake.md).
 - `cd remote && cargo test` — unit tests (sid vector; the derivation
   itself is checked live, since the agent refuses any id the relay
   assigns that doesn't match; secret shape and budget; `ready`
-  validation; framing; yamux windows; pty/pipe spawn) and `tests/e2e.rs`
+  validation; framing; mux open/close and bulk transfer; pty/pipe spawn) and `tests/e2e.rs`
   against an in-process fake relay (WebSocket + yamux server + TCP port
   that becomes client streams) with the host's `ssh`/`scp` and a russh
   client: exec/exit status/stderr, throttling (parallel guesses share
   the budget), pty size + window-change, `-W` forwarding, `-R` (loopback
   binds, refused wildcards, closed on disconnect and Stop), id-taken
-  (longer id, then a throwaway key, saved key back next Start), an old
-  relay's id accepted, saved key stable across Starts and modes,
+  (saved key: a word per collision, back to 2 next Start, fails past 8;
+  unsaved key: new key, then words), saved key stable across Starts and modes,
   bye/drop reconnects keeping the id, fatal bye/v2/foreign id,
   unreachable relay, idle close (and a login holding it off), key login
   (Ed25519 + RSA, any user, others refused), local mode (secret and
@@ -287,9 +286,13 @@ scratch `ssh -F` config with `UserKnownHostsFile` and `BatchMode`.
 
 ## Upstream
 
-Protocol and behaviour follow the upstream Go client (source
-`https://sshyeet.com/dl/src.tar.gz`, version `46kr0c202g`, reviewed
-2026-09-27). Open questions for the author: is v1 stable and will the
+Protocol and behaviour follow upstream's Rust agent (`agent/`; public
+source `https://sshyeet.com/dl/src.tar.gz`, version `npnvl5ppj3` =
+espes/sshyeet `e556664`, reviewed 2026-10-08). That repo is private, so
+`remote/` stays our own implementation rather than a vendored copy.
+Deliberate differences: no `comment` in the hello, `web`/`latest`
+ignored, `-R` forwarding, and a saved host key
+by default. Open questions for the author: is v1 stable and will the
 relay keep speaking it after a bump; is a non-upstream agent string
 welcome; any per-node rate limits (the relay answers 429 on the dial,
 reported as "relay is rate limiting us").

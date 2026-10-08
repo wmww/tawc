@@ -8,11 +8,11 @@
 pub mod agent;
 pub mod event;
 pub mod hostkey;
+pub mod mux;
 pub mod proto;
 pub mod sid;
 pub mod spawn;
 pub mod sshd;
 pub mod tunnel;
-pub mod yamux;
 
 pub use agent::{Agent, Config, Status};

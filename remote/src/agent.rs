@@ -19,7 +19,7 @@ use crate::spawn::Launcher;
 use russh::keys::PublicKey;
 use crate::sshd::auth::{new_secret, parse_authorized_keys, Policy};
 use crate::sshd::Server;
-use crate::{sid, tunnel, yamux};
+use crate::{mux, sid, tunnel};
 
 /// How clients reach the sshd.
 pub enum Transport {
@@ -32,7 +32,7 @@ pub enum Transport {
 
 /// Who may log in.
 pub enum Login {
-    /// A fresh `word-word-NNN` secret as the username.
+    /// A fresh three-word secret (`bold-cook-fern`) as the username.
     Secret,
     /// These public keys, any username. `source` names them for the
     /// screen (`github.com/<user>`, `pasted`).
@@ -262,8 +262,6 @@ impl Agent {
                     last_ready: None,
                     id_words: sid::DEFAULT_ID_WORDS,
                     collisions: 0,
-                    throwaway: false,
-                    scheme: sid::Scheme::Words(sid::DEFAULT_ID_WORDS),
                 };
                 if listeners.is_empty() {
                     run.run().await;
@@ -345,14 +343,10 @@ struct Run {
     /// Words asked for in the id; grows on collisions.
     id_words: usize,
     collisions: u32,
-    /// This run swapped the host key for a throwaway one (a collision).
-    throwaway: bool,
-    /// How the relay derived our id (it may predate RFC 1751 ids).
-    scheme: sid::Scheme,
 }
 
 /// Closes the yamux session when the attempt ends, however it ends.
-struct CloseOnDrop(yamux::Control);
+struct CloseOnDrop(mux::Control);
 
 impl Drop for CloseOnDrop {
     fn drop(&mut self) {
@@ -387,8 +381,6 @@ fn human(d: Duration) -> String {
     if s >= 60 && s % 60 == 0 { format!("{} min", s / 60) } else { format!("{s} s") }
 }
 
-/// Collision retries: one longer id, one throwaway key, then longer ids.
-const MAX_REROLLS: u32 = 2 + (sid::MAX_WORDS - sid::DEFAULT_ID_WORDS) as u32;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const CLIENT_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -396,7 +388,6 @@ impl Run {
     async fn run(&mut self) {
         let mut backoff = Duration::from_secs(1);
         let mut failures = 0u32;
-        let mut rerolls = 0u32;
         // One timer across reconnects: a tunnel blip doesn't reset it.
         let idle = idle(self.server.watch_clients(), self.cfg.idle_timeout);
         tokio::pin!(idle);
@@ -424,17 +415,8 @@ impl Run {
                     });
                     return;
                 }
-                Outcome::RetryNow => {
-                    rerolls += 1;
-                    if rerolls > MAX_REROLLS {
-                        self.shared.update(|s| {
-                            s.state = "failed";
-                            s.error = "session ids keep colliding on the relay; try again later".into();
-                        });
-                        return;
-                    }
-                    continue;
-                }
+                // Bounded: every collision past the first grows the id.
+                Outcome::RetryNow => continue,
                 Outcome::Transient(msg) => {
                     if started.elapsed() > Duration::from_secs(60) {
                         backoff = Duration::from_secs(1);
@@ -535,27 +517,30 @@ impl Run {
         });
     }
 
-    /// Someone else's key holds our id on the relay. First ask for one
-    /// more word (same key: known_hosts and local mode stay valid); if that
-    /// collides too — or the relay predates `id_words` and ignored it —
-    /// use a throwaway key and secret for this run (the saved key is tried
-    /// again next Start); after that, keep adding words up to the maximum.
+    /// Someone else's key holds our words on the relay; upstream's
+    /// policy. The saved key can't change, so each collision asks for one
+    /// more word: same key and known_hosts entry, longer name. A per-Start
+    /// key is replaced (with the secret) instead, and from the second
+    /// collision the id grows too.
     fn on_collision(&mut self) -> Result<(), String> {
         self.collisions += 1;
-        if self.collisions >= 2 && !self.throwaway {
-            self.throwaway = true;
-            return self.reroll();
-        }
-        if self.id_words >= sid::MAX_WORDS {
+        let saved = self.cfg.host_key.is_some();
+        let grow = saved || self.collisions >= 2;
+        if grow && self.id_words >= sid::MAX_WORDS {
             return Err(format!("session ids are taken on the relay even at {} words; try again later", sid::MAX_WORDS));
         }
-        self.id_words += 1;
+        if !saved {
+            self.reroll()?;
+        }
+        if grow {
+            self.id_words += 1;
+        }
         self.last_ready = None;
         Ok(())
     }
 
-    /// New (unsaved) key and secret. Logins made with the old secret keep
-    /// running, as upstream.
+    /// New key and secret. Logins made with the old secret keep running,
+    /// as upstream.
     fn reroll(&mut self) -> Result<(), String> {
         let secret = if self.ident.secret.is_empty() { String::new() } else { new_secret().map_err(|e| e.to_string())? };
         let new = Identity { key: HostKey::generate().map_err(|e| e.to_string())?, secret };
@@ -579,9 +564,9 @@ impl Run {
             Err(e) => return Outcome::Transient(io::Error::from(e).to_string()),
         };
         let (io, _pumps) = tunnel::byte_stream(ws);
-        let (ctl, mut incoming) = yamux::session(io, yamux::Mode::Client);
+        let (ctl, mut incoming) = mux::session(io, mux::Mode::Client);
         let ctl = CloseOnDrop(ctl);
-        let control = match ctl.0.open() {
+        let control = match ctl.0.open().await {
             Ok(s) => s,
             Err(e) => return Outcome::Transient(e.to_string()),
         };
@@ -621,7 +606,7 @@ impl Run {
         }
     }
 
-    async fn handshake(&mut self, br: &mut BufReader<yamux::Stream>) -> Result<Ready, Outcome> {
+    async fn handshake(&mut self, br: &mut BufReader<mux::Stream>) -> Result<Ready, Outcome> {
         let transient = |e: io::Error| Outcome::Transient(format!("handshake: {e}"));
         let line = proto::read_line(br).await.map_err(transient)?;
         self.check_error(&line)?;
@@ -651,10 +636,7 @@ impl Run {
         let ready: Ready = serde_json::from_slice(&line)
             .map_err(|_| Outcome::Transient("handshake: malformed ready message".into()))?;
         match proto::validate_ready(ready, &self.ident.key.wire, self.id_words) {
-            Ok((r, scheme)) => {
-                self.scheme = scheme;
-                Ok(r)
-            }
+            Ok(r) => Ok(r),
             Err(ReadyError::Malformed) => Err(Outcome::Transient("handshake: malformed ready message".into())),
             Err(ReadyError::IdMismatch(id)) => Err(Outcome::Fatal(format!(
                 "relay assigned session id {id:?}, which does not match our host key; refusing to continue"
@@ -691,7 +673,7 @@ impl Run {
         let secret = &self.ident.secret;
         let dest = format!("{}@{}", self.user(), r.id);
         let command = format!("ssh -J {} {dest}", r.jump);
-        let (id_long, fingerprint, host_key) = (sid::long_for(self.scheme, &k.wire), k.fingerprint.clone(), k.openssh.clone());
+        let (id_long, fingerprint, host_key) = (sid::derive_long(&k.wire, self.id_words), k.fingerprint.clone(), k.openssh.clone());
         let secret = secret.clone();
         self.shared.update(|s| {
             s.state = "ready";
@@ -710,7 +692,7 @@ impl Run {
     }
 }
 
-async fn client(stream: yamux::Stream, srv: Arc<Server>, cancel: CancellationToken) {
+async fn client(stream: mux::Stream, srv: Arc<Server>, cancel: CancellationToken) {
     let mut br = BufReader::new(stream);
     let hdr = match tokio::time::timeout(CLIENT_HEADER_TIMEOUT, proto::read_line(&mut br)).await {
         Ok(Ok(l)) => serde_json::from_slice::<ClientHeader>(&l).ok(),

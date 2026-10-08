@@ -25,19 +25,22 @@ it). HTTP 429 means "rate limited"; the agent backs off.
 
 Every binary WebSocket message is a chunk of **one byte stream**; message
 boundaries mean nothing. Other message types are ignored; Close ends the
-tunnel. That stream carries **yamux** ([hashicorp spec](https://github.com/hashicorp/yamux/blob/master/spec.md)),
+tunnel. The agent sends a WebSocket ping every 25 s (answer with pong, as
+any WebSocket library does) and drops the tunnel after 75 s with nothing
+received. That stream carries **yamux** ([hashicorp spec](https://github.com/hashicorp/yamux/blob/master/spec.md)),
 the relay as server (even stream ids), the agent as client (odd):
 
 - 12-byte header: version 0, type (0 data, 1 window update, 2 ping,
   3 go away), flags (1 SYN, 2 ACK, 4 FIN, 8 RST), stream id, length.
 - Initial window 256 KiB per stream in each direction; never send more
-  than the peer's window. The agent's data frames are ≤ 64 KiB.
-- Opens are eager: the agent opens with a zero-delta window update + SYN
-  and accepts with + ACK, and expects the same from the relay. (Lazy
-  SYN-on-first-data opens would deadlock: the relay speaks first.)
-- Pings: answer ping+SYN with ping+ACK echoing the value. The agent pings
-  every 25 s and drops the tunnel if a ping goes a whole interval
-  unanswered.
+  than the peer's window. The agent (the `yamux` crate) grows its receive
+  windows with larger window updates; its data frames are ≤ 16 KiB.
+- The agent opens the control stream at once with an empty data frame +
+  SYN (the relay speaks first on it, so a lazy open would deadlock). Its
+  ACK for a relay-opened stream rides on its first frame there (the SSH
+  banner, sent right after the header arrives).
+- Pings: answer ping+SYN with ping+ACK echoing the value (the agent
+  pings to measure round-trip time).
 
 ### 2. Control stream
 
@@ -62,7 +65,7 @@ relay → {"op":"bye","reason":"…","reconnect":true}
   "ssh-ed25519" ‖ string sig`) by that key over `"sshyeet hello v1\0" ‖
   nonce`; the relay must verify it. `ttl` is seconds wanted, 0 or absent
   = the relay's maximum. `agent` is free text. `id_words` is 1–8, 0 or
-  absent = 2.
+  absent = 2; anything else gets an `error`.
 - **ready**: `id` must be the short id derived below from *this* key
   with `id_words` words, or the agent refuses it — the relay cannot pick
   names. `jump` is the address clients pass to `-J`: `host`, `host:port`,
@@ -71,8 +74,8 @@ relay → {"op":"bye","reason":"…","reconnect":true}
   `region` (≤ 16 chars of `[a-z0-9-]`), `expires` (informational) and
   `notice` (≤ 240 printable chars, shown to the user) are optional.
 - **error**: `msg` `"session id taken"` means another key holds these
-  words; the agent retries with one more word, then with a throwaway
-  key. Any other error is fatal to that Start.
+  words; the agent retries at once with one more word (same key, up to
+  8). Any other error is fatal to that Start.
 - **bye**: `reconnect: true` → the agent backs off (1 s doubling to 1
   min) and reconnects with the same key; `false` → it stops. A silent
   drop also reconnects, so a hello from the key already holding an id
@@ -90,9 +93,12 @@ long  = short "-" base32(H[16:26])                    (lowercase, no padding)
 
 Fields are big-endian 11-bit slices; `W` is the RFC 1751 dictionary
 (2048 words, lowercased; `src/sid/rfc1751.rs`). `wire(key)` is the SSH
-wire encoding of the public key (the base64 in `host_key`, decoded). One
-live tunnel per short id. The long id is self-certifying; routing it too
-is optional.
+wire encoding of the public key (the base64 in `host_key`, decoded). Ids
+are first-claim-wins: one key per short id across all relay nodes (a
+second tunnel from the *same* key replaces the first). If two keys end up
+holding the same words anyway (a race between nodes), refuse to route
+that id rather than pick one. The long id is self-certifying; routing it
+too is optional (refuse one whose suffix doesn't match the holder's key).
 
 ### 4. Clients
 

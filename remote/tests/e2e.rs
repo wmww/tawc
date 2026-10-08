@@ -231,10 +231,10 @@ fn stdio_forwarding_reaches_local_port() {
     assert!(h.has_event("forward", &format!("127.0.0.1:{port}")));
 }
 
-/// Collisions: first a longer id with the same key; then a throwaway
-/// key and secret for the run; then longer ids again.
+/// Collisions with the saved key: each one asks for one more word, same
+/// key (upstream's persistent-key policy); past 8 words Start fails.
 #[test]
-fn id_taken_grows_then_rolls() {
+fn id_taken_grows_saved_key() {
     let relay = Relay::start();
     relay.behaviour().id_taken.store(3, std::sync::atomic::Ordering::SeqCst);
     let dir = scratch("taken");
@@ -242,37 +242,41 @@ fn id_taken_grows_then_rolls() {
     let h = Harness::start_keyed(&relay.url, &key);
     let s = h.ready();
     let hellos = relay.hellos();
-    assert_eq!(hellos.len(), 4);
     let words: Vec<u64> = hellos.iter().map(|h| h.id_words).collect();
-    assert_eq!(words, [2, 3, 3, 4]);
-    // Same (saved) key for the grown id, then a different one.
-    assert_eq!(hellos[0].host_key, hellos[1].host_key);
-    assert_ne!(hellos[1].host_key, hellos[2].host_key);
-    assert_eq!(hellos[3].host_key, s.host_key);
-    assert_eq!(s.id.split('-').count(), 4);
+    assert_eq!(words, [2, 3, 4, 5]);
+    assert!(hellos.iter().all(|h| h.host_key == s.host_key));
+    assert_eq!(s.id.split('-').count(), 5);
+    assert!(s.id_long.starts_with(&format!("{}-", s.id)));
     assert!(h.has_event("warn", "session id was taken"));
     let out = ssh(relay.ssh_port, &s.secret, &["echo ok"], b"");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n");
-    // The throwaway key was never saved: the next Start uses the saved one.
+    // The longer id lasts one run.
     drop(h);
-    let h2 = Harness::start_keyed(&relay.url, &key);
-    let s2 = h2.ready();
-    assert_eq!(s2.host_key, hellos[0].host_key);
+    let s2 = Harness::start_keyed(&relay.url, &key).ready();
     assert_eq!(s2.id.split('-').count(), 2);
+
+    relay.behaviour().id_taken.store(100, std::sync::atomic::Ordering::SeqCst);
+    let h3 = Harness::start_keyed(&relay.url, &key);
+    let s3 = h3.wait(|s| s.state == "failed");
+    assert!(s3.error.contains("8 words"), "{}", s3.error);
+    assert_eq!(relay.hellos().last().unwrap().id_words, 8);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A relay from before RFC 1751 ids ignores `id_words` and assigns the
-/// old three words; that's our key's id too, so it's accepted.
+/// A per-Start key is replaced, secret too, on the first collision; from
+/// the second the id grows as well.
 #[test]
-fn legacy_relay_is_accepted() {
+fn id_taken_rolls_unsaved_key() {
     let relay = Relay::start();
-    relay.behaviour().legacy.store(true, std::sync::atomic::Ordering::SeqCst);
+    relay.behaviour().id_taken.store(3, std::sync::atomic::Ordering::SeqCst);
     let h = Harness::start(&relay.url, None);
     let s = h.ready();
-    assert_eq!(relay.hellos()[0].id_words, 2);
-    assert_eq!(s.id.split('-').count(), 3);
-    assert!(s.id_long.starts_with(&format!("{}-", s.id)));
+    let hellos = relay.hellos();
+    let words: Vec<u64> = hellos.iter().map(|h| h.id_words).collect();
+    assert_eq!(words, [2, 2, 3, 4]);
+    let keys: std::collections::HashSet<_> = hellos.iter().map(|h| h.host_key.clone()).collect();
+    assert_eq!(keys.len(), 4);
+    assert_eq!(hellos[3].host_key, s.host_key);
     let out = ssh(relay.ssh_port, &s.secret, &["echo ok"], b"");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n");
 }

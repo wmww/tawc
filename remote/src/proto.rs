@@ -34,8 +34,7 @@ pub struct Hello<'a> {
     #[serde(skip_serializing_if = "is_zero")]
     pub ttl: u64,
     pub agent: &'a str,
-    /// Words wanted in the session id (1..=8). Relays from before RFC 1751
-    /// ids ignore it and assign their three-word id.
+    /// Words wanted in the session id (1..=8).
     pub id_words: usize,
 }
 
@@ -194,16 +193,16 @@ pub enum ReadyError {
     BadJump(String),
 }
 
-/// Validate and sanitize the relay's `ready`: the id must derive from our
-/// host key (with the `id_words` asked for, or a pre-RFC-1751 relay's
-/// three words), the jump host must be shell-inert, free text is cleaned.
-pub fn validate_ready(mut r: Ready, key_wire: &[u8], id_words: usize) -> Result<(Ready, crate::sid::Scheme), ReadyError> {
+/// Validate and sanitize the relay's `ready`: the id must be the short
+/// one our host key derives at the `id_words` asked for, the jump host
+/// must be shell-inert, free text is cleaned.
+pub fn validate_ready(mut r: Ready, key_wire: &[u8], id_words: usize) -> Result<Ready, ReadyError> {
     if r.op != "ready" {
         return Err(ReadyError::Malformed);
     }
-    let Some(scheme) = crate::sid::identify(&r.id, key_wire, id_words) else {
+    if r.id != crate::sid::derive(key_wire, id_words) {
         return Err(ReadyError::IdMismatch(printable(&r.id, 64)));
-    };
+    }
     if !valid_jump(&r.jump) {
         return Err(ReadyError::BadJump(printable(&r.jump, 64)));
     }
@@ -212,7 +211,7 @@ pub fn validate_ready(mut r: Ready, key_wire: &[u8], id_words: usize) -> Result<
     }
     r.node = printable(&r.node, 64);
     r.notice = printable(&r.notice, 240);
-    Ok((r, scheme))
+    Ok(r)
 }
 
 #[cfg(test)]
@@ -257,8 +256,7 @@ mod tests {
             notice: "hi\x1b]0;x\x07".into(),
             ..Default::default()
         };
-        let (r, scheme) = validate_ready(good.clone(), &k, 2).unwrap();
-        assert_eq!(scheme, crate::sid::Scheme::Words(2));
+        let r = validate_ready(good.clone(), &k, 2).unwrap();
         assert_eq!(r.node, "node");
         assert_eq!(r.notice, "hi]0;x");
         assert_eq!(
@@ -269,12 +267,11 @@ mod tests {
             validate_ready(Ready { jump: "x;rm".into(), ..good.clone() }, &k, 2),
             Err(ReadyError::BadJump(_))
         ));
-        let r = validate_ready(Ready { region: "BAD REGION".into(), ..good.clone() }, &k, 2).unwrap().0;
+        let r = validate_ready(Ready { region: "BAD REGION".into(), ..good.clone() }, &k, 2).unwrap();
         assert_eq!(r.region, "");
-        // A pre-RFC-1751 relay's three words for the same key pass too;
-        // the new words at another count don't.
-        let legacy = Ready { id: crate::sid::legacy::derive(&k), ..good.clone() };
-        assert_eq!(validate_ready(legacy, &k, 2).unwrap().1, crate::sid::Scheme::Legacy);
+        // Our words at another count, or the long form, don't pass.
+        let long = Ready { id: crate::sid::derive_long(&k, 2), ..good.clone() };
+        assert!(matches!(validate_ready(long, &k, 2), Err(ReadyError::IdMismatch(_))));
         let three = Ready { id: crate::sid::derive(&k, 3), ..good.clone() };
         assert!(matches!(validate_ready(three, &k, 2), Err(ReadyError::IdMismatch(_))));
         assert_eq!(validate_ready(Ready { op: "error".into(), ..good }, &k, 2), Err(ReadyError::Malformed));

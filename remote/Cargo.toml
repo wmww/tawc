@@ -7,12 +7,13 @@ description = "TAWC remote access: sshyeet relay client + embedded sshd"
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "net", "time", "sync", "io-util", "macros", "process"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "compat"] }
 # rustls with ring only: aws-lc-rs needs cmake under cargo-ndk.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 futures = "0.3"
+yamux = "0.13"
 russh = { version = "0.63", default-features = false, features = ["ring", "flate2", "rsa"] }
 ring = "0.17"
 serde = { version = "1", features = ["derive"] }

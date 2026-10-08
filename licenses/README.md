@@ -15,4 +15,4 @@ no in-tree source for it.
 | `xz-java.txt` | `org.tukaani:xz` | <https://github.com/tukaani-project/xz-java> `COPYING` |
 | `zstd-jni.txt` | `com.github.luben:zstd-jni` | <https://github.com/luben/zstd-jni> `LICENSE` |
 | `hack.txt` | Hack v3.003 terminal font (`app/src/main/res/font/hack_regular.ttf`) | <https://github.com/source-foundry/Hack> `LICENSE.md` |
-| `sshyeet-words.txt` | RFC 1751 dictionary and legacy sshyeet id word lists in `remote/src/sid/` | <https://www.rfc-editor.org/rfc/rfc1751>, <https://sshyeet.com/dl/src.tar.gz> |
+| `rfc1751.txt` | RFC 1751 dictionary in `remote/src/sid/` | <https://www.rfc-editor.org/rfc/rfc1751> |
