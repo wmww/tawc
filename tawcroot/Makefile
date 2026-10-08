@@ -163,6 +163,7 @@ PROD_C := \
     $(SRC_T)/src/signal_shadow.c \
     $(SRC_T)/src/sigalt.c \
     $(SRC_T)/src/syscalls_socket.c \
+    $(SRC_T)/src/rtnl_emu.c \
     $(SRC_T)/src/usercopy.c \
     $(SRC_T)/src/loader_elf.c \
     $(SRC_T)/src/loader_map.c \

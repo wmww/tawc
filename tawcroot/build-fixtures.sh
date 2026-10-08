@@ -134,6 +134,7 @@ build_static  static_mknod_chr_fake
 build_dynamic dynamic_exit42
 build_dynamic dynamic_argv_check
 build_dynamic dynamic_legacy_nr_probe
+build_dynamic dynamic_rtnl_probe
 build_dynamic_big_stack
 build_wrap
 

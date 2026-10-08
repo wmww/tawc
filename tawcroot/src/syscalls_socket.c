@@ -65,6 +65,7 @@
 #include "path.h"
 #include "path_scratch.h"
 #include "raw_sys.h"
+#include "rtnl_emu.h"
 #include "syscalls_socket.h"
 #include "sysnr.h"
 #include "tawc_string.h"
@@ -73,6 +74,7 @@
 
 #define AF_UNIX_FAMILY  1
 #define AF_NETLINK_FAMILY  16
+#define NETLINK_ROUTE_PROTO 0
 #define NETLINK_AUDIT_PROTO 9
 #define NETLINK_KOBJECT_UEVENT_PROTO 15
 #define SOL_SOCKET_LEVEL 1
@@ -570,30 +572,54 @@ static void reverse_translate_unix_sockaddr(struct tawc_sockaddr_un *kern_addr,
 		(gn < (long)sizeof kern_addr->sun_path ? 1 : 0);
 }
 
-/* A uevent stub is an AF_UNIX socket, so libudev's `bind()` of a
- * sockaddr_nl would fail EINVAL and take the monitor down with it.
- * Answer 0 instead. The AF_NETLINK family in the guest's address is
- * what gates this, and a real netlink fd still gets the kernel's own
- * answer (an unfaked NETLINK_ROUTE bind keeps failing EACCES, so
- * getifaddrs consumers still fail fast rather than waiting on a reply
- * that can't come). */
+/* sa_family of a guest sockaddr, or -1 when there is none. */
+static int guest_family(uint64_t addr, uint64_t len)
+{
+	uint16_t fam;
+	if (!addr || (long)len < (long)sizeof fam) return -1;
+	if (tawc_copy_from_guest(&fam, sizeof fam,
+				 (const void *)(uintptr_t)addr) != 0)
+		return -1;
+	return fam;
+}
+
+/* uevent and rtnl stubs are AF_UNIX sockets, so the guest's `bind()`
+ * of a sockaddr_nl would fail EINVAL (and libudev takes its monitor
+ * down with it). Answer 0 instead; a real netlink fd gets the kernel's
+ * own answer. */
 static long handle_bind(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
-	const void *addr = (const void *)(uintptr_t)args->b;
-	if (addr && (long)args->c >= (long)sizeof(uint16_t)) {
-		uint16_t fam;
-		if (tawc_copy_from_guest(&fam, sizeof fam, addr) == 0 &&
-		    fam == AF_NETLINK_FAMILY && fd_is_uevent_stub((int)args->a))
+	int fd = (int)args->a;
+	if (guest_family(args->b, args->c) == AF_NETLINK_FAMILY) {
+		if (fd_is_uevent_stub(fd) || tawcroot_rtnl_is_stub(fd))
 			return 0;
 	}
 	return do_translate_unix_addr(TAWC_SYS_bind, args);
 }
 
+/* connect() of an rtnl stub to the kernel's sockaddr_nl fails EINVAL
+ * on the AF_UNIX socket; the real one would have succeeded. */
 static long handle_connect(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
-	return do_translate_unix_addr(TAWC_SYS_connect, args);
+	long rv = do_translate_unix_addr(TAWC_SYS_connect, args);
+	if (rv < 0 && guest_family(args->b, args->c) == AF_NETLINK_FAMILY &&
+	    tawcroot_rtnl_is_stub((int)args->a))
+		return 0;
+	return rv;
+}
+
+/* A send on an rtnl stub fails natively (ENOTCONN without an address,
+ * EINVAL with a sockaddr_nl); rtnl_emu answers it instead. Only failed
+ * sends get here, so the hot path pays nothing. */
+static long rtnl_send_fallback(int fd, long rv,
+			       const struct tawc_rtnl_iov *iov, size_t n)
+{
+	if ((rv != TAWC_ENOTCONN && rv != TAWC_EINVAL) ||
+	    !tawcroot_rtnl_is_stub(fd))
+		return rv;
+	return tawcroot_rtnl_send(fd, iov, n);
 }
 
 /* sendto(fd, buf, len, flags, dest_addr, addrlen): a connectionless
@@ -602,9 +628,8 @@ static long handle_connect(const tawcroot_syscall_args *args, ucontext_t *uc)
  * dest_addr. Untranslated it went to the host fs and the message
  * vanished. Translate dest_addr exactly like connect; everything else
  * (buf/len/flags) passes through. NULL dest_addr → ordinary send. */
-static long handle_sendto(const tawcroot_syscall_args *args, ucontext_t *uc)
+static long sendto_native(const tawcroot_syscall_args *args)
 {
-	(void)uc;
 	const void *dest = (const void *)(uintptr_t)args->e;
 	long addrlen = (long)args->f;
 	if (!dest || addrlen <= 0) {
@@ -627,6 +652,15 @@ static long handle_sendto(const tawcroot_syscall_args *args, ucontext_t *uc)
 	return rv;
 }
 
+static long handle_sendto(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	long rv = sendto_native(args);
+	if (rv >= 0) return rv;
+	struct tawc_rtnl_iov iov = { args->b, args->c };
+	return rtnl_send_fallback((int)args->a, rv, &iov, 1);
+}
+
 /* Local mirror of struct msghdr (64-bit ABI; matches the kernel's
  * user_msghdr layout). We only touch msg_name / msg_namelen; the iov /
  * control fields are forwarded as the guest gave them. */
@@ -646,9 +680,8 @@ struct tawc_msghdr {
  * msg_name. Copy the msghdr, translate msg_name into a stack-local
  * sockaddr, repoint, and re-issue. Same connectionless-client failure
  * mode as sendto. */
-static long handle_sendmsg(const tawcroot_syscall_args *args, ucontext_t *uc)
+static long sendmsg_native(const tawcroot_syscall_args *args)
 {
-	(void)uc;
 	const void *gmsg = (const void *)(uintptr_t)args->b;
 	if (!gmsg) {
 		return TAWC_RAW(TAWC_SYS_sendmsg, args->a, args->b, args->c,
@@ -680,6 +713,25 @@ static long handle_sendmsg(const tawcroot_syscall_args *args, ucontext_t *uc)
 			   0, 0, 0);
 	if (close_fd >= 0) tawc_close(close_fd);
 	return rv;
+}
+
+static long handle_sendmsg(const tawcroot_syscall_args *args, ucontext_t *uc)
+{
+	(void)uc;
+	long rv = sendmsg_native(args);
+	if (rv >= 0) return rv;
+	struct tawc_msghdr mh;
+	if (!args->b ||
+	    tawc_copy_from_guest(&mh, sizeof mh,
+				 (const void *)(uintptr_t)args->b) != 0)
+		return rv;
+	struct tawc_rtnl_iov iov[16];
+	if (mh.msg_iovlen > sizeof iov / sizeof iov[0]) return rv;
+	if (mh.msg_iovlen &&
+	    tawc_copy_from_guest(iov, mh.msg_iovlen * sizeof iov[0],
+				 (const void *)(uintptr_t)mh.msg_iov) != 0)
+		return rv;
+	return rtnl_send_fallback((int)args->a, rv, iov, mh.msg_iovlen);
 }
 
 /* Shared tail for getsockname / getpeername / accept4: after the kernel
@@ -727,11 +779,12 @@ static long getname_with_reverse(int nr, long a, long guest_addr_l,
 	 * an autobound netlink socket would have (port id = pid, no
 	 * multicast groups). */
 	if (nr == TAWC_SYS_getsockname &&
-	    is_uevent_stub_name(&kbuf.un, kern_len)) {
+	    (is_uevent_stub_name(&kbuf.un, kern_len) ||
+	     tawcroot_rtnl_is_stub_name(&kbuf.un, kern_len))) {
 		struct tawc_sockaddr_nl nl;
 		memset(&nl, 0, sizeof nl);
 		nl.nl_family = AF_NETLINK_FAMILY;
-		nl.nl_pid = (uint32_t)TAWC_RAW(TAWC_SYS_getpid, 0, 0, 0, 0, 0, 0);
+		nl.nl_pid = tawcroot_rtnl_port_id();
 		memcpy(&kbuf, &nl, sizeof nl);
 		kern_len = (long)sizeof nl;
 	} else {
@@ -886,6 +939,13 @@ static long handle_socket(const tawcroot_syscall_args *args, ucontext_t *uc)
 	if ((int)args->a == AF_NETLINK_FAMILY &&
 	    (int)args->c == NETLINK_AUDIT_PROTO)
 		return TAWC_EPROTONOSUPPORT;
+	/* NETLINK_ROUTE sockets are created fine, but are useless where
+	 * the kernel denies bind and RTM_GETLINK — see rtnl_emu.c. */
+	if ((int)args->a == AF_NETLINK_FAMILY &&
+	    (int)args->c == NETLINK_ROUTE_PROTO && tawcroot_rtnl_denied()) {
+		long stub = tawcroot_rtnl_open_stub(args->b);
+		if (stub >= 0) return stub;
+	}
 	long rv = TAWC_RAW(TAWC_SYS_socket, args->a, args->b, args->c,
 			   0, 0, 0);
 	/* Substitute a silent stub only for the uevent monitor, and only

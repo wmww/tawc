@@ -195,6 +195,7 @@ SRC_C_PROD=(
     "$TAWCROOT_DIR/src/signal_shadow.c"
     "$TAWCROOT_DIR/src/sigalt.c"
     "$TAWCROOT_DIR/src/syscalls_socket.c"
+    "$TAWCROOT_DIR/src/rtnl_emu.c"
     "$TAWCROOT_DIR/src/usercopy.c"
     "$TAWCROOT_DIR/src/loader_elf.c"
     "$TAWCROOT_DIR/src/loader_map.c"

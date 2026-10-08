@@ -55,6 +55,7 @@ const STAGED_PROGRAMS: &[&str] = &[
     "static_fork_closefrom_exec_argv1",
     "dynamic_exit42",
     "dynamic_legacy_nr_probe",
+    "dynamic_rtnl_probe",
 ];
 
 pub struct ProdEnv {

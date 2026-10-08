@@ -677,6 +677,39 @@ static long handle_tcsets2_fallback(long fd, unsigned int cmd, long arg)
 	                (long)legacy, (long)buf, 0, 0, 0);
 }
 
+/* Read-only netdevice ioctls (SIOCGIFNAME, SIOCGIFFLAGS, ...) are
+ * served by the kernel's dev_ioctl the same way on any socket family,
+ * but Android's app policy allowlists them only on inet sockets.
+ * glibc's if_indextoname / if_nametoindex issue them on an AF_UNIX
+ * socket (__opensock tries AF_UNIX first) and get EACCES — libtorrent
+ * then can't name any route's device, decides no interface reaches the
+ * internet, and skips every tracker. On EACCES, retry once on a
+ * transient AF_INET socket. */
+static int is_netdev_get_ioctl(unsigned int cmd)
+{
+	switch (cmd) {
+	case 0x8910:  /* SIOCGIFNAME */
+	case 0x8912:  /* SIOCGIFCONF */
+	case 0x8913:  /* SIOCGIFFLAGS */
+	case 0x891d:  /* SIOCGIFMETRIC */
+	case 0x8921:  /* SIOCGIFMTU */
+	case 0x8933:  /* SIOCGIFINDEX */
+	case 0x8942:  /* SIOCGIFTXQLEN */
+		return 1;
+	}
+	return 0;
+}
+
+static long netdev_ioctl_on_inet(unsigned int cmd, long arg)
+{
+	long s = TAWC_RAW(TAWC_SYS_socket, 2 /* AF_INET */,
+			  2 /* SOCK_DGRAM */ | O_CLOEXEC, 0, 0, 0, 0);
+	if (s < 0) return TAWC_EACCES;
+	long rv = TAWC_RAW(TAWC_SYS_ioctl, s, (long)cmd, arg, 0, 0, 0);
+	tawc_close((int)s);
+	return rv;
+}
+
 static long handle_ioctl(const tawcroot_syscall_args *args, ucontext_t *uc)
 {
 	(void)uc;
@@ -698,8 +731,11 @@ static long handle_ioctl(const tawcroot_syscall_args *args, ucontext_t *uc)
 			return handle_tcgets2_fallback(fd, arg);
 		return handle_tcsets2_fallback(fd, cmd, arg);
 	}
-	return TAWC_RAW(TAWC_SYS_ioctl, fd, args->b, arg,
-	                args->d, args->e, args->f);
+	long rv = TAWC_RAW(TAWC_SYS_ioctl, fd, args->b, arg,
+	                   args->d, args->e, args->f);
+	if (rv == TAWC_EACCES && is_netdev_get_ioctl(cmd))
+		return netdev_ioctl_on_inet(cmd, arg);
+	return rv;
 }
 
 void tawcroot_fd_register(void)

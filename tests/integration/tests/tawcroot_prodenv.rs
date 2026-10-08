@@ -193,6 +193,24 @@ fn test_prodenv_uevent_socket_stub() {
     assert_guest_exit("static_uevent_socket", &out, 42);
 }
 
+/// Interface enumeration at the app uid, where Android denies rtnetlink
+/// bind() and RTM_GETLINK and allows SIOCGIFNAME only on inet sockets:
+/// glibc getifaddrs' netlink sequence, libtorrent's plain-send dump and
+/// glibc if_indextoname's AF_UNIX ioctl must all see `lo`. The hosted
+/// `test_rtnl_emu` suite only simulates the denials; this is the real
+/// policy.
+#[test]
+fn test_prodenv_rtnl_interface_enumeration() {
+    test_init();
+    let out = run_guest(
+        &["/system:/system", "/apex:/apex"],
+        &["/bin/dynamic_rtnl_probe"],
+        &[],
+    )
+    .expect("broker spawn");
+    assert_guest_exit("dynamic_rtnl_probe", &out, 42);
+}
+
 /// io_uring defense-in-depth deny: all three io_uring syscalls return
 /// ENOSYS to the guest. Runs under the real zygote filter, so this is
 /// also ground truth that Android's own filter doesn't preempt

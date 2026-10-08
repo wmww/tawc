@@ -359,12 +359,34 @@ covered by unit/hosted/smoke tests.)
   receive them, and the same shape libudev already falls back to in a
   container with no udevd. The stub identifies itself by the abstract
   name it binds, so there is no fd table to keep straight across
-  fork/exec or fd reuse. Deliberately *not* generalized to other
-  netlink protocols: `NETLINK_ROUTE` keeps its real `EACCES` on bind,
-  so `getifaddrs()` consumers still fail fast instead of waiting on a
-  reply that can't come. Covered by `test_prodenv_uevent_socket_stub`
+  fork/exec or fd reuse. Covered by `test_prodenv_uevent_socket_stub`
   (the only suite running in the untrusted_app domain, where the
   denial is real) plus a hosted contract test.
+- **NETLINK_ROUTE is emulated where Android denies it** (rtnl_emu.c).
+  Apps get EACCES for rtnetlink `bind()` and `RTM_GETLINK`, which broke
+  glibc `getifaddrs()`/`if_nameindex()` (Qt, Python, iproute2), Go's
+  `net.Interfaces`, Chromium's address tracker and libtorrent (a failed
+  bind pauses its whole session, so qBittorrent never transferred). A
+  once-per-process probe (bind a throwaway socket) decides; if denied,
+  `socket(AF_NETLINK, *, NETLINK_ROUTE)` returns an AF_UNIX stub
+  (`TAWC_RTNL_TAG`) from birth — no mid-life fd swap. Sends on it fail
+  natively and are then relayed through a private real netlink socket;
+  only an `RTM_GETLINK` the kernel refuses is synthesized (from
+  SIOCGIFNAME/FLAGS/MTU; no MAC, Android hides it). Replies are queued
+  before the send returns, so native recv/poll/epoll work, and come from
+  a writer whose abstract name reads back as a kernel `sockaddr_nl`
+  (nl_pid 0, length 12); only `nl_family` reads AF_UNIX (Go, glibc,
+  iproute2, libtorrent, Firefox and Chromium don't check it). Gaps: no
+  multicast notifications (`ip monitor` still fails), SOL_NETLINK
+  setsockopts fail EOPNOTSUPP, write()/writev() on the stub are
+  untrapped. Tests: hosted `test_rtnl_emu` (a raw-syscall hook plays the
+  policy) and `test_prodenv_rtnl_interface_enumeration` (real policy).
+- **Netdevice "get" ioctls retry on an inet socket.** Android allows
+  SIOCGIFNAME/FLAGS/MTU/INDEX/… only on inet sockets, and glibc's
+  `if_indextoname()`/`if_nametoindex()` use an AF_UNIX one, so they
+  failed EACCES (libtorrent then thought no interface had an internet
+  route and skipped every tracker). `handle_ioctl` retries those
+  commands once on a transient AF_INET socket after EACCES.
 - **Read-only-bind errno shapes** (see notes/tawcroot/
   path-translation.md §"Read-only binds" for the full table): linkat
   with a *source* in an RO bind returns `EXDEV` even same-fs — the
