@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,11 +18,19 @@
 # define PATH_MAX 4096
 #endif
 
+static int rmrf_one(const char *p, const struct stat *st, int type,
+		    struct FTW *ftw)
+{
+	(void)st; (void)ftw;
+	(void)(type == FTW_DP ? rmdir(p) : unlink(p));
+	return 0;
+}
+
+/* In-process: fork+exec of sh and rm costs ~30 ms a call on Android,
+ * and the kill matrices call this hundreds of times. */
 void rh_rmrf(const char *path)
 {
-	char cmd[PATH_MAX + 32];
-	snprintf(cmd, sizeof cmd, "rm -rf '%s'", path);
-	(void)!system(cmd);
+	(void)nftw(path, rmrf_one, 32, FTW_DEPTH | FTW_PHYS);
 }
 
 bool rh_mkdir_p(const char *path, mode_t mode)

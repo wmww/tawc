@@ -180,11 +180,49 @@ static long recover_op(void *arg)
 	return tawcroot_linkstore_recover_now();
 }
 
+/* With no intent record, recovery's syscall sequence depends only on
+ * which top-level store entries exist (a crash mid-creation leaves a
+ * partial store). Returns 1 the first time a given layout is seen. */
+static int new_quiet_layout(void)
+{
+	static unsigned seen[8];
+	static int n_seen;
+	static const char *const ents[] = {
+		"link", "work", "tmp", "lock", "version",
+	};
+	unsigned sig = 0;
+	char p[4600];
+	for (unsigned i = 0; i < sizeof ents / sizeof *ents; i++) {
+		snprintf(p, sizeof p, "%s/%s", g_store, ents[i]);
+		if (access(p, F_OK) == 0) sig |= 1u << i;
+	}
+	DIR *d = opendir(g_store);
+	if (d) {
+		struct dirent *e;
+		while ((e = readdir(d)))
+			if (e->d_name[0] != '.') sig += 1u << 8;
+		closedir(d);
+	}
+	for (int i = 0; i < n_seen; i++)
+		if (seen[i] == sig) return 0;
+	if (n_seen < (int)(sizeof seen / sizeof *seen)) seen[n_seen++] = sig;
+	return 1;
+}
+
 static void recover_through_kills(TestCtx *test_ctx)
 {
 	/* A crash before the store was even created leaves nothing to
 	 * recover (and nothing recoverable). */
 	if (access(g_store, F_OK) != 0) return;
+	/* Most windows leave no intent and an already-covered layout:
+	 * recovery is then the same few syscalls every time, so kill it
+	 * once per layout, not once per op window. */
+	char ip[4600];
+	snprintf(ip, sizeof ip, "%s/intent", g_store);
+	if (access(ip, F_OK) != 0 && !new_quiet_layout()) {
+		test_int_eq(run_killed(test_ctx, 0, recover_op, NULL), 0);
+		return;
+	}
 	for (int j = 1; j < 200; j++) {
 		int rc = run_killed(test_ctx, j, recover_op, NULL);
 		if (rc == 0) return;

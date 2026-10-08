@@ -306,7 +306,8 @@ test(hosted_rtnl_relay)
 	test_false(r.bad_pid);
 
 	/* No ack asked for: a failure still comes back, a success would
-	 * leave nothing behind (the forced ack is dropped). */
+	 * leave nothing behind (the forced ack is dropped). Under SELinux
+	 * (Android) the send itself is denied, which passes through. */
 	struct {
 		struct nlmsghdr h;
 		struct rtmsg    m;
@@ -320,10 +321,12 @@ test(hosted_rtnl_relay)
 	del.m.rtm_table = RT_TABLE_MAIN;
 	struct iovec iov = { &del, del.h.nlmsg_len };
 	struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1 };
-	test_int_eq(th_sys(TAWC_SYS_sendmsg, fd, &mh, 0, 0, 0, 0),
-		    (long)del.h.nlmsg_len);
-	read_replies((int)fd, 12, &r);
-	test_true(r.error < 0);
+	long sent = th_sys(TAWC_SYS_sendmsg, fd, &mh, 0, 0, 0, 0);
+	if (sent != -EACCES) {
+		test_int_eq(sent, (long)del.h.nlmsg_len);
+		read_replies((int)fd, 12, &r);
+		test_true(r.error < 0);
+	}
 
 	close((int)fd);
 	android_off();
