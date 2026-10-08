@@ -378,7 +378,7 @@ at its definition.
 | `ic-send-key-event` (`keycode`) | InputActions | `TawcInputConnection.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode))`. |
 | `ic-send-modified-key-event` (`keycode`, `ctrl`, `alt`, `shift`) | InputActions | `TawcInputConnection.sendKeyEvent(KeyEvent(ACTION_DOWN, keycode, metaState))`. |
 | `ic-finish-hidden-composing` | InputActions | Test-only stale-callback hook: calls `finishComposingText()` on the hidden test IC retained by `RecordingImeOutput` after keyboard hide. Normal `ic-*` actions still require the current focused IC. |
-| `hardware-key` (`keycode`, optional `action`, `repeat`) | InputActions | Dispatch a `KeyEvent` through the focused Activity/view path; `action` is `press` (default), `down`, or `up`. |
+| `hardware-key` (`keycode`, optional `action`, `repeat`) | InputActions | Dispatch a `KeyEvent` through the focused Activity's pre-IME then normal dispatch (no IME stage); `action` is `press` (default), `down`, or `up`. |
 | `back` | InputActions | Dispatch Android Back through the focused activity's back-press path (the entry the system OnBackInvoked callback routes into). Activity-level rather than system input dispatch — compositor Back handling lives below that boundary either way. |
 | `set-graphics-backend` (`value`) | SettingsActions | Write `Settings.graphicsBackend` to the given `GraphicsBackend.key` (`libhybris` / `gfxstream` / `cpu`). In test mode this only mutates the in-memory store. Tests normally pass `--graphics` on each RUNINSIDE spawn instead. |
 | `get-graphics-backend` | SettingsActions | Print the current backend key on stdout. |

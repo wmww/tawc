@@ -210,7 +210,8 @@ failures abort the process instead of being tolerated.
 Tests inject input through Android-facing entry points. Soft-IME scenarios call
 methods on the active `TawcInputConnection` via broker `ic-*` actions. Hardware
 keyboard scenarios dispatch `KeyEvent`s through the focused Activity/view via
-`hardware-key`, matching Android's USB/Bluetooth keyboard path. There is
+`hardware-key` (pre-IME stage, then normal dispatch; the IME stage itself is
+only covered by `input keyevent` in `test_injected_keys_bypass_ime`). There is
 intentionally no test path that pokes `NativeBridge.native*` directly — see
 `notes/text-input.md` "Test infrastructure note" for the rationale.
 

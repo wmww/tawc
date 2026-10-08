@@ -1227,6 +1227,30 @@ fn test_hardware_keyboard_dispatches_wl_keyboard() {
     assert_compositor_clean();
 }
 
+/// Real input dispatch (`input keyevent`) runs the IME stage, unlike the
+/// `hardware-key` broker action. Gboard there eats Backspace's ACTION_UP
+/// and turns letters into text, so keys must be taken pre-IME.
+#[test]
+fn test_injected_keys_bypass_ime() {
+    tawc_integration::helpers::test_init();
+    let mut app = start_wayland_debug_text_input(INPUT_BACKEND, WAYLAND_DEBUG_ENV);
+
+    for n in 1..=2 {
+        adb::shell("input keyevent 67").expect("input keyevent Backspace");
+        app.wait_for_tag_count("KEY_RELEASE", n, TIMEOUT)
+            .expect("injected Backspace release did not arrive");
+    }
+    assert_eq!(app.count_with_tag("KEY"), 2, "lines={:?}", app.lines());
+
+    adb::shell("input keyevent 29").expect("input keyevent A");
+    app.wait_for_tag_value("KEY_RELEASE", "30", TIMEOUT)
+        .expect("injected A did not arrive as wl_keyboard");
+
+    app.stop()
+        .expect("debug app crashed or failed to stop cleanly");
+    assert_compositor_clean();
+}
+
 /// A client must not be able to paste the Android clipboard once it is
 /// in the background. Smithay hands offers only to the focused client
 /// but never withdraws them, so a client that keeps its `wl_data_offer`

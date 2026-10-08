@@ -236,9 +236,12 @@ Convert logical coordinates to physical tap coordinates with
 
 ## Hardware Keyboard
 
-Physical USB/Bluetooth/emulator keys enter Android through
-focused `SurfaceView.onKeyDown` / `onKeyUp`, not through `TawcInputConnection`.
-The view forwards mapped `ACTION_DOWN`/`ACTION_UP` events to Rust via
+Physical USB/Bluetooth/emulator keys are taken in the focused
+`TawcSurfaceView.dispatchKeyEventPreIme`, before the IME stage, not through
+`TawcInputConnection`. Taking them later (`onKeyDown`/`onKeyUp`) loses keys to
+Gboard: it eats Backspace's `ACTION_UP` (Backspace stuck down in the client)
+and commits letters as text. Keys an IME sends itself skip the pre-IME stage
+and still arrive via `onKeyDown`/`onKeyUp`. The view forwards mapped `ACTION_DOWN`/`ACTION_UP` events to Rust via
 `nativeOnHardwareKeyEvent(activityId, keycode, pressed, repeatCount)`.
 The JNI layer translates Android `KEYCODE_*` values to Linux evdev keycodes
 with `compositor/src/keymap.rs` and sends host-scoped `SurfaceEvent::HardwareKey`
@@ -258,8 +261,9 @@ numpad keys share the same Android-to-evdev table used by IME-originated key
 events. Unmapped Android/system keys return `false` from JNI so Android can
 keep its normal handling.
 
-Known gap: emulator host Backspace can arrive as an app-visible down event
-without a matching up event; see [hardware-backspace-stuck-down](../issues/hardware-backspace-stuck-down.md).
+The `hardware-key` broker action calls the Activity directly and skips the
+IME stage; `text_input::test_injected_keys_bypass_ime` uses
+`input keyevent` to go through real dispatch with the device's IME.
 
 ## Android Back Button
 

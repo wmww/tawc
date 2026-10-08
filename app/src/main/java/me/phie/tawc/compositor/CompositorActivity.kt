@@ -379,7 +379,8 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         val action = if (pressed) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP
         val now = SystemClock.uptimeMillis()
         val event = KeyEvent(now, now, action, keycode, repeatCount.coerceAtLeast(0), 0)
-        return dispatchKeyEvent(event)
+        // Mirror ViewRootImpl: pre-IME stage first, then normal dispatch.
+        return window.decorView.dispatchKeyEventPreIme(event) || dispatchKeyEvent(event)
     }
 
     fun setFullscreenFromCompositor(fullscreen: Boolean) {
@@ -489,6 +490,17 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
      * This makes the view act as a text input target for Gboard.
      */
     private inner class TawcSurfaceView(context: Context) : SurfaceView(context) {
+        /** Hardware keys are taken here, before the IME stage: Gboard
+         *  otherwise eats some of them (Backspace's ACTION_UP, letters it
+         *  commits as text), leaving keys stuck down in the client. Keys
+         *  the IME itself sends skip this stage and land in [onKeyDown]. */
+        override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
+            if (dispatchHardwareKeyToCompositor(event)) {
+                return true
+            }
+            return super.dispatchKeyEventPreIme(event)
+        }
+
         override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
             if (swallowMouseButtonKey(event)) {
                 return true
