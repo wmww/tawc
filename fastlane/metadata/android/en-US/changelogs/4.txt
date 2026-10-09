@@ -1,9 +1,12 @@
-New terminal-first home screen: one open distro, a terminal with tabs, and a launcher-style apps grid.
+New home screen: one open distro, an apps grid, and terminal tabs.
 
-- Remote access: SSH into a distro over your LAN or via a relay
-- Clipboard: wl-copy/wl-paste work in the terminal
-- Optional Keep awake so guests don't stall when the screen is off
-- Graphics start on demand; one notification shows what's running
-- Chromium and Electron apps run natively on Wayland
-- Bundled Hack font and a terminal scale setting
+- Edit app entries: command, icon, env vars, graphics
+- Export/import distros, or import a rootfs tarball
+- Windows fit and center; dialogs over a scrim
+- Back closes dialogs and goes back in apps
+- Pointer emulation for hover menus
+- SSH into a distro over LAN or a relay
+- wl-copy/wl-paste clipboard; optional Keep awake
+- Chromium and Electron run on Wayland
+- Bundled Hack font, terminal scale setting
 - Smaller APK
