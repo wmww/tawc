@@ -167,7 +167,8 @@ Keyboard focus after a window change goes to the topmost focusable window on
 the visible host (`first_toplevel_for_host`), so a dialog takes focus over its
 parent and focus returns to the parent when it closes. Back sends close
 (`xdg_toplevel.close` / `WM_DELETE_WINDOW`) to the topmost dialog, since
-dialogs get no decorations; otherwise it sends Escape.
+dialogs get no decorations; otherwise it sends `KEY_BACK` (`XF86Back`), which
+browsers and file managers treat as "go back".
 
 **Crossing.** Android synthesizes `ACTION_HOVER_EXIT` before every mouse
 `ACTION_DOWN` and `ACTION_HOVER_ENTER` after the matching `ACTION_UP`. Those
@@ -325,13 +326,16 @@ decides from Wayland state, in this order:
 2. Else if the host is fullscreen / immersive, restore it to maximized. This
    clears the xdg fullscreen state, sends a maximized configure, and asks
    Android to show system bars again.
-3. Else inject one Escape key press/release into the focused Wayland keyboard
-   target.
+3. Else if the topmost window is a dialog (Wayland child toplevel or X11
+   transient), send it close, as its missing title-bar button would.
+4. Else inject one `KEY_BACK` (`XF86Back`) press/release into the focused
+   keyboard target. Browsers and file managers navigate back on it; Escape
+   would only cancel.
 
 Back is host-scoped. The `activityId` must still be the foreground host; stale
 events for destroyed/backgrounded Activities are ignored. A popup must belong
 to the Activity that received Back before it is dismissed; otherwise the policy
-falls through to that host's fullscreen/Escape behavior. `CompositorActivity`
+falls through to that host's later steps. `CompositorActivity`
 uses a default-priority `OnBackInvokedCallback` on API 33+ so transient Android
 UI such as the IME can consume Back first, and the legacy `onBackPressed`
 override on older supported Android versions.

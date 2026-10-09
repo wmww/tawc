@@ -644,11 +644,11 @@ fn handle_back_pressed(data: &mut TawcState, activity_id: &ActivityId) {
         return;
     }
 
-    send_keyboard_key_press(data, crate::keymap::EVDEV_KEY_ESC);
+    send_keyboard_key_press(data, crate::keymap::EVDEV_KEY_BACK);
 }
 
 /// Back on a dialog acts like its title-bar close button; dialogs have no
-/// decorations here, and many (e.g. Nemo's preferences) ignore Escape.
+/// decorations here, and few handle the Back key.
 fn close_topmost_dialog(data: &mut TawcState, activity_id: &ActivityId) -> bool {
     let Some(layout) = data.host_layout(activity_id) else {
         return false;

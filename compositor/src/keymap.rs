@@ -13,6 +13,8 @@
 /// literal `"\n"` from the IME into an Enter key event.
 pub const EVDEV_KEY_ENTER: u32 = 28;
 pub const EVDEV_KEY_ESC: u32 = 1;
+/// evdev `KEY_BACK` (keysym `XF86Back`): what Android Back sends to apps.
+pub const EVDEV_KEY_BACK: u32 = 158;
 
 /// Translate an Android `KeyEvent.KEYCODE_*` value into the matching
 /// Linux evdev keycode. `None` for keys we have no mapping for (media

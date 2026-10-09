@@ -349,7 +349,7 @@ fn test_dialog_centered_over_scrim() {
     });
 }
 
-/// Back sends close (not Escape) to the topmost dialog; once it closes,
+/// Back sends close (not a key) to the topmost dialog; once it closes,
 /// keyboard focus returns to the parent and the scrim goes away.
 #[test]
 fn test_dialog_close_returns_focus_to_parent() {
@@ -374,7 +374,7 @@ fn test_dialog_close_returns_focus_to_parent() {
         assert!(output.status.success(), "back failed: {output:?}");
         app.wait_for_tag_count("DIALOG_CLOSED", 1, TIMEOUT).expect("dialog closed by Back");
         assert_eq!(app.count_with_tag("DIALOG_CLOSE_REQUESTED"), 1, "Back sends close");
-        assert_eq!(app.count_with_tag("KEY"), 0, "Back must not also send Escape");
+        assert_eq!(app.count_with_tag("KEY"), 0, "Back must not also send a key");
         let deadline = std::time::Instant::now() + TIMEOUT;
         loop {
             let enters = app

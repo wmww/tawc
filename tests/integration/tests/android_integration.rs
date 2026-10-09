@@ -59,7 +59,7 @@ fn test_xdg_configure_state_maximized_vs_fullscreen() {
 }
 
 #[test]
-fn test_back_restores_fullscreen_then_sends_escape() {
+fn test_back_restores_fullscreen_then_sends_back_key() {
     tawc_integration::helpers::test_init();
     let mut app = start_wayland_debug_touch(BACKEND, WAYLAND_DEBUG_ENV);
     app.wait_for_tag_value("CONFIGURE_STATE", "fullscreen", TIMEOUT)
@@ -69,13 +69,13 @@ fn test_back_restores_fullscreen_then_sends_escape() {
     app.wait_for_tag_value("CONFIGURE_STATE", "maximized", TIMEOUT)
         .expect("back should restore fullscreen app to maximized");
     assert!(
-        app.payloads_with_tag("KEY").iter().all(|s| s != "1"),
-        "first back should restore fullscreen, not inject Escape"
+        app.payloads_with_tag("KEY").iter().all(|s| s != "158"),
+        "first back should restore fullscreen, not inject KEY_BACK"
     );
 
     press_back("second input back");
-    app.wait_for_tag_value("KEY", "1", TIMEOUT)
-        .expect("second back should inject Escape");
+    app.wait_for_tag_value("KEY", "158", TIMEOUT)
+        .expect("second back should inject KEY_BACK");
 
     app.stop()
         .expect("fullscreen debug app failed to stop cleanly");
