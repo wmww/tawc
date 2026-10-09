@@ -349,8 +349,8 @@ fn test_dialog_centered_over_scrim() {
     });
 }
 
-/// Back sends Escape to the focused dialog; once it closes, keyboard focus
-/// returns to the parent and the scrim goes away.
+/// Back sends close (not Escape) to the topmost dialog; once it closes,
+/// keyboard focus returns to the parent and the scrim goes away.
 #[test]
 fn test_dialog_close_returns_focus_to_parent() {
     tawc_integration::helpers::test_init();
@@ -372,7 +372,9 @@ fn test_dialog_close_returns_focus_to_parent() {
             .expect("first Back leaves fullscreen");
         let output = adb::back().expect("back");
         assert!(output.status.success(), "back failed: {output:?}");
-        app.wait_for_tag_count("DIALOG_CLOSED", 1, TIMEOUT).expect("dialog closed by Escape");
+        app.wait_for_tag_count("DIALOG_CLOSED", 1, TIMEOUT).expect("dialog closed by Back");
+        assert_eq!(app.count_with_tag("DIALOG_CLOSE_REQUESTED"), 1, "Back sends close");
+        assert_eq!(app.count_with_tag("KEY"), 0, "Back must not also send Escape");
         let deadline = std::time::Instant::now() + TIMEOUT;
         loop {
             let enters = app

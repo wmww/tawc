@@ -1707,10 +1707,13 @@ static void dialog_configure(void *data, struct xdg_toplevel *toplevel,
     debug_emit_i32_pair("DIALOG_CONFIGURE_SIZE", width, height);
 }
 
+static void close_dialog(struct app *app);
+
 static void dialog_close(void *data, struct xdg_toplevel *toplevel)
 {
-    (void)data;
     (void)toplevel;
+    debug_emit("DIALOG_CLOSE_REQUESTED", NULL);
+    close_dialog(data);
 }
 
 static void dialog_configure_bounds(void *data, struct xdg_toplevel *toplevel,

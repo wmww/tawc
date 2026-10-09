@@ -9,7 +9,7 @@ use std::ffi::c_void;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use log::{error, info};
+use log::{error, info, warn};
 use smithay::reexports::wayland_server::Resource;
 
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState, TouchSlot};
@@ -42,6 +42,7 @@ use crate::clipboard::ClipboardEvent;
 
 use crate::compositor::{ClientState, TawcState};
 use crate::pointer_emulation::{FullGesture, Gesture, Mode as Emulation};
+use crate::placement::Role;
 use crate::render;
 
 enum KeyboardFocusAction {
@@ -639,7 +640,34 @@ fn handle_back_pressed(data: &mut TawcState, activity_id: &ActivityId) {
         return;
     }
 
+    if close_topmost_dialog(data, activity_id) {
+        return;
+    }
+
     send_keyboard_key_press(data, crate::keymap::EVDEV_KEY_ESC);
+}
+
+/// Back on a dialog acts like its title-bar close button; dialogs have no
+/// decorations here, and many (e.g. Nemo's preferences) ignore Escape.
+fn close_topmost_dialog(data: &mut TawcState, activity_id: &ActivityId) -> bool {
+    let Some(layout) = data.host_layout(activity_id) else {
+        return false;
+    };
+    let Some(top) = layout.entries.iter().rev().find(|e| e.role != Role::OverrideRedirect) else {
+        return false;
+    };
+    if top.role != Role::Child || top.window.geometry().is_empty() {
+        return false;
+    }
+    if let Some(toplevel) = top.window.toplevel() {
+        toplevel.send_close();
+    } else if let Some(x11) = top.window.x11_surface() {
+        if let Err(e) = x11.close() {
+            warn!("xwayland: failed to close window {}: {}", x11.window_id(), e);
+            return false;
+        }
+    }
+    true
 }
 
 fn dismiss_host_popups_if_touch_is_outside_popup(

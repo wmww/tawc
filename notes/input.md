@@ -165,8 +165,9 @@ as `pointer_x`/`pointer_y`. Scroll is not scaled.
 
 Keyboard focus after a window change goes to the topmost focusable window on
 the visible host (`first_toplevel_for_host`), so a dialog takes focus over its
-parent and focus returns to the parent when it closes. Back sends Escape to the
-focused dialog, which closes most.
+parent and focus returns to the parent when it closes. Back sends close
+(`xdg_toplevel.close` / `WM_DELETE_WINDOW`) to the topmost dialog, since
+dialogs get no decorations; otherwise it sends Escape.
 
 **Crossing.** Android synthesizes `ACTION_HOVER_EXIT` before every mouse
 `ACTION_DOWN` and `ACTION_HOVER_ENTER` after the matching `ACTION_UP`. Those
