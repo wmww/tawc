@@ -301,6 +301,15 @@ shadow CLOEXEC, unlink/rmdir/linkat errno shapes, `/proc/self/cwd`
 synthesis, cross-process exe substitution — were all fixed and are
 covered by unit/hosted/smoke tests.)
 
+- **`statx()` works without kernel support (pre-4.11).**
+  `stat_compat.c` falls back from raw `statx → ENOSYS` to `fstatat`,
+  fills basic metadata, and leaves unsupported fields unadvertised.
+  Other errors propagate. This covers guest stats, hardlink objects,
+  shm, and proc-device discovery; mount IDs use the fdinfo path below.
+  Executable probes and mount-ID identity checks use raw `fstat`.
+  The v4 executable probe required statx, matching the SM-T720/kernel
+  4.9 report `env: '/bin/bash': Function not implemented`.
+  Regression coverage and pending device verification: [testing.md](testing.md#kernels-without-statx).
 - **`statx()` reports `STATX_MNT_ID` even on pre-5.8 kernels**
   (deliberate *extra* fidelity, the inverse of the usual entry here).
   When the guest requests `STATX_MNT_ID`/`STATX_MNT_ID_UNIQUE` and

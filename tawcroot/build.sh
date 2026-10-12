@@ -185,6 +185,7 @@ SRC_C_PROD=(
     "$TAWCROOT_DIR/src/syscalls_fs_legacy.c"
     "$TAWCROOT_DIR/src/syscalls_link.c"
     "$TAWCROOT_DIR/src/syscalls_stat.c"
+    "$TAWCROOT_DIR/src/stat_compat.c"
     "$TAWCROOT_DIR/src/syscalls_xattr.c"
     "$TAWCROOT_DIR/src/syscalls_fd.c"
     "$TAWCROOT_DIR/src/linkstore.c"

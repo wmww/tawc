@@ -49,3 +49,7 @@
 	(((unsigned long)((min) & 0xffu)) |                               \
 	 ((unsigned long)(maj) << 8) |                                    \
 	 ((unsigned long)((min) & ~0xffu) << 12))
+
+#define TAWC_MAJOR(dev) (((unsigned long)(dev) >> 8) & 0xfffu)
+#define TAWC_MINOR(dev) (((unsigned long)(dev) & 0xffu) | \
+	(((unsigned long)(dev) >> 12) & 0xfff00u))

@@ -28,6 +28,7 @@
 #include "path_scratch.h"
 #include "raw_sys.h"
 #include "shm.h"
+#include "stat_compat.h"
 #include "syscalls_fs.h"
 #include "sysnr.h"
 #include "tawc_string.h"
@@ -646,8 +647,7 @@ long tawcroot_shm_statx_name(const char *name, struct statx *out,
 	if (fd < 0) return TAWC_ENOENT;
 
 	zero_statx(out);
-	long rv = TAWC_RAW(TAWC_SYS_statx, fd, (long)"",
-			   AT_EMPTY_PATH, mask, (long)out, 0);
+	long rv = tawcroot_statx_compat(fd, "", AT_EMPTY_PATH, mask, out);
 	if (rv < 0) return rv;
 	out->stx_mode = (uint16_t)(S_IFREG | 0600);
 	out->stx_uid = 0;

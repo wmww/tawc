@@ -17,6 +17,7 @@
 #include "proc_shadow.h"
 #include "raw_sys.h"
 #include "shm.h"
+#include "stat_compat.h"
 #include "syscalls_fs.h"
 #include "syscalls_fs_internal.h"
 #include "sysnr.h"
@@ -328,13 +329,12 @@ void tawcroot_statx_fill_mnt_id(int dirfd, const char *path,
 	long fd = TAWC_RAW(TAWC_SYS_openat, dirfd, (long)path,
 			   O_PATH | O_CLOEXEC | O_NOFOLLOW, 0, 0, 0);
 	if (fd < 0) return;
-	struct statx chk;
-	long crv = TAWC_RAW(TAWC_SYS_statx, (int)fd, (long)"",
-			    AT_EMPTY_PATH, STATX_INO, (long)&chk, 0);
+	struct stat chk;
+	long crv = TAWC_RAW(TAWC_SYS_fstat, fd, (long)&chk, 0, 0, 0, 0);
 	if (crv == 0 &&
-	    chk.stx_ino == sx->stx_ino &&
-	    chk.stx_dev_major == sx->stx_dev_major &&
-	    chk.stx_dev_minor == sx->stx_dev_minor)
+	    chk.st_ino == sx->stx_ino &&
+	    TAWC_MAJOR(chk.st_dev) == sx->stx_dev_major &&
+	    TAWC_MINOR(chk.st_dev) == sx->stx_dev_minor)
 		statx_mnt_id_from_fdinfo((int)fd, sx);
 	TAWC_RAW(TAWC_SYS_close, fd, 0, 0, 0, 0, 0);
 }
@@ -373,8 +373,8 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 		if (empty < 0) return empty;
 		if (empty) {
 			if (tawcroot_fd_is_reserved(dirfd)) return TAWC_EBADF;
-			long rv = TAWC_RAW(TAWC_SYS_statx, dirfd, (long)"", flags,
-					   mask, (long)&local, 0);
+			long rv = tawcroot_statx_compat(dirfd, "", flags,
+						 mask, &local);
 			if (rv == 0) {
 				unsigned long c = fd_object_nlink(
 					dirfd, local.stx_mode,
@@ -441,8 +441,7 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 	int rv_flags = flags;
 	if (t.is_root) rv_flags |= AT_EMPTY_PATH;
 
-	long rv = TAWC_RAW(TAWC_SYS_statx, t.fd, (long)resolved,
-			   rv_flags, mask, (long)&local, 0);
+	long rv = tawcroot_statx_compat(t.fd, resolved, rv_flags, mask, &local);
 	/* Hardlink emulation — same two fixups as handle_newfstatat:
 	 * NOFOLLOW leaf that is an emulated name → statx the object and
 	 * report the sidecar count; FOLLOW result landing in the store →
@@ -454,10 +453,9 @@ static long handle_statx(const tawcroot_syscall_args *args, ucontext_t *uc)
 			if (tawcroot_link_leaf_token(t.fd, t.path, tok,
 						     sizeof tok) == 1) {
 				struct statx ox;
-				long orv = TAWC_RAW(TAWC_SYS_statx,
-					tawcroot_store_link_fd, (long)tok,
-					AT_SYMLINK_NOFOLLOW, mask,
-					(long)&ox, 0);
+				long orv = tawcroot_statx_compat(
+					tawcroot_store_link_fd, tok,
+					AT_SYMLINK_NOFOLLOW, mask, &ox);
 				if (orv == 0) {
 					ox.stx_nlink = (unsigned int)
 						tawcroot_link_count_for_stat(tok);

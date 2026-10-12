@@ -153,6 +153,7 @@ PROD_C := \
     $(SRC_T)/src/syscalls_fs_legacy.c \
     $(SRC_T)/src/syscalls_link.c \
     $(SRC_T)/src/syscalls_stat.c \
+    $(SRC_T)/src/stat_compat.c \
     $(SRC_T)/src/syscalls_xattr.c \
     $(SRC_T)/src/syscalls_fd.c \
     $(SRC_T)/src/linkstore.c \

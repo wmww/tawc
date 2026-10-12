@@ -12,6 +12,7 @@
 #include "proc_rewrite.h"
 #include "proc_shadow.h"
 #include "raw_sys.h"
+#include "stat_compat.h"
 #include "syscalls_fs.h"
 #include "sysnr.h"
 #include "tawc_string.h"
@@ -706,8 +707,7 @@ static void proc_dev_probe(void)
 	if (proc_dev_known) return;
 	struct statx sx;
 	memset(&sx, 0, sizeof sx);
-	if (TAWC_RAW(TAWC_SYS_statx, AT_FDCWD, (long)"/proc", 0,
-		     STATX_INO, (long)&sx, 0) != 0)
+	if (tawcroot_statx_compat(AT_FDCWD, "/proc", 0, STATX_INO, &sx) != 0)
 		return;
 	proc_dev_major_cache = sx.stx_dev_major;
 	proc_dev_minor_cache = sx.stx_dev_minor;

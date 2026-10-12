@@ -83,6 +83,19 @@ PASSTHROUGH filters propagate to the orchestrator verbatim, exit
 code is the orchestrator's own (captured via an `__exit=$?` sentinel
 because adb shell isn't always a clean exit-code passthrough).
 
+### Kernels without statx
+
+`hosted/test_stat_compat` injects kernel `statx → ENOSYS` to cover
+metadata conversion, flags/errors, hardlinks, shm/proc metadata, and
+executable/shebang validation. `integration/test_no_statx` installs an
+inherited seccomp filter returning ENOSYS for statx, then exercises a
+real guest exec and tawcroot re-exec. Run with
+`tawcroot/test.sh --host '.*stat_compat.*' '.*no_statx.*'`.
+
+These simulate the missing syscall, not all Linux 4.9 behavior. The
+reported SM-T720 / LineageOS Android 15 / kernel 4.9 installation still
+needs device verification; the fix was prepared without a build.
+
 ### Cleat / STC are never linked into production
 
 This is a hard rule:
@@ -347,4 +360,3 @@ behaviors as `untrusted_app` on both targets — never real root, and
 with the production hardlink denial — so device-relevant assertions
 belong there per the placement rule; these accommodations stay only
 for the smoke steps the adb-shell run keeps.
-

@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <sys/stat.h>
+
 #include "errno_neg.h"
 #include "exec_handler.h"
 #include "exec_state.h"
@@ -46,14 +48,13 @@
  * -c /etc` must get a clean error, not a destroyed shell. */
 static long probe_check_executable(int fd)
 {
-	struct statx stx;
-	long sr = TAWC_RAW(TAWC_SYS_statx, fd, (long)"",
-	                   AT_EMPTY_PATH, STATX_TYPE | STATX_MODE,
-	                   (long)&stx, 0);
+	/* Only mode is needed; statx would require Linux 4.11. */
+	struct stat st;
+	long sr = TAWC_RAW(TAWC_SYS_fstat, fd, (long)&st, 0, 0, 0, 0);
 	if (sr < 0) return sr;
-	if (S_ISDIR(stx.stx_mode)) return TAWC_EISDIR;
-	if (!S_ISREG(stx.stx_mode)) return TAWC_EACCES;
-	if ((stx.stx_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0)
+	if (S_ISDIR(st.st_mode)) return TAWC_EISDIR;
+	if (!S_ISREG(st.st_mode)) return TAWC_EACCES;
+	if ((st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0)
 		return TAWC_EACCES;
 	return 0;
 }
