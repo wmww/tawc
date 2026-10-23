@@ -6,6 +6,8 @@
 //! JNI threads send events through channels.
 
 use std::ffi::c_void;
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
@@ -732,6 +734,7 @@ pub fn run(
     text_input_channel: Channel<TextInputEvent>,
     clipboard_channel: Channel<ClipboardEvent>,
     state_query_channel: Channel<mpsc::Sender<String>>,
+    external_channel: Channel<OwnedFd>,
     surface_event_channel: Channel<SurfaceEvent>,
     running: &std::sync::atomic::AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1123,6 +1126,27 @@ pub fn run(
     // Wayland-only subset of the compositor still works without it).
     let initial_xwayland = state.xwayland_enabled;
     crate::xwayland::set_enabled(&loop_handle, &mut state, initial_xwayland);
+
+    // --- Source 11: externally supplied client fds ---
+    // One end of a socketpair per external client (Binder fd passing;
+    // see ExternalWaylandService). These are ordinary Wayland streams —
+    // only the transport differs, so the insert is identical to the
+    // listener path below.
+    loop_handle.insert_source(external_channel, |event, _, data: &mut TawcState| {
+        let ChannelEvent::Msg(fd) = event else { return };
+        let stream = UnixStream::from(fd);
+        if let Err(e) = stream.set_nonblocking(true) {
+            error!("external client: set_nonblocking failed: {}", e);
+            return;
+        }
+        let client_state = ClientState::new(data.client_count.clone(), data.client_ids.clone());
+        if let Err(e) = data
+            .display_handle
+            .insert_client(stream, Arc::new(client_state))
+        {
+            error!("external client: insert_client failed: {}", e);
+        }
+    })?;
 
     // Accept on a clone of the process-lifetime listener (activation.rs).
     // Clients that connected before now have been waiting in its backlog;

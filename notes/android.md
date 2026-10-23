@@ -9,12 +9,65 @@ This is the current development approach.
 **Without root (proot, future goal):** SELinux blocks cross-app `connect()` between
 `untrusted_app` domains on Android 9+. Two viable solutions:
 
-1. **Binder fd passing (preferred):** Compositor creates a `socketpair()`, passes one end
-   to Termux via a ContentProvider or bound Service as a `ParcelFileDescriptor`. No
-   `connect()` syscall occurs, so SELinux is never triggered.
+1. **Binder fd passing (implemented):** the exported
+   [ExternalWaylandService](../app/src/main/java/me/phie/tawc/compositor/ExternalWaylandService.kt)
+   hands one end of a fresh `socketpair()` to the caller; the near end is
+   adopted by the compositor through `NativeBridge.nativeAdoptClientFd`,
+   which hands it to the same `insert_client` path the in-container clients
+   use. There are two entry points. The `IExternalWayland` AIDL
+   (`openClient()`) is the bind path. An `app_process` caller cannot bind,
+   and `startService` rejects Intents containing fds, so the Termux helper
+   starts the service with a Binder token (`me.phie.tawc.extra.HOST`) and
+   the app calls `openClient()` back on that token; the fd travels in that
+   synchronous Binder reply. No `connect()` syscall occurs, so neither
+   SELinux nor `/data/data/<pkg>` DAC traversal applies. Access is gated by
+   [ExternalWaylandAccess](../app/src/main/java/me/phie/tawc/compositor/ExternalWaylandAccess.kt)
+   against `Settings.externalAccessMode`: **Disabled**, **Allowed apps only**
+   (an allowlist; the default, pre-seeded with `com.termux` — plus
+   `com.android.shell` in debug builds — so an upgrade keeps working, and
+   only re-seeded while the preference key is absent), or **Any app**.
+   Settings → External apps edits the mode
+   and opens the allowlist picker. The manifest declares `<queries>` for
+   `com.termux`, `com.android.shell` (debug), and `MAIN`/`LAUNCHER` intents:
+   the first two because Android 11+ package visibility otherwise hides the
+   caller from `getPackagesForUid`, the last so the picker can list apps
+   without `QUERY_ALL_PACKAGES`. The client must be launched with
+   `WAYLAND_SOCKET=<fd>` (libwayland checks it before `WAYLAND_DISPLAY`);
+   one fd per client, no relay. The helper cannot use `ProcessBuilder`:
+   Android's `UNIXProcess` child closes every fd ≥ 4 before exec, so the
+   socketpair is dropped and the client fails to connect. It `execve`s
+   itself into the client instead (which keeps the fd), after the app
+   confirms adoption with a one-way transaction (transaction 2), so the fd
+   reply cannot be cut off when `execve` tears down the helper's Binder
+   threads. A denial sends transaction 3 (the reason) first, which the
+   helper prints before exiting instead of exec'ing a doomed client.
+   Termux-side helper: [../termux-wayland/](../termux-wayland/);
+   details in [../plans/external-wayland-clients.md](../plans/external-wayland-clients.md).
 
 2. **Shared UID:** `sharedUserId="com.termux"` makes both apps run as same UID/SELinux
    domain. Deprecated since API 33 but still functional. Limits distribution flexibility.
+
+### Caller identity
+
+The two entry points know the caller differently:
+
+- **Binder** (`bindService` from a real app): `Binder.getCallingUid()`.
+- **`startService`** (the Termux `app_process` launcher): AMS delivers the
+  start, so `Binder.getCallingUid()` is TAWC itself. The launcher creates
+  the socketpair in its own process, and a socketpair's `SO_PEERCRED`
+  reports the credentials of the process that created it — so
+  `NativeBridge.nativePeerUid` recovers the launcher's real uid. The
+  allowlist therefore applies to both paths.
+
+`SO_PEERCRED` is fixed at `socketpair()` time, so a later Binder call
+cannot spoof it. It also means a *relay* design (one long-lived Termux
+helper serving many clients) would report the relay's uid for every
+client; per-client policy would then need the uid passed as an
+`openClient()` argument and validated separately.
+
+Trade-off on the Binder path: the compositor only speaks
+`wl_shm`/`android_wlegl`, so GL/Vulkan Termux clients fall back to software
+rendering (see [gpu-strategy.md](gpu-strategy.md)).
 
 ## Chroot Setup
 

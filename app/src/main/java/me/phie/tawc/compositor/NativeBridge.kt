@@ -154,6 +154,16 @@ object NativeBridge {
      *  Idempotent. Needs the `TAWC_*` env. */
     external fun nativeStartActivation(xwayland: Boolean)
 
+    /** Adopt one end of a client socketpair (Binder fd passing). The fd is
+     *  owned by native after this call. False only if it could not be
+     *  queued (too many pending, or the compositor is gone). */
+    external fun nativeAdoptClientFd(fd: Int): Boolean
+
+    /** Peer uid of a connected Unix socket, or -1 if unavailable. The fd is
+     *  borrowed, not consumed. Authenticates the `startService` path, where
+     *  AMS delivers the start and `Binder.getCallingUid()` is TAWC itself. */
+    external fun nativePeerUid(fd: Int): Int
+
     /** Debug builds (`compositor-hold`): keep a clientless compositor up. */
     external fun nativeSetCompositorHold(hold: Boolean)
 

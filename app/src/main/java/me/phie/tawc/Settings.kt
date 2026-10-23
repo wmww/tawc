@@ -35,6 +35,8 @@ object Settings {
     private const val KEY_REMOTE_KEY_USER = "remote_key_user"
     private const val KEY_REMOTE_PASTED_KEY = "remote_pasted_key"
     private const val KEY_BATTERY_PROMPT_SHOWN = "battery_prompt_shown"
+    private const val KEY_EXTERNAL_ACCESS_MODE = "external_access_mode"
+    private const val KEY_EXTERNAL_ALLOWED_PACKAGES = "external_allowed_packages"
 
     const val MIN_OUTPUT_SCALE = 0.5f
     const val MAX_OUTPUT_SCALE = 4.0f
@@ -52,6 +54,16 @@ object Settings {
     const val REMOTE_LOGIN_PASTE = "paste"
     val DEFAULT_TINT_BUFFERS_BY_TYPE = BuildConfig.TINT_BUFFERS_BY_TYPE_DEFAULT
 
+    /**
+     * Factory allowlist: Termux, so the launcher that already shipped with
+     * TAWC keeps working after an upgrade. Only used while the preference
+     * key is absent — clearing every package in the picker persists an
+     * empty set and is not re-seeded. Debug builds also pre-allow
+     * `com.android.shell` so `adb shell` can drive the broker/launcher.
+     */
+    val DEFAULT_EXTERNAL_ALLOWED_PACKAGES: Set<String> =
+        if (BuildConfig.DEBUG) setOf("com.termux", "com.android.shell") else setOf("com.termux")
+
     private interface Store {
         var graphicsBackend: GraphicsBackend
         var tintBuffersByType: Boolean
@@ -68,6 +80,8 @@ object Settings {
         var remoteKeyUser: String
         var remotePastedKey: String
         var batteryPromptShown: Boolean
+        var externalAccessMode: ExternalAccessMode
+        var externalAllowedPackages: Set<String>
     }
 
     private class SharedPreferencesStore(private val prefs: SharedPreferences) : Store {
@@ -162,6 +176,20 @@ object Settings {
             set(value) {
                 prefs.edit { putBoolean(KEY_BATTERY_PROMPT_SHOWN, value) }
             }
+
+        override var externalAccessMode: ExternalAccessMode
+            get() = ExternalAccessMode.fromKeyOrNull(prefs.getString(KEY_EXTERNAL_ACCESS_MODE, null))
+                ?: ExternalAccessMode.DEFAULT
+            set(value) {
+                prefs.edit { putString(KEY_EXTERNAL_ACCESS_MODE, value.key) }
+            }
+
+        override var externalAllowedPackages: Set<String>
+            get() = prefs.getStringSet(KEY_EXTERNAL_ALLOWED_PACKAGES, null)
+                ?: DEFAULT_EXTERNAL_ALLOWED_PACKAGES
+            set(value) {
+                prefs.edit { putStringSet(KEY_EXTERNAL_ALLOWED_PACKAGES, value) }
+            }
     }
 
     private class TestStore : Store {
@@ -182,6 +210,8 @@ object Settings {
         @Volatile override var remoteKeyUser: String = ""
         @Volatile override var remotePastedKey: String = ""
         @Volatile override var batteryPromptShown: Boolean = false
+        @Volatile override var externalAccessMode: ExternalAccessMode = ExternalAccessMode.DEFAULT
+        @Volatile override var externalAllowedPackages: Set<String> = DEFAULT_EXTERNAL_ALLOWED_PACKAGES
     }
 
     @Volatile private var store: Store? = null
@@ -303,6 +333,17 @@ object Settings {
         get() = requireStore().batteryPromptShown
         set(value) { requireStore().batteryPromptShown = value }
 
+    /** Who may open external Wayland clients; see [ExternalAccessMode]. */
+    var externalAccessMode: ExternalAccessMode
+        get() = requireStore().externalAccessMode
+        set(value) { requireStore().externalAccessMode = value }
+
+    /** Package names allowed when [externalAccessMode] is
+     *  [ExternalAccessMode.ALLOWLIST]. */
+    var externalAllowedPackages: Set<String>
+        get() = requireStore().externalAllowedPackages
+        set(value) { requireStore().externalAllowedPackages = value }
+
     fun snapOutputScale(value: Float): Float {
         if (!value.isFinite()) return DEFAULT_OUTPUT_SCALE
         val clamped = value.coerceIn(MIN_OUTPUT_SCALE, MAX_OUTPUT_SCALE)
@@ -327,6 +368,33 @@ object Settings {
 
     private fun Float.toIntWithRound(): Int =
         kotlin.math.floor(this + 0.5f).toInt()
+}
+
+/**
+ * Who may open external Wayland clients through
+ * [me.phie.tawc.compositor.ExternalWaylandService].
+ *
+ * Stored by [key] so reordering or adding a mode cannot reinterpret an
+ * existing preference. [DEFAULT] is an allowlist holding `com.termux` so
+ * an upgrade keeps the Termux launcher working; the user can widen it to
+ * [ANY] or close it with [DISABLED].
+ */
+enum class ExternalAccessMode(val key: String) {
+    /** No external caller is accepted. */
+    DISABLED("disabled"),
+
+    /** Only packages in [Settings.externalAllowedPackages] are accepted. */
+    ALLOWLIST("allowlist"),
+
+    /** Any installed app is accepted. */
+    ANY("any");
+
+    companion object {
+        val DEFAULT = ALLOWLIST
+
+        fun fromKeyOrNull(key: String?): ExternalAccessMode? =
+            entries.firstOrNull { it.key == key }
+    }
 }
 
 /**

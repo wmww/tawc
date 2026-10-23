@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::{Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, mpsc};
@@ -65,6 +66,19 @@ type StateQueryResponse = mpsc::Sender<String>;
 /// Global sender for state query requests. Replaced each time the compositor restarts.
 static STATE_QUERY_SENDER: Mutex<Option<smithay::reexports::calloop::channel::Sender<StateQueryResponse>>> = Mutex::new(None);
 
+/// Fds handed over by `ExternalWaylandService` (Binder fd passing), plus
+/// the running compositor's calloop sender. One mutex so a start cannot
+/// miss an fd queued concurrently. The queue holds fds that arrived with
+/// no compositor thread; `nativeStartCompositor` drains it.
+static EXTERNAL_CLIENTS: Mutex<(
+    Option<smithay::reexports::calloop::channel::Sender<OwnedFd>>,
+    Vec<OwnedFd>,
+)> = Mutex::new((None, Vec::new()));
+
+/// Cap on fds waiting for a compositor thread. Beyond this `openClient`
+/// refuses (the client sees EOF) rather than growing without bound.
+const EXTERNAL_CLIENTS_MAX_PENDING: usize = 32;
+
 /// Compositor thread lifecycle. Native state is the truth; Kotlin follows
 /// it (`nativeStartCompositor`'s return value, `onCompositorStopped`).
 /// `Running` lasts until the thread has dropped everything, so a start
@@ -90,6 +104,7 @@ static LIFECYCLE: Lifecycle = Lifecycle {
 /// logs a warning if the loop is already gone.
 pub(crate) fn clear_senders() {
     *STATE_QUERY_SENDER.lock().unwrap() = None;
+    EXTERNAL_CLIENTS.lock().unwrap().0 = None;
     clipboard::clear_clipboard_sender();
     host::clear_surface_event_sender();
     input::clear_senders();
@@ -321,6 +336,23 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
         smithay::reexports::calloop::channel::channel();
     *STATE_QUERY_SENDER.lock().unwrap() = Some(state_query_sender);
 
+    // Same durability rule for externally supplied client fds (Binder fd
+    // passing). Adopt whatever arrived while no compositor ran, then leave
+    // the sender installed so `nativeAdoptClientFd` delivers directly.
+    let (external_sender, external_channel) =
+        smithay::reexports::calloop::channel::channel::<OwnedFd>();
+    {
+        let mut slot = EXTERNAL_CLIENTS.lock().unwrap();
+        slot.0 = Some(external_sender);
+        let pending = std::mem::take(&mut slot.1);
+        let sender = slot.0.as_ref().unwrap();
+        for fd in pending {
+            // A dead channel means this run is already exiting; the
+            // client sees EOF and reconnects.
+            let _ = sender.send(fd);
+        }
+    }
+
     let initial_scale = sanitize_output_scale(output_scale as f64).unwrap_or(DEFAULT_OUTPUT_SCALE);
     let initial_physical_size = (display_width_px, display_height_px);
     let initial_xwayland = xwayland != 0;
@@ -334,6 +366,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
             clipboard_channel,
             surface_event_channel,
             state_query_channel,
+            external_channel,
             initial_scale,
             initial_physical_size,
             initial_xwayland,
@@ -351,6 +384,76 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
         call_native_bridge_void("onCompositorStopped", "()V", &[]);
     });
     1
+}
+
+/// Take one end of a client socketpair from `ExternalWaylandService`
+/// (Binder fd passing). The Java caller has already `detachFd()`d it, so
+/// this call owns it. With no compositor running the fd is queued and
+/// Kotlin is asked to start one; `nativeStartCompositor` drains the queue.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeAdoptClientFd(
+    mut env: JNIEnv,
+    _class: JClass,
+    fd: jint,
+) -> jboolean {
+    init_native_logging();
+    cache_jni_globals(&mut env);
+
+    // SAFETY: ParcelFileDescriptor.detachFd() transferred ownership.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+
+    {
+        let mut slot = EXTERNAL_CLIENTS.lock().unwrap();
+        if let Some(sender) = slot.0.as_ref() {
+            // A failed send means this run is already exiting; the client
+            // sees EOF and reconnects.
+            return sender.send(fd).is_ok() as jboolean;
+        }
+        if slot.1.len() >= EXTERNAL_CLIENTS_MAX_PENDING {
+            return 0;
+        }
+        slot.1.push(fd);
+    }
+
+    crate::call_native_bridge_void("onActivationRequested", "()V", &[]);
+    1
+}
+
+/// Read the peer uid of a connected Unix socket fd, or -1 if the kernel
+/// will not report it. Used by `ExternalWaylandService` to authenticate
+/// the `startService` path, where AMS delivers the start and
+/// `Binder.getCallingUid()` is TAWC itself.
+///
+/// A socketpair's peer credentials are the credentials of the process
+/// that created the pair, so the Termux launcher — which creates it in
+/// its own process — is reported correctly even though the later Binder
+/// transaction comes from AMS.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativePeerUid(
+    _env: JNIEnv,
+    _class: JClass,
+    fd: jint,
+) -> jint {
+    if fd < 0 {
+        return -1;
+    }
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `fd` is borrowed, not consumed; `cred`/`len` are valid
+    // out-parameters of the sizes getsockopt expects.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return -1;
+    }
+    cred.uid as jint
 }
 
 /// Bind the process-lifetime Wayland/X11 sockets and start watching them
@@ -1470,6 +1573,7 @@ fn run_compositor(
     clipboard_channel: smithay::reexports::calloop::channel::Channel<clipboard::ClipboardEvent>,
     surface_event_channel: smithay::reexports::calloop::channel::Channel<SurfaceEvent>,
     state_query_channel: smithay::reexports::calloop::channel::Channel<StateQueryResponse>,
+    external_channel: smithay::reexports::calloop::channel::Channel<OwnedFd>,
     initial_scale: f64,
     initial_physical_size: (i32, i32),
     initial_xwayland: bool,
@@ -1512,6 +1616,7 @@ fn run_compositor(
     event_loop::run(
         wl_display, state,
         touch_channel, pointer_channel, text_input_channel, clipboard_channel, state_query_channel,
+        external_channel,
         surface_event_channel,
         &RUNNING,
     )

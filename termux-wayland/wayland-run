@@ -1,0 +1,40 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Run a Wayland client as a window inside the TAWC compositor.
+#
+#   termux-wayland/wayland-run foot
+#   termux-wayland/wayland-run weston-simple-shm
+#   TAWC_PACKAGE=me.phie.tawc  termux-wayland/wayland-run foot   # release build
+#
+# The jar is used from this directory (built on demand), so nothing has to
+# be copied into $PREFIX. Point TAWC_WAYLAND_JAR at another jar to override.
+set -e
+
+here=$(cd "$(dirname "$0")" && pwd)
+
+if [ -n "${TAWC_WAYLAND_JAR:-}" ]; then
+    jar="$TAWC_WAYLAND_JAR"
+else
+    jar="$here/tawc-wayland.jar"
+    if [ -d "$here/src" ] && { [ ! -f "$jar" ] || \
+        [ -n "$(find "$here/src" "$here/stubs" -name '*.java' -newer "$jar" 2>/dev/null)" ]; }; then
+        echo "wayland-run: building $jar" >&2
+        bash "$here/build.sh" >&2
+    fi
+fi
+
+if [ ! -f "$jar" ]; then
+    echo "wayland-run: no jar at $jar" >&2
+    exit 1
+fi
+
+# Android 14+ refuses to execute writable dex.
+if [ -w "$jar" ]; then
+    chmod 0400 "$jar" 2>/dev/null || true
+fi
+
+export CLASSPATH="$jar"
+# Keep the bionic app_process from pulling in Termux's linker environment.
+unset LD_LIBRARY_PATH LD_PRELOAD
+
+exec /system/bin/app_process -Xnoimage-dex2oat / \
+    com.termux.tawc.WaylandRun "$@"

@@ -22,6 +22,7 @@ import me.phie.tawc.install.buildAndoCommitRow
 import me.phie.tawc.install.distro.DistroRegistry
 import me.phie.tawc.licenses.LicensesActivity
 import me.phie.tawc.ui.buildChildScreen
+import me.phie.tawc.ui.externalAccessGroup
 import me.phie.tawc.ui.graphicsBackendGroup
 import me.phie.tawc.ui.pointerEmulationGroup
 import me.phie.tawc.ui.tawcCard
@@ -53,6 +54,10 @@ class SettingsActivity : AppCompatActivity() {
     /** Holds the open-distro card; refilled in [onResume] so a distro
      *  switch or uninstall while we were in the back stack re-renders. */
     private lateinit var distroSlot: FrameLayout
+
+    /** The allowlist summary/button row, hidden outside ALLOWLIST. */
+    private lateinit var externalAllowlistViews: LinearLayout
+    private lateinit var externalSummary: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,6 +93,10 @@ class SettingsActivity : AppCompatActivity() {
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
         column.addView(
+            buildSectionCard(getString(R.string.settings_external_apps), buildExternalAppsSettings()),
+            verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
+        )
+        column.addView(
             buildSectionCard(getString(R.string.settings_about), buildAboutSettings()),
             verticalLp(MATCH_PARENT, WRAP_CONTENT, bottomMargin = pad),
         )
@@ -113,6 +122,8 @@ class SettingsActivity : AppCompatActivity() {
             distroSlot.visibility = android.view.View.VISIBLE
             distroSlot.addView(buildDistroCard(inst))
         }
+        // The picker may have changed the set while we were paused.
+        refreshExternalAllowlistViews()
     }
 
     override fun onDestroy() {
@@ -210,6 +221,70 @@ class SettingsActivity : AppCompatActivity() {
                 Settings.tintBuffersByType = checked
                 NativeBridge.nativeSetTintBuffersByType(checked)
             }
+        }
+    }
+
+    /**
+     * External Wayland access: mode plus the allowlist editor. The
+     * warning is always visible because "any app" is a real security
+     * decision, not a preference. The list controls only matter for
+     * [ExternalAccessMode.ALLOWLIST], so they hide in the other modes
+     * (the saved set is kept).
+     */
+    private fun buildExternalAppsSettings(): android.view.View {
+        val cardPad = (12 * resources.displayMetrics.density).toInt()
+        val allowlistViews = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                TextView(this@SettingsActivity).apply {
+                    textSize = 13f
+                    setPadding(0, cardPad / 2, 0, cardPad / 2)
+                    externalSummary = this
+                },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+            )
+            addView(
+                tonalButton(getString(R.string.external_access_manage)) {
+                    startActivity(Intent(this@SettingsActivity, ExternalAppsActivity::class.java))
+                },
+                LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT),
+            )
+        }
+        externalAllowlistViews = allowlistViews
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                externalAccessGroup(Settings.externalAccessMode) {
+                    Settings.externalAccessMode = it
+                    refreshExternalAllowlistViews()
+                },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+            )
+            addView(
+                TextView(this@SettingsActivity).apply {
+                    text = getString(R.string.external_access_warning)
+                    textSize = 13f
+                    setPadding(0, cardPad / 2, 0, cardPad / 2)
+                },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+            )
+            addView(allowlistViews, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+    }
+
+    /** Allowlist row visibility and count, for the current mode and set. */
+    private fun refreshExternalAllowlistViews() {
+        val allowlist = Settings.externalAccessMode == ExternalAccessMode.ALLOWLIST
+        externalAllowlistViews.visibility = if (allowlist) {
+            android.view.View.VISIBLE
+        } else {
+            android.view.View.GONE
+        }
+        val count = Settings.externalAllowedPackages.size
+        externalSummary.text = when (count) {
+            0 -> getString(R.string.external_access_summary_none)
+            1 -> getString(R.string.external_access_summary_one, count)
+            else -> getString(R.string.external_access_summary_many, count)
         }
     }
 

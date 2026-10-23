@@ -68,6 +68,25 @@
     <string name="settings_about_detail">%1$s v%2$s</string>
     <string name="settings_about_licenses">Licenses</string>
 
+    <string name="settings_external_apps">External apps</string>
+    <string name="external_access_disabled">Disabled</string>
+    <string name="external_access_disabled_detail">No other app can open windows in TAWC</string>
+    <string name="external_access_allowlist">Allowed apps only</string>
+    <string name="external_access_allowlist_detail">Only apps you pick below can connect</string>
+    <string name="external_access_any">Any app</string>
+    <string name="external_access_any_detail">Any installed app can connect and read your screen and input</string>
+    <string name="external_access_manage">Manage allowed apps</string>
+    <string name="external_access_summary_none">No apps allowed</string>
+    <string name="external_access_summary_one">%1$d app allowed</string>
+    <string name="external_access_summary_many">%1$d apps allowed</string>
+    <string name="external_access_warning">Connecting apps can display content on your screen and receive your input. Only allow apps you trust.</string>
+    <string name="title_external_apps">External apps</string>
+    <string name="external_apps_intro">Choose which apps may open Wayland windows in TAWC. Changes apply immediately.</string>
+    <string name="external_apps_empty">No matching apps</string>
+    <string name="external_apps_no_launcher">No installed apps with a launcher icon were found.</string>
+    <string name="external_apps_search_hint">Search apps</string>
+    <string name="external_apps_unknown">Unknown app</string>
+
     <string name="install_help_methods">What\'s the difference?</string>
     <string name="install_distro_label">Distro</string>
     <string name="install_no_supported_distro">(no distro available for this device)</string>
